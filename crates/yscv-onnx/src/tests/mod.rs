@@ -123,11 +123,7 @@ pub(super) fn make_float_attr(name: &str, value: f32) -> onnx::AttributeProto {
 }
 
 /// Build an ONNX attribute of type TENSOR (type=4) containing a TensorProto.
-pub(super) fn make_tensor_attr(
-    name: &str,
-    dims: Vec<i64>,
-    data: Vec<f32>,
-) -> onnx::AttributeProto {
+pub(super) fn make_tensor_attr(name: &str, dims: Vec<i64>, data: Vec<f32>) -> onnx::AttributeProto {
     onnx::AttributeProto {
         name: Some(name.into()),
         r#type: Some(4), // TENSOR

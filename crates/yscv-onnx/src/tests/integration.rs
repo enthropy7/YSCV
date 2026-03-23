@@ -161,11 +161,7 @@ fn constant_tensor_proto_value_attribute() {
         name: Some("shape_const".into()),
         input: vec![],
         output: vec!["target_shape".into()],
-        attribute: vec![make_tensor_attr(
-            "value",
-            vec![3],
-            vec![1.0, 4.0, 2.0],
-        )],
+        attribute: vec![make_tensor_attr("value", vec![3], vec![1.0, 4.0, 2.0])],
         ..Default::default()
     };
     let reshape_node = onnx::NodeProto {
@@ -224,8 +220,7 @@ fn split_opset13_input_tensor_sizes() {
     );
     let model = load_onnx_model(&bytes).unwrap();
 
-    let input =
-        Tensor::from_vec(vec![1, 6], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]).unwrap();
+    let input = Tensor::from_vec(vec![1, 6], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]).unwrap();
     let mut feed = HashMap::new();
     feed.insert("input".to_string(), input);
 

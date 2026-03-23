@@ -204,18 +204,17 @@ pub(super) fn exec_split(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onn
 
     // Opset 13+: split sizes come from the second input tensor;
     // older opsets use the "split" attribute.
-    let split_sizes: Vec<usize> =
-        if node.inputs.len() > 1 && !node.inputs[1].is_empty() {
-            if let Ok(split_t) = get_tensor(env, &node.name, &node.inputs[1]) {
-                split_t.data().iter().map(|&v| v as usize).collect()
-            } else {
-                equal_split(dim, num_outputs)
-            }
-        } else if let Some(s) = get_attr_ints(node, "split") {
-            s.iter().map(|&v| v as usize).collect()
+    let split_sizes: Vec<usize> = if node.inputs.len() > 1 && !node.inputs[1].is_empty() {
+        if let Ok(split_t) = get_tensor(env, &node.name, &node.inputs[1]) {
+            split_t.data().iter().map(|&v| v as usize).collect()
         } else {
             equal_split(dim, num_outputs)
-        };
+        }
+    } else if let Some(s) = get_attr_ints(node, "split") {
+        s.iter().map(|&v| v as usize).collect()
+    } else {
+        equal_split(dim, num_outputs)
+    };
 
     let data = input.data();
     let strides = compute_strides(shape);
