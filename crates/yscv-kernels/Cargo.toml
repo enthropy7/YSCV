@@ -21,7 +21,7 @@ gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 bytemuck = { version = "1", optional = true, features = ["derive"] }
 pollster = { version = "0.4", optional = true }
 rayon = "1.11"
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
 wgpu = { version = "24", optional = true }
 

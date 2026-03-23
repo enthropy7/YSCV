@@ -11,8 +11,8 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-yscv-detect = { version = "0.1.0", path = "../yscv-detect" }
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
+yscv-detect = { version = "0.1", path = "../yscv-detect" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
 
 [dev-dependencies]

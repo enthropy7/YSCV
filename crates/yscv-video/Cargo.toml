@@ -18,7 +18,7 @@ native-camera = ["dep:nokhwa"]
 bytes = "1"
 nokhwa = { version = "0.10.10", optional = true, default-features = false, features = ["input-native"] }
 rayon = "1.11"
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
 
 [dev-dependencies]

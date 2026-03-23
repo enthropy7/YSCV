@@ -14,9 +14,9 @@ keywords.workspace = true
 onnx = ["yscv-onnx"]
 
 [dependencies]
-yscv-onnx = { version = "0.1.0", path = "../yscv-onnx", optional = true }
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
-yscv-video = { version = "0.1.0", path = "../yscv-video" }
+yscv-onnx = { version = "0.1", path = "../yscv-onnx", optional = true }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
+yscv-video = { version = "0.1", path = "../yscv-video" }
 thiserror.workspace = true
 
 [dev-dependencies]

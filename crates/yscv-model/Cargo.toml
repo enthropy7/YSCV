@@ -12,12 +12,12 @@ keywords.workspace = true
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-yscv-autograd = { version = "0.1.0", path = "../yscv-autograd" }
-yscv-imgproc = { version = "0.1.0", path = "../yscv-imgproc" }
-yscv-kernels = { version = "0.1.0", path = "../yscv-kernels" }
-yscv-onnx = { version = "0.1.0", path = "../yscv-onnx" }
-yscv-optim = { version = "0.1.0", path = "../yscv-optim" }
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
+yscv-autograd = { version = "0.1", path = "../yscv-autograd" }
+yscv-imgproc = { version = "0.1", path = "../yscv-imgproc" }
+yscv-kernels = { version = "0.1", path = "../yscv-kernels" }
+yscv-onnx = { version = "0.1", path = "../yscv-onnx" }
+yscv-optim = { version = "0.1", path = "../yscv-optim" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror.workspace = true

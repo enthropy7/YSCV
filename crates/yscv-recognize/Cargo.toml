@@ -11,7 +11,7 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror.workspace = true

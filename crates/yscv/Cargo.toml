@@ -9,19 +9,19 @@ categories.workspace = true
 keywords.workspace = true
 
 [dependencies]
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
-yscv-autograd = { version = "0.1.0", path = "../yscv-autograd" }
-yscv-optim = { version = "0.1.0", path = "../yscv-optim" }
-yscv-kernels = { version = "0.1.0", path = "../yscv-kernels" }
-yscv-model = { version = "0.1.0", path = "../yscv-model" }
-yscv-imgproc = { version = "0.1.0", path = "../yscv-imgproc" }
-yscv-video = { version = "0.1.0", path = "../yscv-video" }
-yscv-detect = { version = "0.1.0", path = "../yscv-detect" }
-yscv-recognize = { version = "0.1.0", path = "../yscv-recognize" }
-yscv-track = { version = "0.1.0", path = "../yscv-track" }
-yscv-eval = { version = "0.1.0", path = "../yscv-eval" }
-yscv-cli = { version = "0.1.0", path = "../yscv-cli" }
-yscv-onnx = { version = "0.1.0", path = "../yscv-onnx" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
+yscv-autograd = { version = "0.1", path = "../yscv-autograd" }
+yscv-optim = { version = "0.1", path = "../yscv-optim" }
+yscv-kernels = { version = "0.1", path = "../yscv-kernels" }
+yscv-model = { version = "0.1", path = "../yscv-model" }
+yscv-imgproc = { version = "0.1", path = "../yscv-imgproc" }
+yscv-video = { version = "0.1", path = "../yscv-video" }
+yscv-detect = { version = "0.1", path = "../yscv-detect" }
+yscv-recognize = { version = "0.1", path = "../yscv-recognize" }
+yscv-track = { version = "0.1", path = "../yscv-track" }
+yscv-eval = { version = "0.1", path = "../yscv-eval" }
+yscv-cli = { version = "0.1", path = "../yscv-cli" }
+yscv-onnx = { version = "0.1", path = "../yscv-onnx" }
 
 [lints]
 workspace = true

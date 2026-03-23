@@ -15,12 +15,12 @@ default = []
 native-camera = ["yscv-video/native-camera"]
 
 [dependencies]
-yscv-detect = { version = "0.1.0", path = "../yscv-detect" }
-yscv-eval = { version = "0.1.0", path = "../yscv-eval" }
-yscv-recognize = { version = "0.1.0", path = "../yscv-recognize" }
-yscv-track = { version = "0.1.0", path = "../yscv-track" }
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
-yscv-video = { version = "0.1.0", path = "../yscv-video" }
+yscv-detect = { version = "0.1", path = "../yscv-detect" }
+yscv-eval = { version = "0.1", path = "../yscv-eval" }
+yscv-recognize = { version = "0.1", path = "../yscv-recognize" }
+yscv-track = { version = "0.1", path = "../yscv-track" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
+yscv-video = { version = "0.1", path = "../yscv-video" }
 serde_json = "1.0"
 thiserror.workspace = true
 

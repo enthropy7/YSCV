@@ -12,8 +12,8 @@ keywords.workspace = true
 
 [dependencies]
 prost = "0.13"
-yscv-kernels = { version = "0.1.0", path = "../yscv-kernels" }
-yscv-tensor = { version = "0.1.0", path = "../yscv-tensor" }
+yscv-kernels = { version = "0.1", path = "../yscv-kernels" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
 
 [build-dependencies]
