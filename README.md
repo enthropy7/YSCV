@@ -138,7 +138,14 @@ cargo run --example train_linear      # linear regression
 cargo run --example image_processing  # image pipeline demo
 ```
 
-Optional features for extra performance or hardware access:
+### System dependencies
+
+YSCV builds with zero required system dependencies. Optional:
+
+- **OpenBLAS** (Linux/Windows) — faster matmul. `apt install libopenblas-dev` or `brew install openblas`. macOS uses Accelerate automatically.
+- **protoc** — for ONNX proto generation. Without it, a built-in fallback is used. `apt install protobuf-compiler` or `brew install protobuf`.
+
+### Feature flags
 
 | Flag | What it does |
 |------|-------------|

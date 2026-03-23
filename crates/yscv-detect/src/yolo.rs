@@ -142,6 +142,95 @@ pub fn decode_yolov8_output(
     non_max_suppression(&candidates, config.iou_threshold, candidates.len().max(1))
 }
 
+/// Default COCO config for YOLOv11 models.
+///
+/// Same as YOLOv8 COCO — 80 classes, 640 input, 0.25 conf, 0.45 IoU.
+pub fn yolov11_coco_config() -> YoloConfig {
+    yolov8_coco_config()
+}
+
+/// Decode YOLOv11 output tensor into detections.
+///
+/// YOLOv11 output shape: `[1, num_preds, 4 + num_classes]` (transposed vs YOLOv8).
+/// Each row is `[cx, cy, w, h, class_0_score, class_1_score, ...]`.
+/// Coordinates are in letterboxed image space; this function maps them back
+/// to the original image dimensions.
+pub fn decode_yolov11_output(
+    output: &Tensor,
+    config: &YoloConfig,
+    orig_width: usize,
+    orig_height: usize,
+) -> Vec<Detection> {
+    let shape = output.shape();
+    // YOLOv11: [1, N, 4+C] or [N, 4+C]
+    let (num_preds, cols) = if shape.len() == 3 {
+        (shape[1], shape[2])
+    } else if shape.len() == 2 {
+        (shape[0], shape[1])
+    } else {
+        return Vec::new();
+    };
+
+    if cols < 5 {
+        return Vec::new();
+    }
+    let num_classes = cols - 4;
+
+    let data = output.data();
+
+    let scale = (config.input_size as f32 / orig_width as f32)
+        .min(config.input_size as f32 / orig_height as f32);
+    let new_w = orig_width as f32 * scale;
+    let new_h = orig_height as f32 * scale;
+    let pad_x = (config.input_size as f32 - new_w) / 2.0;
+    let pad_y = (config.input_size as f32 - new_h) / 2.0;
+
+    let mut candidates = Vec::new();
+
+    // Skip batch dimension offset if present
+    let base = if shape.len() == 3 { 0 } else { 0 };
+
+    for i in 0..num_preds {
+        let row = base + i * cols;
+        let cx = data[row];
+        let cy = data[row + 1];
+        let w = data[row + 2];
+        let h = data[row + 3];
+
+        let mut best_score = f32::NEG_INFINITY;
+        let mut best_class = 0usize;
+        for c in 0..num_classes {
+            let s = data[row + 4 + c];
+            if s > best_score {
+                best_score = s;
+                best_class = c;
+            }
+        }
+
+        if best_score < config.conf_threshold {
+            continue;
+        }
+
+        let x1 = ((cx - w / 2.0) - pad_x) / scale;
+        let y1 = ((cy - h / 2.0) - pad_y) / scale;
+        let x2 = ((cx + w / 2.0) - pad_x) / scale;
+        let y2 = ((cy + h / 2.0) - pad_y) / scale;
+
+        let x1 = x1.max(0.0).min(orig_width as f32);
+        let y1 = y1.max(0.0).min(orig_height as f32);
+        let x2 = x2.max(0.0).min(orig_width as f32);
+        let y2 = y2.max(0.0).min(orig_height as f32);
+
+        candidates.push(Detection {
+            bbox: BoundingBox { x1, y1, x2, y2 },
+            score: best_score,
+            class_id: best_class,
+        });
+    }
+
+    non_max_suppression(&candidates, config.iou_threshold, candidates.len().max(1))
+}
+
 /// Apply letterbox preprocessing: resize an image to a square with padding.
 ///
 /// The input `image` is an `[H, W, 3]` f32 tensor (RGB, normalised to 0..1).

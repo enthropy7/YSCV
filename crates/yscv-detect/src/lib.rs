@@ -30,7 +30,8 @@ pub use nms::{batched_nms, iou, non_max_suppression, soft_nms};
 pub use roi::{roi_align, roi_pool};
 pub use types::{BoundingBox, CLASS_ID_FACE, CLASS_ID_PERSON, CRATE_ID, Detection};
 pub use yolo::{
-    YoloConfig, coco_labels, decode_yolov8_output, letterbox_preprocess, yolov8_coco_config,
+    YoloConfig, coco_labels, decode_yolov8_output, decode_yolov11_output, letterbox_preprocess,
+    yolov8_coco_config, yolov11_coco_config,
 };
 #[cfg(feature = "onnx")]
 pub use yolo::{detect_yolov8_from_rgb, detect_yolov8_onnx};
