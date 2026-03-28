@@ -92,7 +92,7 @@ Per-op Metal benefits:
 
 | | MPSGraph | Metal per-op | CPU |
 |---|---------|-------------|-----|
-| Speed | Fastest (5-16ms) | Fast (21-79ms) | Baseline (35-133ms) |
+| Speed | Fastest (4.8-7.8ms) | Fast (22-47ms) | Baseline (33-124ms) |
 | Op coverage | Most common ops | All ops | All ops |
 | Dynamic shapes | Static only | Static only | Dynamic |
 | Platform | macOS (Apple Silicon) | macOS (Apple Silicon) | All |
@@ -119,25 +119,30 @@ cargo run --release --example bench_yolo
 
 | Backend | Min | Speedup vs CPU |
 |---------|-----|---------------|
-| CPU | 34.6ms | — |
-| Metal per-op | 24.1ms | 1.4x |
-| **MPSGraph** | **5.9ms** | **5.9x** |
+| CPU | 32.7ms | — |
+| Metal per-op | 22.1ms | 1.5x |
+| **MPSGraph** | **4.8ms** | **6.8x** |
+| onnxruntime CPU | 103.4ms | 0.32x |
+| onnxruntime CoreML | 16.1ms | 2.0x |
 
 ### YOLO11n (6.5 GFLOP, 640x640 input)
 
 | Backend | Min | Speedup vs CPU |
 |---------|-----|---------------|
-| CPU | 36.8ms | — |
-| **Metal per-op** | **21.5ms** | **1.7x** |
-| MPSGraph | — | Unsupported (attention blocks) |
+| CPU | 36.4ms | — |
+| Metal per-op | 22.6ms | 1.6x |
+| **MPSGraph** | **5.9ms** | **6.2x** |
+| onnxruntime | FAIL | Opset 22 unsupported |
 
 ### VballNetGrid (16.3 GFLOP, 432x768 input)
 
 | Backend | Min | Speedup vs CPU |
 |---------|-----|---------------|
-| CPU | 133ms | — |
-| Metal per-op | 78.6ms | 1.7x |
-| **MPSGraph** | **11.0ms** | **12.1x** |
+| CPU | 124.1ms | — |
+| Metal per-op | 47.3ms | 2.6x |
+| **MPSGraph** | **7.8ms** | **15.9x** |
+| onnxruntime CPU | 196.7ms | 0.63x |
+| onnxruntime CoreML CPU_ONLY | 8.6ms | 14.4x |
 
 ## Supported ONNX Operations
 

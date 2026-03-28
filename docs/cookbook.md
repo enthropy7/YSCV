@@ -256,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-CPU performance vs competitors (YOLOv8n 640×640, Apple Silicon M3 Pro):
+CPU performance vs competitors (YOLOv8n 640×640, Apple M1):
 
 | Runtime | YOLOv8n | YOLO11n | Opset 22 |
 |---------|---------|---------|----------|
@@ -372,7 +372,7 @@ let plan = compile_metal_plan(&model, "images", &input)?;
 let outputs = run_metal_plan(&plan, &vec![0.5f32; 1*3*640*640])?;
 ```
 
-Metal performance: **5.9ms** on YOLOv8n (MPSGraph) — 2.3x faster than CoreML (13.4ms). Per-op Metal runs YOLO11n at 21.5ms where CoreML fails entirely.
+Metal performance: **4.8ms** on YOLOv8n, **5.9ms** on YOLO11n, **7.8ms** on VballNet (MPSGraph) — 3.4× faster than CoreML on YOLOv8n (16.1ms), 1.1× faster on VballNet (8.6ms). CoreML fails entirely on YOLO11n.
 
 ---
 
@@ -721,7 +721,7 @@ python benchmarks/python/bench_kernels.py   # vs PyTorch
 python benchmarks/python/bench_opencv.py    # vs OpenCV
 ```
 
-### Current numbers (Apple Silicon M3 Pro)
+### Current numbers (Apple M1)
 
 | What | yscv | Competitor | Speedup |
 |------|------|-----------|---------|

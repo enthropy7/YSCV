@@ -19,10 +19,12 @@ use crate::runner::{get_attr_float, get_attr_int, get_attr_ints};
 pub struct MpsGraphPlan {
     graph: MpsGraph,
     executable: MpsGraphExecutable,
+    #[allow(dead_code)]
     device: Device,
     queue: CommandQueue,
     input_placeholder: MpsGraphTensorRef,
     input_shape: Vec<usize>,
+    input_buf: Buffer, // pre-allocated shared buffer for input
     output_tensors: Vec<(String, MpsGraphTensorRef)>,
     output_shapes: Vec<Vec<usize>>,
 }
@@ -52,12 +54,16 @@ pub fn compile_mpsgraph_plan(
 
     let input_shape = input_tensor.shape().to_vec();
 
-    // Create placeholder for the input tensor (NCHW, f16)
-    let input_placeholder = graph.placeholder_f16(&input_shape, input_name);
+    // Create placeholder for the input tensor (NCHW, f32).
+    // We accept f32 from the caller and let MPSGraph cast to f16 on GPU — this avoids
+    // expensive CPU-side f32→f16 conversion (~3M elements for VballNet).
+    let input_placeholder_f32 = graph.placeholder_f32(&input_shape, input_name);
+    let input_f16 = graph.cast_to_f16(input_placeholder_f32);
 
-    // Map tensor name → MpsGraphTensorRef as we walk the graph
+    // Map tensor name → MpsGraphTensorRef as we walk the graph.
+    // Use the f16-cast tensor so all downstream ops run in f16.
     let mut tensors: HashMap<String, MpsGraphTensorRef> = HashMap::new();
-    tensors.insert(input_name.to_string(), input_placeholder);
+    tensors.insert(input_name.to_string(), input_f16);
 
     // Track shapes for output readback
     let mut cpu_shapes: HashMap<String, Vec<usize>> = HashMap::new();
@@ -330,11 +336,11 @@ pub fn compile_mpsgraph_plan(
         }
     }
 
-    // Compile the graph
+    // Compile the graph — input is f32 (GPU casts to f16 internally)
     let feeds = vec![(
-        input_placeholder,
+        input_placeholder_f32,
         input_shape.as_slice(),
-        yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT16,
+        yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT32,
     )];
     let target_refs: Vec<MpsGraphTensorRef> = output_tensors.iter().map(|(_, t)| *t).collect();
 
@@ -344,13 +350,21 @@ pub fn compile_mpsgraph_plan(
             message: "Failed to compile MPSGraph".to_string(),
         })?;
 
+    // Pre-allocate a shared input buffer (f32) to avoid per-run allocation.
+    let input_elems: usize = input_shape.iter().product();
+    let input_buf = device.new_buffer(
+        (input_elems * 4) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+
     Ok(MpsGraphPlan {
         graph,
         executable,
         device,
         queue,
-        input_placeholder,
+        input_placeholder: input_placeholder_f32,
         input_shape,
+        input_buf,
         output_tensors,
         output_shapes,
     })
@@ -361,22 +375,21 @@ pub fn run_mpsgraph_plan(
     plan: &MpsGraphPlan,
     input_data: &[f32],
 ) -> Result<HashMap<String, Tensor>, OnnxError> {
-    // Convert input f32 → f16
-    let f16_input: Vec<u16> = input_data.iter().map(|&v| f32_to_f16_bits(v)).collect();
-
-    // Create a shared buffer for input
-    let input_bytes = f16_input.len() * 2;
-    let input_buf = plan.device.new_buffer_with_data(
-        f16_input.as_ptr() as *const _,
-        input_bytes as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-
+    // Copy f32 input into pre-allocated shared buffer (memcpy, no alloc).
+    // The graph casts f32→f16 on GPU (hardware path, essentially free).
+    let input_bytes = input_data.len() * 4;
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            input_data.as_ptr() as *const u8,
+            plan.input_buf.contents() as *mut u8,
+            input_bytes,
+        );
+    }
     let inputs = vec![(
         plan.input_placeholder,
-        &input_buf,
+        &plan.input_buf,
         plan.input_shape.as_slice(),
-        yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT16,
+        yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT32,
     )];
 
     let out_bufs = plan
@@ -1033,9 +1046,41 @@ fn build_graph_node(
         "Expand" => {
             let input = get(&node.inputs[0])?;
             let in_shape = get_shape(&node.inputs[0]);
-            // Expand is a broadcast — MPSGraph handles broadcasting automatically
-            // Just pass through with the same shape (the graph will broadcast)
-            Some(vec![(node.outputs[0].clone(), input, in_shape)])
+
+            // Read target shape from second input (initializer or const_values)
+            let target_shape: Vec<usize> = if let Some(t) = model.initializers.get(&node.inputs[1])
+            {
+                t.data().iter().map(|&v| v as usize).collect()
+            } else if let Some(cv) = const_values.get(&node.inputs[1]) {
+                cv.iter().map(|&v| v as usize).collect()
+            } else {
+                // No static target shape available — pass through
+                return Some(vec![(node.outputs[0].clone(), input, in_shape)]);
+            };
+
+            // Compute broadcast output shape (NumPy-style)
+            let ndim = in_shape.len().max(target_shape.len());
+            let mut out_shape = vec![1usize; ndim];
+            for i in 0..ndim {
+                let a = if i < ndim - in_shape.len() {
+                    1
+                } else {
+                    in_shape[i - (ndim - in_shape.len())]
+                };
+                let b = if i < ndim - target_shape.len() {
+                    1
+                } else {
+                    target_shape[i - (ndim - target_shape.len())]
+                };
+                out_shape[i] = a.max(b);
+            }
+
+            // Use MPSGraph broadcast: reshape input to match ndim, then broadcast via mul with ones
+            let shape_i64: Vec<i64> = out_shape.iter().map(|&d| d as i64).collect();
+            let ones_data: Vec<u16> = vec![f32_to_f16_bits(1.0); out_shape.iter().product()];
+            let ones = graph.constant_f16(&ones_data, &out_shape);
+            let out = graph.mul(input, ones);
+            Some(vec![(node.outputs[0].clone(), out, out_shape)])
         }
 
         _ => None, // Unsupported op

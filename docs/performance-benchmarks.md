@@ -30,8 +30,8 @@ python benchmarks/python/bench_opencv.py    # OpenCV
 | u8 imgproc (vs OpenCV) | 10 | 0 | 0 | 0 |
 | f32 imgproc (vs OpenCV) | 6 | 0 | 0 | 0 |
 | Video (vs OpenCV) | 1 | 0 | 0 | 0 |
-| ONNX inference (vs onnxruntime/tract) | 6 | 0 | 0 | 0 |
-| **Total** | **78** | **~4** | **0** | **0** |
+| ONNX inference (vs onnxruntime/tract) | 8 | 0 | 0 | 0 |
+| **Total** | **80** | **~4** | **0** | **0** |
 
 ## Tensor Elementwise Ops (1M f32, vs NumPy)
 
@@ -161,32 +161,28 @@ python benchmarks/python/bench_opencv.py    # OpenCV
 ## ONNX Inference (YOLOv8n / YOLO11n, 640×640 input)
 
 End-to-end model inference benchmarks against onnxruntime, Apple CoreML, and tract.
-Methodology: 50 timed runs after warmup, min/avg reported. Apple Silicon M3 Pro.
+Methodology: 50 timed runs after warmup, min reported. Apple M1 MacBook Air.
 
 ### CPU Inference
 
 | Runtime | YOLOv8n | YOLO11n | Notes |
 |---------|---------|---------|-------|
-| **yscv** | **31.9ms** | **46.0ms** | Pure Rust, NHWC layout, BLAS matmul |
-| onnxruntime 1.19 CPU | 95.4ms | FAILED | Opset 22 unsupported |
+| **yscv** | **32.7ms** | **36.4ms** | Pure Rust, NHWC layout, BLAS matmul |
+| onnxruntime 1.19 CPU | 100.3ms | FAILED | Opset 22 unsupported |
 | tract 0.21 | 217.2ms | FAILED | TDim parse error |
 
-yscv CPU is **3× faster** than onnxruntime and **6.8× faster** than tract on YOLOv8n.
+yscv CPU is **3.2× faster** than onnxruntime and **6.6× faster** than tract on YOLOv8n.
 Both competitors fail on YOLO11n (opset 22), while yscv runs it without issues.
 
-### GPU Inference (Metal, Apple Silicon)
-
-Two Metal backends are available:
+### GPU Inference (Metal, Apple M1)
 
 | Runtime | YOLOv8n | YOLO11n | Notes |
 |---------|:---:|:---:|-------|
-| **yscv MPSGraph** | **5.9ms** | — | Whole-model graph compilation, single GPU dispatch |
-| **yscv Metal per-op** | **24.1ms** | **21.5ms** | Per-op command buffer, Winograd + MPS GEMM |
-| onnxruntime CoreML | 13.4ms | FAILED | Apple Neural Engine delegation |
+| **yscv MPSGraph** | **4.8ms** | **5.9ms** | Whole-model graph compilation, single GPU dispatch |
+| yscv Metal per-op | 22.1ms | 22.6ms | Per-op command buffer, Winograd + MPS GEMM |
+| onnxruntime CoreML | 16.1ms | FAILED | Apple Neural Engine delegation |
 
-**MPSGraph** compiles the entire ONNX model into an `MPSGraphExecutable` and runs it as a single GPU dispatch — eliminating per-op encoder transitions. This is the fastest path for supported models.
-
-**Metal per-op** is the fallback for models with ops that MPSGraph doesn't yet support (e.g., YOLO11n's C2PSA attention blocks with dynamic reshape chains). It still beats CPU by 1.4-1.7×.
+**MPSGraph** compiles the entire ONNX model into an `MPSGraphExecutable` and runs it as a single GPU dispatch — eliminating per-op encoder transitions. **3.4× faster than CoreML** on YOLOv8n.
 
 yscv is the only runtime that runs both YOLOv8n and YOLO11n on GPU. CoreML fails on YOLO11n (opset 22).
 
@@ -226,10 +222,12 @@ fused command buffer. Key optimizations (in order of impact):
 
 | Metric | yscv | onnxruntime | tract |
 |--------|------|-------------|-------|
-| YOLOv8n CPU | **WIN** (3×) | baseline (95ms) | 6.7× slower |
-| YOLO11n CPU | **WIN** | FAIL | FAIL |
-| YOLOv8n GPU (MPSGraph) | **WIN** (5.9ms vs 13.4ms) | CoreML (ANE hw) | N/A |
-| YOLO11n GPU (per-op) | **WIN** (21.5ms) | FAIL | N/A |
+| YOLOv8n CPU | **WIN** (32.7ms vs 103.4ms, 3.2×) | baseline | 6.7× slower |
+| YOLO11n CPU | **WIN** (36.4ms) | FAIL | FAIL |
+| VballNet CPU | **WIN** (124.1ms vs 196.7ms, 1.6×) | baseline | N/A |
+| YOLOv8n GPU (MPSGraph) | **WIN** (4.8ms vs CoreML 16.1ms, 3.4×) | CoreML (ANE hw) | N/A |
+| YOLO11n GPU (MPSGraph) | **WIN** (5.9ms) | FAIL | N/A |
+| VballNet GPU (MPSGraph) | **WIN** (7.8ms vs CoreML 8.6ms, 1.1×) | CoreML CPU_ONLY (BNNS/AMX) | N/A |
 | Opset 22 support | Yes | No | No |
 
 ## VballNetGrid Inference (DSConv model, 16.3 GFLOP)
@@ -243,14 +241,15 @@ Input `[1, 9, 432, 768]`, output `[1, 27, 27, 48]`, 42 ONNX nodes.
 |-------|------|-----|---------|--------------|
 | yscv BEFORE | 558 ms | 1.7 | — | Single-threaded, scalar depthwise |
 | + Multi-threading | 257 ms | 3.9 | 2.1× | `ParallelElementwiseConfig::default()` in public API |
-| + SIMD depthwise | **133 ms** | **7.5** | **4.2×** | NEON/AVX/SSE vectorized depthwise conv |
-| Python onnxruntime CPU | 177 ms | 5.6 | — | CPUExecutionProvider baseline |
-| yscv Metal per-op | 78.6 ms | 12.7 | 7.1× | Metal-native fused pipeline, MPS GEMM |
-| **yscv MPSGraph** | **11.0 ms** | **91** | **50.7×** | Whole-model GPU graph compilation |
+| + SIMD depthwise | **124.1 ms** | **8.1** | **4.5×** | NEON/AVX/SSE vectorized depthwise conv |
+| onnxruntime CPU | 196.7 ms | 5.1 | — | CPUExecutionProvider baseline |
+| onnxruntime CoreML CPU_ONLY | 8.6 ms | 116 | — | BNNS/AMX via CoreML delegate |
+| yscv Metal per-op | 47.3 ms | 21.1 | 11.8× | Metal-native fused pipeline, MPS GEMM |
+| **yscv MPSGraph** | **7.8 ms** | **128** | **71.5×** | Whole-model GPU graph compilation |
 
 ### Key Takeaway
 
-yscv CPU is **faster than onnxruntime CPU** on depthwise-separable models — no special flags needed. MPSGraph provides an additional **12× over CPU**, reaching 91 FPS on Apple Silicon.
+yscv CPU (124.1ms) is **1.6× faster than onnxruntime CPU** (196.7ms) on depthwise-separable models — no special flags needed. MPSGraph (7.8ms) **beats CoreML CPU_ONLY** (8.6ms) which uses Apple's dedicated AMX coprocessor via BNNS — a **1.1× speedup**. MPSGraph provides **16× over CPU**, reaching 128 FPS on Apple Silicon.
 
 ## Cross-Platform SIMD Coverage
 

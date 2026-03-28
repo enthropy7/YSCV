@@ -90,6 +90,11 @@ path = "src/bench_mpsgraph.rs"
 required-features = ["metal-backend"]
 
 [[example]]
+name = "bench_mpsgraph_only"
+path = "src/bench_mpsgraph_only.rs"
+required-features = ["metal-backend"]
+
+[[example]]
 name = "bench_metal_vball"
 path = "src/bench_metal_vball.rs"
 required-features = ["metal-backend"]

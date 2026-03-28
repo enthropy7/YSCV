@@ -88,7 +88,7 @@ The detect → track → recognize pipeline runs in 67µs per frame end-to-end. 
 
 ## Performance
 
-We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, and CoreML. Current score: **78 wins, ~4 ties, 0 losses.** MPSGraph GPU inference is **2.3× faster than Apple CoreML** (which uses dedicated Neural Engine hardware).
+We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, and CoreML. Current score: **80 wins, ~4 ties, 0 losses.** MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n (which uses dedicated Neural Engine hardware).
 
 Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on x86, with optional Intel MKL and ARM Performance Libraries for the last few percent.
 
@@ -107,13 +107,14 @@ Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on
 | sobel 3×3 | 0.074ms | 0.169ms | **2.3×** |
 | dilate 3×3 | 0.031ms | 0.047ms | **1.5×** |
 
-| ONNX Inference (YOLOv8n 640×640) | yscv | Competitor | Result |
+| ONNX Inference | yscv | Competitor | Result |
 |----------------------------------|------|-----------|---------|
-| CPU | 34.6ms | onnxruntime 95.4ms | **3× faster** |
-| Metal MPSGraph | **5.9ms** | CoreML 13.4ms | **2.3× faster** (CoreML uses ANE hw) |
-| Metal per-op | 24.1ms | — | Fallback for unsupported models |
-| YOLO11n CPU | 36.8ms | all competitors FAIL | **WIN** |
-| YOLO11n Metal per-op | **21.5ms** | all competitors FAIL | **WIN** |
+| YOLOv8n CPU | 32.7ms | onnxruntime 103.4ms | **3.2× faster** |
+| YOLOv8n MPSGraph | **4.8ms** | CoreML 16.1ms | **3.4× faster** (CoreML uses ANE hw) |
+| VballNet CPU | 124.1ms | onnxruntime 196.7ms | **1.6× faster** |
+| VballNet MPSGraph | **7.8ms** | CoreML 8.6ms | **1.1× faster** (CoreML uses AMX hw) |
+| YOLO11n CPU | 36.4ms | all competitors FAIL | **WIN** |
+| YOLO11n MPSGraph | **5.9ms** | all competitors FAIL | **WIN** |
 
 Full benchmark results in [docs/performance-benchmarks.md](docs/performance-benchmarks.md).
 
@@ -164,7 +165,7 @@ cargo test --workspace --features metal-backend
 cargo clippy --workspace --features metal-backend
 ```
 
-The `gpu` feature uses wgpu and works on any platform with Vulkan, Metal, or DX12. The `metal-backend` feature talks to Metal directly via `metal-rs` and provides two backends: **MPSGraph** (whole-model graph compilation, fastest — 5.9ms YOLOv8n) and **Metal per-op** (individual op dispatch with Winograd + MPS GEMM, fallback for unsupported models). On macOS, `metal-backend` is what you want.
+The `gpu` feature uses wgpu and works on any platform with Vulkan, Metal, or DX12. The `metal-backend` feature talks to Metal directly via `metal-rs` and provides two backends: **MPSGraph** (whole-model graph compilation, fastest — 4.8ms YOLOv8n) and **Metal per-op** (individual op dispatch with Winograd + MPS GEMM, fallback for unsupported models). On macOS, `metal-backend` is what you want.
 
 ### System dependencies
 
@@ -196,7 +197,7 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **MatMul / Conv** | Accelerate BLAS | OpenBLAS (or MKL with `--features mkl`) | OpenBLAS (or ARMPL with `--features armpl`) |
 | **Vectorized math** | vDSP (Accelerate) | MKL VML (opt-in) | ARMPL (opt-in) |
 | **Threading** | GCD dispatch_apply (~0.3µs) | std::thread::scope (~1µs) | std::thread::scope (~1µs) |
-| **GPU inference** | MPSGraph (5.9ms YOLOv8n) | wgpu/Vulkan | wgpu/Vulkan |
+| **GPU inference** | MPSGraph (4.8ms YOLOv8n) | wgpu/Vulkan | wgpu/Vulkan |
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |
 | **Allocator** | mimalloc | mimalloc | mimalloc |
 
