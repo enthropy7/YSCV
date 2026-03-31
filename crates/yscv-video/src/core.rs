@@ -1,3 +1,5 @@
+#[path = "audio.rs"]
+pub mod audio;
 #[path = "camera.rs"]
 mod camera;
 #[path = "cavlc.rs"]
@@ -42,6 +44,8 @@ pub mod hevc_params;
 pub mod hevc_syntax;
 #[path = "hevc_transform.rs"]
 pub mod hevc_transform;
+#[path = "mkv.rs"]
+pub mod mkv;
 #[path = "source.rs"]
 mod source;
 #[path = "stream.rs"]
@@ -79,7 +83,7 @@ pub use h264_deblock::{compute_boundary_strength, deblock_edge_luma, deblock_fra
 pub use h264_decoder::H264Decoder;
 pub use h264_motion::{MotionVector, ReferenceFrameBuffer, motion_compensate_16x16, predict_mv};
 pub use h264_params::{Pps, SliceHeader, Sps, parse_pps, parse_sps};
-pub use h264_transform::{dequant_4x4, inverse_dct_4x4};
+pub use h264_transform::{dequant_4x4, dequant_8x8, inverse_dct_4x4, inverse_dct_8x8};
 pub use h264_yuv::yuv420_to_rgb8;
 pub use hevc_cabac::{CabacDecoder, ContextModel};
 pub use hevc_decoder::HevcNalUnitType;

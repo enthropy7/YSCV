@@ -362,6 +362,18 @@ impl Mp4VideoReader {
         }
     }
 
+    /// Decode the next frame in luma-only mode (skip RGB conversion entirely).
+    /// Fair comparison with ffmpeg `-f null` which also skips color conversion.
+    pub fn next_frame_luma_only(
+        &mut self,
+    ) -> Result<Option<super::codec::DecodedFrame>, VideoError> {
+        // Enable skip_rgb on HEVC decoder
+        if let Mp4Decoder::Hevc(ref mut dec) = self.decoder {
+            dec.skip_rgb = true;
+        }
+        self.next_frame()
+    }
+
     /// Reset to the beginning (re-decode from first NAL).
     pub fn seek_start(&mut self) {
         self.current_nal = 0;

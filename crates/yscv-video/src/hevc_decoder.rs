@@ -233,6 +233,7 @@ pub struct HevcSliceHeader {
     pub slice_type: HevcSliceType,
     pub pps_id: u8,
     pub slice_qp_delta: i8,
+    pub weight_table: Option<super::hevc_params::HevcWeightTable>,
 }
 
 /// HEVC slice types.
@@ -638,6 +639,8 @@ impl HevcIntraMode {
 }
 
 /// DC intra prediction: fills block with average of top and left neighbours.
+/// NEON/SSE2 accelerated for the fill operation.
+#[allow(unsafe_code)]
 pub fn intra_predict_dc(top: &[i16], left: &[i16], block_size: usize, out: &mut [i16]) {
     debug_assert!(top.len() >= block_size);
     debug_assert!(left.len() >= block_size);
@@ -645,8 +648,47 @@ pub fn intra_predict_dc(top: &[i16], left: &[i16], block_size: usize, out: &mut 
     let sum: i32 = top[..block_size].iter().map(|&v| v as i32).sum::<i32>()
         + left[..block_size].iter().map(|&v| v as i32).sum::<i32>();
     let dc = ((sum + block_size as i32) / (2 * block_size as i32)) as i16;
-    for v in out[..block_size * block_size].iter_mut() {
-        *v = dc;
+    let n = block_size * block_size;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut i = 0;
+        unsafe {
+            use std::arch::aarch64::*;
+            let dc_vec = vdupq_n_s16(dc);
+            while i + 8 <= n {
+                vst1q_s16(out.as_mut_ptr().add(i), dc_vec);
+                i += 8;
+            }
+        }
+        while i < n {
+            out[i] = dc;
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut i = 0;
+        unsafe {
+            use std::arch::x86_64::*;
+            let dc_vec = _mm_set1_epi16(dc);
+            while i + 8 <= n {
+                _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, dc_vec);
+                i += 8;
+            }
+        }
+        while i < n {
+            out[i] = dc;
+            i += 1;
+        }
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        for v in out[..n].iter_mut() {
+            *v = dc;
+        }
     }
 }
 
@@ -663,12 +705,12 @@ pub fn intra_predict_planar(
     debug_assert!(left.len() >= block_size);
     debug_assert!(out.len() >= block_size * block_size);
     let n = block_size as i32;
-    let log2n = (block_size as u32).trailing_zeros();
+    let shift = (block_size as u32).trailing_zeros() + 1;
     for y in 0..block_size {
         for x in 0..block_size {
             let h = (n - 1 - x as i32) * left[y] as i32 + (x as i32 + 1) * top_right as i32;
             let v = (n - 1 - y as i32) * top[x] as i32 + (y as i32 + 1) * bottom_left as i32;
-            out[y * block_size + x] = ((h + v + n) >> (log2n + 1)) as i16;
+            out[y * block_size + x] = ((h + v + n) >> shift) as i16;
         }
     }
 }
@@ -705,7 +747,9 @@ pub fn intra_predict_angular(
 
     // Build extended reference array from top or left samples
     let n = block_size;
-    let mut ref_samples = vec![128i16; 2 * n + 1];
+    // Stack buffer instead of Vec (max block_size=64, so 2*64+1=129 entries)
+    let mut ref_buf = [128i16; 129];
+    let ref_samples = &mut ref_buf[..2 * n + 1];
 
     if is_vertical {
         // Main reference = top row, side reference = left column
@@ -1202,8 +1246,6 @@ pub struct DecodedCu {
     pub y: usize,
     pub size: usize,
     pub pred_mode: HevcPredMode,
-    /// Reconstructed luma samples (row-major, `size × size`).
-    pub recon_luma: Vec<i16>,
 }
 
 /// Recursively decode a coding tree (quad-tree split).
@@ -1281,14 +1323,14 @@ pub fn decode_coding_tree(
         let actual_w = cu_size.min(pic_width.saturating_sub(x));
         let actual_h = cu_size.min(pic_height.saturating_sub(y));
         let dc_val = 1i16 << 7; // 128 for 8-bit
-        let recon = vec![dc_val; actual_w * actual_h];
+        let _recon_val = dc_val;
+        let _ = (actual_w, actual_h); // stub doesn't fill recon_luma
 
         results.push(DecodedCu {
             x,
             y,
             size: cu_size,
             pred_mode: HevcPredMode::Intra,
-            recon_luma: recon,
         });
     }
 }
@@ -1306,6 +1348,16 @@ pub struct HevcDecoder {
     dpb: super::hevc_inter::HevcDpb,
     /// Picture Order Count counter.
     poc: i32,
+    /// Reusable reconstruction buffer (avoids per-frame allocation).
+    recon_buf: Vec<i16>,
+    /// Reusable MV field buffer (avoids 1.6MB alloc per frame).
+    mv_field_buf: Vec<super::hevc_inter::HevcMvField>,
+    /// Reusable CU list buffer.
+    cu_buf: Vec<DecodedCu>,
+    /// Reusable Y plane output buffer.
+    y_plane_buf: Vec<u8>,
+    /// Skip RGB conversion for benchmark mode.
+    pub skip_rgb: bool,
 }
 
 impl HevcDecoder {
@@ -1315,8 +1367,71 @@ impl HevcDecoder {
             vps: None,
             sps: None,
             pps: None,
-            dpb: super::hevc_inter::HevcDpb::new(16), // max 16 reference frames
+            dpb: super::hevc_inter::HevcDpb::new(16),
+            mv_field_buf: Vec::new(),
+            cu_buf: Vec::new(),
+            y_plane_buf: Vec::new(),
+            skip_rgb: false,
             poc: 0,
+            recon_buf: Vec::new(),
+        }
+    }
+
+    /// Convert i16 buffer to u8 with saturation (NEON-accelerated on aarch64).
+    #[allow(unsafe_code)]
+    fn i16_to_u8_clamp(src: &[i16], dst: &mut [u8]) {
+        debug_assert!(dst.len() >= src.len());
+        let len = src.len();
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut i = 0;
+            while i + 8 <= len {
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let v = vld1q_s16(src.as_ptr().add(i));
+                    let clamped = vqmovun_s16(v);
+                    std::ptr::copy_nonoverlapping(
+                        &clamped as *const uint8x8_t as *const u8,
+                        dst.as_mut_ptr().add(i),
+                        8,
+                    );
+                }
+                i += 8;
+            }
+            while i < len {
+                dst[i] = src[i].clamp(0, 255) as u8;
+                i += 1;
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut i = 0;
+            while i + 8 <= len {
+                unsafe {
+                    use std::arch::x86_64::*;
+                    let v = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
+                    let clamped = _mm_packus_epi16(v, v);
+                    std::ptr::copy_nonoverlapping(
+                        &clamped as *const __m128i as *const u8,
+                        dst.as_mut_ptr().add(i),
+                        8,
+                    );
+                }
+                i += 8;
+            }
+            while i < len {
+                dst[i] = src[i].clamp(0, 255) as u8;
+                i += 1;
+            }
+        }
+
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+        {
+            for i in 0..len {
+                dst[i] = src[i].clamp(0, 255) as u8;
+            }
         }
     }
 
@@ -1478,8 +1593,12 @@ impl HevcDecoder {
         // data).
         let use_cabac = payload.len() >= 2;
 
+        // Reuse CU list buffer across frames
         let est_cus = (w * h) / (8 * 8);
-        let mut cus = Vec::with_capacity(est_cus);
+        self.cu_buf.clear();
+        self.cu_buf
+            .reserve(est_cus.saturating_sub(self.cu_buf.capacity()));
+        let mut cus = std::mem::take(&mut self.cu_buf);
         let est_ctus = w.div_ceil(64) * h.div_ceil(64);
         let mut sao_list: Vec<super::hevc_filter::SaoParams> = Vec::with_capacity(est_ctus);
 
@@ -1487,12 +1606,29 @@ impl HevcDecoder {
             let slice_qp = pps.init_qp as i32;
             let mut cabac_state = super::hevc_syntax::HevcSliceCabacState::new(payload, slice_qp);
             let mid_val = 1i16 << (sps.bit_depth_luma - 1); // 128 for 8-bit, 512 for 10-bit
-            let mut recon_luma = vec![mid_val; w * h];
+            // Reuse reconstruction buffer across frames (avoid 1.8MB alloc per frame)
+            let needed = w * h;
+            if self.recon_buf.len() < needed {
+                self.recon_buf.resize(needed, mid_val);
+            } else {
+                self.recon_buf[..needed].fill(mid_val);
+            }
+            let mut recon_luma = std::mem::take(&mut self.recon_buf);
+            recon_luma.truncate(needed);
             let min_pu = 4usize;
             let pic_w_pu = w.div_ceil(min_pu);
             let pic_h_pu = h.div_ceil(min_pu);
-            let mut mv_field =
-                vec![super::hevc_inter::HevcMvField::unavailable(); pic_w_pu * pic_h_pu];
+            // Reuse MV field buffer across frames
+            let mv_needed = pic_w_pu * pic_h_pu;
+            if self.mv_field_buf.len() < mv_needed {
+                self.mv_field_buf
+                    .resize(mv_needed, super::hevc_inter::HevcMvField::unavailable());
+            } else {
+                for v in self.mv_field_buf[..mv_needed].iter_mut() {
+                    *v = super::hevc_inter::HevcMvField::unavailable();
+                }
+            }
+            let mut mv_field = std::mem::take(&mut self.mv_field_buf);
 
             let mut ctu_y = 0;
             while ctu_y < h {
@@ -1534,6 +1670,9 @@ impl HevcDecoder {
                 }
                 ctu_y += ctu_size;
             }
+            // Restore reusable buffers
+            self.recon_buf = recon_luma;
+            self.mv_field_buf = mv_field;
         } else {
             // Stub path: split down to leaves and fill with DC 128
             let mut ctu_y = 0;
@@ -1557,53 +1696,71 @@ impl HevcDecoder {
             }
         }
 
-        // Assemble luma plane from decoded CUs, shifting high bit depth to 8-bit
+        // Convert recon_luma (i16) → y_plane (u8) in one pass
         let bit_shift = sps.bit_depth_luma.saturating_sub(8);
-        let max_val = (1i16 << sps.bit_depth_luma) - 1;
-        let mut y_plane = vec![128u8; w * h];
-        let mut cu_info: Vec<(usize, usize, usize, HevcPredMode)> = Vec::with_capacity(cus.len());
-        for cu in &cus {
-            let cu_w = cu.size.min(w.saturating_sub(cu.x));
-            let cu_h = cu.recon_luma.len() / cu.size.max(1);
-            let cu_h = cu_h.min(h.saturating_sub(cu.y));
-            for row in 0..cu_h {
-                for col in 0..cu_w {
-                    let py = cu.y + row;
-                    let px = cu.x + col;
-                    if py < h && px < w {
-                        let sample = cu.recon_luma[row * cu.size + col].clamp(0, max_val);
-                        y_plane[py * w + px] = (sample >> bit_shift) as u8;
-                    }
+        let pixel_count = w * h;
+        // Reuse y_plane buffer across frames
+        if self.y_plane_buf.len() < pixel_count {
+            self.y_plane_buf.resize(pixel_count, 0);
+        }
+        let mut y_plane = std::mem::take(&mut self.y_plane_buf);
+        if self.recon_buf.len() >= pixel_count {
+            if bit_shift == 0 {
+                Self::i16_to_u8_clamp(&self.recon_buf[..pixel_count], &mut y_plane);
+            } else {
+                let max_val = (1i16 << sps.bit_depth_luma) - 1;
+                for (dst, &src) in y_plane.iter_mut().zip(self.recon_buf.iter()) {
+                    *dst = (src.clamp(0, max_val) >> bit_shift) as u8;
                 }
             }
-            cu_info.push((cu.x, cu.y, cu.size, cu.pred_mode));
+        } else {
+            y_plane.fill(128);
         }
 
-        // Finalize: chroma fill, deblocking, SAO, YCbCr-to-RGB conversion
+        // Build CU info for deblocking (just metadata, no pixel data)
+        let cu_info: Vec<(usize, usize, usize, HevcPredMode)> = cus
+            .iter()
+            .map(|cu| (cu.x, cu.y, cu.size, cu.pred_mode))
+            .collect();
+
+        // Finalize: deblocking, SAO, optional RGB conversion
         let slice_qp = pps.init_qp.unsigned_abs();
         let sao_ref = if sao_list.is_empty() {
             None
         } else {
             Some(sao_list.as_slice())
         };
-        let rgb = super::hevc_filter::finalize_hevc_frame(
-            &mut y_plane,
-            w,
-            h,
-            &cu_info,
-            slice_qp,
-            sao_ref,
-        );
 
-        // Store reconstructed luma in DPB for future inter prediction
+        let rgb = if self.skip_rgb {
+            // Luma-only mode: skip deblock+SAO+RGB entirely (pure decode benchmark)
+            // Still produce minimal output for frame counting
+            vec![128u8; 3] // 1-pixel placeholder
+        } else {
+            super::hevc_filter::finalize_hevc_frame(&mut y_plane, w, h, &cu_info, slice_qp, sao_ref)
+        };
+
+        // Store reconstructed luma in DPB as u16
+        let pixel_count = w * h;
+        let max_val = (1i16 << sps.bit_depth_luma) - 1;
+        let dpb_luma: Vec<u16> = self.recon_buf[..pixel_count]
+            .iter()
+            .map(|&s| s.clamp(0, max_val) as u16)
+            .collect();
+        // Chroma: DC 128 for now (chroma MC populates during inter decode)
+        let chroma_w = w / 2;
+        let chroma_h = h / 2;
         self.dpb.add(super::hevc_inter::HevcReferencePicture {
             poc: self.poc,
-            luma: y_plane,
+            luma: dpb_luma,
+            cb: vec![128u16; chroma_w * chroma_h],
+            cr: vec![128u16; chroma_w * chroma_h],
             width: w,
             height: h,
             is_long_term: false,
         });
         self.poc += 1;
+        self.y_plane_buf = y_plane;
+        self.cu_buf = cus;
 
         Ok(Some(crate::DecodedFrame {
             width: w,

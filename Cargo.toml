@@ -21,6 +21,7 @@ members = [
 ]
 exclude = [
     "benchmarks/rust-competitors",
+    "fuzz",
 ]
 
 [workspace.package]

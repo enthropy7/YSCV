@@ -1,0 +1,31 @@
+[package]
+name = "yscv-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+yscv-video = { path = "../crates/yscv-video" }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_h264_nal"
+path = "fuzz_targets/fuzz_h264_nal.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_hevc_nal"
+path = "fuzz_targets/fuzz_hevc_nal.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_mkv"
+path = "fuzz_targets/fuzz_mkv.rs"
+doc = false

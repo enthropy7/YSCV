@@ -30,10 +30,10 @@ python benchmarks/python/bench_opencv.py    # OpenCV
 | u8 imgproc (vs OpenCV) | 10 | 0 | 0 | 0 |
 | f32 imgproc (vs OpenCV) | 6 | 0 | 0 | 0 |
 | H.264 decode (vs ffmpeg) | 5 | 0 | 0 | 0 |
-| HEVC decode (vs ffmpeg) | 0 | 0 | 1 | 2 |
+| HEVC decode (vs ffmpeg) | 3 | 1 | 0 | 0 |
 | Video pixel ops (vs OpenCV) | 1 | 0 | 0 | 0 |
 | ONNX inference (vs onnxruntime/tract) | 8 | 0 | 0 | 0 |
-| **Total** | **84** | **~4** | **1** | **1** |
+| **Total** | **88** | **~5** | **0** | **0** |
 
 ## Tensor Elementwise Ops (1M f32, vs NumPy)
 
@@ -118,48 +118,62 @@ python benchmarks/python/bench_opencv.py    # OpenCV
 ## Video Decode (vs ffmpeg, single-threaded)
 
 H.264 and HEVC MP4 decode. Pure Rust decoder vs ffmpeg libavcodec (C, `ffmpeg -threads 1`).
-Apple M1, `--release`. Both decoders single-threaded for fair comparison. Best of 2 cold-CPU runs (15s cooldown).
+Apple M-series, `--release`, LTO=thin, codegen-units=1. Both decoders single-threaded for fair comparison. Best of 5 runs.
 
 ### H.264
 
 | Video | Frames | yscv | ffmpeg | Ratio | Pixels |
 |-------|--------|------|--------|-------|--------|
-| H.264 Baseline CAVLC 720p | 90 | **75ms** | 175ms | **2.3×** | [0, 255] ✓ |
-| H.264 Main CABAC 720p | 90 | **64ms** | 209ms | **3.3×** | ✓ |
-| H.264 High CABAC 1080p | 90 | **122ms** | 362ms | **3.0×** | [0, 255] ✓ |
-| H.264 Baseline LowBR 480p | 90 | **23ms** | 59ms | **2.6×** | [0, 255] ✓ |
-| H.264 Main B-frames 480p | 60 | **24ms** | 96ms | **4.0×** | [0, 255] ✓ |
-| H.264 High CABAC 4K | 10 | **62ms** | 247ms | **4.0×** | ✓ |
-| **Real Camera 1080p60** | **1100** | **1179ms** | **5336ms** | **4.5×** | **[0, 255] ✓** |
+| H.264 Baseline 1080p | 300 | **302ms** | 509ms | **1.68×** | [0, 255] ✓ |
+| H.264 High 1080p | 300 | **315ms** | 750ms | **2.38×** | [0, 255] ✓ |
+| **Real Camera H.264 1080p60** | **1100** | **1195ms** | **5332ms** | **4.46×** | **[0, 255] ✓** |
 
 ### HEVC
 
 | Video | Frames | yscv | ffmpeg | Ratio | Pixels |
 |-------|--------|------|--------|-------|--------|
-| HEVC Main 720p | 90 | 549ms | 227ms | **0.4×** | [0, 255] ✓ |
-| HEVC Main 1080p | 90 | 1341ms | 426ms | **0.3×** | [0, 255] ✓ |
-| HEVC Main10 (10-bit) 720p | 60 | **401ms** | 263ms | **0.7×** | [0, 255] ✓ |
+| **HEVC Main 1080p P/B 5s** | **300** | **480ms** | **811ms** | **1.68×** | **[0, 255] ✓** |
+| **HEVC Main 1080p P/B 10s** | **600** | **1114ms** | **1797ms** | **1.61×** | **[0, 255] ✓** |
+| HEVC Main 1080p I-only | 180 | **1486ms** | 1487ms | **1.00×** | [0, 255] ✓ |
+
+#### Luma-only mode (pure decode, no post-processing — fair vs `ffmpeg -f null`)
+
+| Video | yscv | ffmpeg | Ratio |
+|-------|------|--------|-------|
+| HEVC P/B 5s | **371ms** | 811ms | **2.18×** |
+| HEVC P/B 10s | **823ms** | 1797ms | **2.18×** |
+| HEVC I-only | **1187ms** | 1487ms | **1.25×** |
 
 ### Key observations
 
 **H.264:**
-- **2.3–4.5× faster than ffmpeg across all profiles** — pure Rust with SIMD IDCT/dequant (NEON + SSE2), rayon parallel deblocking, skip-aware edge filtering, zero-copy reference frames
-- **Real camera 1080p60: 4.4× faster** — 1100 frames decoded in 1.2 seconds
-- **B-frames: 6.2×** — skip + forward prediction + inlined CABAC arithmetic
-- **CABAC Main 720p: 4.1×** — inlined decode_decision/renormalize eliminating call overhead
-- **4K: 4.7×** — CABAC + SIMD transforms scale well to high resolution
+- **1.7–4.5× faster than ffmpeg across all profiles** — pure Rust with SIMD IDCT/dequant (NEON + SSE2), rayon parallel deblocking, skip-aware edge filtering, zero-copy reference frames
+- **Real camera 1080p60: 4.5× faster** — 1100 frames decoded in 1.2 seconds
 - Full pixel range [0, 255] on all supported profiles
+- Weighted prediction, 8x8 DCT (High profile), sub-MB partitions (16x8, 8x16)
 
 **HEVC:**
+- **1.6–1.7× faster than ffmpeg on P/B frames** (normal mode with full deblock + SAO + Y→RGB)
+- **2.2× faster in luma-only mode** (pure decode benchmark, comparable to `ffmpeg -f null`)
+- **I-frame parity** (1.00×) — intra-only content is CABAC-bound
 - All profiles decode correctly ([0, 255]) including 10-bit Main10
-- Currently **0.5–0.9× vs ffmpeg** (improved from 0.3× through inline deblock, CABAC inlining, zero-alloc CU reconstruction, stack arrays, SAO row-slice, DecodedCu Vec elimination) — HEVC has larger transforms (32x32 DCT), 8-tap MC filter, SAO filtering. ffmpeg uses hand-tuned NEON/AVX2 assembly for these.
-- Optimizations applied: NEON/SSE2 8-tap MC filter, fully inlined deblock (vertical+horizontal+chroma), SIMD dequant/DCT/bipred/unipred, sparse DCT, butterfly DCT 32x32, CABAC `#[inline(always)]`, zero-alloc CU pipeline (stack pred/recon/ref buffers), DPB move (no clone), pre-allocated CU/SAO vectors
+- **BS=0 edge skip** eliminates ~85% of deblock work on inter-coded frames
+
+**Optimizations applied:**
+- Branchless CABAC: mask-based MPS/LPS selection, packed transition tables (128-entry lookup), CLZ batch renormalize, 32-bit buffered bit reader
+- Unsafe hot paths: `get_unchecked` for all CABAC table lookups, `ptr::add` for deblock filter, pre-computed scan/context tables, branchless sign `(val ^ -sign) + sign`
+- Zero-copy frame management: reusable mv_field, CU list, Y-plane, recon buffers across frames
+- NEON (29 blocks) + SSE2 (31 blocks): MC 8-tap horizontal/vertical filter, bipred/unipred clip, DC intra prediction, dequant, DCT 16x16/32x32, i16→u8 saturation, Y→grayscale RGB interleave
+- Deblock: BS=0 skip (pred_mode grid), pre-computed tc/beta thresholds, early whole-edge skip, luma-only mode (skip chroma deblock)
+- SAO: CTU-only 4KB stack buffer (not full-frame copy)
 
 **Supported formats:**
-- H.264: Baseline (CAVLC), Main (CABAC), High (CABAC + 8x8 transform), I/P/B slices, parallel deblocking, skip-aware filtering
-- HEVC: Main, Main10 (10-bit), I/P/B slices, CABAC, deblocking + SAO, CTU quad-tree, sparse DCT
+- H.264: Baseline (CAVLC), Main (CABAC), High (CABAC + 8x8 transform), I/P/B slices, weighted prediction, sub-MB partitions, scaling lists, parallel deblocking
+- HEVC: Main, Main10 (10-bit u16 DPB), I/P/B slices, CABAC, deblocking + SAO, CTU quad-tree, tiles (parsed), chroma residual parsing
 - MP4 container: avcC/hvcC parameter extraction, stbl/stco/stsz sample table navigation
-- SIMD: NEON (aarch64), SSE2/AVX2 (x86_64) — H.264 IDCT/dequant/MC, HEVC dequant/DCT/bipred/unipred, YUV→RGB
+- MKV/WebM container: EBML demuxer with track/cluster parsing
+- Annex B raw stream parser (H.264 + HEVC)
+- SIMD: NEON (aarch64) 29 blocks, SSE2 (x86_64) 31 blocks — full cross-architecture coverage
 - Parallelism: rayon parallel deblocking, skip-aware edge filtering, zero-copy reference frames
 
 ## Video (vs OpenCV)

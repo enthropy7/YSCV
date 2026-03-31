@@ -277,6 +277,153 @@ pub(crate) const ZIGZAG_4X4: [(usize, usize); 16] = [
     (3, 3),
 ];
 
+// ---------------------------------------------------------------------------
+// Inverse 8x8 integer DCT (H.264 specification, section 8.5.13)
+// ---------------------------------------------------------------------------
+
+/// Performs the H.264 8x8 inverse integer transform in-place.
+///
+/// Uses the simplified butterfly operations specified in ITU-T H.264
+/// section 8.5.13 (Table 8-13). Coefficients should already be dequantized.
+pub fn inverse_dct_8x8(coeffs: &mut [i32; 64]) {
+    // Process rows (8 iterations)
+    for i in 0..8 {
+        let base = i * 8;
+        let a0 = coeffs[base] + coeffs[base + 4];
+        let a1 = -coeffs[base + 3] + coeffs[base + 5] - coeffs[base + 7] - (coeffs[base + 7] >> 1);
+        let a2 = coeffs[base] - coeffs[base + 4];
+        let a3 = coeffs[base + 1] + coeffs[base + 7] - coeffs[base + 3] - (coeffs[base + 3] >> 1);
+        let a4 = (coeffs[base + 2] >> 1) - coeffs[base + 6];
+        let a5 = -coeffs[base + 1] + coeffs[base + 7] + coeffs[base + 5] + (coeffs[base + 5] >> 1);
+        let a6 = coeffs[base + 2] + (coeffs[base + 6] >> 1);
+        let a7 = coeffs[base + 3] + coeffs[base + 5] + coeffs[base + 1] + (coeffs[base + 1] >> 1);
+
+        let b0 = a0 + a6;
+        let b1 = a2 + a4;
+        let b2 = a2 - a4;
+        let b3 = a0 - a6;
+
+        coeffs[base] = b0 + a7;
+        coeffs[base + 1] = b1 + a5;
+        coeffs[base + 2] = b2 + a3;
+        coeffs[base + 3] = b3 + a1;
+        coeffs[base + 4] = b3 - a1;
+        coeffs[base + 5] = b2 - a3;
+        coeffs[base + 6] = b1 - a5;
+        coeffs[base + 7] = b0 - a7;
+    }
+    // Process columns (same butterfly with stride 8 and final normalization >>6)
+    for j in 0..8 {
+        let a0 = coeffs[j] + coeffs[32 + j];
+        let a1 = -coeffs[24 + j] + coeffs[40 + j] - coeffs[56 + j] - (coeffs[56 + j] >> 1);
+        let a2 = coeffs[j] - coeffs[32 + j];
+        let a3 = coeffs[8 + j] + coeffs[56 + j] - coeffs[24 + j] - (coeffs[24 + j] >> 1);
+        let a4 = (coeffs[16 + j] >> 1) - coeffs[48 + j];
+        let a5 = -coeffs[8 + j] + coeffs[56 + j] + coeffs[40 + j] + (coeffs[40 + j] >> 1);
+        let a6 = coeffs[16 + j] + (coeffs[48 + j] >> 1);
+        let a7 = coeffs[24 + j] + coeffs[40 + j] + coeffs[8 + j] + (coeffs[8 + j] >> 1);
+
+        let b0 = a0 + a6;
+        let b1 = a2 + a4;
+        let b2 = a2 - a4;
+        let b3 = a0 - a6;
+
+        coeffs[j] = (b0 + a7 + 32) >> 6;
+        coeffs[8 + j] = (b1 + a5 + 32) >> 6;
+        coeffs[16 + j] = (b2 + a3 + 32) >> 6;
+        coeffs[24 + j] = (b3 + a1 + 32) >> 6;
+        coeffs[32 + j] = (b3 - a1 + 32) >> 6;
+        coeffs[40 + j] = (b2 - a3 + 32) >> 6;
+        coeffs[48 + j] = (b1 - a5 + 32) >> 6;
+        coeffs[56 + j] = (b0 - a7 + 32) >> 6;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8x8 inverse quantization (dequantization)
+// ---------------------------------------------------------------------------
+
+/// H.264 8x8 dequantization scale factors for qp%6.
+/// LevelScale8x8(m) values from ITU-T H.264 Table 8-15 for flat scaling matrices.
+/// Each sub-array has 64 entries in raster order.
+const DEQUANT_SCALE_8X8: [[i32; 64]; 6] = [
+    [
+        20, 19, 25, 19, 20, 19, 25, 19, 19, 18, 24, 18, 19, 18, 24, 18, 25, 24, 32, 24, 25, 24, 32,
+        24, 19, 18, 24, 18, 19, 18, 24, 18, 20, 19, 25, 19, 20, 19, 25, 19, 19, 18, 24, 18, 19, 18,
+        24, 18, 25, 24, 32, 24, 25, 24, 32, 24, 19, 18, 24, 18, 19, 18, 24, 18,
+    ],
+    [
+        22, 21, 28, 21, 22, 21, 28, 21, 21, 19, 26, 19, 21, 19, 26, 19, 28, 26, 35, 26, 28, 26, 35,
+        26, 21, 19, 26, 19, 21, 19, 26, 19, 22, 21, 28, 21, 22, 21, 28, 21, 21, 19, 26, 19, 21, 19,
+        26, 19, 28, 26, 35, 26, 28, 26, 35, 26, 21, 19, 26, 19, 21, 19, 26, 19,
+    ],
+    [
+        26, 24, 33, 24, 26, 24, 33, 24, 24, 23, 31, 23, 24, 23, 31, 23, 33, 31, 42, 31, 33, 31, 42,
+        31, 24, 23, 31, 23, 24, 23, 31, 23, 26, 24, 33, 24, 26, 24, 33, 24, 24, 23, 31, 23, 24, 23,
+        31, 23, 33, 31, 42, 31, 33, 31, 42, 31, 24, 23, 31, 23, 24, 23, 31, 23,
+    ],
+    [
+        28, 26, 35, 26, 28, 26, 35, 26, 26, 25, 33, 25, 26, 25, 33, 25, 35, 33, 45, 33, 35, 33, 45,
+        33, 26, 25, 33, 25, 26, 25, 33, 25, 28, 26, 35, 26, 28, 26, 35, 26, 26, 25, 33, 25, 26, 25,
+        33, 25, 35, 33, 45, 33, 35, 33, 45, 33, 26, 25, 33, 25, 26, 25, 33, 25,
+    ],
+    [
+        32, 30, 40, 30, 32, 30, 40, 30, 30, 28, 38, 28, 30, 28, 38, 28, 40, 38, 51, 38, 40, 38, 51,
+        38, 30, 28, 38, 28, 30, 28, 38, 28, 32, 30, 40, 30, 32, 30, 40, 30, 30, 28, 38, 28, 30, 28,
+        38, 28, 40, 38, 51, 38, 40, 38, 51, 38, 30, 28, 38, 28, 30, 28, 38, 28,
+    ],
+    [
+        36, 34, 46, 34, 36, 34, 46, 34, 34, 32, 43, 32, 34, 32, 43, 32, 46, 43, 58, 43, 46, 43, 58,
+        43, 34, 32, 43, 32, 34, 32, 43, 32, 36, 34, 46, 34, 36, 34, 46, 34, 34, 32, 43, 32, 34, 32,
+        43, 32, 46, 43, 58, 43, 46, 43, 58, 43, 34, 32, 43, 32, 34, 32, 43, 32,
+    ],
+];
+
+/// Dequantizes an 8x8 block of transform coefficients in-place.
+///
+/// Applies H.264 inverse quantization for 8x8 blocks:
+/// `level * scale8x8[qp%6][pos] << (qp/6 - 6)` when qp/6 >= 6,
+/// `(level * scale8x8[qp%6][pos] + (1 << (5-qp/6))) >> (6 - qp/6)` otherwise.
+/// Clamps QP to the valid range [0, 51].
+pub fn dequant_8x8(coeffs: &mut [i32; 64], qp: i32) {
+    let qp = qp.clamp(0, 51);
+    let qp_div6 = qp / 6;
+    let qp_mod6 = (qp % 6) as usize;
+    let scale = &DEQUANT_SCALE_8X8[qp_mod6];
+
+    if qp_div6 >= 6 {
+        let shift = (qp_div6 - 6) as u32;
+        for i in 0..64 {
+            coeffs[i] = (coeffs[i] * scale[i]) << shift;
+        }
+    } else {
+        let shift = (6 - qp_div6) as u32;
+        let round = 1i32 << (shift - 1);
+        for i in 0..64 {
+            coeffs[i] = (coeffs[i] * scale[i] + round) >> shift;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8x8 block zigzag scan order
+// ---------------------------------------------------------------------------
+
+/// H.264 8x8 zigzag scan order: maps scan index to raster position.
+pub(crate) const ZIGZAG_8X8: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];
+
+/// Converts scan-order coefficients to 8x8 raster order.
+pub(crate) fn unscan_8x8(scan_coeffs: &[i32], out: &mut [i32; 64]) {
+    *out = [0i32; 64];
+    for (scan_idx, &val) in scan_coeffs.iter().enumerate().take(64) {
+        out[ZIGZAG_8X8[scan_idx]] = val;
+    }
+}
+
 /// Converts scan-order coefficients to 4x4 raster order.
 pub(crate) fn unscan_4x4(scan_coeffs: &[i32], out: &mut [i32; 16]) {
     *out = [0i32; 16];

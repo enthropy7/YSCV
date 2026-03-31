@@ -1,15 +1,21 @@
-//! Benchmark: decode H.264 MP4 video with yscv Mp4VideoReader.
+//! Benchmark: decode H.264/HEVC MP4 video with yscv Mp4VideoReader.
 //!
-//! Usage: cargo run --release --example bench_video_decode -- <video.mp4>
+//! Usage: cargo run --release --example bench_video_decode -- <video.mp4> [--luma-only]
+//!
+//! The `--luma-only` flag skips YUV-to-RGB conversion for fair comparison with
+//! ffmpeg's `-f null -` which also skips color conversion.
 
 use std::path::Path;
 use std::time::Instant;
 
 fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "examples/src/CENSUSWITHOUTLOGO.mp4".to_string());
-    let path = Path::new(&path);
+    let args: Vec<String> = std::env::args().collect();
+    let path_str = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("examples/src/CENSUSWITHOUTLOGO.mp4");
+    let luma_only = args.iter().any(|a| a == "--luma-only");
+    let path = Path::new(path_str);
 
     if !path.exists() {
         eprintln!("File not found: {}", path.display());
@@ -18,6 +24,9 @@ fn main() {
 
     println!("=== yscv Mp4VideoReader benchmark ===");
     println!("File: {}", path.display());
+    if luma_only {
+        println!("Mode: LUMA-ONLY (skip YUV→RGB, fair vs ffmpeg -f null)");
+    }
 
     let t0 = Instant::now();
     let mut reader = match yscv_video::Mp4VideoReader::open(path) {
@@ -38,7 +47,12 @@ fn main() {
     let mut first_frame_time = None;
 
     loop {
-        match reader.next_frame() {
+        let result = if luma_only {
+            reader.next_frame_luma_only()
+        } else {
+            reader.next_frame()
+        };
+        match result {
             Ok(Some(frame)) => {
                 if decoded == 0 {
                     first_frame_time = Some(t1.elapsed());

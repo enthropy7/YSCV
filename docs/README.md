@@ -18,7 +18,7 @@ How the framework is put together. Explains the crate dependency layers, the SIM
 
 ### [performance-benchmarks.md](performance-benchmarks.md)
 
-How we measure performance and how yscv compares to OpenCV. Covers the full benchmark methodology (hardware, measurement protocol, warm-up, statistical aggregation), CI regression gates with trend tracking, and the definitive OpenCV vs yscv comparison table (8 wins, 2 parity, 0 losses on 10 u8 imgproc operations). Includes exact commands to reproduce every number.
+How we measure performance and how yscv compares to OpenCV, ffmpeg, NumPy, PyTorch, onnxruntime, and CoreML. Covers the full benchmark methodology (hardware, measurement protocol, warm-up, statistical aggregation). Overall scorecard: **88 wins, ~5 parity, 0 losses** across all categories. H.264 decode **4.5× faster than ffmpeg**, HEVC decode **1.7× faster**. Includes exact commands to reproduce every number.
 
 ### [ecosystem-capability-matrix.md](ecosystem-capability-matrix.md)
 

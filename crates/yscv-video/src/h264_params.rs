@@ -28,6 +28,10 @@ pub struct Sps {
     pub frame_crop_right: u32,
     pub frame_crop_top: u32,
     pub frame_crop_bottom: u32,
+    /// 4x4 scaling lists (6 lists of 16 values). Default = flat 16.
+    pub scaling_list_4x4: [[i32; 16]; 6],
+    /// 8x8 scaling lists (6 lists of 64 values). Default = flat 16.
+    pub scaling_list_8x8: [[i32; 64]; 6],
 }
 
 impl Sps {
@@ -83,6 +87,8 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
 
     let mut chroma_format_idc = 1u32;
     let mut bit_depth_luma = 8u32;
+    let mut scaling_list_4x4 = [[16i32; 16]; 6];
+    let mut scaling_list_8x8 = [[16i32; 64]; 6];
     let mut bit_depth_chroma = 8u32;
 
     // High profile extensions
@@ -110,7 +116,12 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
                 let present = r.read_bit()?;
                 if present == 1 {
                     let size = if i < 6 { 16 } else { 64 };
-                    skip_scaling_list(&mut r, size)?;
+                    let list = parse_scaling_list(&mut r, size)?;
+                    if i < 6 && list.len() == 16 {
+                        scaling_list_4x4[i].copy_from_slice(&list);
+                    } else if i >= 6 && list.len() == 64 {
+                        scaling_list_8x8[i - 6].copy_from_slice(&list);
+                    }
                 }
             }
         }
@@ -183,24 +194,31 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
         frame_crop_right,
         frame_crop_top,
         frame_crop_bottom,
+        scaling_list_4x4,
+        scaling_list_8x8,
     })
 }
 
-fn skip_scaling_list(r: &mut BitstreamReader<'_>, size: usize) -> Result<(), VideoError> {
+/// Parse a scaling list from the bitstream and return it.
+/// If `use_default` is true (seq_scaling_list_present_flag=0), returns None (use default flat).
+fn parse_scaling_list(r: &mut BitstreamReader<'_>, size: usize) -> Result<Vec<i32>, VideoError> {
+    let mut list = vec![16i32; size]; // default flat
     let mut last_scale = 8i32;
     let mut next_scale = 8i32;
-    for _ in 0..size {
+    for j in 0..size {
         if next_scale != 0 {
             let delta = r.read_se()?;
             next_scale = (last_scale + delta + 256) % 256;
         }
-        last_scale = if next_scale == 0 {
+        let scale = if next_scale == 0 {
             last_scale
         } else {
             next_scale
         };
+        list[j] = scale;
+        last_scale = scale;
     }
-    Ok(())
+    Ok(list)
 }
 
 /// Removes H.264 emulation prevention bytes (0x00 0x00 0x03 -> 0x00 0x00).

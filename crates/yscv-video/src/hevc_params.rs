@@ -71,13 +71,106 @@ pub struct HevcPps {
     pub deblocking_filter_override_enabled: bool,
     pub deblocking_filter_disabled: bool,
     pub loop_filter_across_slices_enabled: bool,
+    pub weighted_pred_flag: bool,
+    pub weighted_bipred_flag: bool,
     pub tiles_enabled: bool,
     pub entropy_coding_sync_enabled: bool,
+    /// Number of tile columns (1 = no tiles).
+    pub num_tile_columns: u32,
+    /// Number of tile rows (1 = no tiles).
+    pub num_tile_rows: u32,
+    /// Column boundaries in CTU units (length = num_tile_columns + 1).
+    pub tile_col_boundaries: Vec<u32>,
+    /// Row boundaries in CTU units (length = num_tile_rows + 1).
+    pub tile_row_boundaries: Vec<u32>,
+    /// Whether loop filter crosses tile boundaries.
+    pub loop_filter_across_tiles_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
 // Slice header & slice types
 // ---------------------------------------------------------------------------
+
+/// HEVC weighted prediction entry for one reference.
+#[derive(Debug, Clone, Default)]
+pub struct HevcWeightEntry {
+    pub weight: i32,
+    pub offset: i32,
+}
+
+/// HEVC weighted prediction table (pred_weight_table §7.3.6.3).
+#[derive(Debug, Clone, Default)]
+pub struct HevcWeightTable {
+    pub luma_log2_denom: u32,
+    pub chroma_log2_denom: u32,
+    pub luma_l0: Vec<HevcWeightEntry>,
+    pub luma_l1: Vec<HevcWeightEntry>,
+}
+
+/// Parse HEVC pred_weight_table from a bitstream reader (ITU-T H.265 §7.3.6.3).
+pub fn parse_hevc_weight_table(
+    reader: &mut super::h264_bitstream::BitstreamReader<'_>,
+    slice_type: HevcSliceType,
+    num_ref_l0: u32,
+    num_ref_l1: u32,
+) -> Result<HevcWeightTable, super::VideoError> {
+    let luma_log2_denom = reader.read_ue()?;
+    let chroma_log2_denom =
+        luma_log2_denom.wrapping_add_signed(reader.read_se()? as i64 as isize as i32 as i64 as i32);
+
+    let luma_default = 1i32 << luma_log2_denom;
+    let mut luma_l0 = Vec::new();
+    // luma_weight_l0_flag for each ref
+    let mut luma_flags = Vec::new();
+    for _ in 0..num_ref_l0 {
+        luma_flags.push(reader.read_bit()? != 0);
+    }
+    for i in 0..num_ref_l0 as usize {
+        if luma_flags[i] {
+            let w = reader.read_se()? + luma_default;
+            let o = reader.read_se()?;
+            luma_l0.push(HevcWeightEntry {
+                weight: w,
+                offset: o,
+            });
+        } else {
+            luma_l0.push(HevcWeightEntry {
+                weight: luma_default,
+                offset: 0,
+            });
+        }
+    }
+
+    let mut luma_l1 = Vec::new();
+    if slice_type == HevcSliceType::B {
+        let mut l1_flags = Vec::new();
+        for _ in 0..num_ref_l1 {
+            l1_flags.push(reader.read_bit()? != 0);
+        }
+        for i in 0..num_ref_l1 as usize {
+            if l1_flags[i] {
+                let w = reader.read_se()? + luma_default;
+                let o = reader.read_se()?;
+                luma_l1.push(HevcWeightEntry {
+                    weight: w,
+                    offset: o,
+                });
+            } else {
+                luma_l1.push(HevcWeightEntry {
+                    weight: luma_default,
+                    offset: 0,
+                });
+            }
+        }
+    }
+
+    Ok(HevcWeightTable {
+        luma_log2_denom,
+        chroma_log2_denom,
+        luma_l0,
+        luma_l1,
+    })
+}
 
 /// HEVC Slice Header (simplified).
 #[derive(Debug, Clone)]
@@ -86,6 +179,7 @@ pub struct HevcSliceHeader {
     pub slice_type: HevcSliceType,
     pub pps_id: u8,
     pub slice_qp_delta: i8,
+    pub weight_table: Option<HevcWeightTable>,
 }
 
 /// HEVC slice types.
@@ -287,26 +381,33 @@ pub fn parse_hevc_pps(data: &[u8]) -> Result<HevcPps, VideoError> {
     let cb_qp_offset = reader.read_se()? as i8;
     let cr_qp_offset = reader.read_se()? as i8;
     let _slice_chroma_qp_offsets_present = reader.read_bit()?;
-    let _weighted_pred = reader.read_bit()?;
-    let _weighted_bipred = reader.read_bit()?;
+    let weighted_pred_flag = reader.read_bit()? != 0;
+    let weighted_bipred_flag = reader.read_bit()? != 0;
     let _transquant_bypass_enabled = reader.read_bit()?;
     let tiles_enabled = reader.read_bit()? != 0;
     let entropy_coding_sync_enabled = reader.read_bit()? != 0;
 
+    let mut num_tile_columns = 1u32;
+    let mut num_tile_rows = 1u32;
+    let mut tile_col_boundaries = Vec::new();
+    let mut tile_row_boundaries = Vec::new();
+    let mut loop_filter_across_tiles_enabled = true;
+
     if tiles_enabled {
-        let num_tile_columns = reader.read_ue()? + 1;
-        let num_tile_rows = reader.read_ue()? + 1;
+        num_tile_columns = reader.read_ue()? + 1;
+        num_tile_rows = reader.read_ue()? + 1;
         let uniform_spacing = reader.read_bit()? != 0;
         if !uniform_spacing {
+            // Read explicit column widths in CTU units
             for _ in 0..num_tile_columns - 1 {
-                reader.read_ue()?;
+                tile_col_boundaries.push(reader.read_ue()? + 1);
             }
             for _ in 0..num_tile_rows - 1 {
-                reader.read_ue()?;
+                tile_row_boundaries.push(reader.read_ue()? + 1);
             }
         }
         if tiles_enabled || entropy_coding_sync_enabled {
-            reader.read_bit()?; // loop_filter_across_tiles_enabled_flag
+            loop_filter_across_tiles_enabled = reader.read_bit()? != 0;
         }
     }
 
@@ -342,8 +443,15 @@ pub fn parse_hevc_pps(data: &[u8]) -> Result<HevcPps, VideoError> {
         deblocking_filter_override_enabled,
         deblocking_filter_disabled,
         loop_filter_across_slices_enabled,
+        weighted_pred_flag,
+        weighted_bipred_flag,
         tiles_enabled,
         entropy_coding_sync_enabled,
+        num_tile_columns,
+        num_tile_rows,
+        tile_col_boundaries,
+        tile_row_boundaries,
+        loop_filter_across_tiles_enabled,
     })
 }
 

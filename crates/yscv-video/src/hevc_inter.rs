@@ -25,7 +25,12 @@ pub struct HevcReferencePicture {
     /// Picture Order Count.
     pub poc: i32,
     /// Reconstructed luma samples (row-major, `width * height` elements).
-    pub luma: Vec<u8>,
+    /// Stored as u16 to support Main10 (10-bit) profile.
+    pub luma: Vec<u16>,
+    /// Reconstructed Cb chroma samples (4:2:0, `width/2 * height/2`).
+    pub cb: Vec<u16>,
+    /// Reconstructed Cr chroma samples (4:2:0, `width/2 * height/2`).
+    pub cr: Vec<u16>,
     /// Picture width in luma samples.
     pub width: usize,
     /// Picture height in luma samples.
@@ -198,11 +203,222 @@ const HEVC_LUMA_FILTER: [[i16; 8]; 4] = [
 // ---------------------------------------------------------------------------
 
 /// Fetch a reference sample with edge clamping.
-#[inline]
+#[inline(always)]
 fn ref_sample(pic: &HevcReferencePicture, x: i32, y: i32) -> i16 {
     let cx = x.clamp(0, pic.width as i32 - 1) as usize;
     let cy = y.clamp(0, pic.height as i32 - 1) as usize;
     pic.luma[cy * pic.width + cx] as i16
+}
+
+/// Check if a block (with 3-pixel border for 8-tap filter) is fully in-bounds.
+#[inline(always)]
+fn mc_in_bounds(pic: &HevcReferencePicture, int_x: i32, int_y: i32, bw: usize, bh: usize) -> bool {
+    int_x - 3 >= 0
+        && int_y - 3 >= 0
+        && (int_x + bw as i32 + 4) <= pic.width as i32
+        && (int_y + bh as i32 + 4) <= pic.height as i32
+}
+
+/// Scalar 8-tap horizontal filter for one row, in-bounds (no clamping).
+#[inline(always)]
+fn filter_h_row_inbounds(
+    src: &[u16],
+    src_offset: usize,
+    filter: &[i16; 8],
+    out: &mut [i16],
+    out_offset: usize,
+    count: usize,
+) {
+    for col in 0..count {
+        let base = src_offset + col;
+        let sum = src[base] as i32 * filter[0] as i32
+            + src[base + 1] as i32 * filter[1] as i32
+            + src[base + 2] as i32 * filter[2] as i32
+            + src[base + 3] as i32 * filter[3] as i32
+            + src[base + 4] as i32 * filter[4] as i32
+            + src[base + 5] as i32 * filter[5] as i32
+            + src[base + 6] as i32 * filter[6] as i32
+            + src[base + 7] as i32 * filter[7] as i32;
+        out[out_offset + col] = ((sum + 32) >> 6) as i16;
+    }
+}
+
+/// Scalar 8-tap horizontal filter for one row, in-bounds, output i32 (no shift).
+#[inline(always)]
+fn filter_h_row_inbounds_i32(
+    src: &[u16],
+    src_offset: usize,
+    filter: &[i16; 8],
+    out: &mut [i32],
+    out_offset: usize,
+    count: usize,
+) {
+    for col in 0..count {
+        let base = src_offset + col;
+        let sum = src[base] as i32 * filter[0] as i32
+            + src[base + 1] as i32 * filter[1] as i32
+            + src[base + 2] as i32 * filter[2] as i32
+            + src[base + 3] as i32 * filter[3] as i32
+            + src[base + 4] as i32 * filter[4] as i32
+            + src[base + 5] as i32 * filter[5] as i32
+            + src[base + 6] as i32 * filter[6] as i32
+            + src[base + 7] as i32 * filter[7] as i32;
+        out[out_offset + col] = sum;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NEON-accelerated 8-tap filter kernels (aarch64)
+// ---------------------------------------------------------------------------
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+mod neon_mc {
+    use std::arch::aarch64::*;
+
+    /// Horizontal 8-tap filter for 8 consecutive output pixels from u16 source.
+    /// Loads 15 consecutive u16 samples (8 outputs need positions 0..14).
+    /// Works for both 8-bit (values 0..255) and 10-bit (values 0..1023).
+    #[target_feature(enable = "neon")]
+    #[inline]
+    pub unsafe fn filter_h8_neon(src: *const u16, filter: &[i16; 8]) -> int16x8_t {
+        // For u16 source: load each shifted window of 8 samples as i16
+        let f0 = vdupq_n_s16(filter[0]);
+        let f1 = vdupq_n_s16(filter[1]);
+        let f2 = vdupq_n_s16(filter[2]);
+        let f3 = vdupq_n_s16(filter[3]);
+        let f4 = vdupq_n_s16(filter[4]);
+        let f5 = vdupq_n_s16(filter[5]);
+        let f6 = vdupq_n_s16(filter[6]);
+        let f7 = vdupq_n_s16(filter[7]);
+
+        let s0 = vreinterpretq_s16_u16(vld1q_u16(src));
+        let s1 = vreinterpretq_s16_u16(vld1q_u16(src.add(1)));
+        let s2 = vreinterpretq_s16_u16(vld1q_u16(src.add(2)));
+        let s3 = vreinterpretq_s16_u16(vld1q_u16(src.add(3)));
+        let s4 = vreinterpretq_s16_u16(vld1q_u16(src.add(4)));
+        let s5 = vreinterpretq_s16_u16(vld1q_u16(src.add(5)));
+        let s6 = vreinterpretq_s16_u16(vld1q_u16(src.add(6)));
+        let s7 = vreinterpretq_s16_u16(vld1q_u16(src.add(7)));
+
+        let mut acc = vmulq_s16(s0, f0);
+        acc = vmlaq_s16(acc, s1, f1);
+        acc = vmlaq_s16(acc, s2, f2);
+        acc = vmlaq_s16(acc, s3, f3);
+        acc = vmlaq_s16(acc, s4, f4);
+        acc = vmlaq_s16(acc, s5, f5);
+        acc = vmlaq_s16(acc, s6, f6);
+        acc = vmlaq_s16(acc, s7, f7);
+
+        let round = vdupq_n_s16(32);
+        vshrq_n_s16(vaddq_s16(acc, round), 6)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SSE2-accelerated 8-tap filter kernels (x86_64)
+// ---------------------------------------------------------------------------
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+mod sse2_mc {
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    /// Horizontal 8-tap filter for 8 output pixels from u16 source (SSE2).
+    /// Loads 8 shifted windows of 8 u16 samples, multiply-accumulate with filter.
+    #[target_feature(enable = "sse2")]
+    #[inline]
+    pub unsafe fn filter_h8_sse2(src: *const u16, filter: &[i16; 8]) -> __m128i {
+        // Load filter taps as broadcast vectors
+        let f0 = _mm_set1_epi16(filter[0]);
+        let f1 = _mm_set1_epi16(filter[1]);
+        let f2 = _mm_set1_epi16(filter[2]);
+        let f3 = _mm_set1_epi16(filter[3]);
+        let f4 = _mm_set1_epi16(filter[4]);
+        let f5 = _mm_set1_epi16(filter[5]);
+        let f6 = _mm_set1_epi16(filter[6]);
+        let f7 = _mm_set1_epi16(filter[7]);
+
+        // Load 8 samples from each of 8 offsets (src[col+k] for k=0..7)
+        // Reinterpret u16 as i16 (values 0..1023 fit safely)
+        let s0 = _mm_loadu_si128(src as *const __m128i);
+        let s1 = _mm_loadu_si128(src.add(1) as *const __m128i);
+        let s2 = _mm_loadu_si128(src.add(2) as *const __m128i);
+        let s3 = _mm_loadu_si128(src.add(3) as *const __m128i);
+        let s4 = _mm_loadu_si128(src.add(4) as *const __m128i);
+        let s5 = _mm_loadu_si128(src.add(5) as *const __m128i);
+        let s6 = _mm_loadu_si128(src.add(6) as *const __m128i);
+        let s7 = _mm_loadu_si128(src.add(7) as *const __m128i);
+
+        // Multiply-accumulate: sum = s0*f0 + s1*f1 + ... + s7*f7
+        // Using mullo (low 16-bit of product) — safe when values < 1024 and filter < 64
+        let mut acc = _mm_mullo_epi16(s0, f0);
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(s1, f1));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(s2, f2));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(s3, f3));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(s4, f4));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(s5, f5));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(s6, f6));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(s7, f7));
+
+        // (acc + 32) >> 6
+        let round = _mm_set1_epi16(32);
+        _mm_srai_epi16(_mm_add_epi16(acc, round), 6)
+    }
+
+    // Remove old scalar code that followed
+    #[target_feature(enable = "sse2")]
+    #[inline]
+    #[allow(dead_code)]
+    unsafe fn filter_h8_sse2_old(src: *const u16, filter: &[i16; 8]) -> __m128i {
+        let mut results = [0i16; 8];
+        for col in 0..8 {
+            let mut sum = 0i32;
+            for k in 0..8 {
+                sum += *src.add(col + k) as i32 * filter[k] as i32;
+            }
+            results[col] = ((sum + 32) >> 6) as i16;
+        }
+        _mm_loadu_si128(results.as_ptr() as *const __m128i)
+    }
+
+    /// Vertical 8-tap filter for 8 output pixels from 8 strided rows (SSE2).
+    /// Source is u16 (10-bit compatible).
+    #[target_feature(enable = "sse2")]
+    #[inline]
+    pub unsafe fn filter_v8_sse2(src: *const u16, stride: usize, filter: &[i16; 8]) -> __m128i {
+        // Load 8 u16 samples from each of 8 rows, reinterpret as i16
+        let r0 = _mm_loadu_si128(src as *const __m128i);
+        let r1 = _mm_loadu_si128(src.add(stride) as *const __m128i);
+        let r2 = _mm_loadu_si128(src.add(2 * stride) as *const __m128i);
+        let r3 = _mm_loadu_si128(src.add(3 * stride) as *const __m128i);
+        let r4 = _mm_loadu_si128(src.add(4 * stride) as *const __m128i);
+        let r5 = _mm_loadu_si128(src.add(5 * stride) as *const __m128i);
+        let r6 = _mm_loadu_si128(src.add(6 * stride) as *const __m128i);
+        let r7 = _mm_loadu_si128(src.add(7 * stride) as *const __m128i);
+
+        // Multiply-accumulate
+        let f0 = _mm_set1_epi16(filter[0]);
+        let f1 = _mm_set1_epi16(filter[1]);
+        let f2 = _mm_set1_epi16(filter[2]);
+        let f3 = _mm_set1_epi16(filter[3]);
+        let f4 = _mm_set1_epi16(filter[4]);
+        let f5 = _mm_set1_epi16(filter[5]);
+        let f6 = _mm_set1_epi16(filter[6]);
+        let f7 = _mm_set1_epi16(filter[7]);
+
+        let mut acc = _mm_mullo_epi16(r0, f0);
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(r1, f1));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(r2, f2));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(r3, f3));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(r4, f4));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(r5, f5));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(r6, f6));
+        acc = _mm_add_epi16(acc, _mm_mullo_epi16(r7, f7));
+
+        // (acc + 32) >> 6
+        let round = _mm_set1_epi16(32);
+        _mm_srai_epi16(_mm_add_epi16(acc, round), 6)
+    }
 }
 
 /// Luma motion compensation with quarter-pel interpolation (8-tap filter).
@@ -211,7 +427,7 @@ fn ref_sample(pic: &HevcReferencePicture, x: i32, y: i32) -> i16 {
 /// `mv` is in quarter-pel units.
 /// `output` receives `block_w * block_h` samples as `i16` (for bi-pred
 /// averaging before final clipping).
-#[allow(clippy::too_many_arguments)]
+#[allow(unsafe_code, clippy::too_many_arguments)]
 pub fn hevc_mc_luma(
     ref_pic: &HevcReferencePicture,
     x: i32,
@@ -232,68 +448,300 @@ pub fn hevc_mc_luma(
     let filter_v = &HEVC_LUMA_FILTER[frac_y];
 
     if frac_x == 0 && frac_y == 0 {
-        // Integer-pel: direct copy.
-        for row in 0..block_h {
-            for col in 0..block_w {
-                output[row * block_w + col] =
-                    ref_sample(ref_pic, int_x + col as i32, int_y + row as i32);
+        // Integer-pel: direct copy (fast path: copy_from_slice when in-bounds).
+        if mc_in_bounds(ref_pic, int_x, int_y, block_w, block_h) {
+            let ux = int_x as usize;
+            let uy = int_y as usize;
+            let stride = ref_pic.width;
+            for row in 0..block_h {
+                let src_start = (uy + row) * stride + ux;
+                let src_row = &ref_pic.luma[src_start..src_start + block_w];
+                let dst = &mut output[row * block_w..(row + 1) * block_w];
+                for (d, &s) in dst.iter_mut().zip(src_row.iter()) {
+                    *d = s as i16;
+                }
+            }
+        } else {
+            for row in 0..block_h {
+                for col in 0..block_w {
+                    output[row * block_w + col] =
+                        ref_sample(ref_pic, int_x + col as i32, int_y + row as i32);
+                }
             }
         }
         return;
     }
 
+    let inbounds = mc_in_bounds(ref_pic, int_x, int_y, block_w, block_h);
+
     if frac_y == 0 {
         // Horizontal-only filtering.
-        for row in 0..block_h {
-            for col in 0..block_w {
-                let sy = int_y + row as i32;
-                let mut sum = 0i32;
-                for k in 0..8 {
-                    let sx = int_x + col as i32 + k as i32 - 3;
-                    sum += ref_sample(ref_pic, sx, sy) as i32 * filter_h[k] as i32;
+        if inbounds {
+            let ux = (int_x - 3) as usize;
+            let uy = int_y as usize;
+            let stride = ref_pic.width;
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                // NEON fast path: process 8 pixels at a time
+                let mut row = 0;
+                while row < block_h {
+                    let src_base = (uy + row) * stride + ux;
+                    let mut col = 0;
+                    while col + 8 <= block_w {
+                        unsafe {
+                            let src_ptr = ref_pic.luma.as_ptr().add(src_base + col);
+                            let result = neon_mc::filter_h8_neon(src_ptr, filter_h);
+                            let out_off = row * block_w + col;
+                            std::arch::aarch64::vst1q_s16(output.as_mut_ptr().add(out_off), result);
+                        }
+                        col += 8;
+                    }
+                    // Tail: scalar
+                    if col < block_w {
+                        filter_h_row_inbounds(
+                            &ref_pic.luma,
+                            src_base + col,
+                            filter_h,
+                            output,
+                            row * block_w + col,
+                            block_w - col,
+                        );
+                    }
+                    row += 1;
                 }
-                output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            {
+                // SSE2 fast path: process 8 pixels at a time
+                for row in 0..block_h {
+                    let src_base = (uy + row) * stride + ux;
+                    let mut col = 0;
+                    while col + 8 <= block_w {
+                        unsafe {
+                            let src_ptr = ref_pic.luma.as_ptr().add(src_base + col);
+                            let result = sse2_mc::filter_h8_sse2(src_ptr, filter_h);
+                            std::arch::x86_64::_mm_storeu_si128(
+                                output.as_mut_ptr().add(row * block_w + col)
+                                    as *mut std::arch::x86_64::__m128i,
+                                result,
+                            );
+                        }
+                        col += 8;
+                    }
+                    if col < block_w {
+                        filter_h_row_inbounds(
+                            &ref_pic.luma,
+                            src_base + col,
+                            filter_h,
+                            output,
+                            row * block_w + col,
+                            block_w - col,
+                        );
+                    }
+                }
+            }
+
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+            {
+                for row in 0..block_h {
+                    let src_base = (uy + row) * stride + ux;
+                    filter_h_row_inbounds(
+                        &ref_pic.luma,
+                        src_base,
+                        filter_h,
+                        output,
+                        row * block_w,
+                        block_w,
+                    );
+                }
+            }
+        } else {
+            for row in 0..block_h {
+                for col in 0..block_w {
+                    let sy = int_y + row as i32;
+                    let mut sum = 0i32;
+                    for k in 0..8 {
+                        let sx = int_x + col as i32 + k as i32 - 3;
+                        sum += ref_sample(ref_pic, sx, sy) as i32 * filter_h[k] as i32;
+                    }
+                    output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+                }
             }
         }
         return;
     }
 
     if frac_x == 0 {
-        // Vertical-only filtering.
-        for row in 0..block_h {
-            for col in 0..block_w {
-                let sx = int_x + col as i32;
-                let mut sum = 0i32;
-                for k in 0..8 {
-                    let sy = int_y + row as i32 + k as i32 - 3;
-                    sum += ref_sample(ref_pic, sx, sy) as i32 * filter_v[k] as i32;
+        // Vertical-only filtering — in-bounds fast path reads 8 rows directly.
+        if inbounds {
+            let ux = int_x as usize;
+            let stride = ref_pic.width;
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                // NEON: process 8 columns at a time
+                for row in 0..block_h {
+                    let base_y = (int_y + row as i32 - 3) as usize;
+                    let base_idx = base_y * stride + ux;
+                    let mut col = 0;
+                    while col + 8 <= block_w {
+                        unsafe {
+                            use std::arch::aarch64::*;
+                            let f0 = vdupq_n_s16(filter_v[0]);
+                            let f1 = vdupq_n_s16(filter_v[1]);
+                            let f2 = vdupq_n_s16(filter_v[2]);
+                            let f3 = vdupq_n_s16(filter_v[3]);
+                            let f4 = vdupq_n_s16(filter_v[4]);
+                            let f5 = vdupq_n_s16(filter_v[5]);
+                            let f6 = vdupq_n_s16(filter_v[6]);
+                            let f7 = vdupq_n_s16(filter_v[7]);
+
+                            let p = ref_pic.luma.as_ptr().add(base_idx + col);
+                            let s0 = vreinterpretq_s16_u16(vld1q_u16(p));
+                            let s1 = vreinterpretq_s16_u16(vld1q_u16(p.add(stride)));
+                            let s2 = vreinterpretq_s16_u16(vld1q_u16(p.add(2 * stride)));
+                            let s3 = vreinterpretq_s16_u16(vld1q_u16(p.add(3 * stride)));
+                            let s4 = vreinterpretq_s16_u16(vld1q_u16(p.add(4 * stride)));
+                            let s5 = vreinterpretq_s16_u16(vld1q_u16(p.add(5 * stride)));
+                            let s6 = vreinterpretq_s16_u16(vld1q_u16(p.add(6 * stride)));
+                            let s7 = vreinterpretq_s16_u16(vld1q_u16(p.add(7 * stride)));
+
+                            let mut acc = vmulq_s16(s0, f0);
+                            acc = vmlaq_s16(acc, s1, f1);
+                            acc = vmlaq_s16(acc, s2, f2);
+                            acc = vmlaq_s16(acc, s3, f3);
+                            acc = vmlaq_s16(acc, s4, f4);
+                            acc = vmlaq_s16(acc, s5, f5);
+                            acc = vmlaq_s16(acc, s6, f6);
+                            acc = vmlaq_s16(acc, s7, f7);
+
+                            let round = vdupq_n_s16(32);
+                            let result = vshrq_n_s16(vaddq_s16(acc, round), 6);
+                            vst1q_s16(output.as_mut_ptr().add(row * block_w + col), result);
+                        }
+                        col += 8;
+                    }
+                    // Scalar tail
+                    while col < block_w {
+                        let bi = base_idx + col;
+                        let sum = ref_pic.luma[bi] as i32 * filter_v[0] as i32
+                            + ref_pic.luma[bi + stride] as i32 * filter_v[1] as i32
+                            + ref_pic.luma[bi + 2 * stride] as i32 * filter_v[2] as i32
+                            + ref_pic.luma[bi + 3 * stride] as i32 * filter_v[3] as i32
+                            + ref_pic.luma[bi + 4 * stride] as i32 * filter_v[4] as i32
+                            + ref_pic.luma[bi + 5 * stride] as i32 * filter_v[5] as i32
+                            + ref_pic.luma[bi + 6 * stride] as i32 * filter_v[6] as i32
+                            + ref_pic.luma[bi + 7 * stride] as i32 * filter_v[7] as i32;
+                        output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+                        col += 1;
+                    }
                 }
-                output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            {
+                for row in 0..block_h {
+                    let base_y = (int_y + row as i32 - 3) as usize;
+                    let base_idx = base_y * stride + ux;
+                    let mut col = 0;
+                    while col + 8 <= block_w {
+                        unsafe {
+                            let src_ptr = ref_pic.luma.as_ptr().add(base_idx + col);
+                            let result = sse2_mc::filter_v8_sse2(src_ptr, stride, filter_v);
+                            std::arch::x86_64::_mm_storeu_si128(
+                                output.as_mut_ptr().add(row * block_w + col)
+                                    as *mut std::arch::x86_64::__m128i,
+                                result,
+                            );
+                        }
+                        col += 8;
+                    }
+                    while col < block_w {
+                        let bi = base_idx + col;
+                        let sum = ref_pic.luma[bi] as i32 * filter_v[0] as i32
+                            + ref_pic.luma[bi + stride] as i32 * filter_v[1] as i32
+                            + ref_pic.luma[bi + 2 * stride] as i32 * filter_v[2] as i32
+                            + ref_pic.luma[bi + 3 * stride] as i32 * filter_v[3] as i32
+                            + ref_pic.luma[bi + 4 * stride] as i32 * filter_v[4] as i32
+                            + ref_pic.luma[bi + 5 * stride] as i32 * filter_v[5] as i32
+                            + ref_pic.luma[bi + 6 * stride] as i32 * filter_v[6] as i32
+                            + ref_pic.luma[bi + 7 * stride] as i32 * filter_v[7] as i32;
+                        output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+                        col += 1;
+                    }
+                }
+            }
+
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+            {
+                for row in 0..block_h {
+                    for col in 0..block_w {
+                        let base_y = (int_y + row as i32 - 3) as usize;
+                        let base_idx = base_y * stride + ux + col;
+                        let sum = ref_pic.luma[base_idx] as i32 * filter_v[0] as i32
+                            + ref_pic.luma[base_idx + stride] as i32 * filter_v[1] as i32
+                            + ref_pic.luma[base_idx + 2 * stride] as i32 * filter_v[2] as i32
+                            + ref_pic.luma[base_idx + 3 * stride] as i32 * filter_v[3] as i32
+                            + ref_pic.luma[base_idx + 4 * stride] as i32 * filter_v[4] as i32
+                            + ref_pic.luma[base_idx + 5 * stride] as i32 * filter_v[5] as i32
+                            + ref_pic.luma[base_idx + 6 * stride] as i32 * filter_v[6] as i32
+                            + ref_pic.luma[base_idx + 7 * stride] as i32 * filter_v[7] as i32;
+                        output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+                    }
+                }
+            }
+        } else {
+            for row in 0..block_h {
+                for col in 0..block_w {
+                    let sx = int_x + col as i32;
+                    let mut sum = 0i32;
+                    for k in 0..8 {
+                        let sy = int_y + row as i32 + k as i32 - 3;
+                        sum += ref_sample(ref_pic, sx, sy) as i32 * filter_v[k] as i32;
+                    }
+                    output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+                }
             }
         }
         return;
     }
 
     // Both horizontal and vertical fractional position: two-pass filtering.
-    // First filter horizontally into a temporary buffer (with extra rows for
-    // the vertical filter tap extent), then filter vertically.
     let ext_h = block_h + 7; // 3 rows above + 4 rows below
-    // Stack buffer: max 71*64 = 4544 i32 = 18KB (safe for stack, not in recursion)
     let tmp_size = ext_h * block_w;
     let mut tmp_buf = [0i32; 71 * 64];
     let tmp = &mut tmp_buf[..tmp_size];
 
-    // Horizontal pass: produce (block_h + 7) rows of block_w intermediate
-    // samples shifted by 6 bits.
-    for row in 0..ext_h {
-        let sy = int_y + row as i32 - 3;
-        for col in 0..block_w {
-            let mut sum = 0i32;
-            for k in 0..8 {
-                let sx = int_x + col as i32 + k as i32 - 3;
-                sum += ref_sample(ref_pic, sx, sy) as i32 * filter_h[k] as i32;
+    if inbounds {
+        // In-bounds 2D: horizontal pass without clamping
+        let ux = (int_x - 3) as usize;
+        let stride = ref_pic.width;
+        for row in 0..ext_h {
+            let sy = (int_y + row as i32 - 3) as usize;
+            let src_base = sy * stride + ux;
+            filter_h_row_inbounds_i32(
+                &ref_pic.luma,
+                src_base,
+                filter_h,
+                tmp,
+                row * block_w,
+                block_w,
+            );
+        }
+    } else {
+        // Out-of-bounds: clamped horizontal pass
+        for row in 0..ext_h {
+            let sy = int_y + row as i32 - 3;
+            for col in 0..block_w {
+                let mut sum = 0i32;
+                for k in 0..8 {
+                    let sx = int_x + col as i32 + k as i32 - 3;
+                    sum += ref_sample(ref_pic, sx, sy) as i32 * filter_h[k] as i32;
+                }
+                tmp[row * block_w + col] = sum;
             }
-            tmp[row * block_w + col] = sum; // keep <<6 headroom
         }
     }
 
@@ -304,8 +752,99 @@ pub fn hevc_mc_luma(
             for k in 0..8 {
                 sum += tmp[(row + k) * block_w + col] as i64 * filter_v[k] as i64;
             }
-            // Two shifts: +32 from h-pass kept, +2048 for v-pass rounding.
             output[row * block_w + col] = ((sum + 2048) >> 12) as i16;
+        }
+    }
+}
+
+/// Chroma motion compensation with 4-tap filter (HEVC 8-th pel).
+///
+/// `chroma_plane` is the reference chroma plane (Cb or Cr), `chroma_w`/`chroma_h`
+/// are its dimensions. MV is in quarter-pel luma units (converted to 1/8-pel chroma).
+/// Output is i16 for bipred averaging.
+#[allow(clippy::too_many_arguments)]
+pub fn hevc_mc_chroma(
+    chroma_plane: &[u16],
+    chroma_w: usize,
+    chroma_h: usize,
+    x: i32,
+    y: i32,
+    mv: HevcMv,
+    block_w: usize,
+    block_h: usize,
+    output: &mut [i16],
+) {
+    debug_assert!(output.len() >= block_w * block_h);
+    // Chroma MV: quarter-pel luma → eighth-pel chroma for 4:2:0
+    let frac_x = ((mv.x as i32) & 7) as usize;
+    let frac_y = ((mv.y as i32) & 7) as usize;
+    let int_x = x + (mv.x as i32 >> 3);
+    let int_y = y + (mv.y as i32 >> 3);
+
+    let filter_h = &super::hevc_filter::HEVC_CHROMA_FILTER[frac_x];
+    let filter_v = &super::hevc_filter::HEVC_CHROMA_FILTER[frac_y];
+
+    let clamp_x = |cx: i32| -> usize { cx.clamp(0, chroma_w as i32 - 1) as usize };
+    let clamp_y = |cy: i32| -> usize { cy.clamp(0, chroma_h as i32 - 1) as usize };
+    let sample =
+        |cx: i32, cy: i32| -> i16 { chroma_plane[clamp_y(cy) * chroma_w + clamp_x(cx)] as i16 };
+
+    if frac_x == 0 && frac_y == 0 {
+        // Integer-pel copy
+        for row in 0..block_h {
+            for col in 0..block_w {
+                output[row * block_w + col] = sample(int_x + col as i32, int_y + row as i32);
+            }
+        }
+    } else if frac_y == 0 {
+        // Horizontal-only 4-tap
+        for row in 0..block_h {
+            for col in 0..block_w {
+                let sy = int_y + row as i32;
+                let mut sum = 0i32;
+                for k in 0..4 {
+                    sum +=
+                        sample(int_x + col as i32 + k as i32 - 1, sy) as i32 * filter_h[k] as i32;
+                }
+                output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+            }
+        }
+    } else if frac_x == 0 {
+        // Vertical-only 4-tap
+        for row in 0..block_h {
+            for col in 0..block_w {
+                let sx = int_x + col as i32;
+                let mut sum = 0i32;
+                for k in 0..4 {
+                    sum +=
+                        sample(sx, int_y + row as i32 + k as i32 - 1) as i32 * filter_v[k] as i32;
+                }
+                output[row * block_w + col] = ((sum + 32) >> 6) as i16;
+            }
+        }
+    } else {
+        // 2D: horizontal then vertical
+        let ext_h = block_h + 3;
+        let mut tmp = vec![0i32; ext_h * block_w];
+        for row in 0..ext_h {
+            let sy = int_y + row as i32 - 1;
+            for col in 0..block_w {
+                let mut sum = 0i32;
+                for k in 0..4 {
+                    sum +=
+                        sample(int_x + col as i32 + k as i32 - 1, sy) as i32 * filter_h[k] as i32;
+                }
+                tmp[row * block_w + col] = sum;
+            }
+        }
+        for row in 0..block_h {
+            for col in 0..block_w {
+                let mut sum = 0i64;
+                for k in 0..4 {
+                    sum += tmp[(row + k) * block_w + col] as i64 * filter_v[k] as i64;
+                }
+                output[row * block_w + col] = ((sum + 2048) >> 12) as i16;
+            }
         }
     }
 }
@@ -314,23 +853,130 @@ pub fn hevc_mc_luma(
 ///
 /// `pred_l0` and `pred_l1` are intermediate i16 values produced by
 /// [`hevc_mc_luma`].  The final result in `output` is clipped to u8.
+#[allow(unsafe_code)]
 pub fn hevc_bipred_average(pred_l0: &[i16], pred_l1: &[i16], output: &mut [u8], size: usize) {
     debug_assert!(pred_l0.len() >= size);
     debug_assert!(pred_l1.len() >= size);
     debug_assert!(output.len() >= size);
 
-    for i in 0..size {
-        let avg = (pred_l0[i] as i32 + pred_l1[i] as i32 + 1) >> 1;
-        output[i] = avg.clamp(0, 255) as u8;
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut i = 0;
+        while i + 8 <= size {
+            unsafe {
+                use std::arch::aarch64::*;
+                let l0 = vld1q_s16(pred_l0.as_ptr().add(i));
+                let l1 = vld1q_s16(pred_l1.as_ptr().add(i));
+                let avg = vrhaddq_s16(l0, l1);
+                let clamped = vqmovun_s16(avg);
+                std::ptr::copy_nonoverlapping(
+                    &clamped as *const uint8x8_t as *const u8,
+                    output.as_mut_ptr().add(i),
+                    8,
+                );
+            }
+            i += 8;
+        }
+        while i < size {
+            let avg = (pred_l0[i] as i32 + pred_l1[i] as i32 + 1) >> 1;
+            output[i] = avg.clamp(0, 255) as u8;
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut i = 0;
+        while i + 8 <= size {
+            unsafe {
+                use std::arch::x86_64::*;
+                let l0 = _mm_loadu_si128(pred_l0.as_ptr().add(i) as *const __m128i);
+                let l1 = _mm_loadu_si128(pred_l1.as_ptr().add(i) as *const __m128i);
+                // (l0 + l1 + 1) >> 1 — manually since SSE2 lacks rounding half-add for signed
+                let sum = _mm_add_epi16(l0, l1);
+                let one = _mm_set1_epi16(1);
+                let avg = _mm_srai_epi16(_mm_add_epi16(sum, one), 1);
+                let clamped = _mm_packus_epi16(avg, avg); // saturate to u8
+                // Store low 8 bytes
+                std::ptr::copy_nonoverlapping(
+                    &clamped as *const __m128i as *const u8,
+                    output.as_mut_ptr().add(i),
+                    8,
+                );
+            }
+            i += 8;
+        }
+        while i < size {
+            let avg = (pred_l0[i] as i32 + pred_l1[i] as i32 + 1) >> 1;
+            output[i] = avg.clamp(0, 255) as u8;
+            i += 1;
+        }
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        for i in 0..size {
+            let avg = (pred_l0[i] as i32 + pred_l1[i] as i32 + 1) >> 1;
+            output[i] = avg.clamp(0, 255) as u8;
+        }
     }
 }
 
 /// Uni-prediction clip: convert an intermediate i16 buffer to u8.
+#[allow(unsafe_code)]
 pub fn hevc_unipred_clip(pred: &[i16], output: &mut [u8], size: usize) {
     debug_assert!(pred.len() >= size);
     debug_assert!(output.len() >= size);
-    for i in 0..size {
-        output[i] = (pred[i] as i32).clamp(0, 255) as u8;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut i = 0;
+        while i + 8 <= size {
+            unsafe {
+                use std::arch::aarch64::*;
+                let v = vld1q_s16(pred.as_ptr().add(i));
+                let clamped = vqmovun_s16(v);
+                std::ptr::copy_nonoverlapping(
+                    &clamped as *const uint8x8_t as *const u8,
+                    output.as_mut_ptr().add(i),
+                    8,
+                );
+            }
+            i += 8;
+        }
+        while i < size {
+            output[i] = (pred[i] as i32).clamp(0, 255) as u8;
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut i = 0;
+        while i + 8 <= size {
+            unsafe {
+                use std::arch::x86_64::*;
+                let v = _mm_loadu_si128(pred.as_ptr().add(i) as *const __m128i);
+                let clamped = _mm_packus_epi16(v, v); // saturate i16→u8
+                std::ptr::copy_nonoverlapping(
+                    &clamped as *const __m128i as *const u8,
+                    output.as_mut_ptr().add(i),
+                    8,
+                );
+            }
+            i += 8;
+        }
+        while i < size {
+            output[i] = (pred[i] as i32).clamp(0, 255) as u8;
+            i += 1;
+        }
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        for i in 0..size {
+            output[i] = (pred[i] as i32).clamp(0, 255) as u8;
+        }
     }
 }
 
@@ -713,6 +1359,8 @@ mod tests {
         dpb.add(HevcReferencePicture {
             poc: 0,
             luma: vec![128; 16],
+            cb: vec![128; 4],
+            cr: vec![128; 4],
             width: 4,
             height: 4,
             is_long_term: false,
@@ -720,6 +1368,8 @@ mod tests {
         dpb.add(HevcReferencePicture {
             poc: 2,
             luma: vec![200; 16],
+            cb: vec![128; 4],
+            cr: vec![128; 4],
             width: 4,
             height: 4,
             is_long_term: false,
@@ -737,7 +1387,9 @@ mod tests {
         for poc in 0..3 {
             dpb.add(HevcReferencePicture {
                 poc,
-                luma: vec![poc as u8; 16],
+                luma: vec![poc as u16; 16],
+                cb: vec![128u16; 4],
+                cr: vec![128u16; 4],
                 width: 4,
                 height: 4,
                 is_long_term: false,
@@ -748,6 +1400,8 @@ mod tests {
         dpb.add(HevcReferencePicture {
             poc: 5,
             luma: vec![5; 16],
+            cb: vec![128; 4],
+            cr: vec![128; 4],
             width: 4,
             height: 4,
             is_long_term: false,
@@ -764,6 +1418,8 @@ mod tests {
         dpb.add(HevcReferencePicture {
             poc: 10,
             luma: vec![0; 16],
+            cb: vec![128; 4],
+            cr: vec![128; 4],
             width: 4,
             height: 4,
             is_long_term: false,
@@ -771,6 +1427,8 @@ mod tests {
         dpb.add(HevcReferencePicture {
             poc: 20,
             luma: vec![0; 16],
+            cb: vec![128; 4],
+            cr: vec![128; 4],
             width: 4,
             height: 4,
             is_long_term: false,
@@ -788,6 +1446,8 @@ mod tests {
             dpb.add(HevcReferencePicture {
                 poc,
                 luma: vec![0; 16],
+                cb: vec![128; 4],
+                cr: vec![128; 4],
                 width: 4,
                 height: 4,
                 is_long_term: false,
@@ -837,7 +1497,9 @@ mod tests {
     fn make_ref_pic(w: usize, h: usize, val: u8) -> HevcReferencePicture {
         HevcReferencePicture {
             poc: 0,
-            luma: vec![val; w * h],
+            luma: vec![val as u16; w * h],
+            cb: vec![128u16; (w / 2) * (h / 2)],
+            cr: vec![128u16; (w / 2) * (h / 2)],
             width: w,
             height: h,
             is_long_term: false,
@@ -912,15 +1574,17 @@ mod tests {
         // Horizontal gradient: column c has value 10*c.
         let w = 32usize;
         let h = 16usize;
-        let mut luma = vec![0u8; w * h];
+        let mut luma = vec![0u16; w * h];
         for row in 0..h {
             for col in 0..w {
-                luma[row * w + col] = (col * 8).min(255) as u8;
+                luma[row * w + col] = (col * 8).min(255) as u16;
             }
         }
         let pic = HevcReferencePicture {
             poc: 0,
             luma,
+            cb: vec![128u16; (w / 2) * (h / 2)],
+            cr: vec![128u16; (w / 2) * (h / 2)],
             width: w,
             height: h,
             is_long_term: false,

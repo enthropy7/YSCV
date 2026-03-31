@@ -169,6 +169,10 @@ pub struct CodingUnitData {
     pub cbf_cr: bool,
     /// Transform coefficients (luma) in scan order, length = block_size^2.
     pub residual_luma: Vec<i16>,
+    /// Transform coefficients (Cb chroma) in scan order, length = (block_size/2)^2.
+    pub residual_cb: Vec<i16>,
+    /// Transform coefficients (Cr chroma) in scan order, length = (block_size/2)^2.
+    pub residual_cr: Vec<i16>,
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +232,9 @@ pub fn parse_coding_unit(
             cbf_luma: false,
             cbf_cb: false,
             cbf_cr: false,
-            residual_luma: vec![0; num_samples],
+            residual_luma: Vec::new(),
+            residual_cb: Vec::new(),
+            residual_cr: Vec::new(),
         };
     }
 
@@ -271,11 +277,49 @@ pub fn parse_coding_unit(
     let cbf_cr = parse_cbf_chroma(state, 0);
     let cbf_luma = parse_cbf_luma(state, 0);
 
-    // Residual coefficients (luma)
+    // Residual coefficients (luma) — skip Vec for uncoded blocks
     let residual_luma = if cbf_luma {
-        parse_transform_unit(state, log2_tu, true, pps.sign_data_hiding_enabled)
+        let mut tu_buf = vec![0i16; num_samples];
+        parse_transform_unit(
+            state,
+            log2_tu,
+            true,
+            pps.sign_data_hiding_enabled,
+            &mut tu_buf,
+        );
+        tu_buf
     } else {
-        vec![0; num_samples]
+        Vec::new()
+    };
+
+    // Chroma residual coefficients (half resolution for 4:2:0)
+    let chroma_log2_tu = log2_tu.saturating_sub(1).max(2); // min 4x4
+    let chroma_samples = (1usize << chroma_log2_tu) * (1usize << chroma_log2_tu);
+    let residual_cb = if cbf_cb {
+        let mut tu_buf = vec![0i16; chroma_samples];
+        parse_transform_unit(
+            state,
+            chroma_log2_tu,
+            false,
+            pps.sign_data_hiding_enabled,
+            &mut tu_buf,
+        );
+        tu_buf
+    } else {
+        Vec::new()
+    };
+    let residual_cr = if cbf_cr {
+        let mut tu_buf = vec![0i16; chroma_samples];
+        parse_transform_unit(
+            state,
+            chroma_log2_tu,
+            false,
+            pps.sign_data_hiding_enabled,
+            &mut tu_buf,
+        );
+        tu_buf
+    } else {
+        Vec::new()
     };
 
     CodingUnitData {
@@ -286,6 +330,8 @@ pub fn parse_coding_unit(
         cbf_cb,
         cbf_cr,
         residual_luma,
+        residual_cb,
+        residual_cr,
     }
 }
 
@@ -300,6 +346,7 @@ pub fn parse_coding_unit(
 ///
 /// The Most Probable Mode (MPM) list is constructed from DC, Planar, and
 /// Angular-26 as a simplified default (real spec uses neighbour modes).
+#[inline]
 fn parse_intra_mode_luma(state: &mut HevcSliceCabacState<'_>) -> u8 {
     let ctx_idx = CTX_PREV_INTRA_LUMA_PRED_FLAG;
     let prev_flag = state.cabac.decode_decision(&mut state.contexts[ctx_idx]);
@@ -415,6 +462,7 @@ fn parse_intra_chroma_pred_mode(state: &mut HevcSliceCabacState<'_>) -> u8 {
 /// Parse `cbf_luma` (ITU-T H.265, 7.3.8.11).
 ///
 /// Context index depends on the transform depth within the CU.
+#[inline]
 fn parse_cbf_luma(state: &mut HevcSliceCabacState<'_>, trafo_depth: u32) -> bool {
     let ctx_idx = CTX_CBF_LUMA + (trafo_depth.min(1) as usize);
     state.cabac.decode_decision(&mut state.contexts[ctx_idx])
@@ -423,6 +471,7 @@ fn parse_cbf_luma(state: &mut HevcSliceCabacState<'_>, trafo_depth: u32) -> bool
 /// Parse `cbf_cb` or `cbf_cr` (ITU-T H.265, 7.3.8.11).
 ///
 /// Contexts are shared between Cb and Cr; index depends on transform depth.
+#[inline]
 fn parse_cbf_chroma(state: &mut HevcSliceCabacState<'_>, trafo_depth: u32) -> bool {
     let ctx_idx = CTX_CBF_CB + (trafo_depth.min(3) as usize);
     state.cabac.decode_decision(&mut state.contexts[ctx_idx])
@@ -441,22 +490,30 @@ fn parse_cbf_chroma(state: &mut HevcSliceCabacState<'_>, trafo_depth: u32) -> bo
 ///
 /// Returns the dequantised coefficient array in raster order (row-major),
 /// with length `(1 << log2_tu_size)^2`.
+#[inline]
+#[allow(unsafe_code)]
 pub fn parse_transform_unit(
     state: &mut HevcSliceCabacState<'_>,
     log2_tu_size: u32,
     is_luma: bool,
     sign_data_hiding_enabled: bool,
-) -> Vec<i16> {
+    out_buf: &mut [i16],
+) {
     let tu_size = 1u32 << log2_tu_size;
     let num_coeffs = (tu_size * tu_size) as usize;
-    let mut coeffs = vec![0i16; num_coeffs];
+    debug_assert!(out_buf.len() >= num_coeffs);
+    // Zero only via pointer (avoids bounds check in fill)
+    unsafe {
+        std::ptr::write_bytes(out_buf.as_mut_ptr(), 0, num_coeffs);
+    }
+    let coeffs = &mut out_buf[..num_coeffs];
 
     // -- Last significant coefficient position ----------------------------
     let (last_x, last_y) = parse_last_sig_coeff_pos(state, log2_tu_size, is_luma);
 
     if last_x >= tu_size || last_y >= tu_size {
         // Out of bounds — treat as all-zero TU.
-        return coeffs;
+        return;
     }
 
     // -- Sub-block and coefficient scanning --------------------------------
@@ -470,9 +527,13 @@ pub fn parse_transform_unit(
     let last_sub_y = last_y >> log2_sub;
     let last_sub_scan = sub_pos_to_scan_idx(last_sub_x, last_sub_y, num_sub_x);
 
-    // Sub-block coded flags (all blocks up to and including last are
-    // potentially coded; the last sub-block is implicitly coded).
-    let mut sub_coded = vec![false; num_sub_total];
+    // Sub-block coded flags — zero only needed portion
+    let mut sub_coded_buf = [false; 256];
+    let n_sub = num_sub_total.min(256);
+    unsafe {
+        std::ptr::write_bytes(sub_coded_buf.as_mut_ptr(), 0, n_sub);
+    }
+    let sub_coded = &mut sub_coded_buf[..n_sub];
     if last_sub_scan < num_sub_total {
         sub_coded[last_sub_scan] = true; // last sub-block always coded
     }
@@ -518,7 +579,7 @@ pub fn parse_transform_unit(
         // Parse significance flags, levels, and signs for this sub-block
         parse_subblock_coeffs(
             state,
-            &mut coeffs,
+            coeffs,
             tu_size,
             base_x,
             base_y,
@@ -528,8 +589,6 @@ pub fn parse_transform_unit(
             sign_data_hiding_enabled,
         );
     }
-
-    coeffs
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +672,11 @@ fn parse_last_sig_coeff_prefix_suffix(
 // ---------------------------------------------------------------------------
 
 /// Parse significance flags, levels, and signs for one 4x4 sub-block.
-#[allow(clippy::too_many_arguments)]
+///
+/// # Safety
+/// Uses `get_unchecked` for performance — all indices are bounded by the
+/// scan range (0..=15) and verified by debug_assert.
+#[allow(unsafe_code, clippy::too_many_arguments)]
 fn parse_subblock_coeffs(
     state: &mut HevcSliceCabacState<'_>,
     coeffs: &mut [i16],
@@ -625,23 +688,40 @@ fn parse_subblock_coeffs(
     is_last_subblock: bool,
     sign_data_hiding_enabled: bool,
 ) {
-    // Step 1: significance flags
-    let mut sig = [false; 16];
+    debug_assert!(last_scan_pos <= 15);
+    debug_assert!(coeffs.len() >= (tu_size * tu_size) as usize);
+    debug_assert!(state.contexts.len() >= NUM_CABAC_CONTEXTS);
+
+    let last = last_scan_pos.min(15) as usize;
+    let sig_ctx_table = if is_luma {
+        &SIG_CTX_INC_LUMA
+    } else {
+        &SIG_CTX_INC_CHROMA
+    };
+
+    // Step 1: significance flags — unsafe unchecked indexing
+    let mut sig = [0u8; 16]; // 0/1 instead of bool for branchless math
     let mut num_sig = 0u32;
 
-    for scan_idx in (0..=last_scan_pos.min(15)).rev() {
-        if is_last_subblock && scan_idx == last_scan_pos {
-            // The last significant position is implicitly significant
-            sig[scan_idx as usize] = true;
-            num_sig += 1;
-            continue;
-        }
-        // Read sig_coeff_flag
-        let ctx_inc = sig_coeff_ctx_inc(scan_idx, is_luma);
-        let ctx_idx = (CTX_SIG_COEFF_FLAG + ctx_inc).min(state.contexts.len() - 1);
-        sig[scan_idx as usize] = state.cabac.decode_decision(&mut state.contexts[ctx_idx]);
-        if sig[scan_idx as usize] {
-            num_sig += 1;
+    unsafe {
+        let ctxs = state.contexts.as_mut_ptr();
+        let mut i = last;
+        loop {
+            if is_last_subblock && i == last {
+                *sig.get_unchecked_mut(i) = 1;
+                num_sig += 1;
+            } else {
+                let ctx_inc = *sig_ctx_table.get_unchecked(i) as usize;
+                let ctx_idx = CTX_SIG_COEFF_FLAG + ctx_inc;
+                let decided = state.cabac.decode_decision(&mut *ctxs.add(ctx_idx));
+                let s = decided as u8;
+                *sig.get_unchecked_mut(i) = s;
+                num_sig += s as u32;
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
     }
 
@@ -649,110 +729,117 @@ fn parse_subblock_coeffs(
         return;
     }
 
-    // Step 2: greater1 and greater2 flags (up to 8 coefficients per sub-block)
-    let mut greater1 = [false; 16];
-    let mut greater2 = [false; 16];
+    // Step 2: greater1 and greater2 flags
+    let mut greater1 = [0u8; 16];
+    let mut greater2 = [0u8; 16];
     let mut coeff_count = 0u32;
-    let max_greater1 = 8u32;
-
-    // Context set selection for greater1 (simplified)
     let ctx_set = if is_luma { 0usize } else { 12 };
 
-    for scan_idx in (0..=last_scan_pos.min(15)).rev() {
-        if !sig[scan_idx as usize] {
-            continue;
+    unsafe {
+        let ctxs = state.contexts.as_mut_ptr();
+        let mut i = last;
+        loop {
+            if *sig.get_unchecked(i) != 0 {
+                if coeff_count < 8 {
+                    let ctx_inc = ctx_set + (coeff_count as usize).min(3);
+                    let ctx_idx = CTX_COEFF_ABS_LEVEL_GREATER1 + ctx_inc;
+                    *greater1.get_unchecked_mut(i) =
+                        state.cabac.decode_decision(&mut *ctxs.add(ctx_idx)) as u8;
+                }
+                coeff_count += 1;
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
-        if coeff_count < max_greater1 {
-            let ctx_inc = ctx_set + (coeff_count as usize).min(3);
-            let ctx_idx = (CTX_COEFF_ABS_LEVEL_GREATER1 + ctx_inc).min(state.contexts.len() - 1);
-            greater1[scan_idx as usize] = state.cabac.decode_decision(&mut state.contexts[ctx_idx]);
-        }
-        coeff_count += 1;
     }
 
-    // greater2 flag: only for the first greater1 coefficient
-    let mut first_greater1_scan = None;
-    for scan_idx in (0..=last_scan_pos.min(15)).rev() {
-        if sig[scan_idx as usize] && greater1[scan_idx as usize] {
-            first_greater1_scan = Some(scan_idx);
-            break;
+    // greater2: only for the first coefficient with greater1=1
+    let mut first_g1: u32 = 16; // sentinel
+    unsafe {
+        let mut i = last;
+        loop {
+            if *sig.get_unchecked(i) != 0 && *greater1.get_unchecked(i) != 0 {
+                first_g1 = i as u32;
+                break;
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
-    }
-    if let Some(scan_idx) = first_greater1_scan {
-        let ctx_inc = if is_luma { 0usize } else { 3 };
-        let ctx_idx = (CTX_COEFF_ABS_LEVEL_GREATER2 + ctx_inc).min(state.contexts.len() - 1);
-        greater2[scan_idx as usize] = state.cabac.decode_decision(&mut state.contexts[ctx_idx]);
+        if first_g1 < 16 {
+            let ctx_inc = if is_luma { 0usize } else { 3 };
+            let ctx_idx = CTX_COEFF_ABS_LEVEL_GREATER2 + ctx_inc;
+            let ctxs = state.contexts.as_mut_ptr();
+            *greater2.get_unchecked_mut(first_g1 as usize) =
+                state.cabac.decode_decision(&mut *ctxs.add(ctx_idx)) as u8;
+        }
     }
 
     // Step 3: signs (bypass coded)
-    let mut signs = [false; 16];
-    let mut num_hidden = 0u32;
-    for scan_idx in (0..=last_scan_pos.min(15)).rev() {
-        if sig[scan_idx as usize] {
-            num_hidden += 1;
-            // Sign data hiding: last sign may be inferred
-            let hide = sign_data_hiding_enabled
-                && num_sig > 1
-                && scan_idx == 0
-                && last_scan_pos - scan_idx > 3;
-            if !hide {
-                signs[scan_idx as usize] = state.cabac.decode_bypass();
+    let mut signs = [0u8; 16]; // 0=positive, 1=negative
+    unsafe {
+        let mut hidden_count = 0u32;
+        let mut i = last;
+        loop {
+            if *sig.get_unchecked(i) != 0 {
+                hidden_count += 1;
+                let hide = sign_data_hiding_enabled && num_sig > 1 && i == 0 && last_scan_pos > 3;
+                if !hide {
+                    *signs.get_unchecked_mut(i) = state.cabac.decode_bypass() as u8;
+                }
             }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
+        let _ = hidden_count;
     }
 
-    // Step 4: remaining level (bypass-coded Exp-Golomb-Rice)
-    let mut abs_levels = [0i32; 16];
+    // Step 4: remaining levels + Step 5: write coefficients (fused loop)
     let mut rice_param = 0u32;
+    unsafe {
+        let coeff_ptr = coeffs.as_mut_ptr();
+        let mut i = last;
+        loop {
+            if *sig.get_unchecked(i) != 0 {
+                let g1 = *greater1.get_unchecked(i) as i32;
+                let g2 = *greater2.get_unchecked(i) as i32;
+                let base_level = 1 + g1 + g2;
 
-    for scan_idx in (0..=last_scan_pos.min(15)).rev() {
-        if !sig[scan_idx as usize] {
-            continue;
-        }
-        let mut base_level = 1i32;
-        if greater1[scan_idx as usize] {
-            base_level += 1;
-        }
-        if greater2[scan_idx as usize] {
-            base_level += 1;
-        }
+                let needs_remaining = g2 != 0 || (g1 != 0 && i as u32 != first_g1);
+                let remaining = if needs_remaining {
+                    decode_coeff_abs_level_remaining(state, rice_param) as i32
+                } else {
+                    0
+                };
 
-        // coeff_abs_level_remaining is coded if the level exceeds the base
-        let needs_remaining = greater2[scan_idx as usize]
-            || (greater1[scan_idx as usize] && first_greater1_scan != Some(scan_idx));
-        let remaining =
-            if needs_remaining || (greater1[scan_idx as usize] && greater2[scan_idx as usize]) {
-                decode_coeff_abs_level_remaining(state, rice_param)
-            } else if !greater1[scan_idx as usize] {
-                0
-            } else {
-                0
-            };
+                let abs_val = base_level + remaining;
 
-        let abs_val = base_level + remaining as i32;
-        abs_levels[scan_idx as usize] = abs_val;
+                // Update Rice parameter (branchless)
+                if abs_val > (3i32 << rice_param) {
+                    rice_param = (rice_param + 1).min(4);
+                }
 
-        // Update Rice parameter
-        if abs_val > (3i32 << rice_param) {
-            rice_param = (rice_param + 1).min(4);
-        }
-    }
-
-    // Ignore hidden sign count warning
-    let _ = num_hidden;
-
-    // Step 5: write coefficients to the output buffer
-    for scan_idx in 0..=last_scan_pos.min(15) {
-        if !sig[scan_idx as usize] {
-            continue;
-        }
-        let (lx, ly) = scan_to_local_pos(scan_idx);
-        let px = base_x + lx;
-        let py = base_y + ly;
-        if px < tu_size && py < tu_size {
-            let idx = (py * tu_size + px) as usize;
-            let val = abs_levels[scan_idx as usize] as i16;
-            coeffs[idx] = if signs[scan_idx as usize] { -val } else { val };
+                // Write coefficient — pre-computed scan→position table, branchless sign
+                let (lx, ly) = *SCAN_TO_XY.get_unchecked(i);
+                let px = base_x + lx as u32;
+                let py = base_y + ly as u32;
+                let idx = (py * tu_size + px) as usize;
+                // sign_mask: 0 for positive, -1 for negative
+                let sign = *signs.get_unchecked(i) as i16;
+                let val = abs_val as i16;
+                // Branchless: (val ^ -sign) + sign = negate if sign=1
+                let signed_val = (val ^ (-sign)) + sign;
+                *coeff_ptr.add(idx) = signed_val;
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
     }
 }
@@ -787,21 +874,7 @@ fn decode_coeff_abs_level_remaining(state: &mut HevcSliceCabacState<'_>, rice_pa
 // Scan-order helpers
 // ---------------------------------------------------------------------------
 
-/// Significance context increment for a given scan position within a 4x4
-/// sub-block. Simplified derivation from ITU-T H.265, Table 9-39.
-fn sig_coeff_ctx_inc(scan_idx: u32, is_luma: bool) -> usize {
-    let base = if is_luma { 0usize } else { 27 };
-    let inc = (scan_idx as usize).min(15);
-    // Map scan position to a context offset (simplified grouping)
-    let group = match inc {
-        0 => 0,
-        1..=4 => 1,
-        5..=8 => 2,
-        9..=12 => 3,
-        _ => 4,
-    };
-    base + group
-}
+// sig_coeff_ctx_inc replaced by pre-computed SIG_CTX_INC_LUMA/CHROMA tables
 
 /// Convert a sub-block scan index to raster (x, y) position within the
 /// sub-block grid.
@@ -853,25 +926,75 @@ fn sub_pos_to_scan_idx(sub_x: u32, sub_y: u32, num_sub_x: u32) -> usize {
     }
 }
 
+// Pre-computed scan→(x,y) table for 4x4 diagonal scan (avoids division per coeff)
+static SCAN_TO_XY: [(u8, u8); 16] = {
+    let mut t = [(0u8, 0u8); 16];
+    let mut i = 0;
+    while i < 16 {
+        let raster = SCAN_ORDER_4X4_DIAG[i];
+        t[i] = (raster % 4, raster / 4);
+        i += 1;
+    }
+    t
+};
+
+// Pre-computed raster→scan reverse lookup (avoids linear search)
+static RASTER_TO_SCAN: [u8; 16] = {
+    let mut t = [0u8; 16];
+    let mut i = 0;
+    while i < 16 {
+        t[SCAN_ORDER_4X4_DIAG[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+};
+
+// Pre-computed sig_coeff context increment table (avoids match per coeff)
+// Index: scan_idx (0-15), luma offset=0, chroma offset=27
+static SIG_CTX_INC_LUMA: [u8; 16] = {
+    let mut t = [0u8; 16];
+    let mut i = 0u8;
+    while i < 16 {
+        t[i as usize] = match i {
+            0 => 0,
+            1..=4 => 1,
+            5..=8 => 2,
+            9..=12 => 3,
+            _ => 4,
+        };
+        i += 1;
+    }
+    t
+};
+static SIG_CTX_INC_CHROMA: [u8; 16] = {
+    let mut t = [0u8; 16];
+    let mut i = 0u8;
+    while i < 16 {
+        t[i as usize] = 27
+            + match i {
+                0 => 0,
+                1..=4 => 1,
+                5..=8 => 2,
+                9..=12 => 3,
+                _ => 4,
+            };
+        i += 1;
+    }
+    t
+};
+
 /// Convert a scan index within a 4x4 sub-block to local (x, y) position.
+#[inline(always)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn scan_to_local_pos(scan_idx: u32) -> (u32, u32) {
-    let idx = if (scan_idx as usize) < 16 {
-        SCAN_ORDER_4X4_DIAG[scan_idx as usize] as u32
-    } else {
-        scan_idx
-    };
-    (idx % 4, idx / 4)
+    let (x, y) = SCAN_TO_XY[scan_idx as usize & 15];
+    (x as u32, y as u32)
 }
 
 /// Convert a local (x, y) within a 4x4 sub-block to a scan index.
+#[inline(always)]
 fn local_pos_to_scan_idx(lx: u32, ly: u32) -> u32 {
-    let raster = ly * 4 + lx;
-    for (i, &s) in SCAN_ORDER_4X4_DIAG.iter().enumerate() {
-        if s as u32 == raster {
-            return i as u32;
-        }
-    }
-    raster
+    RASTER_TO_SCAN[(ly * 4 + lx) as usize & 15] as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -882,6 +1005,7 @@ fn local_pos_to_scan_idx(lx: u32, ly: u32) -> u32 {
 ///
 /// This replaces the stub `decode_coding_tree` in `hevc_decoder.rs` with
 /// actual CABAC-driven split decisions and CU parsing.
+#[allow(unsafe_code)]
 pub fn decode_coding_tree_cabac(
     state: &mut HevcSliceCabacState<'_>,
     x: usize,
@@ -986,12 +1110,29 @@ pub fn decode_coding_tree_cabac(
         let actual_w = cu_size.min(pic_width.saturating_sub(x));
         let actual_h = cu_size.min(pic_height.saturating_sub(y));
 
-        // Intra prediction (from reconstructed neighbours in recon_luma)
-        let mut pred = vec![0i16; cu_size * cu_size];
+        // Intra prediction — zero only the used portion via unsafe
+        let mut pred_buf = [0i16; 64 * 64];
+        let n = cu_size * cu_size;
+        unsafe {
+            std::ptr::write_bytes(pred_buf.as_mut_ptr(), 0, n);
+        }
+        let pred = &mut pred_buf[..n];
         if cu_data.pred_mode == HevcPredMode::Intra {
-            // Build top and left reference samples
-            let top = build_top_ref(recon_luma, x, y, cu_size, pic_width);
-            let left = build_left_ref(recon_luma, x, y, cu_size, pic_width, pic_height);
+            // Build top and left reference samples (stack buffers, no heap)
+            let mut top_buf = [128i16; 64];
+            let mut left_buf = [128i16; 64];
+            build_top_ref(recon_luma, x, y, cu_size, pic_width, &mut top_buf);
+            build_left_ref(
+                recon_luma,
+                x,
+                y,
+                cu_size,
+                pic_width,
+                pic_height,
+                &mut left_buf,
+            );
+            let top = &top_buf[..cu_size];
+            let left = &left_buf[..cu_size];
 
             match cu_data.intra_mode_luma {
                 0 => {
@@ -1006,23 +1147,23 @@ pub fn decode_coding_tree_cabac(
                         *left.last().unwrap_or(&128)
                     };
                     super::hevc_decoder::intra_predict_planar(
-                        &top,
-                        &left,
+                        top,
+                        left,
                         top_right,
                         bottom_left,
                         cu_size,
-                        &mut pred,
+                        pred,
                     );
                 }
                 1 => {
-                    super::hevc_decoder::intra_predict_dc(&top, &left, cu_size, &mut pred);
+                    super::hevc_decoder::intra_predict_dc(top, left, cu_size, pred);
                 }
                 m @ 2..=34 => {
-                    super::hevc_decoder::intra_predict_angular(&top, &left, m, cu_size, &mut pred);
+                    super::hevc_decoder::intra_predict_angular(top, left, m, cu_size, pred);
                 }
                 _ => {
                     // Fallback DC
-                    super::hevc_decoder::intra_predict_dc(&top, &left, cu_size, &mut pred);
+                    super::hevc_decoder::intra_predict_dc(top, left, cu_size, pred);
                 }
             }
         } else {
@@ -1056,7 +1197,7 @@ pub fn decode_coding_tree_cabac(
                     inter_mv.mv[0],
                     cu_size,
                     cu_size,
-                    &mut pred,
+                    pred,
                 );
             } else {
                 // No reference available — fall back to mid-grey
@@ -1066,25 +1207,36 @@ pub fn decode_coding_tree_cabac(
             }
         }
 
-        // Add residual to prediction
-        let mut recon = vec![0i16; cu_size * cu_size];
-        for i in 0..cu_size * cu_size {
-            let r = if i < cu_data.residual_luma.len() {
-                cu_data.residual_luma[i] as i32
-            } else {
-                0
-            };
-            let max_val = (1i32 << sps.bit_depth_luma) - 1; // 255 for 8-bit, 1023 for 10-bit
-            recon[i] = (pred[i] as i32 + r).clamp(0, max_val) as i16;
-        }
+        // Add residual to prediction — write directly to recon_luma (skip temp buffer)
+        let max_val = (1i32 << sps.bit_depth_luma) - 1;
+        let has_residual = !cu_data.residual_luma.is_empty();
+        let residual_ptr = cu_data.residual_luma.as_ptr();
+        let residual_len = cu_data.residual_luma.len();
 
-        // Write reconstructed samples back to the picture buffer
-        for row in 0..actual_h {
-            for col in 0..actual_w {
+        // Fused reconstruct + writeback: write directly to picture buffer
+        #[allow(unsafe_code)]
+        unsafe {
+            let recon_ptr = recon_luma.as_mut_ptr();
+            for row in 0..actual_h {
                 let py = y + row;
-                let px = x + col;
-                if py < pic_height && px < pic_width {
-                    recon_luma[py * pic_width + px] = recon[row * cu_size + col];
+                if py >= pic_height {
+                    break;
+                }
+                let dst_base = py * pic_width + x;
+                let src_base = row * cu_size;
+                for col in 0..actual_w {
+                    let px = x + col;
+                    if px >= pic_width {
+                        break;
+                    }
+                    let i = src_base + col;
+                    let p = *pred.get_unchecked(i) as i32;
+                    let r = if has_residual && i < residual_len {
+                        *residual_ptr.add(i) as i32
+                    } else {
+                        0
+                    };
+                    *recon_ptr.add(dst_base + col) = (p + r).clamp(0, max_val) as i16;
                 }
             }
         }
@@ -1094,7 +1246,6 @@ pub fn decode_coding_tree_cabac(
             y,
             size: cu_size,
             pred_mode: cu_data.pred_mode,
-            recon_luma: recon,
         });
     }
 }
@@ -1104,26 +1255,31 @@ pub fn decode_coding_tree_cabac(
 // ---------------------------------------------------------------------------
 
 /// Build the top reference row for intra prediction.
+#[inline]
 fn build_top_ref(
     recon: &[i16],
     x: usize,
     y: usize,
     block_size: usize,
     pic_width: usize,
-) -> Vec<i16> {
-    let mut top = vec![128i16; block_size];
-    if y > 0 {
+    out: &mut [i16],
+) {
+    out[..block_size].fill(128);
+    if y > 0 && x + block_size <= pic_width {
+        let src = (y - 1) * pic_width + x;
+        out[..block_size].copy_from_slice(&recon[src..src + block_size]);
+    } else if y > 0 {
         for i in 0..block_size {
             let px = x + i;
             if px < pic_width {
-                top[i] = recon[(y - 1) * pic_width + px];
+                out[i] = recon[(y - 1) * pic_width + px];
             }
         }
     }
-    top
 }
 
 /// Build the left reference column for intra prediction.
+#[inline]
 fn build_left_ref(
     recon: &[i16],
     x: usize,
@@ -1131,17 +1287,17 @@ fn build_left_ref(
     block_size: usize,
     pic_width: usize,
     pic_height: usize,
-) -> Vec<i16> {
-    let mut left = vec![128i16; block_size];
+    out: &mut [i16],
+) {
+    out[..block_size].fill(128);
     if x > 0 {
         for i in 0..block_size {
             let py = y + i;
             if py < pic_height {
-                left[i] = recon[py * pic_width + x - 1];
+                out[i] = recon[py * pic_width + x - 1];
             }
         }
     }
-    left
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,20 +1470,19 @@ mod tests {
 
     #[test]
     fn parse_tu_all_zero_stream() {
-        // An all-zero stream should produce near-zero coefficients
-        // (the last_sig_coeff position will be small or zero).
         let data = [0x00u8; 64];
         let mut state = make_state(&data);
-        let coeffs = parse_transform_unit(&mut state, 2, true, false);
+        let mut coeffs = [0i16; 16];
+        parse_transform_unit(&mut state, 2, true, false, &mut coeffs);
         assert_eq!(coeffs.len(), 16); // 4x4
     }
 
     #[test]
     fn parse_tu_all_ones_stream() {
-        // An all-ones stream exercises the "prefix keeps incrementing" path.
         let data = [0xFFu8; 128];
         let mut state = make_state(&data);
-        let coeffs = parse_transform_unit(&mut state, 2, true, false);
+        let mut coeffs = [0i16; 16];
+        parse_transform_unit(&mut state, 2, true, false, &mut coeffs);
         assert_eq!(coeffs.len(), 16);
     }
 
@@ -1335,7 +1490,8 @@ mod tests {
     fn parse_tu_8x8_size() {
         let data = [0x55u8; 128];
         let mut state = make_state(&data);
-        let coeffs = parse_transform_unit(&mut state, 3, true, false);
+        let mut coeffs = [0i16; 64];
+        parse_transform_unit(&mut state, 3, true, false, &mut coeffs);
         assert_eq!(coeffs.len(), 64); // 8x8
     }
 
@@ -1343,7 +1499,8 @@ mod tests {
     fn parse_tu_chroma() {
         let data = [0xAAu8; 64];
         let mut state = make_state(&data);
-        let coeffs = parse_transform_unit(&mut state, 2, false, false);
+        let mut coeffs = [0i16; 16];
+        parse_transform_unit(&mut state, 2, false, false, &mut coeffs);
         assert_eq!(coeffs.len(), 16);
     }
 

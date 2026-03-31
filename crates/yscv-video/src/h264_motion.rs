@@ -94,6 +94,58 @@ pub fn motion_compensate_16x16(
     }
 }
 
+/// Generic block-size motion compensation for sub-partitions (16x8, 8x16, 8x8, etc.).
+#[allow(clippy::too_many_arguments)]
+pub fn motion_compensate_block(
+    reference: &[u8],
+    ref_width: usize,
+    ref_height: usize,
+    mv: MotionVector,
+    block_x: usize,
+    block_y: usize,
+    block_w: usize,
+    block_h: usize,
+    output: &mut [u8],
+    out_width: usize,
+) {
+    let src_x = block_x as i32 + mv.dx as i32;
+    let src_y = block_y as i32 + mv.dy as i32;
+    let ref_w = ref_width as i32;
+    let ref_h = ref_height as i32;
+
+    // Fast path: entire block in-bounds
+    if src_x >= 0
+        && src_x + block_w as i32 <= ref_w
+        && src_y >= 0
+        && src_y + block_h as i32 <= ref_h
+    {
+        let sx = src_x as usize;
+        let sy = src_y as usize;
+        for row in 0..block_h {
+            let dst_start = (block_y + row) * out_width + block_x;
+            let src_start = (sy + row) * ref_width + sx;
+            if dst_start + block_w <= output.len() && src_start + block_w <= reference.len() {
+                output[dst_start..dst_start + block_w]
+                    .copy_from_slice(&reference[src_start..src_start + block_w]);
+            }
+        }
+        return;
+    }
+
+    // Slow path: per-pixel with clamping
+    for row in 0..block_h {
+        let sy = (src_y + row as i32).clamp(0, ref_h - 1) as usize;
+        for col in 0..block_w {
+            let sx = (src_x + col as i32).clamp(0, ref_w - 1) as usize;
+            let dst_idx = (block_y + row) * out_width + block_x + col;
+            let src_idx = sy * ref_width + sx;
+            if dst_idx < output.len() && src_idx < reference.len() {
+                output[dst_idx] = reference[src_idx];
+            }
+        }
+    }
+}
+
 /// Apply half-pel interpolation for sub-pixel motion vectors.
 ///
 /// Motion vectors are in quarter-pel units. Integer-pel positions are copied

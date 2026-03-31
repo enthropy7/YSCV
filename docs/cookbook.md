@@ -667,18 +667,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 The decoder handles:
-- **MP4 container**: avcC/hvcC parameter set extraction, stbl/stco/stsz sample table navigation, interleaved audio/video demuxing
-- **H.264**: Baseline (CAVLC), Main (CABAC), High (CABAC + 8x8 transform), I/P/B slices, deblocking filter, SIMD IDCT (NEON + SSE2)
-- **HEVC**: Main, Main10 (10-bit), I/P/B slices, CABAC, deblocking + SAO, CTU quad-tree
+- **MP4 container**: avcC/hvcC parameter set extraction, stbl/stco/stsz sample table navigation
+- **MKV/WebM container**: EBML demuxer with track/cluster parsing
+- **H.264**: Baseline (CAVLC), Main (CABAC), High (CABAC + 8x8 transform), I/P/B slices, weighted prediction, sub-MB partitions, deblocking, SIMD IDCT (NEON + SSE2)
+- **HEVC**: Main, Main10 (10-bit, u16 DPB), I/P/B slices, branchless CABAC, BS=0 deblock skip, SAO, CTU quad-tree, tiles parsing, chroma residual
+- **SIMD**: 29 NEON blocks (aarch64) + 31 SSE2 blocks (x86_64) — full cross-architecture coverage
+- **Annex B**: raw H.264/HEVC stream parser
 
-Performance (Apple M1, single-threaded, vs ffmpeg `-threads 1`):
+Performance (Apple M-series, single-threaded, vs ffmpeg `-threads 1`, best of 5):
 
 | Video | yscv | ffmpeg | Speedup |
 |-------|------|--------|---------|
-| Real camera H.264 1080p60 (1100 frames) | 1179ms | 5336ms | **4.5×** |
-| H.264 Main B-frames 480p | 24ms | 96ms | **4.0×** |
-| H.264 High CABAC 4K | 62ms | 247ms | **4.0×** |
-| HEVC Main10 10-bit 720p | 316ms | 257ms | **0.8×** |
+| H.264 Baseline 1080p (300 frames) | 302ms | 509ms | **1.68×** |
+| H.264 High 1080p (300 frames) | 315ms | 750ms | **2.38×** |
+| Real camera H.264 1080p60 (1100 frames) | 1195ms | 5332ms | **4.46×** |
+| **HEVC Main 1080p P/B (300 frames)** | **480ms** | **811ms** | **1.68×** |
+| **HEVC Main 1080p P/B (600 frames)** | **1114ms** | **1797ms** | **1.61×** |
+| HEVC Main 1080p I-only (180 frames) | 1486ms | 1487ms | **1.00×** |
+
+Luma-only mode (`--luma-only`, pure decode without post-processing):
+
+| Video | yscv | ffmpeg | Speedup |
+|-------|------|--------|---------|
+| HEVC P/B 5s | 371ms | 811ms | **2.18×** |
+| HEVC P/B 10s | 823ms | 1797ms | **2.18×** |
 
 ### Camera capture (requires `native-camera` feature)
 
@@ -803,16 +815,17 @@ python benchmarks/python/bench_kernels.py   # vs PyTorch
 python benchmarks/python/bench_opencv.py    # vs OpenCV
 ```
 
-### Current numbers (Apple M1)
+### Current numbers (Apple M-series, March 2026)
 
 | What | yscv | Competitor | Speedup |
 |------|------|-----------|---------|
 | YOLOv8n CPU | **30.4ms** | onnxruntime 37.4ms | **1.2x** |
 | YOLOv8n MPSGraph | **3.5ms** | CoreML 15.5ms | **4.4x** |
 | YOLO11n CPU | **33.7ms** | onnxruntime 35.2ms* | **1.0x** |
-| H.264 decode 1080p60 (1100 frames) | **1213ms** | ffmpeg 5348ms | **4.4x** |
-| H.264 LowBR 480p | **23ms** | ffmpeg 77ms | **3.3x** |
-| H.264 CABAC 4K | **59ms** | ffmpeg 233ms | **3.9x** |
+| H.264 decode 1080p60 (1100 frames) | **1195ms** | ffmpeg 5332ms | **4.5x** |
+| H.264 High 1080p (300 frames) | **315ms** | ffmpeg 750ms | **2.4x** |
+| **HEVC 1080p P/B (300 frames)** | **480ms** | **ffmpeg 811ms** | **1.7x** |
+| **HEVC 1080p P/B (600 frames)** | **1114ms** | **ffmpeg 1797ms** | **1.6x** |
 | sigmoid 921K | 0.217ms | PyTorch 1.296ms | **6.0x** |
 | resize nearest u8 | 0.048ms | OpenCV 0.157ms | **3.3x** |
 | detect+track pipeline | 0.067ms | — | 15,000 FPS |

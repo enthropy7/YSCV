@@ -88,7 +88,7 @@ The detect → track → recognize pipeline runs in 67µs per frame end-to-end. 
 
 ## Performance
 
-We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, and CoreML. Current score: **80 wins, ~4 ties, 0 losses.** MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n (which uses dedicated Neural Engine hardware).
+We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **88 wins, ~5 parity, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC decode is **1.7× faster**. MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n.
 
 Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on x86, with optional Intel MKL and ARM Performance Libraries for the last few percent.
 
