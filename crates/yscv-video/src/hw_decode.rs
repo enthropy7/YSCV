@@ -381,11 +381,7 @@ pub mod videotoolbox {
                 9, // kCFNumberSInt32Type
                 &pixel_fmt as *const u32 as *const c_void,
             );
-            CFDictionarySetValue(
-                attrs,
-                kCVPixelBufferPixelFormatTypeKey,
-                fmt_num,
-            );
+            CFDictionarySetValue(attrs, kCVPixelBufferPixelFormatTypeKey, fmt_num);
 
             let callback = VTDecompressionOutputCallbackRecord {
                 callback: decode_callback,
@@ -590,13 +586,7 @@ pub mod videotoolbox {
 
     /// Convert BGRA (from VT GPU output) to RGB8.
     /// NEON: deinterleave 16 pixels at a time via vld4/vst3.
-    unsafe fn bgra_to_rgb(
-        bgra_ptr: *const u8,
-        stride: usize,
-        w: usize,
-        h: usize,
-        rgb: &mut [u8],
-    ) {
+    unsafe fn bgra_to_rgb(bgra_ptr: *const u8, stride: usize, w: usize, h: usize, rgb: &mut [u8]) {
         for row in 0..h {
             let src = bgra_ptr.add(row * stride);
             let dst = &mut rgb[row * w * 3..(row + 1) * w * 3];

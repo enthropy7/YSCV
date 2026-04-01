@@ -869,7 +869,7 @@ impl GpuBackend {
     }
 
     /// Read an f16 GPU buffer back as f32 Vec.
-    pub fn read_buf_f16(&self, buffer: &wgpu::Buffer, len: usize) -> Vec<f32> {
+    pub fn read_buf_f16(&self, buffer: &wgpu::Buffer, len: usize) -> Result<Vec<f32>, KernelError> {
         let size = (len * 2) as u64;
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -899,14 +899,20 @@ impl GpuBackend {
             submission_index: None,
             timeout: None,
         });
-        rx.recv().expect("channel closed").expect("GPU map failed");
+        rx.recv()
+            .map_err(|_| KernelError::Gpu {
+                message: "GPU channel closed during f16 read-back".into(),
+            })?
+            .map_err(|e| KernelError::Gpu {
+                message: format!("GPU map failed during f16 read-back: {e}"),
+            })?;
 
         let mapped = slice.get_mapped_range();
         let u16_data: &[u16] = bytemuck::cast_slice(&mapped);
         let result: Vec<f32> = u16_data.iter().map(|&bits| f16_bits_to_f32(bits)).collect();
         drop(mapped);
         staging.unmap();
-        result
+        Ok(result)
     }
 
     /// Returns a buffer to the output pool (f16: 2 bytes per element).
@@ -966,9 +972,9 @@ impl GpuBackend {
     }
 
     /// Download a GPU buffer back to a CPU tensor.
-    pub fn download(&self, buf: &GpuBuffer) -> Tensor {
-        let data = self.read_buf(&buf.buffer, buf.size);
-        Tensor::from_vec(buf.shape.clone(), data).expect("shape matches data")
+    pub fn download(&self, buf: &GpuBuffer) -> Result<Tensor, KernelError> {
+        let data = self.read_buf(&buf.buffer, buf.size)?;
+        Tensor::from_vec(buf.shape.clone(), data).map_err(Into::into)
     }
 
     /// Run a shader with GPU-resident inputs, producing a GPU-resident output.
@@ -1112,12 +1118,14 @@ impl GpuBackend {
         b: &wgpu::Buffer,
         len: usize,
         op: u32,
-    ) -> wgpu::Buffer {
+    ) -> Result<wgpu::Buffer, KernelError> {
         let pipeline = self
             .pipelines
             .elementwise_f16
             .as_ref()
-            .expect("f16 not available");
+            .ok_or_else(|| KernelError::Gpu {
+                message: "f16 elementwise pipeline not available on this device".into(),
+            })?;
         let len4 = len.div_ceil(4);
         let buf_out = self.output_buf_f16(len4 * 4);
         let params: [u32; 2] = [len4 as u32, op];
@@ -1148,16 +1156,23 @@ impl GpuBackend {
         });
 
         self.record_compute(pipeline, &bg, (div_ceil(len4 as u32, 256), 1, 1));
-        buf_out
+        Ok(buf_out)
     }
 
     /// Unary op on f16 device buffers.
-    fn gpu_unary_f16_on_device(&self, a: &wgpu::Buffer, len: usize, op: u32) -> wgpu::Buffer {
+    fn gpu_unary_f16_on_device(
+        &self,
+        a: &wgpu::Buffer,
+        len: usize,
+        op: u32,
+    ) -> Result<wgpu::Buffer, KernelError> {
         let pipeline = self
             .pipelines
             .unary_f16
             .as_ref()
-            .expect("f16 not available");
+            .ok_or_else(|| KernelError::Gpu {
+                message: "f16 unary pipeline not available on this device".into(),
+            })?;
         let len4 = len.div_ceil(4);
         let buf_out = self.output_buf_f16(len4 * 4);
         let params: [u32; 2] = [len4 as u32, op];
@@ -1184,16 +1199,21 @@ impl GpuBackend {
         });
 
         self.record_compute(pipeline, &bg, (div_ceil(len4 as u32, 256), 1, 1));
-        buf_out
+        Ok(buf_out)
     }
 
     /// Convert an f32 buffer to f16 on device.
-    pub fn convert_f32_to_f16_on_device(&self, input: &GpuBuffer) -> GpuBuffer {
-        let pipeline = self
-            .pipelines
-            .convert_f32_to_f16
-            .as_ref()
-            .expect("f16 not available");
+    pub fn convert_f32_to_f16_on_device(
+        &self,
+        input: &GpuBuffer,
+    ) -> Result<GpuBuffer, KernelError> {
+        let pipeline =
+            self.pipelines
+                .convert_f32_to_f16
+                .as_ref()
+                .ok_or_else(|| KernelError::Gpu {
+                    message: "f16 conversion pipeline not available on this device".into(),
+                })?;
         let len = input.size;
         let buf_out = self.output_buf_f16(len);
         let params: [u32; 2] = [len as u32, 0];
@@ -1220,20 +1240,25 @@ impl GpuBackend {
         });
 
         self.record_compute(pipeline, &bg, (div_ceil(len as u32, 256), 1, 1));
-        GpuBuffer {
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: len,
             shape: input.shape.clone(),
-        }
+        })
     }
 
     /// Convert an f16 storage buffer to f32 on device.
-    pub fn convert_f16_to_f32_on_device(&self, input: &GpuBuffer) -> GpuBuffer {
-        let pipeline = self
-            .pipelines
-            .convert_f16_to_f32
-            .as_ref()
-            .expect("f16 not available");
+    pub fn convert_f16_to_f32_on_device(
+        &self,
+        input: &GpuBuffer,
+    ) -> Result<GpuBuffer, KernelError> {
+        let pipeline =
+            self.pipelines
+                .convert_f16_to_f32
+                .as_ref()
+                .ok_or_else(|| KernelError::Gpu {
+                    message: "f16 conversion pipeline not available on this device".into(),
+                })?;
         let len = input.size;
         let buf_out = self.output_buf(len); // f32 output = 4 bytes/elem
         let params: [u32; 2] = [len as u32, 0];
@@ -1260,14 +1285,14 @@ impl GpuBackend {
         });
 
         self.record_compute(pipeline, &bg, (div_ceil(len as u32, 256), 1, 1));
-        GpuBuffer {
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: len,
             shape: input.shape.clone(),
-        }
+        })
     }
 
-    fn read_buf(&self, buffer: &wgpu::Buffer, len: usize) -> Vec<f32> {
+    fn read_buf(&self, buffer: &wgpu::Buffer, len: usize) -> Result<Vec<f32>, KernelError> {
         let size = (len * 4) as u64;
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1299,18 +1324,30 @@ impl GpuBackend {
             submission_index: None,
             timeout: None,
         });
-        rx.recv().expect("channel closed").expect("GPU map failed");
+        rx.recv()
+            .map_err(|_| KernelError::Gpu {
+                message: "GPU channel closed during read-back".into(),
+            })?
+            .map_err(|e| KernelError::Gpu {
+                message: format!("GPU map failed during read-back: {e}"),
+            })?;
 
         let mapped = slice.get_mapped_range();
         let result: Vec<f32> = bytemuck::cast_slice(&mapped).to_vec();
         drop(mapped);
         staging.unmap();
-        result
+        Ok(result)
     }
 
     // ── Dispatch helpers ───────────────────────────────────────────
 
-    fn dispatch_elementwise(&self, a: &[f32], b: &[f32], len: usize, op: u32) -> Vec<f32> {
+    fn dispatch_elementwise(
+        &self,
+        a: &[f32],
+        b: &[f32],
+        len: usize,
+        op: u32,
+    ) -> Result<Vec<f32>, KernelError> {
         let len4 = len.div_ceil(4);
         let mut pa = a.to_vec();
         pa.resize(len4 * 4, 0.0);
@@ -1351,9 +1388,9 @@ impl GpuBackend {
             &bg,
             (div_ceil(len4 as u32, 256), 1, 1),
         );
-        let mut result = self.read_buf(&buf_out, len4 * 4);
+        let mut result = self.read_buf(&buf_out, len4 * 4)?;
         result.truncate(len);
-        result
+        Ok(result)
     }
 
     fn dispatch_backward_binary(
@@ -1362,7 +1399,7 @@ impl GpuBackend {
         forward_val: &[f32],
         len: usize,
         op: u32,
-    ) -> Vec<f32> {
+    ) -> Result<Vec<f32>, KernelError> {
         let buf_up = self.storage_buf(upstream);
         let buf_fv = self.storage_buf(forward_val);
         let buf_out = self.output_buf(len);
@@ -1401,7 +1438,11 @@ impl GpuBackend {
         self.read_buf(&buf_out, len)
     }
 
-    fn dispatch_reduce_sum_backward(&self, upstream: &[f32], output_len: usize) -> Vec<f32> {
+    fn dispatch_reduce_sum_backward(
+        &self,
+        upstream: &[f32],
+        output_len: usize,
+    ) -> Result<Vec<f32>, KernelError> {
         let buf_up = self.storage_buf(upstream);
         let buf_out = self.output_buf(output_len);
         let params: [u32; 2] = [output_len as u32, 0];
@@ -1435,7 +1476,7 @@ impl GpuBackend {
         self.read_buf(&buf_out, output_len)
     }
 
-    fn dispatch_unary(&self, a: &[f32], len: usize, op: u32) -> Vec<f32> {
+    fn dispatch_unary(&self, a: &[f32], len: usize, op: u32) -> Result<Vec<f32>, KernelError> {
         // Pad input to vec4 boundary for the vec4 shader
         let len4 = len.div_ceil(4);
         let mut padded = a.to_vec();
@@ -1470,9 +1511,9 @@ impl GpuBackend {
             &bg,
             (div_ceil(len4 as u32, 256), 1, 1),
         );
-        let mut result = self.read_buf(&buf_out, len4 * 4);
+        let mut result = self.read_buf(&buf_out, len4 * 4)?;
         result.truncate(len);
-        result
+        Ok(result)
     }
 
     // ── Public on-device operations (no read-back) ────────────────
@@ -1578,55 +1619,63 @@ impl GpuBackend {
     // ── f16 I/O public dispatch methods ───────────────────────────────
 
     /// ReLU on f16 device buffer (op=0).
-    pub fn relu_f16_on_device(&self, input: &GpuBuffer) -> GpuBuffer {
-        let out = self.gpu_unary_f16_on_device(&input.buffer, input.size, 0);
-        GpuBuffer {
+    pub fn relu_f16_on_device(&self, input: &GpuBuffer) -> Result<GpuBuffer, KernelError> {
+        let out = self.gpu_unary_f16_on_device(&input.buffer, input.size, 0)?;
+        Ok(GpuBuffer {
             buffer: out,
             size: input.size,
             shape: input.shape.clone(),
-        }
+        })
     }
 
     /// Sigmoid on f16 device buffer (op=1).
-    pub fn sigmoid_f16_on_device(&self, input: &GpuBuffer) -> GpuBuffer {
-        let out = self.gpu_unary_f16_on_device(&input.buffer, input.size, 1);
-        GpuBuffer {
+    pub fn sigmoid_f16_on_device(&self, input: &GpuBuffer) -> Result<GpuBuffer, KernelError> {
+        let out = self.gpu_unary_f16_on_device(&input.buffer, input.size, 1)?;
+        Ok(GpuBuffer {
             buffer: out,
             size: input.size,
             shape: input.shape.clone(),
-        }
+        })
     }
 
     /// SiLU on f16 device buffer (op=4).
-    pub fn silu_f16_on_device(&self, input: &GpuBuffer) -> GpuBuffer {
-        let out = self.gpu_unary_f16_on_device(&input.buffer, input.size, 4);
-        GpuBuffer {
+    pub fn silu_f16_on_device(&self, input: &GpuBuffer) -> Result<GpuBuffer, KernelError> {
+        let out = self.gpu_unary_f16_on_device(&input.buffer, input.size, 4)?;
+        Ok(GpuBuffer {
             buffer: out,
             size: input.size,
             shape: input.shape.clone(),
-        }
+        })
     }
 
     /// Add on f16 device buffers (op=0).
-    pub fn add_f16_on_device(&self, a: &GpuBuffer, b: &GpuBuffer) -> GpuBuffer {
+    pub fn add_f16_on_device(
+        &self,
+        a: &GpuBuffer,
+        b: &GpuBuffer,
+    ) -> Result<GpuBuffer, KernelError> {
         let len = a.size;
-        let out = self.gpu_elementwise_f16_on_device(&a.buffer, &b.buffer, len, 0);
-        GpuBuffer {
+        let out = self.gpu_elementwise_f16_on_device(&a.buffer, &b.buffer, len, 0)?;
+        Ok(GpuBuffer {
             buffer: out,
             size: len,
             shape: a.shape.clone(),
-        }
+        })
     }
 
     /// Mul on f16 device buffers (op=2).
-    pub fn mul_f16_on_device(&self, a: &GpuBuffer, b: &GpuBuffer) -> GpuBuffer {
+    pub fn mul_f16_on_device(
+        &self,
+        a: &GpuBuffer,
+        b: &GpuBuffer,
+    ) -> Result<GpuBuffer, KernelError> {
         let len = a.size;
-        let out = self.gpu_elementwise_f16_on_device(&a.buffer, &b.buffer, len, 2);
-        GpuBuffer {
+        let out = self.gpu_elementwise_f16_on_device(&a.buffer, &b.buffer, len, 2)?;
+        Ok(GpuBuffer {
             buffer: out,
             size: len,
             shape: a.shape.clone(),
-        }
+        })
     }
 
     /// Conv2D on f16 I/O buffers: input [NHWC] and weight are f16, bias is f32, output is f16.
@@ -1639,7 +1688,7 @@ impl GpuBackend {
         stride_w: usize,
         pads: [usize; 4],
         act: u32,
-    ) -> GpuBuffer {
+    ) -> Result<GpuBuffer, KernelError> {
         let (n, ih, iw, ic) = (
             input.shape[0],
             input.shape[1],
@@ -1705,7 +1754,9 @@ impl GpuBackend {
                 self.pipelines
                     .conv_gemm_f16_io_n32
                     .as_ref()
-                    .expect("f16 io not available"),
+                    .ok_or_else(|| KernelError::Gpu {
+                        message: "f16 I/O conv pipeline (n32) not available on this device".into(),
+                    })?,
                 32u32,
             )
         } else {
@@ -1713,7 +1764,9 @@ impl GpuBackend {
                 self.pipelines
                     .conv_gemm_f16_io
                     .as_ref()
-                    .expect("f16 io not available"),
+                    .ok_or_else(|| KernelError::Gpu {
+                        message: "f16 I/O conv pipeline not available on this device".into(),
+                    })?,
                 64u32,
             )
         };
@@ -1748,20 +1801,25 @@ impl GpuBackend {
         let wg_y = div_ceil(m as u32, 64);
         self.record_compute(pipeline, &bg, (wg_x, wg_y, 1));
 
-        GpuBuffer {
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: out_total,
             shape: vec![n, oh, ow, oc],
-        }
+        })
     }
 
     /// Channel concat on f16 device buffers.
-    pub fn channel_concat_f16_on_device(&self, inputs: &[&GpuBuffer]) -> GpuBuffer {
-        let pipeline = self
-            .pipelines
-            .channel_concat_f16
-            .as_ref()
-            .expect("f16 not available");
+    pub fn channel_concat_f16_on_device(
+        &self,
+        inputs: &[&GpuBuffer],
+    ) -> Result<GpuBuffer, KernelError> {
+        let pipeline =
+            self.pipelines
+                .channel_concat_f16
+                .as_ref()
+                .ok_or_else(|| KernelError::Gpu {
+                    message: "f16 channel concat pipeline not available on this device".into(),
+                })?;
         let c_out: usize = inputs.iter().map(|b| *b.shape.last().unwrap()).sum();
         let spatial: usize = inputs[0].size / *inputs[0].shape.last().unwrap();
         let total = spatial * c_out;
@@ -1817,11 +1875,11 @@ impl GpuBackend {
 
         let mut out_shape = inputs[0].shape.clone();
         *out_shape.last_mut().unwrap() = c_out;
-        GpuBuffer {
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: total,
             shape: out_shape,
-        }
+        })
     }
 
     /// Channel split on f16 device buffers.
@@ -1829,12 +1887,14 @@ impl GpuBackend {
         &self,
         input: &GpuBuffer,
         split_sizes: &[usize],
-    ) -> Vec<GpuBuffer> {
-        let pipeline = self
-            .pipelines
-            .channel_split_f16
-            .as_ref()
-            .expect("f16 not available");
+    ) -> Result<Vec<GpuBuffer>, KernelError> {
+        let pipeline =
+            self.pipelines
+                .channel_split_f16
+                .as_ref()
+                .ok_or_else(|| KernelError::Gpu {
+                    message: "f16 channel split pipeline not available on this device".into(),
+                })?;
         let c_in = *input.shape.last().unwrap();
         let spatial: usize = input.size / c_in;
 
@@ -1896,7 +1956,7 @@ impl GpuBackend {
         }
 
         self.record_compute_batch(pipeline, &bind_groups, &wg_sizes);
-        results
+        Ok(results)
     }
 
     /// Nearest-neighbor resize on f16 NHWC tensor.
@@ -1905,12 +1965,14 @@ impl GpuBackend {
         input: &GpuBuffer,
         oh: usize,
         ow: usize,
-    ) -> GpuBuffer {
-        let pipeline = self
-            .pipelines
-            .resize_nearest_f16
-            .as_ref()
-            .expect("f16 not available");
+    ) -> Result<GpuBuffer, KernelError> {
+        let pipeline =
+            self.pipelines
+                .resize_nearest_f16
+                .as_ref()
+                .ok_or_else(|| KernelError::Gpu {
+                    message: "f16 resize nearest pipeline not available on this device".into(),
+                })?;
         let (n, _ih, _iw, c) = (
             input.shape[0],
             input.shape[1],
@@ -1964,20 +2026,25 @@ impl GpuBackend {
             ],
         });
         self.record_compute(pipeline, &bg, (div_ceil(total as u32, 256), 1, 1));
-        GpuBuffer {
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: total,
             shape: vec![n, oh, ow, c],
-        }
+        })
     }
 
     /// Permute NHWC → NCHW with f16 input, f32 output (for final readback).
-    pub fn nhwc_to_nchw_f16_to_f32_on_device(&self, input: &GpuBuffer) -> GpuBuffer {
+    pub fn nhwc_to_nchw_f16_to_f32_on_device(
+        &self,
+        input: &GpuBuffer,
+    ) -> Result<GpuBuffer, KernelError> {
         let pipeline = self
             .pipelines
             .permute_nhwc_nchw_f16
             .as_ref()
-            .expect("f16 not available");
+            .ok_or_else(|| KernelError::Gpu {
+                message: "f16 NHWC-to-NCHW permute pipeline not available on this device".into(),
+            })?;
         let (n, h, w, c) = (
             input.shape[0],
             input.shape[1],
@@ -2023,11 +2090,11 @@ impl GpuBackend {
             ],
         });
         self.record_compute(pipeline, &bg, (div_ceil(total as u32, 256), 1, 1));
-        GpuBuffer {
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: total,
             shape: vec![n, c, h, w],
-        }
+        })
     }
 
     /// Broadcasting binary op on device (handles ONNX broadcast rules, up to 6D).
@@ -3850,7 +3917,7 @@ impl Backend for GpuBackend {
             (div_ceil(n as u32, 64), div_ceil(m as u32, 64), 1),
         );
 
-        let data = self.read_buf(&buf_out, m * n);
+        let data = self.read_buf(&buf_out, m * n)?;
         Tensor::from_vec(vec![m, n], data).map_err(Into::into)
     }
 
@@ -3858,7 +3925,7 @@ impl Backend for GpuBackend {
         if let Some(len) = same_shape_data(lhs, rhs)
             && len >= MIN_GPU_ELEMENTS
         {
-            let out = self.dispatch_elementwise(lhs.data(), rhs.data(), len, 0);
+            let out = self.dispatch_elementwise(lhs.data(), rhs.data(), len, 0)?;
             return Tensor::from_vec(lhs.shape().to_vec(), out).map_err(Into::into);
         }
         crate::add(lhs, rhs)
@@ -3868,7 +3935,7 @@ impl Backend for GpuBackend {
         if let Some(len) = same_shape_data(lhs, rhs)
             && len >= MIN_GPU_ELEMENTS
         {
-            let out = self.dispatch_elementwise(lhs.data(), rhs.data(), len, 1);
+            let out = self.dispatch_elementwise(lhs.data(), rhs.data(), len, 1)?;
             return Tensor::from_vec(lhs.shape().to_vec(), out).map_err(Into::into);
         }
         crate::sub(lhs, rhs)
@@ -3878,7 +3945,7 @@ impl Backend for GpuBackend {
         if let Some(len) = same_shape_data(lhs, rhs)
             && len >= MIN_GPU_ELEMENTS
         {
-            let out = self.dispatch_elementwise(lhs.data(), rhs.data(), len, 2);
+            let out = self.dispatch_elementwise(lhs.data(), rhs.data(), len, 2)?;
             return Tensor::from_vec(lhs.shape().to_vec(), out).map_err(Into::into);
         }
         crate::mul(lhs, rhs)
@@ -3889,7 +3956,9 @@ impl Backend for GpuBackend {
         if len < MIN_GPU_ELEMENTS {
             return crate::relu(input);
         }
-        let out = self.dispatch_unary(input.data(), len, 0);
+        let out = self
+            .dispatch_unary(input.data(), len, 0)
+            .expect("GPU read-back failed in relu (trait prevents Result propagation)");
         Tensor::from_vec(input.shape().to_vec(), out).expect("shape matches data")
     }
 
@@ -3898,7 +3967,9 @@ impl Backend for GpuBackend {
         if len < MIN_GPU_ELEMENTS {
             return crate::sigmoid(input);
         }
-        let out = self.dispatch_unary(input.data(), len, 1);
+        let out = self
+            .dispatch_unary(input.data(), len, 1)
+            .expect("GPU read-back failed in sigmoid (trait prevents Result propagation)");
         Tensor::from_vec(input.shape().to_vec(), out).expect("shape matches data")
     }
 
@@ -3907,7 +3978,9 @@ impl Backend for GpuBackend {
         if len < MIN_GPU_ELEMENTS {
             return crate::exp(input);
         }
-        let out = self.dispatch_unary(input.data(), len, 2);
+        let out = self
+            .dispatch_unary(input.data(), len, 2)
+            .expect("GPU read-back failed in exp (trait prevents Result propagation)");
         Tensor::from_vec(input.shape().to_vec(), out).expect("shape matches data")
     }
 
@@ -3916,7 +3989,9 @@ impl Backend for GpuBackend {
         if len < MIN_GPU_ELEMENTS {
             return crate::tanh_act(input);
         }
-        let out = self.dispatch_unary(input.data(), len, 3);
+        let out = self
+            .dispatch_unary(input.data(), len, 3)
+            .expect("GPU read-back failed in tanh_act (trait prevents Result propagation)");
         Tensor::from_vec(input.shape().to_vec(), out).expect("shape matches data")
     }
 
@@ -3961,7 +4036,7 @@ impl Backend for GpuBackend {
             &bg,
             (div_ceil(rows as u32, 256), 1, 1),
         );
-        let data = self.read_buf(&buf_out, rows * cols);
+        let data = self.read_buf(&buf_out, rows * cols)?;
         Tensor::from_vec(shape.to_vec(), data).map_err(Into::into)
     }
 
@@ -4006,7 +4081,7 @@ impl Backend for GpuBackend {
             &bg,
             (div_ceil(rows as u32, 256), 1, 1),
         );
-        let data = self.read_buf(&buf_out, rows * cols);
+        let data = self.read_buf(&buf_out, rows * cols)?;
         Tensor::from_vec(shape.to_vec(), data).map_err(Into::into)
     }
 
@@ -4051,7 +4126,7 @@ impl Backend for GpuBackend {
             &bg,
             (div_ceil(rows as u32, 256), 1, 1),
         );
-        let data = self.read_buf(&buf_out, rows);
+        let data = self.read_buf(&buf_out, rows)?;
         let mut out_shape = shape[..shape.len() - 1].to_vec();
         if out_shape.is_empty() {
             out_shape.push(1);
@@ -4128,7 +4203,7 @@ impl Backend for GpuBackend {
             &bg,
             (div_ceil(rows as u32, 256), 1, 1),
         );
-        let data = self.read_buf(&buf_out, rows * cols);
+        let data = self.read_buf(&buf_out, rows * cols)?;
         Tensor::from_vec(shape.to_vec(), data).map_err(Into::into)
     }
 
@@ -4248,7 +4323,7 @@ impl Backend for GpuBackend {
                 (n * oc) as u32,
             ),
         );
-        let data = self.read_buf(&buf_out, total);
+        let data = self.read_buf(&buf_out, total)?;
         Tensor::from_vec(vec![n, oh, ow, oc], data).map_err(Into::into)
     }
 
@@ -4356,7 +4431,7 @@ impl Backend for GpuBackend {
             &bg,
             (div_ceil(total as u32, 256), 1, 1),
         );
-        let data = self.read_buf(&buf_out, total);
+        let data = self.read_buf(&buf_out, total)?;
         Tensor::from_vec(shape.to_vec(), data).map_err(Into::into)
     }
 
@@ -4463,7 +4538,7 @@ impl Backend for GpuBackend {
                 (n * oc) as u32,
             ),
         );
-        let data = self.read_buf(&buf_out, total);
+        let data = self.read_buf(&buf_out, total)?;
         Tensor::from_vec(vec![n, oh, ow, oc], data).map_err(Into::into)
     }
 
@@ -4555,7 +4630,7 @@ impl Backend for GpuBackend {
             &bg,
             (div_ceil(total as u32, 256), 1, 1),
         );
-        let data = self.read_buf(&buf_out, total);
+        let data = self.read_buf(&buf_out, total)?;
         Tensor::from_vec(shape.to_vec(), data).map_err(Into::into)
     }
 
@@ -4623,7 +4698,7 @@ impl Backend for GpuBackend {
             &bg,
             (div_ceil(rows as u32, 256), 1, 1),
         );
-        let data = self.read_buf(&buf_out, rows * cols);
+        let data = self.read_buf(&buf_out, rows * cols)?;
         Tensor::from_vec(shape.to_vec(), data).map_err(Into::into)
     }
 }
@@ -4646,7 +4721,7 @@ impl crate::BackwardOps for GpuBackend {
                 .collect();
             return Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into);
         }
-        let out = self.dispatch_backward_binary(upstream.data(), forward_input.data(), len, 0);
+        let out = self.dispatch_backward_binary(upstream.data(), forward_input.data(), len, 0)?;
         Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into)
     }
 
@@ -4666,7 +4741,7 @@ impl crate::BackwardOps for GpuBackend {
                 .collect();
             return Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into);
         }
-        let out = self.dispatch_backward_binary(upstream.data(), forward_output.data(), len, 1);
+        let out = self.dispatch_backward_binary(upstream.data(), forward_output.data(), len, 1)?;
         Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into)
     }
 
@@ -4686,7 +4761,7 @@ impl crate::BackwardOps for GpuBackend {
                 .collect();
             return Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into);
         }
-        let out = self.dispatch_backward_binary(upstream.data(), forward_output.data(), len, 2);
+        let out = self.dispatch_backward_binary(upstream.data(), forward_output.data(), len, 2)?;
         Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into)
     }
 
@@ -4702,7 +4777,7 @@ impl crate::BackwardOps for GpuBackend {
             let out: Vec<f32> = u.iter().zip(e.iter()).map(|(&u, &e)| u * e).collect();
             return Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into);
         }
-        let out = self.dispatch_backward_binary(upstream.data(), forward_output.data(), len, 3);
+        let out = self.dispatch_backward_binary(upstream.data(), forward_output.data(), len, 3)?;
         Tensor::from_vec(upstream.shape().to_vec(), out).map_err(Into::into)
     }
 
@@ -4717,7 +4792,7 @@ impl crate::BackwardOps for GpuBackend {
             let out = vec![grad_val; len];
             return Tensor::from_vec(original_shape.to_vec(), out).map_err(Into::into);
         }
-        let out = self.dispatch_reduce_sum_backward(upstream.data(), len);
+        let out = self.dispatch_reduce_sum_backward(upstream.data(), len)?;
         Tensor::from_vec(original_shape.to_vec(), out).map_err(Into::into)
     }
 
@@ -4892,7 +4967,7 @@ impl crate::BackwardOps for GpuBackend {
                 (n * ic) as u32,
             ),
         );
-        let data = self.read_buf(&buf_out, total);
+        let data = self.read_buf(&buf_out, total)?;
         Tensor::from_vec(input_shape.to_vec(), data).map_err(Into::into)
     }
 }
@@ -4994,7 +5069,7 @@ impl GpuBackend {
                 (n * c) as u32,
             ),
         );
-        let data = self.read_buf(&buf_out, total);
+        let data = self.read_buf(&buf_out, total)?;
         Tensor::from_vec(vec![n, oh, ow, c], data).map_err(Into::into)
     }
 
@@ -5101,7 +5176,7 @@ impl GpuBackend {
                 (n * oc) as u32,
             ),
         );
-        let data = self.read_buf(&buf_out, total);
+        let data = self.read_buf(&buf_out, total)?;
         Tensor::from_vec(vec![n, oh, ow, oc], data).map_err(Into::into)
     }
 }

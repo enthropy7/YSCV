@@ -86,7 +86,7 @@ pub use h264_decoder::H264Decoder;
 pub use h264_motion::{MotionVector, ReferenceFrameBuffer, motion_compensate_16x16, predict_mv};
 pub use h264_params::{Pps, SliceHeader, Sps, parse_pps, parse_sps};
 pub use h264_transform::{dequant_4x4, dequant_8x8, inverse_dct_4x4, inverse_dct_8x8};
-pub use h264_yuv::yuv420_to_rgb8;
+pub use h264_yuv::{yuv420_to_rgb8, yuv420_to_rgb8_into};
 pub use hevc_cabac::{CabacDecoder, ContextModel};
 pub use hevc_decoder::HevcNalUnitType;
 pub use hevc_decoder::{

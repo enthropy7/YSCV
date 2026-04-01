@@ -37,7 +37,10 @@ pub struct Sps {
 impl Sps {
     /// Frame width in pixels (before cropping).
     pub fn width(&self) -> usize {
-        (self.pic_width_in_mbs * 16) as usize
+        self.pic_width_in_mbs
+            .checked_mul(16)
+            .map(|v| v as usize)
+            .unwrap_or(usize::MAX)
     }
 
     /// Frame height in pixels (before cropping).
@@ -45,9 +48,12 @@ impl Sps {
         let mbs_height = if self.frame_mbs_only_flag {
             self.pic_height_in_map_units
         } else {
-            self.pic_height_in_map_units * 2
+            self.pic_height_in_map_units.saturating_mul(2)
         };
-        (mbs_height * 16) as usize
+        mbs_height
+            .checked_mul(16)
+            .map(|v| v as usize)
+            .unwrap_or(usize::MAX)
     }
 
     /// Cropped frame width.

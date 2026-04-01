@@ -321,7 +321,7 @@ pub fn letterbox_preprocess(image: &Tensor, target_size: usize) -> (Tensor, f32,
     }
 
     let tensor = Tensor::from_vec(vec![target_size, target_size, 3], out)
-        .expect("letterbox output tensor creation");
+        .unwrap_or_else(|_| unreachable!("letterbox: shape matches pre-allocated output"));
     (tensor, scale, pad_x, pad_y)
 }
 

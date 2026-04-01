@@ -201,7 +201,9 @@ impl MkvDemuxer {
             pos += id_len;
             let (el_size, size_len) = read_ebml_size(&self.data[pos..])?;
             pos += size_len;
-            let el_end = pos + el_size as usize;
+            let el_end = pos
+                .checked_add(el_size as usize)
+                .ok_or_else(|| VideoError::Codec("MKV element size overflow".into()))?;
 
             if id == TRACK_ENTRY {
                 self.parse_track_entry(pos, el_size as usize)?;
@@ -223,22 +225,26 @@ impl MkvDemuxer {
             pos += id_len;
             let (el_size, size_len) = read_ebml_size(&self.data[pos..])?;
             pos += size_len;
+            let el_end = pos
+                .checked_add(el_size as usize)
+                .ok_or_else(|| VideoError::Codec("MKV element size overflow".into()))?;
+            let el_end = el_end.min(end);
 
             match id {
                 TRACK_TYPE => {
-                    track_type = read_ebml_uint(&self.data[pos..pos + el_size as usize]);
+                    track_type = read_ebml_uint(&self.data[pos..el_end]);
                 }
                 CODEC_ID => {
-                    if let Ok(s) = std::str::from_utf8(&self.data[pos..pos + el_size as usize]) {
+                    if let Ok(s) = std::str::from_utf8(&self.data[pos..el_end]) {
                         codec_id = s.to_string();
                     }
                 }
                 CODEC_PRIVATE => {
-                    codec_private = self.data[pos..pos + el_size as usize].to_vec();
+                    codec_private = self.data[pos..el_end].to_vec();
                 }
                 _ => {}
             }
-            pos += el_size as usize;
+            pos = el_end;
         }
 
         // Track type 1 = video
@@ -277,7 +283,10 @@ impl MkvDemuxer {
             pos += id_len;
             let (el_size, size_len) = read_ebml_size(&self.data[pos..])?;
             pos += size_len;
-            let el_end = (pos + el_size as usize).min(end);
+            let el_end = pos
+                .checked_add(el_size as usize)
+                .ok_or_else(|| VideoError::Codec("MKV element size overflow".into()))?
+                .min(end);
 
             match id {
                 TIMECODE => {

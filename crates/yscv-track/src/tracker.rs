@@ -68,8 +68,13 @@ impl Tracker {
                 }
             }
         }
-        self.pair_candidates
-            .sort_by(|left, right| right.0.total_cmp(&left.0));
+        self.pair_candidates.sort_by(|left, right| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+        });
 
         self.track_taken.clear();
         self.track_taken.resize(self.tracks.len(), false);

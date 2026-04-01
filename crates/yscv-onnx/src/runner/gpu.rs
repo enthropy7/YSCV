@@ -615,7 +615,7 @@ pub fn run_onnx_model_gpu_cached(
     // ── Collect outputs ──────────────────────────────────────────
     let mut result = HashMap::new();
     for name in &model.outputs {
-        to_cpu(gpu, name, &mut env, &mut gc);
+        to_cpu(gpu, name, &mut env, &mut gc)?;
         if let Some(t) = env.get(name) {
             result.insert(name.clone(), t.clone());
         } else {
@@ -956,7 +956,7 @@ pub fn run_compiled_gpu(
     let mut result = HashMap::new();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
-            let t = gpu.download(out_buf);
+            let t = gpu.download(out_buf)?;
             let shape = out_buf.shape();
             // If NHWC 4D, permute to NCHW for output
             if *nhwc && shape.len() == 4 {
@@ -1007,7 +1007,7 @@ pub fn run_compiled_gpu_fused(
     let mut result = HashMap::new();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
-            let t = gpu.download(out_buf);
+            let t = gpu.download(out_buf)?;
             let shape = out_buf.shape();
             if *nhwc && shape.len() == 4 {
                 let (n, h, w, c) = (shape[0], shape[1], shape[2], shape[3]);
@@ -1056,7 +1056,7 @@ pub fn run_compiled_gpu_fused_timed(
     let mut result = HashMap::new();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
-            let t = gpu.download(out_buf);
+            let t = gpu.download(out_buf)?;
             let shape = out_buf.shape();
             if *nhwc && shape.len() == 4 {
                 let (n, h, w, c) = (shape[0], shape[1], shape[2], shape[3]);
@@ -1114,34 +1114,44 @@ fn fuse_relu(gpu: &GpuBackend, src: &str, dst: &str, env: &mut TensorEnv, gc: &m
 /// Download a GPU tensor to CPU env in NCHW format.  No-op if already on CPU.
 /// If the tensor is NHWC 4D, permutes NHWC→NCHW on GPU before download
 /// (faster than CPU permute for large tensors).
-fn to_cpu(gpu: &GpuBackend, name: &str, env: &mut TensorEnv, gc: &mut GpuCache) {
+fn to_cpu(
+    gpu: &GpuBackend,
+    name: &str,
+    env: &mut TensorEnv,
+    gc: &mut GpuCache,
+) -> Result<(), OnnxError> {
     if env.get(name).is_some() {
-        return;
+        return Ok(());
     }
     if let Some(gt) = gc.remove(name) {
         if gt.f16_io {
             // f16 buffer: convert to f32 first, then download
             if gt.nhwc && gt.buf.shape().len() == 4 {
-                let nchw_buf = gpu.nhwc_to_nchw_f16_to_f32_on_device(&gt.buf);
+                let nchw_buf = gpu.nhwc_to_nchw_f16_to_f32_on_device(&gt.buf)?;
                 gpu.flush();
-                let tensor = gpu.download(&nchw_buf);
+                let tensor = gpu.download(&nchw_buf)?;
                 env.insert(name.to_string(), tensor);
             } else {
                 gpu.flush();
-                let data = gpu.read_buf_f16(gt.buf.raw_buffer(), gt.buf.len());
-                let tensor = Tensor::from_vec(gt.buf.shape().to_vec(), data).unwrap();
+                let data = gpu.read_buf_f16(gt.buf.raw_buffer(), gt.buf.len())?;
+                let tensor = Tensor::from_vec(gt.buf.shape().to_vec(), data).map_err(|e| {
+                    OnnxError::GpuKernel {
+                        message: e.to_string(),
+                    }
+                })?;
                 env.insert(name.to_string(), tensor);
             }
         } else if gt.nhwc && gt.buf.shape().len() == 4 {
             // Permute NHWC → NCHW on GPU, then download
             let nchw_buf = gpu.nhwc_to_nchw_on_device(&gt.buf);
-            let tensor = gpu.download(&nchw_buf);
+            let tensor = gpu.download(&nchw_buf)?;
             env.insert(name.to_string(), tensor);
         } else {
-            let tensor = gpu.download(&gt.buf);
+            let tensor = gpu.download(&gt.buf)?;
             env.insert(name.to_string(), tensor);
         }
     }
+    Ok(())
 }
 
 /// Ensure a tensor exists on GPU.  If only on CPU, upload it (NCHW, nhwc=false).
@@ -1172,9 +1182,9 @@ fn ensure_nhwc(gpu: &GpuBackend, name: &str, gc: &mut GpuCache) {
         let gt = gc.get(name).unwrap();
         if gt.f16_io {
             // f16 buffer: convert to f32, permute, convert back to f16
-            let f32_buf = gpu.convert_f16_to_f32_on_device(&gt.buf);
+            let f32_buf = gpu.convert_f16_to_f32_on_device(&gt.buf)?;
             let nhwc_f32 = gpu.permute_on_device(&f32_buf, &[0, 2, 3, 1]);
-            let nhwc_f16 = gpu.convert_f32_to_f16_on_device(&nhwc_f32);
+            let nhwc_f16 = gpu.convert_f32_to_f16_on_device(&nhwc_f32)?;
             gc.insert(
                 name.to_string(),
                 GpuTensor {
@@ -1198,12 +1208,18 @@ fn ensure_nhwc(gpu: &GpuBackend, name: &str, gc: &mut GpuCache) {
 }
 
 /// Materialize all inputs of a node to CPU for fallback execution.
-fn inputs_to_cpu(gpu: &GpuBackend, node: &OnnxNode, env: &mut TensorEnv, gc: &mut GpuCache) {
+fn inputs_to_cpu(
+    gpu: &GpuBackend,
+    node: &OnnxNode,
+    env: &mut TensorEnv,
+    gc: &mut GpuCache,
+) -> Result<(), OnnxError> {
     for name in &node.inputs {
         if !name.is_empty() {
-            to_cpu(gpu, name, env, gc);
+            to_cpu(gpu, name, env, gc)?;
         }
     }
+    Ok(())
 }
 
 // ── GPU op dispatch ──────────────────────────────────────────────
@@ -1411,7 +1427,7 @@ fn dispatch_inner(
 
         // ── CPU fallback ─────────────────────────────────────────
         _ => {
-            inputs_to_cpu(gpu, node, env, gc);
+            inputs_to_cpu(gpu, node, env, gc)?;
             execute_node_inner(node, env)
         }
     }
@@ -1478,7 +1494,7 @@ fn binary(
     let b_too_small =
         !gc.contains_key(b_name) && env.get(b_name).is_some_and(|t| t.data().len() < 4);
     if (a_cpu_small && b_cpu_small) || a_too_small || b_too_small {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return execute_node_inner(node, env);
     }
 
@@ -1541,7 +1557,7 @@ fn binary(
             );
             Ok(())
         } else {
-            inputs_to_cpu(gpu, node, env, gc);
+            inputs_to_cpu(gpu, node, env, gc)?;
             execute_node_inner(node, env)
         }
     }
@@ -1659,7 +1675,7 @@ fn exec_conv_act(
 
     // General grouped conv (not depthwise) → CPU fallback
     if group > 1 && !(group == o_ch && group == ic) {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return conv::exec_conv(node, env, yscv_kernels::Activation::None);
     }
 
@@ -2021,7 +2037,7 @@ fn exec_softmax(
                 node: node.name.clone(),
                 input: name.clone(),
             })?;
-            gpu.download(&gt.buf)
+            gpu.download(&gt.buf)?
         };
         let mut perm: Vec<usize> = (0..ndim).collect();
         perm.swap(axis, ndim - 1);
@@ -2090,7 +2106,7 @@ fn exec_matmul(
             return Ok(());
         }
         // Fallback to CPU if inputs missing
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return execute_node_inner(node, env);
     }
 
@@ -2135,7 +2151,7 @@ fn exec_gemm(
     gc: &mut GpuCache,
 ) -> Result<(), OnnxError> {
     // Gemm has alpha/beta/transA/transB — handled on CPU for simplicity
-    inputs_to_cpu(gpu, node, env, gc);
+    inputs_to_cpu(gpu, node, env, gc)?;
     super::linear::exec_gemm(node, env)
 }
 
@@ -2246,7 +2262,7 @@ fn exec_concat_gpu(
     }
     // Verify all on GPU (some might not exist at all)
     if !input_names.iter().all(|n| gc.contains_key(n.as_str())) {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return super::reshape::exec_concat(node, env);
     }
 
@@ -2335,7 +2351,7 @@ fn exec_split_gpu(
         if let Some(split_t) = env.get(&node.inputs[1]) {
             split_t.data().iter().map(|&v| v as usize).collect()
         } else if let Some(gt_split) = gc.get(node.inputs[1].as_str()) {
-            let data = gpu.download(&gt_split.buf);
+            let data = gpu.download(&gt_split.buf)?;
             data.data().iter().map(|&v| v as usize).collect()
         } else {
             equal_split(dim_size, num_outputs)
@@ -2405,7 +2421,7 @@ fn exec_resize_gpu(
         .is_some_and(|gt| gt.nhwc && gt.buf.shape().len() == 4);
 
     if !on_gpu_nhwc {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return super::misc::exec_resize(node, env);
     }
 
@@ -2415,7 +2431,7 @@ fn exec_resize_gpu(
     // Determine output size — sizes input or scales
     let (oh, ow) = if node.inputs.len() > 3 && !node.inputs[3].is_empty() {
         // sizes tensor (NCHW format: [n, c, oh, ow])
-        to_cpu(gpu, &node.inputs[3], env, gc);
+        to_cpu(gpu, &node.inputs[3], env, gc)?;
         if let Some(sizes) = env.get(&node.inputs[3]) {
             let sd = sizes.data();
             (sd[2] as usize, sd[3] as usize)
@@ -2424,7 +2440,7 @@ fn exec_resize_gpu(
         }
     } else if node.inputs.len() > 2 && !node.inputs[2].is_empty() {
         // scales tensor
-        to_cpu(gpu, &node.inputs[2], env, gc);
+        to_cpu(gpu, &node.inputs[2], env, gc)?;
         if let Some(scales) = env.get(&node.inputs[2]) {
             let sd = scales.data();
             if sd.len() >= 4 && sd.iter().any(|&v| v != 0.0) {
@@ -2548,7 +2564,7 @@ fn exec_reshape_gpu(
         Ok(())
     } else {
         // On CPU — ensure inputs are materialized from gc to env
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         if node.op_type == "Flatten" {
             super::reshape::exec_flatten(node, env)
         } else {
@@ -2578,7 +2594,7 @@ fn get_reshape_shape(
         st.data().to_vec()
     } else if let Some(gt) = gc.get(shape_name) {
         // Download shape tensor directly (it's small)
-        let t = gpu.download(&gt.buf);
+        let t = gpu.download(&gt.buf)?;
         t.data().to_vec()
     } else {
         return vec![];
@@ -2712,7 +2728,7 @@ fn exec_unsqueeze_gpu(
         }
 
         // NHWC 4D — complex layout, fall back to CPU
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
     }
 
     if is_unsqueeze {
@@ -2753,7 +2769,7 @@ fn exec_slice_gpu(
     if let Some(ref sv) = steps_v
         && sv.iter().any(|&s| s != 1)
     {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return super::reshape::exec_slice(node, env);
     }
 
@@ -2833,7 +2849,7 @@ fn get_small_i64_vec(gpu: &GpuBackend, name: &str, env: &TensorEnv, gc: &GpuCach
         return t.data().iter().map(|&v| v as i64).collect();
     }
     if let Some(gt) = gc.get(name) {
-        let t = gpu.download(&gt.buf);
+        let t = gpu.download(&gt.buf)?;
         return t.data().iter().map(|&v| v as i64).collect();
     }
     vec![]
@@ -2852,7 +2868,7 @@ fn exec_constant_of_shape_gpu(
     let shape: Vec<usize> = if let Some(t) = env.get(shape_name) {
         t.data().iter().map(|&v| v as usize).collect()
     } else if let Some(gt) = gc.get(shape_name) {
-        let t = gpu.download(&gt.buf);
+        let t = gpu.download(&gt.buf)?;
         t.data().iter().map(|&v| v as usize).collect()
     } else {
         return Err(OnnxError::DecodeFailed {
@@ -2891,10 +2907,10 @@ fn exec_expand_gpu(
         let target_shape: Vec<usize> = if let Some(t) = env.get(shape_name) {
             t.data().iter().map(|&v| v as usize).collect()
         } else if let Some(gt) = gc.get(shape_name) {
-            let t = gpu.download(&gt.buf);
+            let t = gpu.download(&gt.buf)?;
             t.data().iter().map(|&v| v as usize).collect()
         } else {
-            inputs_to_cpu(gpu, node, env, gc);
+            inputs_to_cpu(gpu, node, env, gc)?;
             return super::reshape::exec_expand(node, env);
         };
 
@@ -2920,7 +2936,7 @@ fn exec_expand_gpu(
         );
         Ok(())
     } else {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         super::reshape::exec_expand(node, env)
     }
 }
@@ -2993,7 +3009,7 @@ fn binary_f16(
     node: &OnnxNode,
     gc: &mut GpuCache,
     env: &mut TensorEnv,
-    op: impl Fn(&GpuBackend, &GpuBuffer, &GpuBuffer) -> GpuBuffer,
+    op: impl Fn(&GpuBackend, &GpuBuffer, &GpuBuffer) -> Result<GpuBuffer, yscv_kernels::KernelError>,
 ) -> Result<(), OnnxError> {
     let a_name = &node.inputs[0];
     let b_name = &node.inputs[1];
@@ -3005,7 +3021,7 @@ fn binary_f16(
         let b = gc.get(b_name);
         match (a, b) {
             (Some(a), Some(b)) if a.buf.len() == b.buf.len() && a.buf.len() >= 4 => {
-                Some((op(gpu, &a.buf, &b.buf), a.nhwc))
+                Some((op(gpu, &a.buf, &b.buf)?, a.nhwc))
             }
             _ => None,
         }
@@ -3071,7 +3087,7 @@ fn exec_conv_f16(
 
     // Non-standard grouped conv → fall back to f32 CPU
     if group > 1 && !(group == o_ch && group == ic) {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return conv::exec_conv(node, env, yscv_kernels::Activation::None);
     }
 
@@ -3127,7 +3143,7 @@ fn exec_conv_f16(
                     )
                 })
                 .buf;
-            gpu.im2col_conv_f16_on_device(input_buf, w, b, sh, sw, pad4, act)
+            gpu.im2col_conv_f16_on_device(input_buf, w, b, sh, sw, pad4, act)?
         };
         gc.insert(
             node.outputs[0].clone(),
@@ -3139,7 +3155,7 @@ fn exec_conv_f16(
         );
     } else {
         // Depthwise: fall back to f32 CPU path
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         let cpu_act = yscv_kernels::Activation::None;
         return conv::exec_conv(node, env, cpu_act);
     }
@@ -3170,7 +3186,7 @@ fn exec_concat_f16_gpu(
         to_gpu_f16(gpu, name, env, gc);
     }
     if !input_names.iter().all(|n| gc.contains_key(n.as_str())) {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return super::reshape::exec_concat(node, env);
     }
 
@@ -3200,7 +3216,7 @@ fn exec_concat_f16_gpu(
         .iter()
         .any(|n| gc.get(n.as_str()).unwrap().f16_io);
     let (out, is_f16) = if actual_axis == rank - 1 && any_f16 {
-        (gpu.channel_concat_f16_on_device(&bufs), true)
+        (gpu.channel_concat_f16_on_device(&bufs)?, true)
     } else if actual_axis == rank - 1 {
         (gpu.channel_concat_on_device(&bufs), false)
     } else if any_f16 {
@@ -3208,10 +3224,10 @@ fn exec_concat_f16_gpu(
         let f32_bufs: Vec<GpuBuffer> = bufs
             .iter()
             .map(|b| gpu.convert_f16_to_f32_on_device(b))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let f32_refs: Vec<&GpuBuffer> = f32_bufs.iter().collect();
         let f32_out = gpu.general_concat_on_device(&f32_refs, actual_axis);
-        let f16_out = gpu.convert_f32_to_f16_on_device(&f32_out);
+        let f16_out = gpu.convert_f32_to_f16_on_device(&f32_out)?;
         (f16_out, true)
     } else {
         (gpu.general_concat_on_device(&bufs, actual_axis), false)
@@ -3240,7 +3256,7 @@ fn exec_resize_f16_gpu(
         .is_some_and(|gt| gt.nhwc && gt.buf.shape().len() == 4);
 
     if !on_gpu_nhwc {
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return super::misc::exec_resize(node, env);
     }
 
@@ -3248,7 +3264,7 @@ fn exec_resize_f16_gpu(
     let (ih, iw) = (input_shape[1], input_shape[2]);
 
     let (oh, ow) = if node.inputs.len() > 3 && !node.inputs[3].is_empty() {
-        to_cpu(gpu, &node.inputs[3], env, gc);
+        to_cpu(gpu, &node.inputs[3], env, gc)?;
         if let Some(sizes) = env.get(&node.inputs[3]) {
             let sd = sizes.data();
             (sd[2] as usize, sd[3] as usize)
@@ -3256,7 +3272,7 @@ fn exec_resize_f16_gpu(
             (ih, iw)
         }
     } else if node.inputs.len() > 2 && !node.inputs[2].is_empty() {
-        to_cpu(gpu, &node.inputs[2], env, gc);
+        to_cpu(gpu, &node.inputs[2], env, gc)?;
         if let Some(scales) = env.get(&node.inputs[2]) {
             let sd = scales.data();
             if sd.len() >= 4 && sd.iter().any(|&v| v != 0.0) {
@@ -3279,7 +3295,7 @@ fn exec_resize_f16_gpu(
     }
 
     let input_buf = &gc.get(name).unwrap().buf;
-    let out = gpu.resize_nearest_f16_on_device(input_buf, oh, ow);
+    let out = gpu.resize_nearest_f16_on_device(input_buf, oh, ow)?;
     gc.insert(
         node.outputs[0].clone(),
         GpuTensor {
@@ -3344,7 +3360,7 @@ fn exec_split_f16_gpu(
     };
 
     if actual_axis == rank - 1 {
-        let results = gpu.channel_split_f16_on_device(&gc.get(name).unwrap().buf, &split_sizes);
+        let results = gpu.channel_split_f16_on_device(&gc.get(name).unwrap().buf, &split_sizes)?;
         for (i, buf) in results.into_iter().enumerate() {
             if i < node.outputs.len() {
                 gc.insert(
@@ -3359,16 +3375,22 @@ fn exec_split_f16_gpu(
         }
     } else {
         // Fall back to f32 for non-channel split
-        inputs_to_cpu(gpu, node, env, gc);
+        inputs_to_cpu(gpu, node, env, gc)?;
         return super::reshape::exec_split(node, env);
     }
 
     Ok(())
 }
 
-fn fuse_relu_f16(gpu: &GpuBackend, src: &str, dst: &str, env: &mut TensorEnv, gc: &mut GpuCache) {
+fn fuse_relu_f16(
+    gpu: &GpuBackend,
+    src: &str,
+    dst: &str,
+    env: &mut TensorEnv,
+    gc: &mut GpuCache,
+) -> Result<(), OnnxError> {
     if let Some(gt) = gc.remove(src) {
-        let out = gpu.relu_f16_on_device(&gt.buf);
+        let out = gpu.relu_f16_on_device(&gt.buf)?;
         gc.insert(
             dst.to_string(),
             GpuTensor {
@@ -3383,6 +3405,7 @@ fn fuse_relu_f16(gpu: &GpuBackend, src: &str, dst: &str, env: &mut TensorEnv, gc
         }
         env.alias(dst, src);
     }
+    Ok(())
 }
 
 /// f16 dispatch router for compilation.
@@ -3430,7 +3453,7 @@ fn dispatch_f16_with_f32_fallback(
             && gt.f16_io
         {
             let gt = gc.remove(input_name).unwrap();
-            let f32_buf = gpu.convert_f16_to_f32_on_device(&gt.buf);
+            let f32_buf = gpu.convert_f16_to_f32_on_device(&gt.buf)?;
             let nhwc = gt.nhwc;
             saved_f16.push((input_name.clone(), gt));
             gc.insert(
@@ -3453,7 +3476,7 @@ fn dispatch_f16_with_f32_fallback(
             .get(input_name.as_str())
             .is_some_and(|gt| !gt.f16_io && gt.buf.len() < 4)
         {
-            to_cpu(gpu, input_name, env, gc);
+            to_cpu(gpu, input_name, env, gc)?;
         }
     }
 
@@ -3472,7 +3495,7 @@ fn dispatch_f16_with_f32_fallback(
         }
         if let Some(gt) = gc.get(output_name.as_str()) {
             if !gt.f16_io && gt.buf.len() >= 64 {
-                let f16_buf = gpu.convert_f32_to_f16_on_device(&gt.buf);
+                let f16_buf = gpu.convert_f32_to_f16_on_device(&gt.buf)?;
                 let nhwc = gt.nhwc;
                 gc.insert(
                     output_name.clone(),
@@ -3484,7 +3507,7 @@ fn dispatch_f16_with_f32_fallback(
                 );
             } else if !gt.f16_io && gt.buf.len() < 64 {
                 // Tiny output: download to CPU so later ops handle it naturally
-                to_cpu(gpu, output_name, env, gc);
+                to_cpu(gpu, output_name, env, gc)?;
             }
         }
     }
@@ -3545,7 +3568,7 @@ pub fn compile_gpu_plan_f16(
             } => {
                 to_gpu_f16(gpu, x_name, &env, &mut gc);
                 if let Some(gt) = gc.get(x_name.as_str()) {
-                    let out = gpu.silu_f16_on_device(&gt.buf);
+                    let out = gpu.silu_f16_on_device(&gt.buf)?;
                     let nhwc = gt.nhwc;
                     gc.insert(
                         output_name.clone(),
@@ -3570,7 +3593,7 @@ pub fn compile_gpu_plan_f16(
             } => {
                 dispatch_f16(gpu, node, &mut env, &mut gc)?;
                 dispatch_f16(gpu, &nodes[*bn_idx], &mut env, &mut gc)?;
-                fuse_relu_f16(gpu, bn_output, relu_output, &mut env, &mut gc);
+                fuse_relu_f16(gpu, bn_output, relu_output, &mut env, &mut gc)?;
             }
 
             GpuExecAction::OpRelu {
@@ -3579,7 +3602,7 @@ pub fn compile_gpu_plan_f16(
                 ..
             } => {
                 dispatch_f16(gpu, node, &mut env, &mut gc)?;
-                fuse_relu_f16(gpu, op_output, relu_output, &mut env, &mut gc);
+                fuse_relu_f16(gpu, op_output, relu_output, &mut env, &mut gc)?;
             }
 
             GpuExecAction::MatMulAdd { add_idx } => {
@@ -3765,20 +3788,24 @@ pub fn run_compiled_gpu_f16_fused(
             if *f16_io {
                 if *nhwc && shape.len() == 4 {
                     // Use GPU NHWC(f16)→NCHW(f32) permute shader
-                    let nchw_buf = gpu.nhwc_to_nchw_f16_to_f32_on_device(out_buf);
+                    let nchw_buf = gpu.nhwc_to_nchw_f16_to_f32_on_device(out_buf)?;
                     gpu.flush();
-                    let t = gpu.download(&nchw_buf);
+                    let t = gpu.download(&nchw_buf)?;
                     result.insert(name.clone(), t);
                 } else {
                     // Read f16 buffer as f32
                     gpu.flush();
-                    let data = gpu.read_buf_f16(out_buf.raw_buffer(), out_buf.len());
-                    let t = Tensor::from_vec(shape.to_vec(), data).unwrap();
+                    let data = gpu.read_buf_f16(out_buf.raw_buffer(), out_buf.len())?;
+                    let t = Tensor::from_vec(shape.to_vec(), data).map_err(|e| {
+                        OnnxError::GpuKernel {
+                            message: e.to_string(),
+                        }
+                    })?;
                     result.insert(name.clone(), t);
                 }
             } else {
                 // f32 output — standard download
-                let t = gpu.download(out_buf);
+                let t = gpu.download(out_buf)?;
                 let shape = out_buf.shape();
                 if *nhwc && shape.len() == 4 {
                     let (n, h, w, c) = (shape[0], shape[1], shape[2], shape[3]);

@@ -32,6 +32,9 @@ pub fn non_max_suppression(
         if selected.len() >= max_detections {
             break;
         }
+        if candidate.bbox.area() <= 0.0 {
+            continue;
+        }
         let mut suppressed = false;
         for chosen in &selected {
             if chosen.class_id == candidate.class_id

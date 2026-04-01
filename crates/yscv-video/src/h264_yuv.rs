@@ -379,6 +379,64 @@ pub fn yuv420_to_rgb8(
     Ok(rgb)
 }
 
+/// Like [`yuv420_to_rgb8`] but writes into a caller-supplied buffer,
+/// avoiding per-frame allocation. `rgb_out` must be at least `width * height * 3` bytes.
+pub fn yuv420_to_rgb8_into(
+    y_plane: &[u8],
+    u_plane: &[u8],
+    v_plane: &[u8],
+    width: usize,
+    height: usize,
+    rgb_out: &mut Vec<u8>,
+) -> Result<(), VideoError> {
+    let expected_y = width * height;
+    let expected_uv = (width / 2) * (height / 2);
+
+    if y_plane.len() < expected_y {
+        return Err(VideoError::Codec(format!(
+            "Y plane too small: expected {expected_y}, got {}",
+            y_plane.len()
+        )));
+    }
+    if u_plane.len() < expected_uv || v_plane.len() < expected_uv {
+        return Err(VideoError::Codec(format!(
+            "UV planes too small: expected {expected_uv}, got U={} V={}",
+            u_plane.len(),
+            v_plane.len()
+        )));
+    }
+
+    let total = width * height * 3;
+    rgb_out.resize(total, 0);
+    let uv_stride = width / 2;
+
+    if height < 4 {
+        yuv420_to_rgb8_rows(
+            y_plane, u_plane, v_plane, rgb_out, width, uv_stride, 0, height,
+        );
+    } else {
+        use rayon::prelude::*;
+        let row_bytes = width * 3;
+        rgb_out
+            .par_chunks_mut(row_bytes)
+            .enumerate()
+            .for_each(|(row_idx, row_slice)| {
+                yuv420_to_rgb8_rows(
+                    y_plane,
+                    u_plane,
+                    v_plane,
+                    row_slice,
+                    width,
+                    uv_stride,
+                    row_idx,
+                    row_idx + 1,
+                );
+            });
+    }
+
+    Ok(())
+}
+
 /// Convert rows `start_row..end_row` from YUV420 to RGB8.
 /// `rgb_out` starts at the byte corresponding to `start_row`.
 #[inline]

@@ -1,4 +1,5 @@
 use thiserror::Error;
+use yscv_kernels::KernelError;
 
 /// Errors returned by ONNX model loading and conversion.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -27,4 +28,14 @@ pub enum OnnxError {
     ShapeMismatch { detail: String },
     #[error("missing required attribute '{attr}' on node '{node}'")]
     MissingAttribute { node: String, attr: String },
+    #[error("GPU kernel error: {message}")]
+    GpuKernel { message: String },
+}
+
+impl From<KernelError> for OnnxError {
+    fn from(e: KernelError) -> Self {
+        OnnxError::GpuKernel {
+            message: e.to_string(),
+        }
+    }
 }
