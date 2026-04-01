@@ -64,12 +64,18 @@ pub fn detect_hw_backend() -> HwBackend {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-#[allow(unsafe_code, non_camel_case_types, non_upper_case_globals)]
+#[allow(
+    unsafe_code,
+    unsafe_op_in_unsafe_fn,
+    non_camel_case_types,
+    non_upper_case_globals,
+    dead_code,
+    improper_ctypes_definitions
+)]
 pub mod videotoolbox {
     use super::*;
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::{Arc, Mutex};
 
     // --- Raw FFI bindings to CoreMedia / VideoToolbox frameworks ---
 
@@ -91,6 +97,7 @@ pub mod videotoolbox {
     const kCMVideoCodecType_HEVC: CMVideoCodecType = 0x68766331; // 'hvc1'
     // NV12 video-range: VT always delivers this reliably (Y:16-235, UV:16-240)
     const kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange: u32 = 0x34323076; // '420v'
+    const kCVPixelFormatType_32BGRA: u32 = 0x42475241; // 'BGRA'
 
     #[repr(C)]
     struct VTDecompressionOutputCallbackRecord {
@@ -106,6 +113,7 @@ pub mod videotoolbox {
         refcon: *mut c_void,
     }
 
+    #[allow(clippy::duplicated_attributes)]
     #[link(name = "VideoToolbox", kind = "framework")]
     #[link(name = "CoreMedia", kind = "framework")]
     #[link(name = "CoreVideo", kind = "framework")]
@@ -259,52 +267,20 @@ pub mod videotoolbox {
             let planes = CVPixelBufferGetPlaneCount(image_buffer);
 
             let rgb = if planes >= 2 {
-                // NV12 video-range: Y plane [16-235], UV plane [16-240]
-                // BT.601 limited-range → RGB direct conversion (no intermediate scaling)
+                // NV12 → RGB via NEON SIMD
                 let y_ptr = CVPixelBufferGetBaseAddressOfPlane(image_buffer, 0);
                 let y_stride = CVPixelBufferGetBytesPerRowOfPlane(image_buffer, 0);
                 let uv_ptr = CVPixelBufferGetBaseAddressOfPlane(image_buffer, 1);
                 let uv_stride = CVPixelBufferGetBytesPerRowOfPlane(image_buffer, 1);
-
                 let mut rgb_out = vec![0u8; w * h * 3];
-                for row in 0..h {
-                    let y_row = y_ptr.add(row * y_stride);
-                    let uv_row = uv_ptr.add((row / 2) * uv_stride);
-                    for col in 0..w {
-                        let y_val = *y_row.add(col) as i32;
-                        let cb_val = *uv_row.add((col / 2) * 2) as i32;
-                        let cr_val = *uv_row.add((col / 2) * 2 + 1) as i32;
-
-                        // BT.601 limited range → full range RGB
-                        // R = 1.164*(Y-16) + 1.596*(Cr-128)
-                        // G = 1.164*(Y-16) - 0.813*(Cr-128) - 0.391*(Cb-128)
-                        // B = 1.164*(Y-16) + 2.018*(Cb-128)
-                        let c = 298 * (y_val - 16); // 1.164 * 256
-                        let r = (c + 409 * (cr_val - 128) + 128) >> 8;
-                        let g = (c - 208 * (cr_val - 128) - 100 * (cb_val - 128) + 128) >> 8;
-                        let b = (c + 516 * (cb_val - 128) + 128) >> 8;
-
-                        let dst = (row * w + col) * 3;
-                        rgb_out[dst] = r.clamp(0, 255) as u8;
-                        rgb_out[dst + 1] = g.clamp(0, 255) as u8;
-                        rgb_out[dst + 2] = b.clamp(0, 255) as u8;
-                    }
-                }
+                nv12_bt601_to_rgb(y_ptr, y_stride, uv_ptr, uv_stride, w, h, &mut rgb_out);
                 rgb_out
             } else {
-                // Fallback BGRA
+                // BGRA fallback
                 let base = CVPixelBufferGetBaseAddress(image_buffer);
                 let stride = CVPixelBufferGetBytesPerRow(image_buffer);
                 let mut out = vec![0u8; w * h * 3];
-                for row in 0..h {
-                    for x in 0..w {
-                        let s = base.add(row * stride + x * 4);
-                        let d = (row * w + x) * 3;
-                        out[d] = *s.add(2);
-                        out[d + 1] = *s.add(1);
-                        out[d + 2] = *s;
-                    }
-                }
+                bgra_to_rgb(base, stride, w, h, &mut out);
                 out
             };
             CVPixelBufferUnlockBaseAddress(image_buffer, 1);
@@ -397,6 +373,8 @@ pub mod videotoolbox {
                 &kCFTypeDictionaryKeyCallBacks,
                 &kCFTypeDictionaryValueCallBacks,
             );
+            // NV12 output — direct from decoder, no GPU color conversion overhead.
+            // CPU-side NEON NV12→RGB is faster than VT's GPU BGRA scaler on Apple Silicon.
             let pixel_fmt = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
             let fmt_num = CFNumberCreate(
                 kCFAllocatorDefault,
@@ -405,7 +383,7 @@ pub mod videotoolbox {
             );
             CFDictionarySetValue(
                 attrs,
-                kCVPixelBufferPixelFormatTypeKey as *const c_void,
+                kCVPixelBufferPixelFormatTypeKey,
                 fmt_num,
             );
 
@@ -496,89 +474,76 @@ pub mod videotoolbox {
                 }
             }
 
-            // Feed NAL units to VT
+            // Build single AVCC buffer from all non-param NALs in this AU.
+            // One CMBlockBuffer + one DecodeFrame call per AU eliminates per-NAL FFI overhead.
             let nals = crate::parse_annex_b(data);
+            let mut avcc_buf = Vec::new();
             for nal in &nals {
                 if nal.data.is_empty() {
                     continue;
                 }
-                // Skip parameter set NALs (already processed)
                 let is_param = match self.codec {
                     VideoCodec::H264 => matches!(nal.data[0] & 0x1F, 7 | 8),
-                    VideoCodec::H265 => matches!((nal.data[0] >> 1) & 0x3F, 32 | 33 | 34),
+                    VideoCodec::H265 => matches!((nal.data[0] >> 1) & 0x3F, 32..=34),
                     _ => false,
                 };
                 if is_param {
                     continue;
                 }
-
-                // Wrap NAL in AVCC format (4-byte length prefix)
                 let nal_len = nal.data.len() as u32;
-                let mut avcc = Vec::with_capacity(4 + nal.data.len());
-                avcc.extend_from_slice(&nal_len.to_be_bytes());
-                avcc.extend_from_slice(&nal.data);
+                avcc_buf.extend_from_slice(&nal_len.to_be_bytes());
+                avcc_buf.extend_from_slice(&nal.data);
+            }
 
+            if !avcc_buf.is_empty() {
                 unsafe {
-                    // Create block buffer — pass NULL memory so CMBlockBuffer
-                    // allocates and we copy data in. This ensures the buffer
-                    // owns the data and it survives async decode.
                     let mut block_buf: CMBlockBufferRef = ptr::null();
                     let mut status = CMBlockBufferCreateWithMemoryBlock(
                         kCFAllocatorDefault,
-                        ptr::null(), // NULL = CMBlockBuffer allocates
-                        avcc.len(),
-                        ptr::null(), // default allocator
+                        ptr::null(),
+                        avcc_buf.len(),
+                        ptr::null(),
                         ptr::null(),
                         0,
-                        avcc.len(),
+                        avcc_buf.len(),
                         0,
                         &mut block_buf,
                     );
-                    if status != 0 || block_buf.is_null() {
-                        continue;
-                    }
-
-                    // Copy our AVCC data into the block buffer
-                    status = CMBlockBufferReplaceDataBytes(
-                        avcc.as_ptr() as *const c_void,
-                        block_buf,
-                        0,
-                        avcc.len(),
-                    );
-                    if status != 0 {
+                    if status == 0 && !block_buf.is_null() {
+                        status = CMBlockBufferReplaceDataBytes(
+                            avcc_buf.as_ptr() as *const c_void,
+                            block_buf,
+                            0,
+                            avcc_buf.len(),
+                        );
+                        if status == 0 {
+                            let sample_size = avcc_buf.len();
+                            let mut sample_buf: CMSampleBufferRef = ptr::null();
+                            status = CMSampleBufferCreateReady(
+                                kCFAllocatorDefault,
+                                block_buf,
+                                self.format_desc,
+                                1,
+                                0,
+                                ptr::null(),
+                                1,
+                                &sample_size,
+                                &mut sample_buf,
+                            );
+                            if status == 0 && !sample_buf.is_null() {
+                                let mut info_flags: u32 = 0;
+                                let _ = VTDecompressionSessionDecodeFrame(
+                                    self.session,
+                                    sample_buf,
+                                    1, // async decode — VT pipelines decode while we prepare next AU
+                                    ptr::null_mut(),
+                                    &mut info_flags,
+                                );
+                                CFRelease(sample_buf);
+                            }
+                        }
                         CFRelease(block_buf);
-                        continue;
                     }
-
-                    let sample_size = avcc.len();
-                    let mut sample_buf: CMSampleBufferRef = ptr::null();
-                    status = CMSampleBufferCreateReady(
-                        kCFAllocatorDefault,
-                        block_buf,
-                        self.format_desc,
-                        1, // numSamples
-                        0, // numSampleTimingEntries (0 = no timing)
-                        ptr::null(),
-                        1, // numSampleSizeEntries
-                        &sample_size,
-                        &mut sample_buf,
-                    );
-                    if status != 0 || sample_buf.is_null() {
-                        CFRelease(block_buf);
-                        continue;
-                    }
-
-                    let mut info_flags: u32 = 0;
-                    let _ = VTDecompressionSessionDecodeFrame(
-                        self.session,
-                        sample_buf,
-                        1, // kVTDecodeFrame_EnableAsynchronousDecompression
-                        ptr::null_mut(),
-                        &mut info_flags,
-                    );
-
-                    CFRelease(sample_buf);
-                    CFRelease(block_buf);
                 }
             }
 
@@ -622,6 +587,199 @@ pub mod videotoolbox {
 
     // Safety: VT session is used single-threaded via &mut self
     unsafe impl Send for VideoToolboxDecoder {}
+
+    /// Convert BGRA (from VT GPU output) to RGB8.
+    /// NEON: deinterleave 16 pixels at a time via vld4/vst3.
+    unsafe fn bgra_to_rgb(
+        bgra_ptr: *const u8,
+        stride: usize,
+        w: usize,
+        h: usize,
+        rgb: &mut [u8],
+    ) {
+        for row in 0..h {
+            let src = bgra_ptr.add(row * stride);
+            let dst = &mut rgb[row * w * 3..(row + 1) * w * 3];
+            let mut col = 0usize;
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                use std::arch::aarch64::*;
+                // Process 16 pixels per iteration: load 16×BGRA, store 16×RGB
+                while col + 16 <= w {
+                    let bgra = vld4q_u8(src.add(col * 4));
+                    // bgra.0=B, bgra.1=G, bgra.2=R, bgra.3=A
+                    let out = uint8x16x3_t(bgra.2, bgra.1, bgra.0);
+                    vst3q_u8(dst.as_mut_ptr().add(col * 3), out);
+                    col += 16;
+                }
+            }
+
+            // Scalar tail
+            while col < w {
+                let s = src.add(col * 4);
+                let d = col * 3;
+                dst[d] = *s.add(2); // R
+                dst[d + 1] = *s.add(1); // G
+                dst[d + 2] = *s; // B
+                col += 1;
+            }
+        }
+    }
+
+    /// Convert NV12 BT.601 limited range to RGB8.
+    /// Uses NEON SIMD on aarch64, scalar fallback otherwise.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn nv12_bt601_to_rgb(
+        y_ptr: *const u8,
+        y_stride: usize,
+        uv_ptr: *const u8,
+        uv_stride: usize,
+        w: usize,
+        h: usize,
+        rgb: &mut [u8],
+    ) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            nv12_bt601_to_rgb_neon(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
+            return;
+        }
+        #[allow(unreachable_code)]
+        nv12_bt601_to_rgb_scalar(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
+    }
+
+    /// NEON-accelerated NV12 BT.601 → RGB8.
+    /// Processes 8 pixels per iteration using int16 arithmetic.
+    #[cfg(target_arch = "aarch64")]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn nv12_bt601_to_rgb_neon(
+        y_ptr: *const u8,
+        y_stride: usize,
+        uv_ptr: *const u8,
+        uv_stride: usize,
+        w: usize,
+        h: usize,
+        rgb: &mut [u8],
+    ) {
+        use std::arch::aarch64::*;
+
+        let v16 = vdupq_n_s16(16);
+        let v128 = vdupq_n_s16(128);
+        let c298 = vdupq_n_s16(149); // 298/2 (work in half-scale to avoid overflow)
+        let c409 = vdupq_n_s16(204); // 409/2
+        let c100 = vdupq_n_s16(50); // 100/2
+        let c208 = vdupq_n_s16(104); // 208/2
+        let c516 = vdupq_n_s16(258u16 as i16); // 516/2 (wraps but ok for signed mul)
+        let half = vdupq_n_s16(64); // 128/2
+
+        for row in 0..h {
+            let y_row = y_ptr.add(row * y_stride);
+            let uv_row = uv_ptr.add((row / 2) * uv_stride);
+            let dst_row = &mut rgb[row * w * 3..(row + 1) * w * 3];
+            let mut col = 0usize;
+
+            while col + 8 <= w {
+                // Load 8 Y values
+                let y8 = vld1_u8(y_row.add(col));
+                let y16 = vreinterpretq_s16_u16(vmovl_u8(y8));
+                let y_adj = vsubq_s16(y16, v16); // Y - 16
+
+                // Load 4 UV pairs (interleaved Cb,Cr), duplicate to 8
+                let uv8 = vld1_u8(uv_row.add((col / 2) * 2));
+                let uv16 = vreinterpretq_s16_u16(vmovl_u8(uv8));
+                // Deinterleave: cb = uv[0,2,4,6], cr = uv[1,3,5,7]
+                let cb4 = vuzp1q_s16(uv16, uv16); // even indices
+                let cr4 = vuzp2q_s16(uv16, uv16); // odd indices
+                // Each UV pair covers 2 pixels — duplicate: [a,b,c,d] → [a,a,b,b,c,c,d,d]
+                let cb = vzip1q_s16(cb4, cb4);
+                let cr = vzip1q_s16(cr4, cr4);
+                let cb_adj = vsubq_s16(cb, v128); // Cb - 128
+                let cr_adj = vsubq_s16(cr, v128); // Cr - 128
+
+                // BT.601: work in half-scale (>>7 instead of >>8) to stay in i16
+                // c = 149 * (Y-16)
+                let c_val = vmulq_s16(c298, y_adj);
+                // r = (c + 204*(Cr-128) + 64) >> 7
+                let r16 = vshrq_n_s16(
+                    vaddq_s16(vaddq_s16(c_val, vmulq_s16(c409, cr_adj)), half),
+                    7,
+                );
+                // g = (c - 104*(Cr-128) - 50*(Cb-128) + 64) >> 7
+                let g16 = vshrq_n_s16(
+                    vaddq_s16(
+                        vsubq_s16(
+                            vsubq_s16(c_val, vmulq_s16(c208, cr_adj)),
+                            vmulq_s16(c100, cb_adj),
+                        ),
+                        half,
+                    ),
+                    7,
+                );
+                // b = (c + 258*(Cb-128) + 64) >> 7
+                let b16 = vshrq_n_s16(
+                    vaddq_s16(vaddq_s16(c_val, vmulq_s16(c516, cb_adj)), half),
+                    7,
+                );
+
+                // Clamp to [0, 255] and narrow to u8
+                let r8 = vqmovun_s16(vmaxq_s16(r16, vdupq_n_s16(0)));
+                let g8 = vqmovun_s16(vmaxq_s16(g16, vdupq_n_s16(0)));
+                let b8 = vqmovun_s16(vmaxq_s16(b16, vdupq_n_s16(0)));
+
+                // Interleave RGB and store
+                let rgb_triple = uint8x8x3_t(r8, g8, b8);
+                vst3_u8(dst_row.as_mut_ptr().add(col * 3), rgb_triple);
+
+                col += 8;
+            }
+
+            // Scalar tail
+            while col < w {
+                let y_val = *y_row.add(col) as i32;
+                let cb_val = *uv_row.add((col / 2) * 2) as i32;
+                let cr_val = *uv_row.add((col / 2) * 2 + 1) as i32;
+                let c = 298 * (y_val - 16);
+                let r = (c + 409 * (cr_val - 128) + 128) >> 8;
+                let g = (c - 208 * (cr_val - 128) - 100 * (cb_val - 128) + 128) >> 8;
+                let b = (c + 516 * (cb_val - 128) + 128) >> 8;
+                let dst = col * 3;
+                dst_row[dst] = r.clamp(0, 255) as u8;
+                dst_row[dst + 1] = g.clamp(0, 255) as u8;
+                dst_row[dst + 2] = b.clamp(0, 255) as u8;
+                col += 1;
+            }
+        }
+    }
+
+    /// Scalar fallback NV12 BT.601 → RGB8.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn nv12_bt601_to_rgb_scalar(
+        y_ptr: *const u8,
+        y_stride: usize,
+        uv_ptr: *const u8,
+        uv_stride: usize,
+        w: usize,
+        h: usize,
+        rgb: &mut [u8],
+    ) {
+        for row in 0..h {
+            let y_row = y_ptr.add(row * y_stride);
+            let uv_row = uv_ptr.add((row / 2) * uv_stride);
+            for col in 0..w {
+                let y_val = *y_row.add(col) as i32;
+                let cb_val = *uv_row.add((col / 2) * 2) as i32;
+                let cr_val = *uv_row.add((col / 2) * 2 + 1) as i32;
+                let c = 298 * (y_val - 16);
+                let r = (c + 409 * (cr_val - 128) + 128) >> 8;
+                let g = (c - 208 * (cr_val - 128) - 100 * (cb_val - 128) + 128) >> 8;
+                let b = (c + 516 * (cb_val - 128) + 128) >> 8;
+                let dst = (row * w + col) * 3;
+                rgb[dst] = r.clamp(0, 255) as u8;
+                rgb[dst + 1] = g.clamp(0, 255) as u8;
+                rgb[dst + 2] = b.clamp(0, 255) as u8;
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

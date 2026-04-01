@@ -252,9 +252,10 @@ pub struct Mp4VideoReader {
     /// Whether parameter sets have been fed to the decoder.
     params_fed: bool,
 
-    /// Raw Annex B data per sample (for HW decode path — loaded on demand).
-    raw_samples: Vec<Vec<u8>>,
-    current_nal: usize,
+    /// Parameter set init AU for HW decode (prepended to first sample).
+    hw_init_au: Option<Vec<u8>>,
+    /// Current HW sample index for streaming decode.
+    hw_sample_idx: usize,
 }
 
 impl Mp4VideoReader {
@@ -359,8 +360,8 @@ impl Mp4VideoReader {
             nal_length_size,
             current_sample: 0,
             params_fed: false,
-            raw_samples: Vec::new(),
-            current_nal: 0,
+            hw_init_au: None,
+            hw_sample_idx: 0,
         })
     }
 
@@ -376,10 +377,7 @@ impl Mp4VideoReader {
         };
         let hw = super::hw_decode::HwVideoDecoder::new(vc)?;
         if hw.is_hardware() {
-            // Build Annex B blobs per-AU by reading samples from file
-            let mut raw = Vec::new();
-
-            // First: parameter sets as init AU
+            // Build parameter set init blob (prepended to first AU only)
             let mut init_au = Vec::new();
             match reader.codec {
                 Mp4Codec::H264 => {
@@ -396,27 +394,8 @@ impl Mp4VideoReader {
                 }
             }
 
-            // Read each sample from file and build AU
-            for idx in 0..reader.sample_table.len() {
-                let sample_data = reader.read_sample(idx)?;
-                let nals = parse_length_prefixed_nals(&sample_data, reader.nal_length_size);
-
-                let mut au = if idx == 0 {
-                    std::mem::take(&mut init_au) // prepend param sets to first AU
-                } else {
-                    Vec::new()
-                };
-
-                for nal_data in nals {
-                    au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-                    au.extend_from_slice(&nal_data);
-                }
-                if !au.is_empty() {
-                    raw.push(au);
-                }
-            }
-
-            reader.raw_samples = raw;
+            // Store init AU for streaming — samples are read one-at-a-time in next_frame
+            reader.hw_init_au = Some(init_au);
             reader.decoder = Mp4Decoder::Hw(hw);
         }
         Ok(reader)
@@ -448,12 +427,30 @@ impl Mp4VideoReader {
 
     /// Decode the next frame. Reads one sample at a time from disk — O(1) memory.
     pub fn next_frame(&mut self) -> Result<Option<super::codec::DecodedFrame>, VideoError> {
-        // HW decode path (legacy — keeps all NALs in memory)
-        if let Mp4Decoder::Hw(ref mut hw) = self.decoder {
-            while self.current_nal < self.raw_samples.len() {
-                let data = &self.raw_samples[self.current_nal];
-                self.current_nal += 1;
-                if let Some(frame) = hw.decode(data, 0)? {
+        // HW decode path — streaming: read one sample from disk per call
+        if matches!(self.decoder, Mp4Decoder::Hw(_)) {
+            while self.hw_sample_idx < self.sample_table.len() {
+                let idx = self.hw_sample_idx;
+                self.hw_sample_idx += 1;
+
+                // Read sample from disk (borrows self.file only)
+                let sample_data = self.read_sample(idx)?;
+                let nals = parse_length_prefixed_nals(&sample_data, self.nal_length_size);
+
+                let mut au = if idx == 0 {
+                    self.hw_init_au.take().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
+                for nal_data in nals {
+                    au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                    au.extend_from_slice(&nal_data);
+                }
+                if !au.is_empty()
+                    && let Mp4Decoder::Hw(ref mut hw) = self.decoder
+                    && let Some(frame) = hw.decode(&au, 0)?
+                {
                     return Ok(Some(frame));
                 }
             }
@@ -538,7 +535,7 @@ impl Mp4VideoReader {
     /// Reset to the beginning (re-decode from first sample).
     pub fn seek_start(&mut self) {
         self.current_sample = 0;
-        self.current_nal = 0;
+        self.hw_sample_idx = 0;
         self.params_fed = false;
         match self.codec {
             Mp4Codec::H264 => {
