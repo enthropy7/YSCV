@@ -6,7 +6,9 @@ unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 impl<T> SendPtr<T> {
     #[inline(always)]
-    pub(crate) fn ptr(self) -> *mut T { self.0 }
+    pub(crate) fn ptr(self) -> *mut T {
+        self.0
+    }
 }
 
 /// Wrapper to send raw const pointers across thread boundaries.
@@ -17,7 +19,9 @@ unsafe impl<T> Send for SendConstPtr<T> {}
 unsafe impl<T> Sync for SendConstPtr<T> {}
 impl<T> SendConstPtr<T> {
     #[inline(always)]
-    pub(crate) fn ptr(self) -> *const T { self.0 }
+    pub(crate) fn ptr(self) -> *const T {
+        self.0
+    }
 }
 
 mod augment;

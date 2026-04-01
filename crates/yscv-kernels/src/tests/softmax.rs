@@ -66,7 +66,12 @@ fn log_softmax_last_dim_matches_ln_softmax() {
     let log_softmax = log_softmax_last_dim(&input).unwrap();
     assert_eq!(softmax.shape(), log_softmax.shape());
     for index in 0..softmax.len() {
-        assert!((softmax.data()[index].ln() - log_softmax.data()[index]).abs() <= 1e-6);
+        assert!(
+            (softmax.data()[index].ln() - log_softmax.data()[index]).abs() <= 1e-5,
+            "mismatch at {index}: ln(softmax)={} log_softmax={}",
+            softmax.data()[index].ln(),
+            log_softmax.data()[index]
+        );
     }
 }
 

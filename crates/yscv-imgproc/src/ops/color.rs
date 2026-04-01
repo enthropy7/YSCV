@@ -36,8 +36,7 @@ pub fn rgb_to_grayscale(input: &Tensor) -> Result<Tensor, ImgProcError> {
             let n = (y_end - y_start) * w_c;
             let src_off = y_start * w_c * 3;
             let dst_off = y_start * w_c;
-            let chunk_src =
-                unsafe { std::slice::from_raw_parts(src_ptr.ptr(), data_len) };
+            let chunk_src = unsafe { std::slice::from_raw_parts(src_ptr.ptr(), data_len) };
             let chunk_src = &chunk_src[src_off..src_off + n * 3];
             let chunk_dst =
                 unsafe { std::slice::from_raw_parts_mut(dst_ptr.ptr().add(dst_off), n) };
@@ -284,16 +283,10 @@ pub fn rgb_to_hsv(input: &Tensor) -> Result<Tensor, ImgProcError> {
         {
             super::u8ops::gcd::parallel_for(h, |y| {
                 let src = unsafe {
-                    std::slice::from_raw_parts(
-                        _src_ptr.ptr().add(y * row_stride),
-                        row_stride,
-                    )
+                    std::slice::from_raw_parts(_src_ptr.ptr().add(y * row_stride), row_stride)
                 };
                 let dst = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        _dst_ptr.ptr().add(y * row_stride),
-                        row_stride,
-                    )
+                    std::slice::from_raw_parts_mut(_dst_ptr.ptr().add(y * row_stride), row_stride)
                 };
                 let done = if !cfg!(miri) {
                     hsv_simd_row(src, dst)
@@ -785,16 +778,10 @@ pub fn rgb_to_lab(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
         let process_row = |row: usize| {
             let src_row = unsafe {
-                std::slice::from_raw_parts(
-                    src_ptr.ptr().add(row * row_stride),
-                    row_stride,
-                )
+                std::slice::from_raw_parts(src_ptr.ptr().add(row * row_stride), row_stride)
             };
             let out_row = unsafe {
-                std::slice::from_raw_parts_mut(
-                    dst_ptr.ptr().add(row * row_stride),
-                    row_stride,
-                )
+                std::slice::from_raw_parts_mut(dst_ptr.ptr().add(row * row_stride), row_stride)
             };
             for px in 0..w {
                 let base = px * 3;
@@ -1319,10 +1306,7 @@ pub fn rgb_to_yuv(input: &Tensor) -> Result<Tensor, ImgProcError> {
         gcd::parallel_for(h, |y| {
             let src_row = &data[y * row_stride..(y + 1) * row_stride];
             let dst_row = unsafe {
-                std::slice::from_raw_parts_mut(
-                    out_ptr.ptr().add(y * row_stride),
-                    row_stride,
-                )
+                std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_stride), row_stride)
             };
             let done = if !cfg!(miri) {
                 yuv_simd_row(src_row, dst_row)
@@ -1724,10 +1708,7 @@ pub fn rgb_to_bgr(input: &Tensor) -> Result<Tensor, ImgProcError> {
         gcd::parallel_for(h, |y| {
             let src_row = &data[y * row_stride..(y + 1) * row_stride];
             let dst_row = unsafe {
-                std::slice::from_raw_parts_mut(
-                    out_ptr.ptr().add(y * row_stride),
-                    row_stride,
-                )
+                std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_stride), row_stride)
             };
             let done = if !cfg!(miri) {
                 bgr_simd_row(src_row, dst_row)

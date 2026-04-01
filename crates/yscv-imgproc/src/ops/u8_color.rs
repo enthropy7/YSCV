@@ -526,9 +526,8 @@ pub fn clahe_u8(
             let denom = tile_pixels as u32 - cdf_min;
 
             // SAFETY: each tile writes to non-overlapping region of maps
-            let map = unsafe {
-                std::slice::from_raw_parts_mut(maps_base.ptr().add(tile_idx * 256), 256)
-            };
+            let map =
+                unsafe { std::slice::from_raw_parts_mut(maps_base.ptr().add(tile_idx * 256), 256) };
 
             if denom == 0 {
                 for i in 0..256 {
@@ -605,9 +604,8 @@ pub fn clahe_u8(
 
             let row_start = y * width;
             // SAFETY: each row writes to non-overlapping region; pointer derived from as_mut_ptr
-            let dst_row = unsafe {
-                std::slice::from_raw_parts_mut(out_base.ptr().add(row_start), width)
-            };
+            let dst_row =
+                unsafe { std::slice::from_raw_parts_mut(out_base.ptr().add(row_start), width) };
 
             for x in 0..width {
                 let tc0 = unsafe { *xtc0.get_unchecked(x) } as usize;

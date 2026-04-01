@@ -29,12 +29,10 @@ pub fn threshold_binary(
         let dst_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
-            let src = unsafe {
-                std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len)
-            };
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len)
-            };
+            let src =
+                unsafe { std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len) };
+            let dst =
+                unsafe { std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len) };
             threshold_binary_simd_slice(src, dst, threshold, max_val);
         });
         return Tensor::from_aligned(vec![h, w, channels], out).map_err(Into::into);
@@ -74,12 +72,10 @@ pub fn threshold_binary_inv(
         let dst_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
-            let src = unsafe {
-                std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len)
-            };
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len)
-            };
+            let src =
+                unsafe { std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len) };
+            let dst =
+                unsafe { std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len) };
             threshold_binary_inv_simd_slice(src, dst, threshold, max_val);
         });
         return Tensor::from_aligned(vec![h, w, channels], out).map_err(Into::into);
@@ -115,12 +111,10 @@ pub fn threshold_truncate(input: &Tensor, threshold: f32) -> Result<Tensor, ImgP
         let dst_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
-            let src = unsafe {
-                std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len)
-            };
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len)
-            };
+            let src =
+                unsafe { std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len) };
+            let dst =
+                unsafe { std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len) };
             threshold_truncate_simd_slice(src, dst, threshold);
         });
         return Tensor::from_aligned(vec![h, w, channels], out).map_err(Into::into);

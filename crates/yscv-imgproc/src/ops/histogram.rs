@@ -295,9 +295,8 @@ pub fn clahe(
             let n_pixels = (y1 - y0) * (x1 - x0);
 
             // SAFETY: each tile writes to its own non-overlapping 256-byte slice.
-            let map = unsafe {
-                std::slice::from_raw_parts_mut(maps_ptr.ptr().add(tile_idx * 256), 256)
-            };
+            let map =
+                unsafe { std::slice::from_raw_parts_mut(maps_ptr.ptr().add(tile_idx * 256), 256) };
             let src_u8 = unsafe { std::slice::from_raw_parts(src_u8_ptr.ptr(), h * w) };
 
             let mut hist = [0u32; 256];
@@ -347,8 +346,7 @@ pub fn clahe(
         let src_u8_ptr = super::SendConstPtr(src_u8.as_ptr());
         gcd::parallel_for(h, |y| {
             // SAFETY: each row writes to non-overlapping out[y*w..(y+1)*w].
-            let out_row =
-                unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * w), w) };
+            let out_row = unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * w), w) };
             let maps = unsafe { std::slice::from_raw_parts(maps_ptr.ptr(), n_tiles * 256) };
             let src_u8 = unsafe { std::slice::from_raw_parts(src_u8_ptr.ptr(), h * w) };
 

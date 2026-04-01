@@ -94,16 +94,10 @@ pub fn sobel_3x3_gradients(input: &Tensor) -> Result<(Tensor, Tensor), ImgProcEr
                     let y = i + 1;
                     // SAFETY: each row writes to a disjoint slice.
                     let gx_row = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            gx_ptr.ptr().add(i * row_len),
-                            row_len,
-                        )
+                        std::slice::from_raw_parts_mut(gx_ptr.ptr().add(i * row_len), row_len)
                     };
                     let gy_row = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            gy_ptr.ptr().add(i * row_len),
-                            row_len,
-                        )
+                        std::slice::from_raw_parts_mut(gy_ptr.ptr().add(i * row_len), row_len)
                     };
                     compute_interior_row(y, gx_row, gy_row);
                 });
@@ -368,13 +362,9 @@ pub fn sobel_3x3_magnitude(input: &Tensor) -> Result<Tensor, ImgProcError> {
         gcd::parallel_for(h, |y| {
             let start = y * row_len;
             // SAFETY: each row writes to a disjoint slice.
-            let gx_slice =
-                unsafe { std::slice::from_raw_parts(gx_ptr.ptr().add(start), row_len) };
-            let gy_slice =
-                unsafe { std::slice::from_raw_parts(gy_ptr.ptr().add(start), row_len) };
-            let dst = unsafe {
-                std::slice::from_raw_parts_mut(out_ptr.ptr().add(start), row_len)
-            };
+            let gx_slice = unsafe { std::slice::from_raw_parts(gx_ptr.ptr().add(start), row_len) };
+            let gy_slice = unsafe { std::slice::from_raw_parts(gy_ptr.ptr().add(start), row_len) };
+            let dst = unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(start), row_len) };
             let mut i = magnitude_simd(gx_slice, gy_slice, dst);
             while i < row_len {
                 let x = gx_slice[i];

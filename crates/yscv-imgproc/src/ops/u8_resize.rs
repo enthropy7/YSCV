@@ -71,10 +71,7 @@ pub fn resize_nearest_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option<
                 } else {
                     let src_row = &data[src_y * in_row_stride..];
                     let dst_row = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            out_base.ptr().add(dst_off),
-                            out_row_bytes,
-                        )
+                        std::slice::from_raw_parts_mut(out_base.ptr().add(dst_off), out_row_bytes)
                     };
                     resize_nearest_row(src_row, dst_row, x_map_ref, channels);
                     prev_src_y = src_y;
@@ -498,10 +495,7 @@ pub fn resize_bilinear_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option
 
                     let dst_off = oy * row_stride;
                     let dst_row = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            out_base.ptr().add(dst_off),
-                            row_stride,
-                        )
+                        std::slice::from_raw_parts_mut(out_base.ptr().add(dst_off), row_stride)
                     };
                     unsafe {
                         resize_vpass_multi_ch(&hbuf0, &hbuf1, dst_row, fy as u16, hbuf_len);

@@ -33,10 +33,7 @@ pub fn grayscale_u8(input: &ImageU8) -> Option<ImageU8> {
             let y_end = (y_start + rows_per_chunk).min(h_c);
             let chunk_pixels = (y_end - y_start) * w_c;
             let src_chunk = unsafe {
-                std::slice::from_raw_parts(
-                    sp.ptr().add(y_start * w_c * 3),
-                    chunk_pixels * 3,
-                )
+                std::slice::from_raw_parts(sp.ptr().add(y_start * w_c * 3), chunk_pixels * 3)
             };
             let dst_chunk = unsafe {
                 std::slice::from_raw_parts_mut(dp.ptr().add(y_start * w_c), chunk_pixels)

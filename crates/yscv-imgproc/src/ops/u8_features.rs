@@ -550,8 +550,7 @@ pub fn warp_perspective_u8(
         let src_ptr = super::SendConstPtr(src.as_ptr());
         let out_ptr = super::SendPtr(out.as_mut_ptr());
         (0..out_h).into_par_iter().for_each(|oy| {
-            let src =
-                unsafe { std::slice::from_raw_parts(src_ptr.ptr(), ih * iw * channels) };
+            let src = unsafe { std::slice::from_raw_parts(src_ptr.ptr(), ih * iw * channels) };
             let out_row = unsafe {
                 std::slice::from_raw_parts_mut(
                     out_ptr.ptr().add(oy * out_w * channels),
@@ -862,8 +861,7 @@ fn bilateral_u8_parallel(
         gcd::parallel_for(height, |y| {
             let sp = sp.ptr();
             let dp = dp.ptr();
-            let spatial_lut =
-                unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
+            let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
             let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
             let combined_lut =
                 unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
@@ -891,8 +889,7 @@ fn bilateral_u8_parallel(
         (0..height).into_par_iter().for_each(|y| {
             let sp = sp.ptr();
             let dp = dp.ptr();
-            let spatial_lut =
-                unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
+            let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
             let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
             let combined_lut =
                 unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
@@ -1031,8 +1028,7 @@ fn bilateral_u8_parallel_x86<const USE_AVX2: bool>(
         let dp = dp.ptr();
         let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
         let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
-        let combined_lut =
-            unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
+        let combined_lut = unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
         if USE_AVX2 {
             unsafe {
                 bilateral_u8_row_avx2(

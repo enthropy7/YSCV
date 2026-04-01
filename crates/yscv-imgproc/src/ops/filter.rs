@@ -252,9 +252,8 @@ pub fn box_blur_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             // SAFETY: each row writes to a disjoint slice of out.
-            let row = unsafe {
-                std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len)
-            };
+            let row =
+                unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len) };
             compute_row(y, row);
         });
         return Tensor::from_vec(vec![h, w, channels], out).map_err(Into::into);
@@ -482,9 +481,8 @@ pub fn gaussian_blur_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             // SAFETY: each row writes to a disjoint slice of out.
-            let row = unsafe {
-                std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len)
-            };
+            let row =
+                unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len) };
             compute_row(y, row);
         });
         return Tensor::from_vec(vec![h, w, channels], out).map_err(Into::into);
@@ -1327,8 +1325,7 @@ pub fn bilateral_filter(
         let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
-            let row =
-                unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * w), w) };
+            let row = unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * w), w) };
             compute_row(y, row);
         });
         return Tensor::from_vec(vec![h, w, 1], out).map_err(Into::into);
