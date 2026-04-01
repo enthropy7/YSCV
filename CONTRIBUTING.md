@@ -10,7 +10,7 @@ The framework covers the full pipeline: tensors and autograd, neural network lay
 
 ## Project shape
 
-The workspace has 14 library crates, 2 application binaries, and an examples crate. There are 1,659 tests, 12 criterion microbenchmarks, and CI with regression gates on GitHub Actions.
+The workspace has 14 library crates, 2 application binaries, and an examples crate. There are 1,693 tests across 15 crates, 12 criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64).
 
 Key crates and what they do:
 
@@ -20,7 +20,7 @@ Key crates and what they do:
 - **yscv-optim** — 8 optimizers (SGD/Adam/AdamW/RAdam/RmsProp/Adagrad/Lamb/Lars) all with NEON+AVX+SSE SIMD, Lookahead meta-optimizer, 11 LR schedulers.
 - **yscv-model** — 39 layer types (25 trainable), Trainer API, model zoo (ResNet/VGG/MobileNet/EfficientNet/AlexNet/ViT/DeiT), LoRA, EMA, mixed precision, TensorBoard logging, StreamingDataLoader, distributed training.
 - **yscv-imgproc** — 178 image processing ops. The u8 operations (grayscale, blur, morphology, edge detection, resize) have hand-written NEON, AVX2 and SSE/SSSE3 SIMD and beat OpenCV 4.13 on all benchmarked operations.
-- **yscv-video** — H.264 decoder (I/P/B-slices), HEVC infrastructure, MP4 parsing, camera I/O.
+- **yscv-video** — H.264/HEVC software decode (4.5×/1.4× faster than ffmpeg), MP4/MKV demux, HW decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), audio metadata extraction, camera I/O. 220 tests, 29 NEON + 31 SSE2 SIMD blocks.
 - **yscv-detect** — YOLOv8 ONNX pipeline, NMS, heatmap decoding, anchor generation.
 - **yscv-track** — DeepSORT, ByteTrack, Kalman filter, Hungarian assignment, re-identification.
 - **yscv-recognize** — cosine similarity matching, VP-Tree ANN indexing.

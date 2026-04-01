@@ -44,6 +44,8 @@ pub mod hevc_params;
 pub mod hevc_syntax;
 #[path = "hevc_transform.rs"]
 pub mod hevc_transform;
+#[path = "hw_decode.rs"]
+pub mod hw_decode;
 #[path = "mkv.rs"]
 pub mod mkv;
 #[path = "source.rs"]

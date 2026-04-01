@@ -1602,10 +1602,15 @@ impl HevcDecoder {
         let est_ctus = w.div_ceil(64) * h.div_ceil(64);
         let mut sao_list: Vec<super::hevc_filter::SaoParams> = Vec::with_capacity(est_ctus);
 
+        // Chroma recon buffers (shared across CABAC/stub paths)
+        let chroma_needed = (w / 2) * (h / 2);
+        let mut recon_cb = vec![128i16; chroma_needed];
+        let mut recon_cr = vec![128i16; chroma_needed];
+
         if use_cabac {
             let slice_qp = pps.init_qp as i32;
             let mut cabac_state = super::hevc_syntax::HevcSliceCabacState::new(payload, slice_qp);
-            let mid_val = 1i16 << (sps.bit_depth_luma - 1); // 128 for 8-bit, 512 for 10-bit
+            let mid_val = 1i16 << (sps.bit_depth_luma - 1);
             // Reuse reconstruction buffer across frames (avoid 1.8MB alloc per frame)
             let needed = w * h;
             if self.recon_buf.len() < needed {
@@ -1662,6 +1667,8 @@ impl HevcDecoder {
                         w,
                         h,
                         &mut recon_luma,
+                        &mut recon_cb,
+                        &mut recon_cr,
                         &mut cus,
                         &self.dpb,
                         &mut mv_field,
@@ -1736,7 +1743,26 @@ impl HevcDecoder {
             // Still produce minimal output for frame counting
             vec![128u8; 3] // 1-pixel placeholder
         } else {
-            super::hevc_filter::finalize_hevc_frame(&mut y_plane, w, h, &cu_info, slice_qp, sao_ref)
+            // Convert chroma recon i16 → u8
+            let chroma_n = (w / 2) * (h / 2);
+            let cb_plane: Vec<u8> = recon_cb[..chroma_n]
+                .iter()
+                .map(|&v| v.clamp(0, 255) as u8)
+                .collect();
+            let cr_plane: Vec<u8> = recon_cr[..chroma_n]
+                .iter()
+                .map(|&v| v.clamp(0, 255) as u8)
+                .collect();
+            super::hevc_filter::finalize_hevc_frame_with_chroma(
+                &mut y_plane,
+                &cb_plane,
+                &cr_plane,
+                w,
+                h,
+                &cu_info,
+                slice_qp,
+                sao_ref,
+            )
         };
 
         // Store reconstructed luma in DPB as u16
@@ -1746,14 +1772,21 @@ impl HevcDecoder {
             .iter()
             .map(|&s| s.clamp(0, max_val) as u16)
             .collect();
-        // Chroma: DC 128 for now (chroma MC populates during inter decode)
-        let chroma_w = w / 2;
-        let chroma_h = h / 2;
+        // Store chroma in DPB for inter prediction
+        let chroma_n = (w / 2) * (h / 2);
+        let dpb_cb: Vec<u16> = recon_cb[..chroma_n]
+            .iter()
+            .map(|&v| v.clamp(0, 255) as u16)
+            .collect();
+        let dpb_cr: Vec<u16> = recon_cr[..chroma_n]
+            .iter()
+            .map(|&v| v.clamp(0, 255) as u16)
+            .collect();
         self.dpb.add(super::hevc_inter::HevcReferencePicture {
             poc: self.poc,
             luma: dpb_luma,
-            cb: vec![128u16; chroma_w * chroma_h],
-            cr: vec![128u16; chroma_w * chroma_h],
+            cb: dpb_cb,
+            cr: dpb_cr,
             width: w,
             height: h,
             is_long_term: false,

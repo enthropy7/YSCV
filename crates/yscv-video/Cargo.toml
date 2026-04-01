@@ -13,6 +13,12 @@ keywords.workspace = true
 [features]
 default = []
 native-camera = ["dep:nokhwa"]
+## Hardware video decode backends (opt-in, platform-specific)
+videotoolbox = []  # macOS: Apple VideoToolbox HW decode
+vaapi = []         # Linux: VA-API HW decode
+nvdec = []         # NVIDIA: NVDEC HW decode (Linux/Windows)
+media-foundation = [] # Windows: Media Foundation HW decode
+hw-decode = []     # Enable auto-dispatch (tries HW, falls back to SW)
 
 [dependencies]
 bytes = "1"
@@ -20,6 +26,12 @@ nokhwa = { version = "0.10.10", optional = true, default-features = false, featu
 rayon = "1.11"
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
+
+# Platform-specific HW decode (linked via system frameworks, no crate deps needed)
+# VideoToolbox: uses raw FFI to CoreMedia/VideoToolbox frameworks (macOS)
+# VAAPI: uses raw FFI to libva (Linux)
+# MediaFoundation: uses raw FFI to mf/mfplat (Windows)
+# NVDEC: uses raw FFI to nvcuvid (Linux/Windows)
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

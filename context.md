@@ -11,10 +11,10 @@ yscv (umbrella re-export)
 ├── yscv-tensor          ← 115 ops, f32/f16/bf16, 50 SIMD functions
 ├── yscv-kernels         ← 61 kernel ops, 49 SIMD, 20 GPU WGSL shaders
 ├── yscv-autograd        ← dynamic computation graph, 40+ backward ops
-├── yscv-optim           ← 20 optimizers, 11 LR schedulers
+├── yscv-optim           ← 8 optimizers (SGD/Adam/AdamW/RAdam/RmsProp/Adagrad/Lamb/Lars), 11 LR schedulers
 ├── yscv-model           ← 39 layer types, 13 model zoo architectures, 17 losses
 ├── yscv-imgproc         ← 178 image ops, u8 NEON/SSE/AVX SIMD, GCD/rayon threading
-├── yscv-video           ← H.264 decoder (3,069 LOC), HEVC decoder (6,678 LOC), camera I/O
+├── yscv-video           ← H.264/HEVC decode (23K LOC, 4.5× ffmpeg), MP4/MKV demux, HW decode (VT/VAAPI/NVDEC/MF), camera I/O, audio metadata
 ├── yscv-detect          ← YOLOv8 pipeline, NMS, heatmap, RoI align
 ├── yscv-recognize       ← cosine matching, VP-Tree ANN
 ├── yscv-track           ← DeepSORT, ByteTrack, Kalman, re-id

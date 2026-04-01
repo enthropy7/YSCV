@@ -1293,8 +1293,99 @@ pub fn finalize_hevc_frame(
     }
 
     // Fast Y→RGB: chroma planes are all-128 (no chroma decode), so UV=0 and R=G=B=Y.
-    // This is ~10x faster than the full YUV420 matrix multiply.
     y_to_grayscale_rgb(y_plane)
+}
+
+/// Finalize with real chroma planes — full color YUV420→RGB output.
+pub fn finalize_hevc_frame_with_chroma(
+    y_plane: &mut [u8],
+    cb_plane: &[u8],
+    cr_plane: &[u8],
+    width: usize,
+    height: usize,
+    cus: &[(usize, usize, usize, HevcPredMode)],
+    qp: u8,
+    sao_params: Option<&[SaoParams]>,
+) -> Vec<u8> {
+    // Deblock luma (same as grayscale path)
+    let min_cu_size = 8;
+    let grid_cols = width.div_ceil(min_cu_size);
+    let grid_rows = height.div_ceil(min_cu_size);
+    let grid_size = grid_cols * grid_rows;
+
+    let mut mode_grid = vec![2u8; grid_size];
+    for &(cu_x, cu_y, cu_size, pred_mode) in cus {
+        let mode_val = match pred_mode {
+            HevcPredMode::Intra => 0u8,
+            HevcPredMode::Inter => 1u8,
+            HevcPredMode::Skip => 2u8,
+        };
+        let gx_end = ((cu_x + cu_size) / min_cu_size).min(grid_cols);
+        let gy_end = ((cu_y + cu_size) / min_cu_size).min(grid_rows);
+        for gy in (cu_y / min_cu_size)..gy_end {
+            for gx in (cu_x / min_cu_size)..gx_end {
+                mode_grid[gy * grid_cols + gx] = mode_val;
+            }
+        }
+    }
+
+    let mut cu_edges = vec![true; grid_size];
+    for &(cu_x, cu_y, cu_size, _) in cus {
+        if cu_size <= min_cu_size {
+            continue;
+        }
+        let gx_start = cu_x / min_cu_size;
+        let gy_start = cu_y / min_cu_size;
+        let gx_end = (cu_x + cu_size) / min_cu_size;
+        let gy_end = (cu_y + cu_size) / min_cu_size;
+        for gy in (gy_start + 1)..gy_end {
+            for gx in (gx_start + 1)..gx_end.min(grid_cols) {
+                if gy < grid_rows {
+                    cu_edges[gy * grid_cols + gx] = false;
+                }
+            }
+        }
+    }
+
+    let ctu_size = 64usize.min(width).min(height);
+    let ctu_cols = width.div_ceil(ctu_size);
+    let ctu_rows = height.div_ceil(ctu_size);
+    let qp_map = vec![qp; ctu_cols * ctu_rows];
+
+    hevc_deblock_luma_only(
+        y_plane,
+        width,
+        height,
+        &qp_map,
+        &cu_edges,
+        min_cu_size,
+        &mode_grid,
+    );
+
+    // Apply SAO
+    if let Some(sao_list) = sao_params {
+        let mut sao_idx = 0;
+        for ctu_row in 0..ctu_rows {
+            for ctu_col in 0..ctu_cols {
+                if sao_idx < sao_list.len() {
+                    hevc_apply_sao(
+                        y_plane,
+                        width,
+                        height,
+                        ctu_col * ctu_size,
+                        ctu_row * ctu_size,
+                        ctu_size,
+                        &sao_list[sao_idx],
+                    );
+                    sao_idx += 1;
+                }
+            }
+        }
+    }
+
+    // Full YUV420 → RGB with real chroma (NEON-accelerated)
+    crate::yuv420_to_rgb8(y_plane, cb_plane, cr_plane, width, height)
+        .unwrap_or_else(|_| y_to_grayscale_rgb(y_plane))
 }
 
 // ---------------------------------------------------------------------------

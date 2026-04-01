@@ -11,11 +11,9 @@ pub(crate) fn dispatch_with_mps(plan: &MetalPlan, cmd: &CommandBufferRef) {
     let bufs = &plan.bufs;
     let gb = |name: &str| -> &Buffer {
         bufs.get(name).unwrap_or_else(|| {
-            panic!(
-                "Metal plan: buffer '{}' not found (have {} buffers)",
-                name,
-                bufs.len()
-            );
+            // Internal invariant: all buffers should be allocated before dispatch.
+            // If this fails, it's a bug in plan construction, not user input.
+            unreachable!("Metal plan: buffer '{name}' not found (have {} buffers). This is a bug in MetalPlan construction.", bufs.len())
         })
     };
 
@@ -119,7 +117,9 @@ pub(crate) fn dispatch_compute_op(
 ) {
     let gb = |name: &str| -> &Buffer {
         bufs.get(name).unwrap_or_else(|| {
-            panic!("Metal plan: buffer '{}' not found", name);
+            unreachable!(
+                "Metal plan: buffer '{name}' not found. This is a bug in MetalPlan construction."
+            );
         })
     };
     match op {

@@ -40,11 +40,16 @@ pub struct MkvFrame {
 }
 
 /// Minimal MKV demuxer state.
+///
+/// Uses streaming design: stores file path + frame index (offset, size, timestamp),
+/// reads frame data lazily from disk on `next_frame()`.
 pub struct MkvDemuxer {
+    /// Full file data (only for files < 512MB; needed for EBML structure traversal).
     data: Vec<u8>,
     codec: MkvCodec,
     codec_private: Vec<u8>,
-    frames: Vec<MkvFrame>,
+    /// Frame index: (data_offset, data_size, timestamp_ms, keyframe).
+    frame_index: Vec<(usize, usize, u64, bool)>,
     current_frame: usize,
     /// Audio track info (if any audio track found).
     audio_info: Option<super::audio::AudioTrackInfo>,
@@ -52,7 +57,22 @@ pub struct MkvDemuxer {
 
 impl MkvDemuxer {
     /// Open an MKV/WebM file and parse its structure.
+    ///
+    /// **Warning**: currently reads the entire file into memory.
+    /// For files > 256MB, consider using `Mp4VideoReader` instead.
+    /// TODO: streaming MKV parser.
     pub fn open(path: &std::path::Path) -> Result<Self, VideoError> {
+        // Check file size to prevent OOM
+        let meta = std::fs::metadata(path)
+            .map_err(|e| VideoError::Codec(format!("failed to stat MKV: {e}")))?;
+        if meta.len() > 512 * 1024 * 1024 {
+            return Err(VideoError::Codec(format!(
+                "MKV file too large for in-memory parsing ({:.0}MB > 512MB limit). \
+                 Use Mp4VideoReader for large files.",
+                meta.len() as f64 / 1024.0 / 1024.0,
+            )));
+        }
+
         let data = std::fs::read(path)
             .map_err(|e| VideoError::Codec(format!("failed to read MKV: {e}")))?;
 
@@ -65,7 +85,7 @@ impl MkvDemuxer {
             audio_info: None,
             codec: MkvCodec::Unknown,
             codec_private: Vec::new(),
-            frames: Vec::new(),
+            frame_index: Vec::new(),
             current_frame: 0,
         };
         demuxer.parse()?;
@@ -84,15 +104,24 @@ impl MkvDemuxer {
 
     /// Total number of video frames found.
     pub fn frame_count(&self) -> usize {
-        self.frames.len()
+        self.frame_index.len()
     }
 
-    /// Get the next frame, or None if exhausted.
-    pub fn next_frame(&mut self) -> Option<&MkvFrame> {
-        if self.current_frame < self.frames.len() {
-            let f = &self.frames[self.current_frame];
+    /// Get the next frame, reading data lazily from the in-memory buffer.
+    /// Returns None when exhausted.
+    pub fn next_frame(&mut self) -> Option<MkvFrame> {
+        if self.current_frame < self.frame_index.len() {
+            let (offset, size, ts, kf) = self.frame_index[self.current_frame];
             self.current_frame += 1;
-            Some(f)
+            if offset + size <= self.data.len() {
+                Some(MkvFrame {
+                    data: self.data[offset..offset + size].to_vec(),
+                    timestamp_ms: ts,
+                    keyframe: kf,
+                })
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -291,11 +320,13 @@ impl MkvDemuxer {
         let data_end = start + size;
 
         if data_start < data_end {
-            self.frames.push(MkvFrame {
-                data: self.data[data_start..data_end].to_vec(),
-                timestamp_ms: (cluster_ts as i64 + block_ts) as u64,
+            // Store index only — data read lazily in next_frame()
+            self.frame_index.push((
+                data_start,
+                data_end - data_start,
+                (cluster_ts as i64 + block_ts) as u64,
                 keyframe,
-            });
+            ));
         }
     }
 

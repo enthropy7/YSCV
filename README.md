@@ -1,8 +1,8 @@
 # yscv
 
-A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (178 ops, faster than OpenCV), neural network training (39 layer types, 5 optimizers), ONNX inference (128+ operators, INT8 quantization), real-time detection + tracking + recognition (67µs per frame), H.264 video decoding, and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (178 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (128+ operators, INT8 quantization), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
-We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 295 functions with runtime dispatch. It's faster than NumPy, PyTorch, and OpenCV on every operation we benchmarked (76 wins, 0 losses).
+We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 298 functions with runtime dispatch. It's faster than NumPy, PyTorch, OpenCV, and ffmpeg on every operation we benchmarked (85 wins, 0 losses).
 
 ## Quick Start
 
@@ -88,7 +88,7 @@ The detect → track → recognize pipeline runs in 67µs per frame end-to-end. 
 
 ## Performance
 
-We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **88 wins, ~5 parity, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC decode is **1.7× faster**. MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n.
+We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1693 tests across 15 crates.
 
 Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on x86, with optional Intel MKL and ARM Performance Libraries for the last few percent.
 

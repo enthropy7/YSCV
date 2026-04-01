@@ -3121,12 +3121,9 @@ fn exec_conv_f16(
             let input_buf = &gc
                 .get(input_name)
                 .unwrap_or_else(|| {
-                    panic!(
-                        "f16 conv: input '{}' not in gc for node '{}' (op {}). gc keys: {:?}",
-                        input_name,
-                        node.name,
-                        node.op_type,
-                        gc.keys().take(20).collect::<Vec<_>>()
+                    unreachable!(
+                        "f16 conv: input '{}' not in gc for node '{}' (op {}). Bug in graph scheduling.",
+                        input_name, node.name, node.op_type,
                     )
                 })
                 .buf;

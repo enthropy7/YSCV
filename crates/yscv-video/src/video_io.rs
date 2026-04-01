@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
+use super::codec::VideoDecoder as _;
 use super::error::VideoError;
 use super::frame::Rgb8Frame;
 
@@ -32,6 +33,11 @@ impl RawVideoReader {
     pub fn open(path: &Path) -> Result<Self, VideoError> {
         let mut file = std::fs::File::open(path)
             .map_err(|e| VideoError::Source(format!("{}: {e}", path.display())))?;
+        // Prevent OOM on large files
+        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if file_size > 2 * 1024 * 1024 * 1024 {
+            return Err(VideoError::Source("raw video file too large (>2GB)".into()));
+        }
         let mut data = Vec::new();
         file.read_to_end(&mut data)
             .map_err(|e| VideoError::Source(e.to_string()))?;
@@ -64,8 +70,12 @@ impl RawVideoReader {
         if self.current_frame >= self.meta.frame_count {
             return None;
         }
-        let frame_size = self.meta.width as usize * self.meta.height as usize * 3;
-        let start = self.frame_offset + self.current_frame as usize * frame_size;
+        let frame_size = (self.meta.width as usize)
+            .checked_mul(self.meta.height as usize)
+            .and_then(|x| x.checked_mul(3))?;
+        let start = self
+            .frame_offset
+            .checked_add((self.current_frame as usize).checked_mul(frame_size)?)?;
         let end = start + frame_size;
         if end > self.data.len() {
             return None;
@@ -215,19 +225,35 @@ enum Mp4Codec {
 ///     // frame.rgb8_data is Vec<u8>, frame.width / frame.height
 /// }
 /// ```
-/// Internal decoder — either H.264 or HEVC, stored concretely for direct access.
+/// Internal decoder — either H.264, HEVC, or hardware-accelerated.
 enum Mp4Decoder {
     H264(super::h264_decoder::H264Decoder),
     Hevc(super::hevc_decoder::HevcDecoder),
+    /// Hardware decoder (VideoToolbox/VAAPI/NVDEC/MediaFoundation).
+    Hw(super::hw_decode::HwVideoDecoder),
 }
 
 pub struct Mp4VideoReader {
     decoder: Mp4Decoder,
     codec: Mp4Codec,
-    /// H.264 NAL units (used only for H.264 codec path)
-    h264_nals: Vec<super::codec::NalUnit>,
-    /// HEVC raw NAL unit data (used only for HEVC codec path)
-    hevc_nals: Vec<Vec<u8>>,
+    /// File handle for lazy sample reading.
+    file: Option<std::fs::File>,
+    /// Audio track info (if present in MP4).
+    audio: Option<super::audio::AudioTrackInfo>,
+    /// Parameter set NALs (SPS/PPS/VPS) — small, kept in memory.
+    param_nals_h264: Vec<super::codec::NalUnit>,
+    param_nals_hevc: Vec<Vec<u8>>,
+    /// Sample table: (file_offset, size) per video sample. ~12 bytes per frame.
+    sample_table: Vec<(u64, u32)>,
+    /// NAL length size from avcC/hvcC (typically 4).
+    nal_length_size: usize,
+    /// Current sample index.
+    current_sample: usize,
+    /// Whether parameter sets have been fed to the decoder.
+    params_fed: bool,
+
+    /// Raw Annex B data per sample (for HW decode path — loaded on demand).
+    raw_samples: Vec<Vec<u8>>,
     current_nal: usize,
 }
 
@@ -238,128 +264,263 @@ impl Mp4VideoReader {
     /// auto-detects the codec from sample entry types (avc1/hvc1/hev1),
     /// and extracts NAL units from the raw data.
     pub fn open(path: &Path) -> Result<Self, VideoError> {
-        let data = std::fs::read(path)
+        use std::io::{Read as _, Seek, SeekFrom};
+
+        // Step 1: Read only enough to find moov box (scan box headers, not mdat)
+        let mut file = std::fs::File::open(path)
             .map_err(|e| VideoError::Source(format!("{}: {e}", path.display())))?;
+        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-        let boxes = super::codec::parse_mp4_boxes(&data)?;
-        let detected_codec = detect_mp4_codec(&data, &boxes);
+        // Read moov box: scan for it by reading box headers
+        // moov is typically at the start or end of the file, usually < 5MB
+        let mut moov_data: Vec<u8> = Vec::new();
+        let mut pos = 0u64;
+        let mut header_buf = [0u8; 8];
+        #[allow(unused_assignments)]
+        let mut detected_codec = Mp4Codec::H264;
 
-        // Find moov box for parameter sets and sample table
-        let moov = boxes
-            .iter()
-            .find(|b| b.type_str() == "moov")
-            .ok_or_else(|| VideoError::ContainerParse("no moov box found".into()))?;
-        let moov_start = (moov.offset + moov.header_size as u64) as usize;
-        let moov_end = ((moov.offset + moov.size) as usize).min(data.len());
-        let moov_data = &data[moov_start..moov_end];
+        while pos < file_size {
+            file.seek(SeekFrom::Start(pos))
+                .map_err(|e| VideoError::Source(format!("seek: {e}")))?;
+            if file.read_exact(&mut header_buf).is_err() {
+                break;
+            }
+            let box_size =
+                u32::from_be_bytes([header_buf[0], header_buf[1], header_buf[2], header_buf[3]])
+                    as u64;
+            let box_type = &header_buf[4..8];
+            let real_size = if box_size == 1 {
+                // Extended size
+                let mut ext = [0u8; 8];
+                let _ = file.read_exact(&mut ext);
+                u64::from_be_bytes(ext)
+            } else if box_size == 0 {
+                file_size - pos
+            } else {
+                box_size
+            };
 
-        // Extract video samples using the sample table (stbl/stco/stsz/stsc)
-        let nal_length_size = find_nal_length_size(moov_data, detected_codec);
-        let video_samples = extract_video_samples(&data, moov_data, nal_length_size)?;
+            if box_type == b"moov" {
+                let content_size = (real_size - 8) as usize;
+                moov_data.resize(content_size, 0);
+                let _ = file.read_exact(&mut moov_data);
+                break;
+            }
+            pos += real_size.max(8);
+        }
 
+        if moov_data.is_empty() {
+            return Err(VideoError::ContainerParse("no moov box found".into()));
+        }
+
+        // Detect codec from moov
+        detected_codec = if moov_data.windows(4).any(|w| w == b"hvc1" || w == b"hev1") {
+            Mp4Codec::Hevc
+        } else {
+            Mp4Codec::H264
+        };
+
+        // Step 2: Build sample table (just offsets + sizes, no data read)
+        let nal_length_size = find_nal_length_size(&moov_data, detected_codec);
+        let sample_table = build_sample_table(&moov_data)?;
+
+        if sample_table.is_empty() {
+            return Err(VideoError::ContainerParse("no video samples found".into()));
+        }
+
+        // Step 3: Extract parameter sets (tiny — SPS/PPS/VPS < 1KB)
+        let mut param_nals_h264 = Vec::new();
+        let mut param_nals_hevc = Vec::new();
         match detected_codec {
             Mp4Codec::Hevc => {
-                let mut hevc_nals: Vec<Vec<u8>> = Vec::new();
-
-                // Extract VPS/SPS/PPS from hvcC
-                let param_nals = extract_hvcc_nals(moov_data);
-                for nal in param_nals {
-                    hevc_nals.push(nal);
-                }
-
-                // Add video sample NALs
-                for sample in &video_samples {
-                    let sample_nals = parse_length_prefixed_nals(sample, nal_length_size);
-                    for nal_data in sample_nals {
-                        hevc_nals.push(nal_data);
-                    }
-                }
-
-                if hevc_nals.is_empty() {
-                    return Err(VideoError::ContainerParse(
-                        "no HEVC NAL units found in MP4".into(),
-                    ));
-                }
-
-                Ok(Self {
-                    decoder: Mp4Decoder::Hevc(super::hevc_decoder::HevcDecoder::new()),
-                    codec: Mp4Codec::Hevc,
-                    h264_nals: Vec::new(),
-                    hevc_nals,
-                    current_nal: 0,
-                })
+                param_nals_hevc = extract_hvcc_nals(&moov_data);
             }
             Mp4Codec::H264 => {
-                let mut nal_units: Vec<super::codec::NalUnit> = Vec::new();
+                param_nals_h264 = extract_avcc_nals(&moov_data);
+            }
+        }
 
-                // Extract SPS/PPS from avcC
-                let param_nals = extract_avcc_nals(moov_data);
-                nal_units.extend(param_nals);
+        let decoder = match detected_codec {
+            Mp4Codec::H264 => Mp4Decoder::H264(super::h264_decoder::H264Decoder::new()),
+            Mp4Codec::Hevc => Mp4Decoder::Hevc(super::hevc_decoder::HevcDecoder::new()),
+        };
 
-                // Add video sample NALs
-                for sample in &video_samples {
-                    let sample_nals = parse_length_prefixed_nals(sample, nal_length_size);
-                    for nal_data in sample_nals {
-                        if !nal_data.is_empty() {
-                            let header = nal_data[0];
-                            nal_units.push(super::codec::NalUnit {
-                                nal_type: super::codec::NalUnitType::from_byte(header),
-                                nal_ref_idc: (header >> 5) & 3,
-                                data: nal_data,
-                            });
-                        }
+        // Parse audio track info (if present)
+        let audio = find_audio_trak(&moov_data).and_then(parse_mp4_audio_info);
+
+        Ok(Self {
+            decoder,
+            codec: detected_codec,
+            file: Some(file),
+            audio,
+            param_nals_h264,
+            param_nals_hevc,
+            sample_table,
+            nal_length_size,
+            current_sample: 0,
+            params_fed: false,
+            raw_samples: Vec::new(),
+            current_nal: 0,
+        })
+    }
+
+    /// Open with hardware decode (auto-detect best HW backend, SW fallback).
+    ///
+    /// For HW decode, reads all samples into memory (needed for VT/NVDEC).
+    /// For large files, use `open()` with software decode instead.
+    pub fn open_hw(path: &std::path::Path) -> Result<Self, VideoError> {
+        let mut reader = Self::open(path)?;
+        let vc = match reader.codec {
+            Mp4Codec::H264 => crate::VideoCodec::H264,
+            Mp4Codec::Hevc => crate::VideoCodec::H265,
+        };
+        let hw = super::hw_decode::HwVideoDecoder::new(vc)?;
+        if hw.is_hardware() {
+            // Build Annex B blobs per-AU by reading samples from file
+            let mut raw = Vec::new();
+
+            // First: parameter sets as init AU
+            let mut init_au = Vec::new();
+            match reader.codec {
+                Mp4Codec::H264 => {
+                    for nal in &reader.param_nals_h264 {
+                        init_au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                        init_au.extend_from_slice(&nal.data);
                     }
                 }
-
-                if nal_units.is_empty() {
-                    return Err(VideoError::ContainerParse(
-                        "no H.264 NAL units found in MP4".into(),
-                    ));
+                Mp4Codec::Hevc => {
+                    for nal in &reader.param_nals_hevc {
+                        init_au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                        init_au.extend_from_slice(nal);
+                    }
                 }
-
-                Ok(Self {
-                    decoder: Mp4Decoder::H264(super::h264_decoder::H264Decoder::new()),
-                    codec: Mp4Codec::H264,
-                    h264_nals: nal_units,
-                    hevc_nals: Vec::new(),
-                    current_nal: 0,
-                })
             }
+
+            // Read each sample from file and build AU
+            for idx in 0..reader.sample_table.len() {
+                let sample_data = reader.read_sample(idx)?;
+                let nals = parse_length_prefixed_nals(&sample_data, reader.nal_length_size);
+
+                let mut au = if idx == 0 {
+                    std::mem::take(&mut init_au) // prepend param sets to first AU
+                } else {
+                    Vec::new()
+                };
+
+                for nal_data in nals {
+                    au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                    au.extend_from_slice(&nal_data);
+                }
+                if !au.is_empty() {
+                    raw.push(au);
+                }
+            }
+
+            reader.raw_samples = raw;
+            reader.decoder = Mp4Decoder::Hw(hw);
+        }
+        Ok(reader)
+    }
+
+    /// Which hardware backend is being used (Software if no HW).
+    pub fn hw_backend(&self) -> super::hw_decode::HwBackend {
+        match &self.decoder {
+            Mp4Decoder::Hw(hw) => hw.backend(),
+            _ => super::hw_decode::HwBackend::Software,
         }
     }
 
-    /// Decode the next frame. Returns `None` when all NAL units are consumed.
+    /// Read one sample from file at the given sample_table index.
+    fn read_sample(&mut self, idx: usize) -> Result<Vec<u8>, VideoError> {
+        use std::io::{Read as _, Seek, SeekFrom};
+        let (offset, size) = self.sample_table[idx];
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| VideoError::Source("file handle closed".into()))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| VideoError::Source(format!("seek: {e}")))?;
+        let mut buf = vec![0u8; size as usize];
+        file.read_exact(&mut buf)
+            .map_err(|e| VideoError::Source(format!("read sample: {e}")))?;
+        Ok(buf)
+    }
+
+    /// Decode the next frame. Reads one sample at a time from disk — O(1) memory.
     pub fn next_frame(&mut self) -> Result<Option<super::codec::DecodedFrame>, VideoError> {
-        match self.codec {
-            Mp4Codec::H264 => {
-                let Mp4Decoder::H264(ref mut dec) = self.decoder else {
-                    return Ok(None);
-                };
-                while self.current_nal < self.h264_nals.len() {
-                    let nal = &self.h264_nals[self.current_nal];
-                    self.current_nal += 1;
-                    // Feed NAL directly to the H264 decoder (no Annex B re-wrapping)
-                    if let Some(frame) = dec.process_nal(nal)? {
-                        return Ok(Some(frame));
-                    }
+        // HW decode path (legacy — keeps all NALs in memory)
+        if let Mp4Decoder::Hw(ref mut hw) = self.decoder {
+            while self.current_nal < self.raw_samples.len() {
+                let data = &self.raw_samples[self.current_nal];
+                self.current_nal += 1;
+                if let Some(frame) = hw.decode(data, 0)? {
+                    return Ok(Some(frame));
                 }
-                Ok(None)
             }
-            Mp4Codec::Hevc => {
-                let Mp4Decoder::Hevc(ref mut dec) = self.decoder else {
-                    return Ok(None);
-                };
-                while self.current_nal < self.hevc_nals.len() {
-                    let nal_data = &self.hevc_nals[self.current_nal];
-                    self.current_nal += 1;
-                    // Feed NAL directly to HEVC decoder (no start code wrapping)
-                    if let Some(frame) = dec.decode_nal(nal_data)? {
-                        return Ok(Some(frame));
+            return Ok(None);
+        }
+
+        // Feed parameter sets first (once)
+        if !self.params_fed {
+            self.params_fed = true;
+            match self.codec {
+                Mp4Codec::H264 => {
+                    let Mp4Decoder::H264(ref mut dec) = self.decoder else {
+                        return Ok(None);
+                    };
+                    for nal in &self.param_nals_h264 {
+                        let _ = dec.process_nal(nal);
                     }
                 }
-                Ok(None)
+                Mp4Codec::Hevc => {
+                    let Mp4Decoder::Hevc(ref mut dec) = self.decoder else {
+                        return Ok(None);
+                    };
+                    for nal in &self.param_nals_hevc {
+                        let _ = dec.decode_nal(nal);
+                    }
+                }
             }
         }
+
+        // Streaming: read one sample at a time from file
+        while self.current_sample < self.sample_table.len() {
+            let sample_data = self.read_sample(self.current_sample)?;
+            self.current_sample += 1;
+
+            // Parse NALs from this sample and feed to decoder
+            let nals = parse_length_prefixed_nals(&sample_data, self.nal_length_size);
+            for nal_data in nals {
+                if nal_data.is_empty() {
+                    continue;
+                }
+                match self.codec {
+                    Mp4Codec::H264 => {
+                        let Mp4Decoder::H264(ref mut dec) = self.decoder else {
+                            continue;
+                        };
+                        let header = nal_data[0];
+                        let nal = super::codec::NalUnit {
+                            nal_type: super::codec::NalUnitType::from_byte(header),
+                            nal_ref_idc: (header >> 5) & 3,
+                            data: nal_data,
+                        };
+                        if let Some(frame) = dec.process_nal(&nal)? {
+                            return Ok(Some(frame));
+                        }
+                    }
+                    Mp4Codec::Hevc => {
+                        let Mp4Decoder::Hevc(ref mut dec) = self.decoder else {
+                            continue;
+                        };
+                        if let Some(frame) = dec.decode_nal(&nal_data)? {
+                            return Ok(Some(frame));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Decode the next frame in luma-only mode (skip RGB conversion entirely).
@@ -374,9 +535,11 @@ impl Mp4VideoReader {
         self.next_frame()
     }
 
-    /// Reset to the beginning (re-decode from first NAL).
+    /// Reset to the beginning (re-decode from first sample).
     pub fn seek_start(&mut self) {
+        self.current_sample = 0;
         self.current_nal = 0;
+        self.params_fed = false;
         match self.codec {
             Mp4Codec::H264 => {
                 self.decoder = Mp4Decoder::H264(super::h264_decoder::H264Decoder::new());
@@ -387,12 +550,9 @@ impl Mp4VideoReader {
         }
     }
 
-    /// Total number of NAL units found.
+    /// Total number of video samples (approximately = frame count).
     pub fn nal_count(&self) -> usize {
-        match self.codec {
-            Mp4Codec::H264 => self.h264_nals.len(),
-            Mp4Codec::Hevc => self.hevc_nals.len(),
-        }
+        self.sample_table.len()
     }
 
     /// Returns the detected video codec.
@@ -401,6 +561,11 @@ impl Mp4VideoReader {
             Mp4Codec::H264 => super::codec::VideoCodec::H264,
             Mp4Codec::Hevc => super::codec::VideoCodec::H265,
         }
+    }
+
+    /// Audio track info, if the MP4 contains an audio track.
+    pub fn audio_info(&self) -> Option<&super::audio::AudioTrackInfo> {
+        self.audio.as_ref()
     }
 }
 
@@ -454,6 +619,86 @@ fn find_video_trak(moov_data: &[u8]) -> Option<&[u8]> {
         i += sz;
     }
     None
+}
+
+/// Find the first audio trak in a moov box (looks for smhd = Sound Media Header).
+fn find_audio_trak(moov_data: &[u8]) -> Option<&[u8]> {
+    let mut i = 0;
+    while i + 8 <= moov_data.len() {
+        let sz = u32::from_be_bytes([
+            moov_data[i],
+            moov_data[i + 1],
+            moov_data[i + 2],
+            moov_data[i + 3],
+        ]) as usize;
+        if sz < 8 || i + sz > moov_data.len() {
+            break;
+        }
+        if &moov_data[i + 4..i + 8] == b"trak" {
+            let trak_data = &moov_data[i + 8..i + sz];
+            if find_box_data(trak_data, b"smhd").is_some() {
+                return Some(trak_data);
+            }
+        }
+        i += sz;
+    }
+    None
+}
+
+/// Parse audio info from an audio trak's stsd box (mp4a → esds).
+fn parse_mp4_audio_info(trak_data: &[u8]) -> Option<super::audio::AudioTrackInfo> {
+    let stsd = find_box_data(trak_data, b"stsd")?;
+    // stsd: version(1) + flags(3) + entry_count(4) + entries...
+    if stsd.len() < 8 {
+        return None;
+    }
+    let entry_data = &stsd[8..];
+
+    // Scan for mp4a/alac/Opus codec box
+    let mut codec = super::audio::AudioCodec::Unknown;
+    let mut sample_rate = 0u32;
+    let mut channels = 0u16;
+
+    for i in 0..entry_data.len().saturating_sub(32) {
+        let tag = &entry_data[i..i + 4];
+        if tag == b"mp4a" || tag == b"alac" || tag == b"Opus" || tag == b"fLaC" {
+            codec = super::audio::audio_codec_from_mp4(tag.try_into().unwrap_or(&[0; 4]));
+            // AudioSampleEntry layout AFTER the 4-byte codec tag:
+            // +0:  reserved(6)
+            // +6:  data_ref_index(2)
+            // +8:  reserved(8)
+            // +16: channel_count(2)
+            // +18: sample_size(2)
+            // +20: compression_id(2)
+            // +22: packet_size(2)
+            // +24: sample_rate(4, 16.16 fixed-point)
+            let base = i + 4; // skip tag
+            if base + 28 <= entry_data.len() {
+                channels = u16::from_be_bytes([entry_data[base + 16], entry_data[base + 17]]);
+                let sr_fixed = u32::from_be_bytes([
+                    entry_data[base + 24],
+                    entry_data[base + 25],
+                    entry_data[base + 26],
+                    entry_data[base + 27],
+                ]);
+                sample_rate = sr_fixed >> 16;
+            }
+            break;
+        }
+    }
+
+    if codec == super::audio::AudioCodec::Unknown {
+        return None;
+    }
+
+    Some(super::audio::AudioTrackInfo {
+        codec,
+        sample_rate,
+        channels,
+        bits_per_sample: 0,
+        duration_ms: 0,
+        codec_private: Vec::new(),
+    })
 }
 
 /// Read the NAL length size from avcC/hvcC config (typically 4).
@@ -588,47 +833,39 @@ fn parse_stsc(box_data: &[u8]) -> Vec<(u32, u32, u32)> {
 }
 
 /// Extract raw sample data for each video frame using the sample table.
-fn extract_video_samples(
-    file_data: &[u8],
-    moov_data: &[u8],
-    _nal_length_size: usize,
-) -> Result<Vec<Vec<u8>>, VideoError> {
+/// Build sample table: Vec<(file_offset, size)> without reading sample data.
+/// Only reads metadata from moov — O(1) memory relative to file size.
+fn build_sample_table(moov_data: &[u8]) -> Result<Vec<(u64, u32)>, VideoError> {
     let video_trak = find_video_trak(moov_data)
         .ok_or_else(|| VideoError::ContainerParse("no video trak found".into()))?;
 
-    // Parse sample table boxes from the video trak
     let chunk_offsets = if let Some(co64_data) = find_box_data(video_trak, b"co64") {
         parse_co64(co64_data)
     } else if let Some(stco_data) = find_box_data(video_trak, b"stco") {
         parse_stco(stco_data)
     } else {
-        return Err(VideoError::ContainerParse(
-            "no stco/co64 in video trak".into(),
-        ));
+        return Err(VideoError::ContainerParse("no stco/co64".into()));
     };
 
     let sample_sizes = if let Some(stsz_data) = find_box_data(video_trak, b"stsz") {
         parse_stsz(stsz_data)
     } else {
-        return Err(VideoError::ContainerParse("no stsz in video trak".into()));
+        return Err(VideoError::ContainerParse("no stsz".into()));
     };
 
     let stsc_entries = if let Some(stsc_data) = find_box_data(video_trak, b"stsc") {
         parse_stsc(stsc_data)
     } else {
-        // Default: 1 sample per chunk
         vec![(1, 1, 1)]
     };
 
-    // Build sample-to-file-offset mapping using stsc + stco + stsz
     let num_samples = sample_sizes.len();
     let num_chunks = chunk_offsets.len();
-    let mut samples = Vec::with_capacity(num_samples);
+    let mut table = Vec::with_capacity(num_samples);
     let mut sample_idx = 0usize;
 
     for chunk_idx in 0..num_chunks {
-        // Find how many samples in this chunk (from stsc)
-        let chunk_num = chunk_idx as u32 + 1; // 1-based
+        let chunk_num = chunk_idx as u32 + 1;
         let mut samples_in_chunk = 1u32;
         for entry in stsc_entries.iter().rev() {
             if chunk_num >= entry.0 {
@@ -636,22 +873,18 @@ fn extract_video_samples(
                 break;
             }
         }
-
-        let mut offset = chunk_offsets[chunk_idx] as usize;
+        let mut offset = chunk_offsets[chunk_idx];
         for _ in 0..samples_in_chunk {
             if sample_idx >= num_samples {
                 break;
             }
-            let sz = sample_sizes[sample_idx] as usize;
-            if offset + sz <= file_data.len() {
-                samples.push(file_data[offset..offset + sz].to_vec());
-            }
-            offset += sz;
+            let sz = sample_sizes[sample_idx];
+            table.push((offset, sz));
+            offset += sz as u64;
             sample_idx += 1;
         }
     }
-
-    Ok(samples)
+    Ok(table)
 }
 
 /// Parse length-prefixed NAL units from a single sample.
@@ -681,25 +914,6 @@ fn parse_length_prefixed_nals(sample: &[u8], nal_length_size: usize) -> Vec<Vec<
 }
 
 /// Detect video codec from MP4 moov box by scanning for sample entry types.
-/// Looks for avc1/avc3 (H.264) or hvc1/hev1 (HEVC) in the raw moov data.
-fn detect_mp4_codec(data: &[u8], boxes: &[super::codec::Mp4Box]) -> Mp4Codec {
-    if let Some(moov) = boxes.iter().find(|b| b.type_str() == "moov") {
-        let start = (moov.offset + moov.header_size as u64) as usize;
-        let end = ((moov.offset + moov.size) as usize).min(data.len());
-        if start < end {
-            let moov_data = &data[start..end];
-            // Scan for sample entry type codes in the moov box
-            for i in 0..moov_data.len().saturating_sub(4) {
-                let tag = &moov_data[i..i + 4];
-                if tag == b"hvc1" || tag == b"hev1" {
-                    return Mp4Codec::Hevc;
-                }
-            }
-        }
-    }
-    Mp4Codec::H264 // default
-}
-
 /// Extract VPS/SPS/PPS NAL units from an hvcC (HEVC Decoder Configuration Record)
 /// found inside the moov box. Returns raw NAL data suitable for HevcDecoder.
 fn extract_hvcc_nals(moov_data: &[u8]) -> Vec<Vec<u8>> {

@@ -1,9 +1,9 @@
 //! Benchmark: decode H.264/HEVC MP4 video with yscv Mp4VideoReader.
 //!
-//! Usage: cargo run --release --example bench_video_decode -- <video.mp4> [--luma-only]
+//! Usage: cargo run --release --example bench_video_decode -- <video.mp4> [--luma-only] [--hw]
 //!
-//! The `--luma-only` flag skips YUV-to-RGB conversion for fair comparison with
-//! ffmpeg's `-f null -` which also skips color conversion.
+//! `--luma-only` skips YUV-to-RGB for fair comparison with ffmpeg `-f null`.
+//! `--hw` uses hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation).
 
 use std::path::Path;
 use std::time::Instant;
@@ -15,6 +15,7 @@ fn main() {
         .map(|s| s.as_str())
         .unwrap_or("examples/src/CENSUSWITHOUTLOGO.mp4");
     let luma_only = args.iter().any(|a| a == "--luma-only");
+    let hw_mode = args.iter().any(|a| a == "--hw");
     let path = Path::new(path_str);
 
     if !path.exists() {
@@ -24,22 +25,44 @@ fn main() {
 
     println!("=== yscv Mp4VideoReader benchmark ===");
     println!("File: {}", path.display());
-    if luma_only {
+    if hw_mode {
+        println!("Mode: HARDWARE DECODE");
+    } else if luma_only {
         println!("Mode: LUMA-ONLY (skip YUV→RGB, fair vs ffmpeg -f null)");
     }
 
     let t0 = Instant::now();
-    let mut reader = match yscv_video::Mp4VideoReader::open(path) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Failed to open: {e}");
-            std::process::exit(1);
+    let mut reader = if hw_mode {
+        match yscv_video::Mp4VideoReader::open_hw(path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to open (HW): {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match yscv_video::Mp4VideoReader::open(path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to open: {e}");
+                std::process::exit(1);
+            }
         }
     };
     let open_time = t0.elapsed();
     println!("Open + parse: {:.0}ms", open_time.as_secs_f64() * 1000.0);
     println!("NAL count: {}", reader.nal_count());
     println!("Codec: {:?}", reader.codec());
+    if let Some(audio) = reader.audio_info() {
+        println!(
+            "Audio: {:?} {}Hz {}ch",
+            audio.codec, audio.sample_rate, audio.channels
+        );
+    }
+
+    if hw_mode {
+        println!("HW Backend: {}", reader.hw_backend());
+    }
 
     let t1 = Instant::now();
     let mut decoded = 0u32;

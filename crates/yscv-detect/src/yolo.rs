@@ -98,6 +98,12 @@ pub fn decode_yolov8_output(
 
     let mut candidates = Vec::new();
 
+    // Bounds guard: ensure tensor data is large enough for all accesses
+    let required_len = (4 + num_classes) * num_preds;
+    if data.len() < required_len {
+        return Vec::new();
+    }
+
     for i in 0..num_preds {
         // Output is laid out row-major: data[row * num_preds + col]
         let cx = data[i];
@@ -187,11 +193,14 @@ pub fn decode_yolov11_output(
 
     let mut candidates = Vec::new();
 
-    // Skip batch dimension offset if present
-    let base = if shape.len() == 3 { 0 } else { 0 };
+    // Bounds guard
+    let required_len = num_preds * cols;
+    if data.len() < required_len {
+        return Vec::new();
+    }
 
     for i in 0..num_preds {
-        let row = base + i * cols;
+        let row = i * cols;
         let cx = data[row];
         let cy = data[row + 1];
         let w = data[row + 2];
@@ -320,7 +329,7 @@ pub fn letterbox_preprocess(image: &Tensor, target_size: usize) -> (Tensor, f32,
 ///
 /// This is a pure layout transformation — no normalisation is applied
 /// (the input is assumed to already be in `[0, 1]`).
-#[allow(dead_code)]
+#[cfg(any(feature = "onnx", test))]
 fn hwc_to_nchw(hwc: &Tensor) -> Vec<f32> {
     let shape = hwc.shape();
     let h = shape[0];

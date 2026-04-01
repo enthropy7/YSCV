@@ -366,20 +366,6 @@ mod sse2_mc {
     }
 
     // Remove old scalar code that followed
-    #[target_feature(enable = "sse2")]
-    #[inline]
-    #[allow(dead_code)]
-    unsafe fn filter_h8_sse2_old(src: *const u16, filter: &[i16; 8]) -> __m128i {
-        let mut results = [0i16; 8];
-        for col in 0..8 {
-            let mut sum = 0i32;
-            for k in 0..8 {
-                sum += *src.add(col + k) as i32 * filter[k] as i32;
-            }
-            results[col] = ((sum + 32) >> 6) as i16;
-        }
-        _mm_loadu_si128(results.as_ptr() as *const __m128i)
-    }
 
     /// Vertical 8-tap filter for 8 output pixels from 8 strided rows (SSE2).
     /// Source is u16 (10-bit compatible).

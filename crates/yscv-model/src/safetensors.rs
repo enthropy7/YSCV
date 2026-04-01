@@ -71,6 +71,9 @@ pub struct SafeTensorFile {
 
 impl SafeTensorFile {
     /// Parse a SafeTensors file from disk.
+    ///
+    /// Reads the entire file into memory. For very large models,
+    /// the OS will return an error if insufficient memory is available.
     pub fn from_file(path: &Path) -> Result<Self, ModelError> {
         let bytes = std::fs::read(path).map_err(|e| ModelError::SafeTensorsIo {
             path: path.display().to_string(),

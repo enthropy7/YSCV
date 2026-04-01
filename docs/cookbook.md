@@ -678,19 +678,35 @@ Performance (Apple M-series, single-threaded, vs ffmpeg `-threads 1`, best of 5)
 
 | Video | yscv | ffmpeg | Speedup |
 |-------|------|--------|---------|
-| H.264 Baseline 1080p (300 frames) | 302ms | 509ms | **1.68×** |
-| H.264 High 1080p (300 frames) | 315ms | 750ms | **2.38×** |
-| Real camera H.264 1080p60 (1100 frames) | 1195ms | 5332ms | **4.46×** |
-| **HEVC Main 1080p P/B (300 frames)** | **480ms** | **811ms** | **1.68×** |
-| **HEVC Main 1080p P/B (600 frames)** | **1114ms** | **1797ms** | **1.61×** |
-| HEVC Main 1080p I-only (180 frames) | 1486ms | 1487ms | **1.00×** |
+| H.264 Baseline 1080p (300 frames) | 324ms | 519ms | **1.60×** |
+| H.264 High 1080p (300 frames) | 332ms | 760ms | **2.28×** |
+| Real camera H.264 1080p60 (1100 frames) | 1187ms | 5372ms | **4.52×** |
+| **HEVC Main 1080p P/B (300 frames)** | **575ms** | **806ms** | **1.40×** |
+| **HEVC Main 1080p P/B (600 frames)** | **1288ms** | **1808ms** | **1.40×** |
+| HEVC Main 1080p I-only (180 frames) | 1538ms | 1483ms | 0.97× |
 
-Luma-only mode (`--luma-only`, pure decode without post-processing):
+All HEVC with **full color** (chroma MC + YUV420→RGB). Memory: **27MB RSS** for 41MB file.
 
-| Video | yscv | ffmpeg | Speedup |
-|-------|------|--------|---------|
-| HEVC P/B 5s | 371ms | 811ms | **2.18×** |
-| HEVC P/B 10s | 823ms | 1797ms | **2.18×** |
+**How to reproduce:**
+```bash
+# Build
+cargo build --release --example bench_video_decode
+
+# H.264 benchmark
+cargo run --release --example bench_video_decode -- your_video.mp4
+
+# HEVC benchmark
+cargo run --release --example bench_video_decode -- your_hevc.mp4
+
+# Compare with ffmpeg
+ffmpeg -threads 1 -benchmark -i your_video.mp4 -f null -
+
+# Luma-only (fair vs ffmpeg -f null, skips post-processing)
+cargo run --release --example bench_video_decode -- your_video.mp4 --luma-only
+
+# Hardware decode (macOS VideoToolbox)
+cargo run --release --features videotoolbox --example bench_video_decode -- your_video.mp4 --hw
+```
 
 ### Camera capture (requires `native-camera` feature)
 
@@ -815,17 +831,17 @@ python benchmarks/python/bench_kernels.py   # vs PyTorch
 python benchmarks/python/bench_opencv.py    # vs OpenCV
 ```
 
-### Current numbers (Apple M-series, March 2026)
+### Current numbers (Apple M-series, April 2026)
 
 | What | yscv | Competitor | Speedup |
 |------|------|-----------|---------|
 | YOLOv8n CPU | **30.4ms** | onnxruntime 37.4ms | **1.2x** |
 | YOLOv8n MPSGraph | **3.5ms** | CoreML 15.5ms | **4.4x** |
 | YOLO11n CPU | **33.7ms** | onnxruntime 35.2ms* | **1.0x** |
-| H.264 decode 1080p60 (1100 frames) | **1195ms** | ffmpeg 5332ms | **4.5x** |
-| H.264 High 1080p (300 frames) | **315ms** | ffmpeg 750ms | **2.4x** |
-| **HEVC 1080p P/B (300 frames)** | **480ms** | **ffmpeg 811ms** | **1.7x** |
-| **HEVC 1080p P/B (600 frames)** | **1114ms** | **ffmpeg 1797ms** | **1.6x** |
+| H.264 decode 1080p60 (1100 frames) | **1187ms** | ffmpeg 5372ms | **4.5x** |
+| H.264 High 1080p (300 frames) | **332ms** | ffmpeg 760ms | **2.3x** |
+| **HEVC 1080p P/B (300 frames)** | **575ms** | **ffmpeg 806ms** | **1.4x** |
+| **HEVC 1080p P/B (600 frames)** | **1288ms** | **ffmpeg 1808ms** | **1.4x** |
 | sigmoid 921K | 0.217ms | PyTorch 1.296ms | **6.0x** |
 | resize nearest u8 | 0.048ms | OpenCV 0.157ms | **3.3x** |
 | detect+track pipeline | 0.067ms | — | 15,000 FPS |

@@ -35,12 +35,11 @@ pub fn run_metal_plan(
     }
     let t_upload = t0.elapsed();
 
-    // Helper to get a buffer by name, with a meaningful panic message
+    // Helper to get a buffer by name — internal invariant
     let get_buf = |name: &str| -> &Buffer {
         plan.bufs.get(name).unwrap_or_else(|| {
-            panic!(
-                "Metal plan: buffer '{}' not found (have {} buffers)",
-                name,
+            unreachable!(
+                "Metal plan: buffer '{name}' not found (have {} buffers). Bug in MetalPlan construction.",
                 plan.bufs.len()
             );
         })

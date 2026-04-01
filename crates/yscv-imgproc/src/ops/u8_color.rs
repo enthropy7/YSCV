@@ -419,13 +419,13 @@ pub fn histogram_u8(src: &[u8], len: usize) -> [u32; 256] {
             local[chunk[i] as usize] += 1;
         }
 
-        *local_hists[t].lock().expect("mutex poisoned") = local;
+        *local_hists[t].lock().unwrap_or_else(|e| e.into_inner()) = local;
     });
 
     // Merge all thread-local histograms
     let mut hist = [0u32; 256];
     for lh in &local_hists {
-        let local = lh.lock().expect("mutex poisoned");
+        let local = lh.lock().unwrap_or_else(|e| e.into_inner());
         for i in 0..256 {
             hist[i] += local[i];
         }

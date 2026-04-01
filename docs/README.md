@@ -18,7 +18,7 @@ How the framework is put together. Explains the crate dependency layers, the SIM
 
 ### [performance-benchmarks.md](performance-benchmarks.md)
 
-How we measure performance and how yscv compares to OpenCV, ffmpeg, NumPy, PyTorch, onnxruntime, and CoreML. Covers the full benchmark methodology (hardware, measurement protocol, warm-up, statistical aggregation). Overall scorecard: **88 wins, ~5 parity, 0 losses** across all categories. H.264 decode **4.5× faster than ffmpeg**, HEVC decode **1.7× faster**. Includes exact commands to reproduce every number.
+How we measure performance and how yscv compares to OpenCV, ffmpeg, NumPy, PyTorch, onnxruntime, and CoreML. Covers the full benchmark methodology (hardware, measurement protocol, warm-up, statistical aggregation). Overall scorecard: **85 wins, ~4 parity, 1 close, 0 losses** across all categories. H.264 decode **4.5× faster than ffmpeg**, HEVC decode **1.4× faster** (full color). 1693 tests across 15 crates. Includes exact commands to reproduce every number.
 
 ### [ecosystem-capability-matrix.md](ecosystem-capability-matrix.md)
 
@@ -40,6 +40,14 @@ The data augmentation pipeline for training: 12+ transform operations (flips, cr
 
 Supported dataset formats for both training (JSONL, CSV, ImageManifest, ImageFolder) and evaluation (COCO, OpenImages, YOLO, VOC, KITTI, WIDER FACE, MOTChallenge, and more). Documents the field mapping rules and CLI integration.
 
+### [onnx-inference.md](onnx-inference.md)
+
+ONNX model loading and inference: CPU runner (128+ operators), Metal GPU runner (MPSGraph), quantization (INT8), dynamic shapes, and operator fusion. Covers YOLOv8/v11 detection pipeline end-to-end.
+
 ### [native-camera-validation.md](native-camera-validation.md)
 
 Step-by-step checklist for validating native camera capture on macOS, Linux, and Windows. Covers build verification, device discovery, capture diagnostics, and the end-to-end face detection pipeline.
+
+### [video-pipeline.md](video-pipeline.md)
+
+Video decode pipeline: H.264/HEVC software decode (faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), MP4/MKV container parsing, streaming reader, audio metadata extraction, SIMD coverage (29 NEON + 31 SSE2), fuzz testing.

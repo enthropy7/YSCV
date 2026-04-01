@@ -1006,6 +1006,7 @@ fn local_pos_to_scan_idx(lx: u32, ly: u32) -> u32 {
 /// This replaces the stub `decode_coding_tree` in `hevc_decoder.rs` with
 /// actual CABAC-driven split decisions and CU parsing.
 #[allow(unsafe_code)]
+#[allow(clippy::too_many_arguments)]
 pub fn decode_coding_tree_cabac(
     state: &mut HevcSliceCabacState<'_>,
     x: usize,
@@ -1019,6 +1020,8 @@ pub fn decode_coding_tree_cabac(
     pic_width: usize,
     pic_height: usize,
     recon_luma: &mut Vec<i16>,
+    recon_cb: &mut Vec<i16>,
+    recon_cr: &mut Vec<i16>,
     results: &mut Vec<super::hevc_decoder::DecodedCu>,
     dpb: &super::hevc_inter::HevcDpb,
     mv_field: &mut Vec<HevcMvField>,
@@ -1050,7 +1053,7 @@ pub fn decode_coding_tree_cabac(
         let nd = depth + 1;
         decode_coding_tree_cabac(
             state, x, y, half, nd, max_depth, sps, pps, slice_type, pic_width, pic_height,
-            recon_luma, results, dpb, mv_field,
+            recon_luma, recon_cb, recon_cr, results, dpb, mv_field,
         );
         decode_coding_tree_cabac(
             state,
@@ -1065,6 +1068,8 @@ pub fn decode_coding_tree_cabac(
             pic_width,
             pic_height,
             recon_luma,
+            recon_cb,
+            recon_cr,
             results,
             dpb,
             mv_field,
@@ -1082,6 +1087,8 @@ pub fn decode_coding_tree_cabac(
             pic_width,
             pic_height,
             recon_luma,
+            recon_cb,
+            recon_cr,
             results,
             dpb,
             mv_field,
@@ -1099,6 +1106,8 @@ pub fn decode_coding_tree_cabac(
             pic_width,
             pic_height,
             recon_luma,
+            recon_cb,
+            recon_cr,
             results,
             dpb,
             mv_field,
@@ -1199,8 +1208,60 @@ pub fn decode_coding_tree_cabac(
                     cu_size,
                     pred,
                 );
+                // Chroma MC (4:2:0)
+                let cs = cu_size / 2;
+                if cs > 0 && !ref_pic.cb.is_empty() {
+                    let cw = ref_pic.width / 2;
+                    let ch = ref_pic.height / 2;
+                    let mut pcb = vec![128i16; cs * cs];
+                    let mut pcr = vec![128i16; cs * cs];
+                    let cmv = inter_mv.mv[0]; // quarter-pel luma → eighth-pel chroma
+                    super::hevc_inter::hevc_mc_chroma(
+                        &ref_pic.cb,
+                        cw,
+                        ch,
+                        (x / 2) as i32,
+                        (y / 2) as i32,
+                        cmv,
+                        cs,
+                        cs,
+                        &mut pcb,
+                    );
+                    super::hevc_inter::hevc_mc_chroma(
+                        &ref_pic.cr,
+                        cw,
+                        ch,
+                        (x / 2) as i32,
+                        (y / 2) as i32,
+                        cmv,
+                        cs,
+                        cs,
+                        &mut pcr,
+                    );
+                    // Write chroma recon
+                    let cpw = pic_width / 2;
+                    for row in 0..cs.min((pic_height / 2).saturating_sub(y / 2)) {
+                        for col in 0..cs.min(cpw.saturating_sub(x / 2)) {
+                            let ci = (y / 2 + row) * cpw + (x / 2 + col);
+                            let si = row * cs + col;
+                            if ci < recon_cb.len() {
+                                let rcb = if si < cu_data.residual_cb.len() {
+                                    cu_data.residual_cb[si] as i32
+                                } else {
+                                    0
+                                };
+                                let rcr = if si < cu_data.residual_cr.len() {
+                                    cu_data.residual_cr[si] as i32
+                                } else {
+                                    0
+                                };
+                                recon_cb[ci] = (pcb[si] as i32 + rcb).clamp(0, 255) as i16;
+                                recon_cr[ci] = (pcr[si] as i32 + rcr).clamp(0, 255) as i16;
+                            }
+                        }
+                    }
+                }
             } else {
-                // No reference available — fall back to mid-grey
                 for v in pred.iter_mut() {
                     *v = 128;
                 }
@@ -1558,6 +1619,8 @@ mod tests {
             64,
             64,
             &mut recon,
+            &mut vec![128i16; 32 * 32],
+            &mut vec![128i16; 32 * 32],
             &mut results,
             &dpb,
             &mut mv_field,
@@ -1596,6 +1659,8 @@ mod tests {
             48,
             48,
             &mut recon,
+            &mut vec![128i16; 32 * 32],
+            &mut vec![128i16; 32 * 32],
             &mut results,
             &dpb,
             &mut mv_field,

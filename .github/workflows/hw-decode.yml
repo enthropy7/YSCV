@@ -1,0 +1,56 @@
+name: HW Decode Platforms
+
+on:
+  push:
+    paths:
+      - 'crates/yscv-video/src/hw_decode.rs'
+      - '.github/workflows/hw-decode.yml'
+  pull_request:
+    paths:
+      - 'crates/yscv-video/src/hw_decode.rs'
+
+jobs:
+  hw-decode:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            features: videotoolbox
+            name: macOS + VideoToolbox
+          - os: ubuntu-latest
+            features: ""
+            name: Linux (SW fallback)
+          - os: windows-latest
+            features: ""
+            name: Windows (SW fallback)
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build (default features)
+        run: cargo build -p yscv-video
+
+      - name: Build (HW features)
+        if: matrix.features != ''
+        run: cargo build -p yscv-video --features ${{ matrix.features }}
+
+      - name: Test (default)
+        run: cargo test -p yscv-video
+
+      - name: Test (HW features)
+        if: matrix.features != ''
+        run: cargo test -p yscv-video --features ${{ matrix.features }}
+
+      - name: Clippy
+        run: cargo clippy -p yscv-video -- -D warnings
+
+      - name: Clippy (HW features)
+        if: matrix.features != ''
+        run: cargo clippy -p yscv-video --features ${{ matrix.features }} -- -D warnings

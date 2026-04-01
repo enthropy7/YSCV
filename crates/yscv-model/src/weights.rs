@@ -61,6 +61,9 @@ pub fn save_weights(path: &Path, tensors: &HashMap<String, Tensor>) -> Result<()
 }
 
 /// Loads named tensors from a binary weight file.
+///
+/// Reads the entire file into memory. For very large models (>RAM),
+/// consider using memory-mapped I/O or streaming instead.
 pub fn load_weights(path: &Path) -> Result<HashMap<String, Tensor>, ModelError> {
     let file_data = std::fs::read(path).map_err(|e| ModelError::DatasetLoadIo {
         path: path.display().to_string(),

@@ -217,12 +217,12 @@ pub fn fast9_detect_raw(
                 x += 1;
             }
 
-            *results[row_idx].lock().expect("mutex poisoned") = row_kps;
+            *results[row_idx].lock().unwrap_or_else(|e| e.into_inner()) = row_kps;
         });
 
         results
             .into_iter()
-            .map(|m| m.into_inner().expect("mutex poisoned"))
+            .map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()))
             .collect()
     };
 
