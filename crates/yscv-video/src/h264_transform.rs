@@ -228,10 +228,7 @@ pub fn dequant_4x4(coeffs: &mut [i32; 16], qp: i32) {
             for i in (0..16).step_by(4) {
                 let c = _mm_loadu_si128(ptr.add(i) as *const __m128i);
                 let s = _mm_loadu_si128(sptr.add(i) as *const __m128i);
-                // SSE2 doesn't have _mm_mullo_epi32 (needs SSE4.1), use manual
-                // multiply: split into lo/hi, multiply, recombine
-                let c_lo = _mm_shuffle_epi32(c, 0b11_01_10_00);
-                let s_lo = _mm_shuffle_epi32(s, 0b11_01_10_00);
+                // SSE2 doesn't have _mm_mullo_epi32 (needs SSE4.1), use manual multiply
                 let mul_02 = _mm_mul_epu32(c, s);
                 let mul_13 = _mm_mul_epu32(_mm_srli_si128(c, 4), _mm_srli_si128(s, 4));
                 // Pack low 32 bits of each 64-bit product

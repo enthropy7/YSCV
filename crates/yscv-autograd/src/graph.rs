@@ -688,8 +688,8 @@ impl Graph {
     }
 
     /// NHWC 2-D convolution forward.
-    /// `input` shape `[N,H,W,C_in]`, `weight` shape `[KH,KW,C_in,C_out]`,
-    /// optional `bias` shape `[C_out]`.
+    /// `input` shape \[N,H,W,C_in\], `weight` shape \[KH,KW,C_in,C_out\],
+    /// optional `bias` shape \[C_out\].
     pub fn conv2d_nhwc(
         &mut self,
         input: NodeId,
@@ -1228,8 +1228,8 @@ impl Graph {
     }
 
     /// NLC 1-D convolution forward.
-    /// `input` shape `[N,L,C_in]`, `weight` shape `[K,C_in,C_out]`,
-    /// optional `bias` shape `[C_out]`.
+    /// `input` shape \[N,L,C_in\], `weight` shape \[K,C_in,C_out\],
+    /// optional `bias` shape \[C_out\].
     pub fn conv1d_nlc(
         &mut self,
         input: NodeId,
@@ -1285,8 +1285,8 @@ impl Graph {
     }
 
     /// NDHWC 3-D convolution forward (no padding).
-    /// `input` shape `[N,D,H,W,C_in]`, `weight` shape `[KD,KH,KW,C_in,C_out]`,
-    /// optional `bias` shape `[C_out]`.
+    /// `input` shape \[N,D,H,W,C_in\], `weight` shape \[KD,KH,KW,C_in,C_out\],
+    /// optional `bias` shape \[C_out\].
     pub fn conv3d_ndhwc(
         &mut self,
         input: NodeId,
@@ -1378,8 +1378,8 @@ impl Graph {
     }
 
     /// NHWC transposed 2-D convolution forward.
-    /// `input` shape `[N,H,W,C_in]`, `weight` shape `[KH,KW,C_out,C_in]`,
-    /// optional `bias` shape `[C_out]`.
+    /// `input` shape \[N,H,W,C_in\], `weight` shape \[KH,KW,C_out,C_in\],
+    /// optional `bias` shape \[C_out\].
     /// Output shape: `[N, (H-1)*stride_h + KH, (W-1)*stride_w + KW, C_out]`.
     pub fn conv_transpose2d_nhwc(
         &mut self,
@@ -1782,9 +1782,9 @@ impl Graph {
     }
 
     /// RNN forward pass through all timesteps (for BPTT).
-    /// input: [seq_len, input_size], w_ih: [input_size, hidden_size],
-    /// w_hh: [hidden_size, hidden_size], bias: [hidden_size].
-    /// Returns output [seq_len, hidden_size].
+    /// input: `[seq_len, input_size]`, w_ih: `[input_size, hidden_size]`,
+    /// w_hh: `[hidden_size, hidden_size]`, bias: `[hidden_size]`.
+    /// Returns output `[seq_len, hidden_size]`.
     pub fn rnn_forward(
         &mut self,
         input: NodeId,
@@ -1853,9 +1853,9 @@ impl Graph {
     }
 
     /// LSTM forward pass through all timesteps (for BPTT).
-    /// input: [seq_len, input_size], w_ih: [input_size, 4*hidden_size],
-    /// w_hh: [hidden_size, 4*hidden_size], bias: [4*hidden_size].
-    /// Returns output [seq_len, hidden_size].
+    /// input: `[seq_len, input_size]`, w_ih: `[input_size, 4*hidden_size]`,
+    /// w_hh: `[hidden_size, 4*hidden_size]`, bias: `[4*hidden_size]`.
+    /// Returns output `[seq_len, hidden_size]`.
     pub fn lstm_forward(
         &mut self,
         input: NodeId,
@@ -1960,9 +1960,9 @@ impl Graph {
     }
 
     /// GRU forward pass through all timesteps (for BPTT).
-    /// input: [seq_len, input_size], w_ih: [input_size, 3*hidden_size],
-    /// w_hh: [hidden_size, 3*hidden_size], bias_ih: [3*hidden_size], bias_hh: [3*hidden_size].
-    /// Returns output [seq_len, hidden_size].
+    /// input: `[seq_len, input_size]`, w_ih: `[input_size, 3*hidden_size]`,
+    /// w_hh: `[hidden_size, 3*hidden_size]`, bias_ih: `[3*hidden_size]`, bias_hh: `[3*hidden_size]`.
+    /// Returns output `[seq_len, hidden_size]`.
     pub fn gru_forward(
         &mut self,
         input: NodeId,
@@ -2069,7 +2069,7 @@ impl Graph {
     }
 
     /// Deformable conv2d NHWC forward.
-    /// input: [N,H,W,C_in], weight: [KH,KW,C_in,C_out], offsets: [N,OH,OW,KH*KW*2].
+    /// input: \[N,H,W,C_in\], weight: \[KH,KW,C_in,C_out\], offsets: \[N,OH,OW,KH\*KW\*2\].
     pub fn deformable_conv2d_nhwc(
         &mut self,
         input: NodeId,

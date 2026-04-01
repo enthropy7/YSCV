@@ -1709,9 +1709,7 @@ mod tests {
             cbf_luma: false,
             cbf_cb: false,
             cbf_cr: false,
-            residual_luma: vec![0; 256],
-            residual_cb: Vec::new(),
-            residual_cr: Vec::new(),
+            log2_tu_size: 4,
         };
         let chroma_w = 8;
         let chroma_h = 8;

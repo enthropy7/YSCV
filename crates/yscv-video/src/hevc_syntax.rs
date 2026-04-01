@@ -167,12 +167,8 @@ pub struct CodingUnitData {
     pub cbf_cb: bool,
     /// Whether the Cr CBF is set.
     pub cbf_cr: bool,
-    /// Transform coefficients (luma) in scan order, length = block_size^2.
-    pub residual_luma: Vec<i16>,
-    /// Transform coefficients (Cb chroma) in scan order, length = (block_size/2)^2.
-    pub residual_cb: Vec<i16>,
-    /// Transform coefficients (Cr chroma) in scan order, length = (block_size/2)^2.
-    pub residual_cr: Vec<i16>,
+    /// log2 of transform unit size (needed for inline TU parsing in caller).
+    pub log2_tu_size: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -210,11 +206,11 @@ pub fn parse_coding_unit(
     _y: usize,
     log2_cu_size: u32,
     sps: &HevcSps,
-    pps: &HevcPps,
+    _pps: &HevcPps,
     slice_type: HevcSliceType,
 ) -> CodingUnitData {
     let cu_size = 1u32 << log2_cu_size;
-    let num_samples = (cu_size * cu_size) as usize;
+    let _num_samples = (cu_size * cu_size) as usize;
 
     // -- cu_skip_flag (P/B slices only) ------------------------------------
     let skip_flag = if slice_type != HevcSliceType::I {
@@ -232,9 +228,7 @@ pub fn parse_coding_unit(
             cbf_luma: false,
             cbf_cb: false,
             cbf_cr: false,
-            residual_luma: Vec::new(),
-            residual_cb: Vec::new(),
-            residual_cr: Vec::new(),
+            log2_tu_size: log2_cu_size,
         };
     }
 
@@ -277,50 +271,8 @@ pub fn parse_coding_unit(
     let cbf_cr = parse_cbf_chroma(state, 0);
     let cbf_luma = parse_cbf_luma(state, 0);
 
-    // Residual coefficients (luma) — skip Vec for uncoded blocks
-    let residual_luma = if cbf_luma {
-        let mut tu_buf = vec![0i16; num_samples];
-        parse_transform_unit(
-            state,
-            log2_tu,
-            true,
-            pps.sign_data_hiding_enabled,
-            &mut tu_buf,
-        );
-        tu_buf
-    } else {
-        Vec::new()
-    };
-
-    // Chroma residual coefficients (half resolution for 4:2:0)
-    let chroma_log2_tu = log2_tu.saturating_sub(1).max(2); // min 4x4
-    let chroma_samples = (1usize << chroma_log2_tu) * (1usize << chroma_log2_tu);
-    let residual_cb = if cbf_cb {
-        let mut tu_buf = vec![0i16; chroma_samples];
-        parse_transform_unit(
-            state,
-            chroma_log2_tu,
-            false,
-            pps.sign_data_hiding_enabled,
-            &mut tu_buf,
-        );
-        tu_buf
-    } else {
-        Vec::new()
-    };
-    let residual_cr = if cbf_cr {
-        let mut tu_buf = vec![0i16; chroma_samples];
-        parse_transform_unit(
-            state,
-            chroma_log2_tu,
-            false,
-            pps.sign_data_hiding_enabled,
-            &mut tu_buf,
-        );
-        tu_buf
-    } else {
-        Vec::new()
-    };
+    // TU parsing deferred to caller (decode_coding_tree_cabac) which uses stack buffers.
+    // This avoids Vec allocation per coded CU.
 
     CodingUnitData {
         pred_mode,
@@ -329,9 +281,7 @@ pub fn parse_coding_unit(
         cbf_luma,
         cbf_cb,
         cbf_cr,
-        residual_luma,
-        residual_cb,
-        residual_cr,
+        log2_tu_size: log2_tu,
     }
 }
 
@@ -1238,6 +1188,29 @@ pub fn decode_coding_tree_cabac(
                         cs,
                         &mut pcr,
                     );
+                    // Parse chroma TU into stack buffers (zero alloc)
+                    let chroma_log2 = cu_data.log2_tu_size.saturating_sub(1).max(2);
+                    let chroma_tu_n = (1usize << chroma_log2) * (1usize << chroma_log2);
+                    let mut res_cb = [0i16; 32 * 32];
+                    let mut res_cr = [0i16; 32 * 32];
+                    if cu_data.cbf_cb {
+                        parse_transform_unit(
+                            state,
+                            chroma_log2,
+                            false,
+                            pps.sign_data_hiding_enabled,
+                            &mut res_cb[..chroma_tu_n],
+                        );
+                    }
+                    if cu_data.cbf_cr {
+                        parse_transform_unit(
+                            state,
+                            chroma_log2,
+                            false,
+                            pps.sign_data_hiding_enabled,
+                            &mut res_cr[..chroma_tu_n],
+                        );
+                    }
                     // Write chroma recon
                     let cpw = pic_width / 2;
                     for row in 0..cs.min((pic_height / 2).saturating_sub(y / 2)) {
@@ -1245,13 +1218,13 @@ pub fn decode_coding_tree_cabac(
                             let ci = (y / 2 + row) * cpw + (x / 2 + col);
                             let si = row * cs + col;
                             if ci < recon_cb.len() {
-                                let rcb = if si < cu_data.residual_cb.len() {
-                                    cu_data.residual_cb[si] as i32
+                                let rcb = if cu_data.cbf_cb && si < chroma_tu_n {
+                                    res_cb[si] as i32
                                 } else {
                                     0
                                 };
-                                let rcr = if si < cu_data.residual_cr.len() {
-                                    cu_data.residual_cr[si] as i32
+                                let rcr = if cu_data.cbf_cr && si < chroma_tu_n {
+                                    res_cr[si] as i32
                                 } else {
                                     0
                                 };
@@ -1268,11 +1241,25 @@ pub fn decode_coding_tree_cabac(
             }
         }
 
-        // Add residual to prediction — write directly to recon_luma (skip temp buffer)
+        // Parse luma TU into stack buffer (zero heap allocation)
         let max_val = (1i32 << sps.bit_depth_luma) - 1;
-        let has_residual = !cu_data.residual_luma.is_empty();
-        let residual_ptr = cu_data.residual_luma.as_ptr();
-        let residual_len = cu_data.residual_luma.len();
+        let mut residual_buf = [0i16; 64 * 64];
+        let tu_n = (1usize << cu_data.log2_tu_size) * (1usize << cu_data.log2_tu_size);
+        let has_residual = cu_data.cbf_luma;
+        if has_residual {
+            unsafe {
+                std::ptr::write_bytes(residual_buf.as_mut_ptr(), 0, tu_n);
+            }
+            parse_transform_unit(
+                state,
+                cu_data.log2_tu_size,
+                true,
+                pps.sign_data_hiding_enabled,
+                &mut residual_buf[..tu_n],
+            );
+        }
+        let residual_ptr = residual_buf.as_ptr();
+        let residual_len = if has_residual { tu_n } else { 0 };
 
         // Fused reconstruct + writeback: write directly to picture buffer
         #[allow(unsafe_code)]

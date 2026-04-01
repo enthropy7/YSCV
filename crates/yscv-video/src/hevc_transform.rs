@@ -868,6 +868,7 @@ unsafe fn hevc_inverse_dct_32x32_neon(coeffs: &[i32; 1024], out: &mut [i32; 1024
 }
 
 /// Build the HEVC 32-point DCT-II transform matrix at compile time.
+#[cfg(any(target_arch = "aarch64", test))]
 const fn hevc_dct32_matrix() -> [[i32; 32]; 32] {
     // Even rows (0,2,4,...,30) come from 16-point matrix expanded to 32 columns.
     // Odd rows (1,3,5,...,31) are the 32-point odd basis from HEVC spec Table 8-7.
@@ -1006,6 +1007,7 @@ const fn hevc_dct32_matrix() -> [[i32; 32]; 32] {
 ///   M[2r][n] = M[2r][31-n]  for all r and n.
 /// The first 16 columns equal the 16-point DCT matrix, and columns 16..31
 /// mirror columns 15..0.
+#[cfg(any(target_arch = "aarch64", test))]
 const fn expand_even_rows(even16: &[[i32; 16]; 16]) -> [[i32; 32]; 16] {
     let mut out = [[0i32; 32]; 16];
     let mut r = 0;
@@ -1080,8 +1082,7 @@ fn hevc_dequant_scalar(coeffs: &mut [i32], scale: i32, total_shift: i32) {
 #[target_feature(enable = "sse2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn hevc_dequant_sse2(coeffs: &mut [i32], scale: i32, total_shift: i32) {
-    use std::arch::x86_64::*;
-    let scale_v = _mm_set1_epi32(scale);
+    // SSE2 lacks _mm_mullo_epi32 (SSE4.1), so scalar loop with autovectorization
     let len = coeffs.len();
     let p = coeffs.as_mut_ptr();
 
@@ -1091,27 +1092,8 @@ unsafe fn hevc_dequant_sse2(coeffs: &mut [i32], scale: i32, total_shift: i32) {
         } else {
             0
         };
-        let offset_v = _mm_set1_epi32(offset);
-        let mut i = 0;
-        while i + 4 <= len {
-            let c = _mm_loadu_si128(p.add(i) as *const __m128i);
-            // SSE2 lacks _mm_mullo_epi32 — use manual lo/hi multiply
-            let lo = _mm_mul_epu32(c, scale_v);
-            let hi = _mm_mul_epu32(_mm_srli_si128(c, 4), _mm_srli_si128(scale_v, 4));
-            // Recombine (only need low 32 bits of each product)
-            let lo32 = _mm_shuffle_epi32(lo, 0b10_00_10_00);
-            let hi32 = _mm_shuffle_epi32(hi, 0b10_00_10_00);
-            let prod = _mm_unpacklo_epi32(lo32, hi32);
-            // Handle sign correctly — mul_epu32 is unsigned, need signed result
-            // Simpler: just do scalar for correctness
-            for j in 0..4 {
-                *p.add(i + j) = (*p.add(i + j) * scale + offset) >> total_shift;
-            }
-            i += 4;
-        }
-        while i < len {
+        for i in 0..len {
             *p.add(i) = (*p.add(i) * scale + offset) >> total_shift;
-            i += 1;
         }
     } else {
         let left_shift = (-total_shift) as u32;

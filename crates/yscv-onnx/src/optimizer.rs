@@ -179,8 +179,8 @@ pub fn fuse_conv_relu(model: &mut OnnxModel) {
 /// For each Conv immediately followed by a BatchNormalization whose sole input is the
 /// Conv output, we compute fused weights:
 ///   scale_c = gamma_c / sqrt(var_c + eps)
-///   W_fused[c] = W[c] * scale_c
-///   b_fused[c] = (b[c] - mean_c) * scale_c + beta_c
+///   `W_fused[c] = W[c] * scale_c`
+///   `b_fused[c] = (b[c] - mean_c) * scale_c + beta_c`
 /// The Conv initializers are replaced and the BN node is removed.
 pub fn fold_conv_bn(model: &mut OnnxModel) {
     let mut fuse_pairs: Vec<(usize, usize)> = Vec::new();
