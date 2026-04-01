@@ -7,10 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **yscv-onnx**: CPU depthwise and grouped Conv paths now correctly apply fused SiLU activation. Previously, Conv+SiLU fusion only applied the activation in the group=1 path, silently skipping it for depthwise (group=C) and grouped convolutions. This caused YOLO11n (which uses DWConv 3×3 in the detection head) to produce ~34 false detections instead of ~9. YOLOv8n was unaffected (group=1 only).
-
 ### Added
+- **yscv-video**: HEVC chroma motion compensation (4-tap filter) — full color YUV420→RGB output instead of grayscale
+- **yscv-video**: Streaming MP4 reader — O(1) memory (27MB RSS for 41MB file), lazy seek-based sample reading
+- **yscv-video**: MP4 audio track detection — extracts codec, sample_rate, channels from mp4a box
+- **yscv-video**: MKV/WebM EBML demuxer with frame index (no per-frame data copy)
+- **yscv-video**: Hardware video decode backends — VideoToolbox (macOS, working), NVDEC (parser pipeline), VA-API (init), MediaFoundation (init), all with auto SW fallback
+- **yscv-video**: Branchless CABAC engine — packed transition tables, CLZ batch renormalize, 32-bit buffered reader, unsafe get_unchecked on hot paths
+- **yscv-video**: BS=0 deblock skip — pred_mode grid eliminates ~85% of deblock work on inter-coded HEVC frames
+- **yscv-video**: SSE2 parity with NEON — 31 SSE2 blocks (MC filter, bipred, unipred, dequant, i16→u8, DC prediction)
+- **yscv-video**: HEVC weighted prediction table parser (ITU-T H.265 §7.3.6.3)
+- **yscv-video**: H.264 sub-MB partitions (P_8x8: 4 sub-blocks with per-block MVD)
+- **yscv-video**: H.264 scaling lists parsed and stored in SPS
+- **yscv-video**: 10-bit Main10 support (u16 DPB, NEON u16 MC filter)
+- **yscv-video**: `--luma-only` and `--hw` flags in bench_video_decode example
+- **yscv-video**: Fuzz testing — 3 targets (H.264 NAL, HEVC NAL, MKV) with seed corpus
+- **yscv-video**: Audio module — AudioCodec enum, AudioTrackInfo, MP4/MKV codec detection
+- **yscv-detect**: Bounds checks in YOLOv8/v11 decoder (guard against malformed tensor output)
+- **docs**: `video-pipeline.md` — comprehensive video decode documentation
+- **.github/workflows/hw-decode.yml** — CI matrix for macOS+VT, Linux, Windows
+
+### Fixed
+- **yscv-video**: OOM on large MP4 files — streaming reader replaces `std::fs::read()` whole-file load
+- **yscv-video**: MKV OOM — 512MB file size limit + frame index instead of per-frame data copy
+- **yscv-onnx**: CPU depthwise and grouped Conv paths now correctly apply fused SiLU activation
+- **yscv-onnx**: `panic!()` in Metal/GPU dispatch replaced with `unreachable!()` (internal invariant)
+- **yscv-imgproc**: Mutex poisoning — `.expect("mutex poisoned")` replaced with `.unwrap_or_else(|e| e.into_inner())`
+- **yscv-video**: Integer overflow in raw video frame size calculation — uses `checked_mul()`
+- **yscv-model**: Removed artificial 8GB file size limits on weight/safetensors loading
+- **yscv-onnx**: Removed artificial 4GB limit on ONNX model loading
+- **yscv-detect**: False `#[allow(dead_code)]` on `hwc_to_nchw` (function IS used behind cfg(feature))
+
+### Added (earlier)
 - **examples**: `bench_yolo` now supports `BENCH_COOLDOWN` env var (default 20s) to insert thermal cooldown pauses between benchmarks, preventing CPU frequency throttling on sustained runs.
 
 ## [0.2.0] — 2026-03-18
