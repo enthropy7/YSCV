@@ -23,5 +23,13 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 name = "imgproc_ops"
 harness = false
 
+[[bench]]
+name = "imgproc_morph"
+harness = false
+
+[[bench]]
+name = "imgproc_u8"
+harness = false
+
 [lints]
 workspace = true

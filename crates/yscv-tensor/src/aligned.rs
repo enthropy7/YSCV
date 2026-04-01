@@ -69,10 +69,9 @@ impl<T> AlignedVec<T> {
         unsafe {
             std::ptr::copy_nonoverlapping(v.as_ptr(), ptr, len);
         }
-        // Prevent Vec from dropping the elements (we moved them via copy).
-        // For Copy types this is fine. For non-Copy types that impl Drop,
-        // we must prevent double-free.
-        std::mem::forget(v);
+        // v is dropped here normally — T: Copy so no element destructors,
+        // and Vec's drop frees the backing allocation.
+        drop(v);
         Self { ptr, len, cap: len }
     }
 

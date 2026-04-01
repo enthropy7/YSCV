@@ -25,9 +25,10 @@ pub fn rgb_to_grayscale(input: &Tensor) -> Result<Tensor, ImgProcError> {
     if total >= 4096 && !cfg!(miri) {
         let n_chunks = 8usize.min(h);
         let chunk_h = h.div_ceil(n_chunks);
-        let src_ptr = data.as_ptr() as usize;
-        let dst_ptr = out.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(data.as_ptr());
+        let dst_ptr = super::SendPtr(out.as_mut_ptr());
         let w_c = w;
+        let data_len = data.len();
         // SAFETY: each chunk writes to non-overlapping region
         (0..n_chunks).into_par_iter().for_each(|chunk| {
             let y_start = chunk * chunk_h;
@@ -36,10 +37,10 @@ pub fn rgb_to_grayscale(input: &Tensor) -> Result<Tensor, ImgProcError> {
             let src_off = y_start * w_c * 3;
             let dst_off = y_start * w_c;
             let chunk_src =
-                unsafe { std::slice::from_raw_parts(src_ptr as *const f32, data.len()) };
+                unsafe { std::slice::from_raw_parts(src_ptr.ptr(), data_len) };
             let chunk_src = &chunk_src[src_off..src_off + n * 3];
             let chunk_dst =
-                unsafe { std::slice::from_raw_parts_mut((dst_ptr as *mut f32).add(dst_off), n) };
+                unsafe { std::slice::from_raw_parts_mut(dst_ptr.ptr().add(dst_off), n) };
             let done = grayscale_simd_row(chunk_src, chunk_dst);
             for i in done..n {
                 let base = i * 3;
@@ -276,21 +277,21 @@ pub fn rgb_to_hsv(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
     // Row-parallel dispatch (not per-pixel — avoids rayon scheduling overhead)
     if pixels > 4096 {
-        let _src_ptr = data.as_ptr() as usize;
-        let _dst_ptr = out.as_mut_ptr() as usize;
+        let _src_ptr = super::SendConstPtr(data.as_ptr());
+        let _dst_ptr = super::SendPtr(out.as_mut_ptr());
 
         #[cfg(target_os = "macos")]
         {
             super::u8ops::gcd::parallel_for(h, |y| {
                 let src = unsafe {
                     std::slice::from_raw_parts(
-                        (_src_ptr as *const f32).add(y * row_stride),
+                        _src_ptr.ptr().add(y * row_stride),
                         row_stride,
                     )
                 };
                 let dst = unsafe {
                     std::slice::from_raw_parts_mut(
-                        (_dst_ptr as *mut f32).add(y * row_stride),
+                        _dst_ptr.ptr().add(y * row_stride),
                         row_stride,
                     )
                 };
@@ -778,20 +779,20 @@ pub fn rgb_to_lab(input: &Tensor) -> Result<Tensor, ImgProcError> {
             z_b[i] = lin * 0.9503041 * INV_ZN;
         }
 
-        let src_ptr = data.as_ptr() as usize;
-        let dst_ptr = out.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(data.as_ptr());
+        let dst_ptr = super::SendPtr(out.as_mut_ptr());
         let row_stride = w * 3;
 
         let process_row = |row: usize| {
             let src_row = unsafe {
                 std::slice::from_raw_parts(
-                    (src_ptr as *const f32).add(row * row_stride),
+                    src_ptr.ptr().add(row * row_stride),
                     row_stride,
                 )
             };
             let out_row = unsafe {
                 std::slice::from_raw_parts_mut(
-                    (dst_ptr as *mut f32).add(row * row_stride),
+                    dst_ptr.ptr().add(row * row_stride),
                     row_stride,
                 )
             };
@@ -1313,13 +1314,13 @@ pub fn rgb_to_yuv(input: &Tensor) -> Result<Tensor, ImgProcError> {
     #[cfg(target_os = "macos")]
     if pixels > 4096 && !cfg!(miri) {
         let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
-        let out_ptr = out.as_mut_ptr() as usize;
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let src_row = &data[y * row_stride..(y + 1) * row_stride];
             let dst_row = unsafe {
                 std::slice::from_raw_parts_mut(
-                    (out_ptr as *mut f32).add(y * row_stride),
+                    out_ptr.ptr().add(y * row_stride),
                     row_stride,
                 )
             };
@@ -1718,13 +1719,13 @@ pub fn rgb_to_bgr(input: &Tensor) -> Result<Tensor, ImgProcError> {
     #[cfg(target_os = "macos")]
     if pixels > 4096 && !cfg!(miri) {
         let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
-        let out_ptr = out.as_mut_ptr() as usize;
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let src_row = &data[y * row_stride..(y + 1) * row_stride];
             let dst_row = unsafe {
                 std::slice::from_raw_parts_mut(
-                    (out_ptr as *mut f32).add(y * row_stride),
+                    out_ptr.ptr().add(y * row_stride),
                     row_stride,
                 )
             };

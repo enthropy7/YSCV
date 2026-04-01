@@ -85,11 +85,11 @@ pub fn fast9_detect_u8(image: &ImageU8, threshold: u8, nms: bool) -> Vec<(u16, u
     let use_rayon = (h - 2 * border) * (w - 2 * border) >= RAYON_THRESHOLD && !cfg!(miri);
 
     let candidates: Vec<(u16, u16, u16)> = if use_rayon {
-        let src_ptr = src.as_ptr() as usize;
+        let src_ptr = super::SendConstPtr(src.as_ptr());
         (border..h - border)
             .into_par_iter()
             .flat_map(|y| {
-                let src = unsafe { std::slice::from_raw_parts(src_ptr as *const u8, h * w) };
+                let src = unsafe { std::slice::from_raw_parts(src_ptr.ptr(), h * w) };
                 let mut row_corners = Vec::new();
                 fast9_detect_row(src, y, w, border, &offsets, threshold, &mut row_corners);
                 row_corners
@@ -547,14 +547,14 @@ pub fn warp_perspective_u8(
     let use_rayon = out_h * out_w >= RAYON_THRESHOLD && !cfg!(miri);
 
     if use_rayon {
-        let src_ptr = src.as_ptr() as usize;
-        let out_ptr = out.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(src.as_ptr());
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         (0..out_h).into_par_iter().for_each(|oy| {
             let src =
-                unsafe { std::slice::from_raw_parts(src_ptr as *const u8, ih * iw * channels) };
+                unsafe { std::slice::from_raw_parts(src_ptr.ptr(), ih * iw * channels) };
             let out_row = unsafe {
                 std::slice::from_raw_parts_mut(
-                    (out_ptr as *mut u8).add(oy * out_w * channels),
+                    out_ptr.ptr().add(oy * out_w * channels),
                     out_w * channels,
                 )
             };
@@ -850,23 +850,23 @@ fn bilateral_u8_parallel(
     max_color_diff: u8,
     combined_lut: &[f32],
 ) {
-    let sp = src.as_ptr() as usize;
-    let dp = out.as_mut_ptr() as usize;
-    let spatial_ptr = spatial_lut.as_ptr() as usize;
-    let color_ptr = color_lut.as_ptr() as usize;
-    let combined_ptr = combined_lut.as_ptr() as usize;
+    let sp = super::SendConstPtr(src.as_ptr());
+    let dp = super::SendPtr(out.as_mut_ptr());
+    let spatial_ptr = super::SendConstPtr(spatial_lut.as_ptr());
+    let color_ptr = super::SendConstPtr(color_lut.as_ptr());
+    let combined_ptr = super::SendConstPtr(combined_lut.as_ptr());
     let combined_len = combined_lut.len();
 
     #[cfg(target_os = "macos")]
     if height * width >= RAYON_THRESHOLD {
         gcd::parallel_for(height, |y| {
-            let sp = sp as *const u8;
-            let dp = dp as *mut u8;
+            let sp = sp.ptr();
+            let dp = dp.ptr();
             let spatial_lut =
-                unsafe { std::slice::from_raw_parts(spatial_ptr as *const f32, d * d) };
-            let color_lut = unsafe { std::slice::from_raw_parts(color_ptr as *const f32, 256) };
+                unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
+            let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
             let combined_lut =
-                unsafe { std::slice::from_raw_parts(combined_ptr as *const f32, combined_len) };
+                unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
             unsafe {
                 bilateral_u8_row_neon(
                     sp,
@@ -889,13 +889,13 @@ fn bilateral_u8_parallel(
     #[cfg(not(target_os = "macos"))]
     if height * width >= RAYON_THRESHOLD {
         (0..height).into_par_iter().for_each(|y| {
-            let sp = sp as *const u8;
-            let dp = dp as *mut u8;
+            let sp = sp.ptr();
+            let dp = dp.ptr();
             let spatial_lut =
-                unsafe { std::slice::from_raw_parts(spatial_ptr as *const f32, d * d) };
-            let color_lut = unsafe { std::slice::from_raw_parts(color_ptr as *const f32, 256) };
+                unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
+            let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
             let combined_lut =
-                unsafe { std::slice::from_raw_parts(combined_ptr as *const f32, combined_len) };
+                unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
             unsafe {
                 bilateral_u8_row_neon(
                     sp,
@@ -919,8 +919,8 @@ fn bilateral_u8_parallel(
     for y in 0..height {
         unsafe {
             bilateral_u8_row_neon(
-                sp as *const u8,
-                dp as *mut u8,
+                sp.ptr(),
+                dp.ptr(),
                 width,
                 height,
                 d,
@@ -947,16 +947,16 @@ fn bilateral_u8_parallel_scalar(
     color_lut: &[f32],
     max_color_diff: u8,
 ) {
-    let sp = src.as_ptr() as usize;
-    let dp = out.as_mut_ptr() as usize;
-    let spatial_ptr = spatial_lut.as_ptr() as usize;
-    let color_ptr = color_lut.as_ptr() as usize;
+    let sp = super::SendConstPtr(src.as_ptr());
+    let dp = super::SendPtr(out.as_mut_ptr());
+    let spatial_ptr = super::SendConstPtr(spatial_lut.as_ptr());
+    let color_ptr = super::SendConstPtr(color_lut.as_ptr());
 
     let process_row = |y: usize| {
-        let src = unsafe { std::slice::from_raw_parts(sp as *const u8, width * height) };
-        let dst = unsafe { std::slice::from_raw_parts_mut(dp as *mut u8, width * height) };
-        let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr as *const f32, d * d) };
-        let color_lut = unsafe { std::slice::from_raw_parts(color_ptr as *const f32, 256) };
+        let src = unsafe { std::slice::from_raw_parts(sp.ptr(), width * height) };
+        let dst = unsafe { std::slice::from_raw_parts_mut(dp.ptr(), width * height) };
+        let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
+        let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
 
         for x in 0..width {
             let center = src[y * width + x];
@@ -1019,20 +1019,20 @@ fn bilateral_u8_parallel_x86<const USE_AVX2: bool>(
     max_color_diff: u8,
     combined_lut: &[f32],
 ) {
-    let sp = src.as_ptr() as usize;
-    let dp = out.as_mut_ptr() as usize;
-    let spatial_ptr = spatial_lut.as_ptr() as usize;
-    let color_ptr = color_lut.as_ptr() as usize;
-    let combined_ptr = combined_lut.as_ptr() as usize;
+    let sp = super::SendConstPtr(src.as_ptr());
+    let dp = super::SendPtr(out.as_mut_ptr());
+    let spatial_ptr = super::SendConstPtr(spatial_lut.as_ptr());
+    let color_ptr = super::SendConstPtr(color_lut.as_ptr());
+    let combined_ptr = super::SendConstPtr(combined_lut.as_ptr());
     let combined_len = combined_lut.len();
 
     let process_row = |y: usize| {
-        let sp = sp as *const u8;
-        let dp = dp as *mut u8;
-        let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr as *const f32, d * d) };
-        let color_lut = unsafe { std::slice::from_raw_parts(color_ptr as *const f32, 256) };
+        let sp = sp.ptr();
+        let dp = dp.ptr();
+        let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
+        let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
         let combined_lut =
-            unsafe { std::slice::from_raw_parts(combined_ptr as *const f32, combined_len) };
+            unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
         if USE_AVX2 {
             unsafe {
                 bilateral_u8_row_avx2(

@@ -63,7 +63,7 @@ pub fn canny_u8(input: &ImageU8, low_thresh: u8, high_thresh: u8) -> Result<Imag
             }
         }
 
-        let nms_ptr = nms_out.as_mut_ptr() as usize;
+        let nms_ptr = super::SendPtr(nms_out.as_mut_ptr());
         let strong_per_strip: Vec<Vec<u32>> = strips
             .par_iter()
             .map(|&(nms_start, nms_end)| {
@@ -96,7 +96,7 @@ pub fn canny_u8(input: &ImageU8, low_thresh: u8, high_thresh: u8) -> Result<Imag
                             let b_s = (y % 3) * w;
                             let nms_row = unsafe {
                                 std::slice::from_raw_parts_mut(
-                                    (nms_ptr as *mut u8).add(nms_y * w),
+                                    nms_ptr.ptr().add(nms_y * w),
                                     w,
                                 )
                             };
@@ -122,7 +122,7 @@ pub fn canny_u8(input: &ImageU8, low_thresh: u8, high_thresh: u8) -> Result<Imag
                     let b_s = ((nms_y + 1) % 3) * w;
                     mag_ring[b_s..b_s + w].fill(0);
                     let nms_row = unsafe {
-                        std::slice::from_raw_parts_mut((nms_ptr as *mut u8).add(nms_y * w), w)
+                        std::slice::from_raw_parts_mut(nms_ptr.ptr().add(nms_y * w), w)
                     };
                     canny_nms_dir_row(
                         &mag_ring[a_s..a_s + w],

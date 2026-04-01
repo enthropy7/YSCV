@@ -37,13 +37,13 @@ pub fn rgb_to_hsv_u8(src: &[u8], width: usize, height: usize) -> Vec<u8> {
     let mut out = vec![0u8; npixels * 3];
 
     if npixels >= RAYON_THRESHOLD {
-        let out_base = out.as_mut_ptr() as usize;
+        let out_base = super::SendPtr(out.as_mut_ptr());
         gcd::parallel_for(height, |y| {
             let row_src = &src[y * width * 3..(y + 1) * width * 3];
             let row_dst_start = y * width * 3;
             // SAFETY: each row writes to non-overlapping region; pointer derived from as_mut_ptr
             let out_ptr = unsafe {
-                std::slice::from_raw_parts_mut((out_base as *mut u8).add(row_dst_start), width * 3)
+                std::slice::from_raw_parts_mut(out_base.ptr().add(row_dst_start), width * 3)
             };
             rgb_to_hsv_u8_row(row_src, out_ptr, width, sdiv, hdiv);
         });
@@ -473,7 +473,7 @@ pub fn clahe_u8(
 
     // Compute LUT maps for each tile: maps[tile_idx * 256 + val] = mapped_val
     let mut maps = vec![0u8; n_tiles * 256];
-    let maps_base = maps.as_mut_ptr() as usize;
+    let maps_base = super::SendPtr(maps.as_mut_ptr());
 
     // Phase 1: compute histogram + clip + CDF for each tile (parallel)
     {
@@ -527,7 +527,7 @@ pub fn clahe_u8(
 
             // SAFETY: each tile writes to non-overlapping region of maps
             let map = unsafe {
-                std::slice::from_raw_parts_mut((maps_base as *mut u8).add(tile_idx * 256), 256)
+                std::slice::from_raw_parts_mut(maps_base.ptr().add(tile_idx * 256), 256)
             };
 
             if denom == 0 {
@@ -545,7 +545,7 @@ pub fn clahe_u8(
 
     // Phase 2: interpolate between tile maps for each pixel (parallel by row)
     let mut out = vec![0u8; npixels];
-    let out_base = out.as_mut_ptr() as usize;
+    let out_base = super::SendPtr(out.as_mut_ptr());
 
     // Precompute x-dependent tile indices and weights (shared across all rows)
     let half_w = tile_w / 2;
@@ -606,7 +606,7 @@ pub fn clahe_u8(
             let row_start = y * width;
             // SAFETY: each row writes to non-overlapping region; pointer derived from as_mut_ptr
             let dst_row = unsafe {
-                std::slice::from_raw_parts_mut((out_base as *mut u8).add(row_start), width)
+                std::slice::from_raw_parts_mut(out_base.ptr().add(row_start), width)
             };
 
             for x in 0..width {

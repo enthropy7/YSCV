@@ -24,7 +24,7 @@ pub fn grayscale_f32(input: &ImageF32) -> Option<ImageF32> {
     let total = h * w;
 
     // SAFETY: every element written by SIMD + scalar tail + GCD chunks.
-    let mut out = Vec::with_capacity(total);
+    let mut out: Vec<f32> = Vec::with_capacity(total);
     #[allow(unsafe_code)]
     unsafe {
         out.set_len(total);
@@ -35,11 +35,11 @@ pub fn grayscale_f32(input: &ImageF32) -> Option<ImageF32> {
     if total >= RAYON_THRESHOLD && !cfg!(miri) {
         let n_chunks = 8usize.min(h);
         let chunk_h = h.div_ceil(n_chunks);
-        let sp = src.as_ptr() as usize;
-        let dp = out.as_mut_ptr() as usize;
+        let sp = super::SendConstPtr(src.as_ptr());
+        let dp = super::SendPtr(out.as_mut_ptr());
         gcd::parallel_for(n_chunks, |chunk| {
-            let sp = sp as *const f32;
-            let dp = dp as *mut f32;
+            let sp = sp.ptr();
+            let dp = dp.ptr();
             let y_start = chunk * chunk_h;
             let y_end = ((chunk + 1) * chunk_h).min(h);
             let n = (y_end - y_start) * w;
@@ -1261,7 +1261,7 @@ pub fn threshold_binary_f32(input: &ImageF32, thresh: f32, max_val: f32) -> Opti
     let src = input.data();
     let total = h * w;
 
-    let mut out = Vec::with_capacity(total);
+    let mut out: Vec<f32> = Vec::with_capacity(total);
     #[allow(unsafe_code)]
     unsafe {
         out.set_len(total);
@@ -1272,11 +1272,11 @@ pub fn threshold_binary_f32(input: &ImageF32, thresh: f32, max_val: f32) -> Opti
     if total >= RAYON_THRESHOLD && !cfg!(miri) {
         let n_chunks = 8usize.min(h);
         let chunk_h = h.div_ceil(n_chunks);
-        let sp = src.as_ptr() as usize;
-        let dp = out.as_mut_ptr() as usize;
+        let sp = super::SendConstPtr(src.as_ptr());
+        let dp = super::SendPtr(out.as_mut_ptr());
         gcd::parallel_for(n_chunks, |chunk| {
-            let sp = sp as *const f32;
-            let dp = dp as *mut f32;
+            let sp = sp.ptr();
+            let dp = dp.ptr();
             let start = chunk * chunk_h * w;
             let end = (((chunk + 1) * chunk_h).min(h)) * w;
             let n = end - start;

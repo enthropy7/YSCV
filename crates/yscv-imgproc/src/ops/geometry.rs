@@ -87,21 +87,21 @@ pub fn sobel_3x3_gradients(input: &Tensor) -> Result<(Tensor, Tensor), ImgProcEr
         if use_gcd {
             #[cfg(target_os = "macos")]
             {
-                let gx_ptr = gx_interior.as_mut_ptr() as usize;
-                let gy_ptr = gy_interior.as_mut_ptr() as usize;
+                let gx_ptr = super::SendPtr(gx_interior.as_mut_ptr());
+                let gy_ptr = super::SendPtr(gy_interior.as_mut_ptr());
                 use super::u8ops::gcd;
                 gcd::parallel_for(interior_h, |i| {
                     let y = i + 1;
                     // SAFETY: each row writes to a disjoint slice.
                     let gx_row = unsafe {
                         std::slice::from_raw_parts_mut(
-                            (gx_ptr as *mut f32).add(i * row_len),
+                            gx_ptr.ptr().add(i * row_len),
                             row_len,
                         )
                     };
                     let gy_row = unsafe {
                         std::slice::from_raw_parts_mut(
-                            (gy_ptr as *mut f32).add(i * row_len),
+                            gy_ptr.ptr().add(i * row_len),
                             row_len,
                         )
                     };
@@ -335,7 +335,7 @@ pub fn sobel_3x3_magnitude(input: &Tensor) -> Result<Tensor, ImgProcError> {
     let gy_data = gy.data();
     let total = gx.len();
     // SAFETY: every element is written by compute_chunk below.
-    let mut out = Vec::with_capacity(total);
+    let mut out: Vec<f32> = Vec::with_capacity(total);
     unsafe {
         out.set_len(total);
     }
@@ -361,19 +361,19 @@ pub fn sobel_3x3_magnitude(input: &Tensor) -> Result<Tensor, ImgProcError> {
         let shape = gx.shape().to_vec();
         let (h, w, _channels) = (shape[0], shape[1], shape[2]);
         let row_len = w * shape[2];
-        let gx_ptr = gx_data.as_ptr() as usize;
-        let gy_ptr = gy_data.as_ptr() as usize;
-        let out_ptr = out.as_mut_ptr() as usize;
+        let gx_ptr = super::SendConstPtr(gx_data.as_ptr());
+        let gy_ptr = super::SendConstPtr(gy_data.as_ptr());
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let start = y * row_len;
             // SAFETY: each row writes to a disjoint slice.
             let gx_slice =
-                unsafe { std::slice::from_raw_parts((gx_ptr as *const f32).add(start), row_len) };
+                unsafe { std::slice::from_raw_parts(gx_ptr.ptr().add(start), row_len) };
             let gy_slice =
-                unsafe { std::slice::from_raw_parts((gy_ptr as *const f32).add(start), row_len) };
+                unsafe { std::slice::from_raw_parts(gy_ptr.ptr().add(start), row_len) };
             let dst = unsafe {
-                std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(start), row_len)
+                std::slice::from_raw_parts_mut(out_ptr.ptr().add(start), row_len)
             };
             let mut i = magnitude_simd(gx_slice, gy_slice, dst);
             while i < row_len {
@@ -845,8 +845,8 @@ fn warp_perspective_scalar(
     out_w: usize,
 ) {
     use super::u8ops::gcd;
-    let out_ptr = out.as_mut_ptr() as usize;
-    let in_ptr = in_data.as_ptr() as usize;
+    let out_ptr = super::SendPtr(out.as_mut_ptr());
+    let in_ptr = super::SendConstPtr(in_data.as_ptr());
     let in_len = in_data.len();
     let row_stride = out_w * channels;
     let inv = *inv; // copy for closure capture
@@ -854,9 +854,9 @@ fn warp_perspective_scalar(
     gcd::parallel_for(out_h, |dy| {
         // SAFETY: each row writes to non-overlapping out[dy*row_stride..(dy+1)*row_stride].
         let out_row = unsafe {
-            std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(dy * row_stride), row_stride)
+            std::slice::from_raw_parts_mut(out_ptr.ptr().add(dy * row_stride), row_stride)
         };
-        let in_data = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
+        let in_data = unsafe { std::slice::from_raw_parts(in_ptr.ptr(), in_len) };
 
         let yf = dy as f32 + 0.5;
         let base_num_x = inv[1] * yf + inv[2];
@@ -915,15 +915,15 @@ fn warp_perspective_c1(
     use super::u8ops::gcd;
     let iw_f = (iw - 1) as f32;
     let ih_f = (ih - 1) as f32;
-    let out_ptr = out.as_mut_ptr() as usize;
-    let in_ptr = in_data.as_ptr() as usize;
+    let out_ptr = super::SendPtr(out.as_mut_ptr());
+    let in_ptr = super::SendConstPtr(in_data.as_ptr());
     let in_len = in_data.len();
     let inv = *inv;
 
     gcd::parallel_for(out_h, |dy| {
         let out_row =
-            unsafe { std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(dy * out_w), out_w) };
-        let in_data = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
+            unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(dy * out_w), out_w) };
+        let in_data = unsafe { std::slice::from_raw_parts(in_ptr.ptr(), in_len) };
 
         let yf = dy as f32 + 0.5;
         let base_num_x = inv[1] * yf + inv[2];

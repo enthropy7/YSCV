@@ -33,9 +33,9 @@ pub fn histogram_256(input: &Tensor) -> Result<[u32; 256], ImgProcError> {
             for (chunk_idx, chunk) in u8_buf.chunks(chunk_size).enumerate() {
                 let hist_slice = &mut local_hists[chunk_idx * 256..(chunk_idx + 1) * 256];
                 // SAFETY: each thread writes to its own disjoint slice
-                let hist_ptr = hist_slice.as_mut_ptr() as usize;
+                let hist_ptr = super::SendPtr(hist_slice.as_mut_ptr());
                 s.spawn(move |_| {
-                    let hist = unsafe { std::slice::from_raw_parts_mut(hist_ptr as *mut u32, 256) };
+                    let hist = unsafe { std::slice::from_raw_parts_mut(hist_ptr.ptr(), 256) };
                     histogram_bin_chunk(chunk, hist);
                 });
             }
@@ -283,8 +283,8 @@ pub fn clahe(
     // Compute tile maps — each tile is independent, parallelize across tiles.
     {
         use super::u8ops::gcd;
-        let maps_ptr = maps.as_mut_ptr() as usize;
-        let src_u8_ptr = src_u8.as_ptr() as usize;
+        let maps_ptr = super::SendPtr(maps.as_mut_ptr());
+        let src_u8_ptr = super::SendConstPtr(src_u8.as_ptr());
         gcd::parallel_for(n_tiles, |tile_idx| {
             let gr = tile_idx / grid_cols;
             let gc = tile_idx % grid_cols;
@@ -296,9 +296,9 @@ pub fn clahe(
 
             // SAFETY: each tile writes to its own non-overlapping 256-byte slice.
             let map = unsafe {
-                std::slice::from_raw_parts_mut((maps_ptr as *mut u8).add(tile_idx * 256), 256)
+                std::slice::from_raw_parts_mut(maps_ptr.ptr().add(tile_idx * 256), 256)
             };
-            let src_u8 = unsafe { std::slice::from_raw_parts(src_u8_ptr as *const u8, h * w) };
+            let src_u8 = unsafe { std::slice::from_raw_parts(src_u8_ptr.ptr(), h * w) };
 
             let mut hist = [0u32; 256];
             for y in y0..y1 {
@@ -342,15 +342,15 @@ pub fn clahe(
     // Interpolation pass — rows are independent, parallelize across rows.
     {
         use super::u8ops::gcd;
-        let out_ptr = out.as_mut_ptr() as usize;
-        let maps_ptr = maps.as_ptr() as usize;
-        let src_u8_ptr = src_u8.as_ptr() as usize;
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
+        let maps_ptr = super::SendConstPtr(maps.as_ptr());
+        let src_u8_ptr = super::SendConstPtr(src_u8.as_ptr());
         gcd::parallel_for(h, |y| {
             // SAFETY: each row writes to non-overlapping out[y*w..(y+1)*w].
             let out_row =
-                unsafe { std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(y * w), w) };
-            let maps = unsafe { std::slice::from_raw_parts(maps_ptr as *const u8, n_tiles * 256) };
-            let src_u8 = unsafe { std::slice::from_raw_parts(src_u8_ptr as *const u8, h * w) };
+                unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * w), w) };
+            let maps = unsafe { std::slice::from_raw_parts(maps_ptr.ptr(), n_tiles * 256) };
+            let src_u8 = unsafe { std::slice::from_raw_parts(src_u8_ptr.ptr(), h * w) };
 
             let gy = (y as f32 * inv_cell_h - 0.5).max(0.0);
             let gr0 = (gy as usize).min(gr_max);

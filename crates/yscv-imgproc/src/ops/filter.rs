@@ -157,7 +157,7 @@ pub fn box_blur_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
     let row_len = w * channels;
     let total = h * w * channels;
     // SAFETY: every element is written by compute_row (SIMD + scalar) below.
-    let mut out = Vec::with_capacity(total);
+    let mut out: Vec<f32> = Vec::with_capacity(total);
     unsafe {
         out.set_len(total);
     }
@@ -248,12 +248,12 @@ pub fn box_blur_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
     #[cfg(target_os = "macos")]
     if pixels > 4096 && !cfg!(miri) {
-        let out_ptr = out.as_mut_ptr() as usize;
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             // SAFETY: each row writes to a disjoint slice of out.
             let row = unsafe {
-                std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len)
             };
             compute_row(y, row);
         });
@@ -434,7 +434,7 @@ pub fn gaussian_blur_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
     }
     // Vertical pass: [1, 2, 1] / 4
     // SAFETY: every element is written by compute_row below.
-    let mut out = Vec::with_capacity(total);
+    let mut out: Vec<f32> = Vec::with_capacity(total);
     unsafe {
         out.set_len(total);
     }
@@ -478,12 +478,12 @@ pub fn gaussian_blur_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
     #[cfg(target_os = "macos")]
     if pixels > 4096 && !cfg!(miri) {
-        let out_ptr = out.as_mut_ptr() as usize;
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             // SAFETY: each row writes to a disjoint slice of out.
             let row = unsafe {
-                std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len)
             };
             compute_row(y, row);
         });
@@ -1324,11 +1324,11 @@ pub fn bilateral_filter(
 
     #[cfg(target_os = "macos")]
     if pixels > 4096 && !cfg!(miri) {
-        let out_ptr = out.as_mut_ptr() as usize;
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let row =
-                unsafe { std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(y * w), w) };
+                unsafe { std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * w), w) };
             compute_row(y, row);
         });
         return Tensor::from_vec(vec![h, w, 1], out).map_err(Into::into);

@@ -1,3 +1,25 @@
+/// Wrapper to send raw mutable pointers across thread boundaries.
+/// SAFETY: callers must ensure non-overlapping access from each thread.
+#[derive(Clone, Copy)]
+pub(crate) struct SendPtr<T>(pub(crate) *mut T);
+unsafe impl<T> Send for SendPtr<T> {}
+unsafe impl<T> Sync for SendPtr<T> {}
+impl<T> SendPtr<T> {
+    #[inline(always)]
+    pub(crate) fn ptr(self) -> *mut T { self.0 }
+}
+
+/// Wrapper to send raw const pointers across thread boundaries.
+/// SAFETY: callers must ensure the pointed-to data lives long enough.
+#[derive(Clone, Copy)]
+pub(crate) struct SendConstPtr<T>(pub(crate) *const T);
+unsafe impl<T> Send for SendConstPtr<T> {}
+unsafe impl<T> Sync for SendConstPtr<T> {}
+impl<T> SendConstPtr<T> {
+    #[inline(always)]
+    pub(crate) fn ptr(self) -> *const T { self.0 }
+}
+
 mod augment;
 mod bitwise;
 mod brief;

@@ -25,15 +25,15 @@ pub fn threshold_binary(
 
     #[cfg(target_os = "macos")]
     if len >= RAYON_THRESHOLD && !cfg!(miri) {
-        let src_ptr = data.as_ptr() as usize;
-        let dst_ptr = out.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(data.as_ptr());
+        let dst_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let src = unsafe {
-                std::slice::from_raw_parts((src_ptr as *const f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len)
             };
             let dst = unsafe {
-                std::slice::from_raw_parts_mut((dst_ptr as *mut f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len)
             };
             threshold_binary_simd_slice(src, dst, threshold, max_val);
         });
@@ -70,15 +70,15 @@ pub fn threshold_binary_inv(
 
     #[cfg(target_os = "macos")]
     if len >= RAYON_THRESHOLD && !cfg!(miri) {
-        let src_ptr = data.as_ptr() as usize;
-        let dst_ptr = out.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(data.as_ptr());
+        let dst_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let src = unsafe {
-                std::slice::from_raw_parts((src_ptr as *const f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len)
             };
             let dst = unsafe {
-                std::slice::from_raw_parts_mut((dst_ptr as *mut f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len)
             };
             threshold_binary_inv_simd_slice(src, dst, threshold, max_val);
         });
@@ -111,15 +111,15 @@ pub fn threshold_truncate(input: &Tensor, threshold: f32) -> Result<Tensor, ImgP
 
     #[cfg(target_os = "macos")]
     if len >= RAYON_THRESHOLD && !cfg!(miri) {
-        let src_ptr = data.as_ptr() as usize;
-        let dst_ptr = out.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(data.as_ptr());
+        let dst_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let src = unsafe {
-                std::slice::from_raw_parts((src_ptr as *const f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts(src_ptr.ptr().add(y * row_len), row_len)
             };
             let dst = unsafe {
-                std::slice::from_raw_parts_mut((dst_ptr as *mut f32).add(y * row_len), row_len)
+                std::slice::from_raw_parts_mut(dst_ptr.ptr().add(y * row_len), row_len)
             };
             threshold_truncate_simd_slice(src, dst, threshold);
         });

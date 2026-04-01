@@ -24,8 +24,8 @@ pub fn grayscale_u8(input: &ImageU8) -> Option<ImageU8> {
     if total >= GRAY_PAR_THRESHOLD && !cfg!(miri) {
         let rows_per_chunk = (MIN_PIXELS_PER_CHUNK / w).max(1);
         let num_chunks = h.div_ceil(rows_per_chunk);
-        let sp = src.as_ptr() as usize;
-        let dp = out.as_mut_ptr() as usize;
+        let sp = super::SendConstPtr(src.as_ptr());
+        let dp = super::SendPtr(out.as_mut_ptr());
         let w_c = w;
         let h_c = h;
         gcd::parallel_for(num_chunks, |chunk_idx| {
@@ -34,12 +34,12 @@ pub fn grayscale_u8(input: &ImageU8) -> Option<ImageU8> {
             let chunk_pixels = (y_end - y_start) * w_c;
             let src_chunk = unsafe {
                 std::slice::from_raw_parts(
-                    (sp as *const u8).add(y_start * w_c * 3),
+                    sp.ptr().add(y_start * w_c * 3),
                     chunk_pixels * 3,
                 )
             };
             let dst_chunk = unsafe {
-                std::slice::from_raw_parts_mut((dp as *mut u8).add(y_start * w_c), chunk_pixels)
+                std::slice::from_raw_parts_mut(dp.ptr().add(y_start * w_c), chunk_pixels)
             };
             let done = grayscale_u8_simd_row(src_chunk, dst_chunk);
             for x in done..chunk_pixels {
@@ -2547,11 +2547,11 @@ pub fn median_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
 
     #[cfg(target_os = "macos")]
     if use_rayon && interior_h > 1 {
-        let src_ptr = src.as_ptr() as usize;
-        let out_ptr = out.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(src.as_ptr());
+        let out_ptr = super::SendPtr(out.as_mut_ptr());
         gcd::parallel_for(interior_h, |i| {
-            let sp = src_ptr as *const u8;
-            let dp = out_ptr as *mut u8;
+            let sp = src_ptr.ptr();
+            let dp = out_ptr.ptr();
             let y = i + 1;
             let row0 = unsafe { core::slice::from_raw_parts(sp.add((y - 1) * w), w) };
             let row1 = unsafe { core::slice::from_raw_parts(sp.add(y * w), w) };

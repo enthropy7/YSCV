@@ -103,7 +103,7 @@ pub fn resize_nearest(input: &Tensor, out_h: usize, out_w: usize) -> Result<Tens
         // Parallel path with row duplication preserved.
         // Each group is processed independently: compute first row, memcpy duplicates.
         // This keeps row deduplication while parallelizing across groups.
-        let out_addr = out.as_mut_ptr() as usize;
+        let out_addr = super::SendPtr(out.as_mut_ptr());
         let row_len_c = row_len;
 
         #[cfg(target_os = "macos")]
@@ -114,7 +114,7 @@ pub fn resize_nearest(input: &Tensor, out_h: usize, out_w: usize) -> Result<Tens
                 let (start, end) = groups_ref[gi];
                 let group_slice = unsafe {
                     std::slice::from_raw_parts_mut(
-                        (out_addr as *mut f32).add(start * row_len_c),
+                        out_addr.ptr().add(start * row_len_c),
                         (end - start) * row_len_c,
                     )
                 };
@@ -132,7 +132,7 @@ pub fn resize_nearest(input: &Tensor, out_h: usize, out_w: usize) -> Result<Tens
                 // SAFETY: groups are non-overlapping ranges, each writes to [start*row_len..(end)*row_len)
                 let group_slice = unsafe {
                     std::slice::from_raw_parts_mut(
-                        (out_addr as *mut f32).add(start * row_len_c),
+                        out_addr.ptr().add(start * row_len_c),
                         (end - start) * row_len_c,
                     )
                 };

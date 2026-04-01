@@ -40,14 +40,14 @@ pub fn harris_corners_u8(
 
     #[cfg(target_os = "macos")]
     {
-        let src_ptr = src.as_ptr() as usize;
-        let ix_ptr = ix.as_mut_ptr() as usize;
-        let iy_ptr = iy.as_mut_ptr() as usize;
+        let src_ptr = super::SendConstPtr(src.as_ptr());
+        let ix_ptr = super::SendPtr(ix.as_mut_ptr());
+        let iy_ptr = super::SendPtr(iy.as_mut_ptr());
         super::u8ops::gcd::parallel_for(interior_h, |i| {
             let y = i + 1;
-            let sp = src_ptr as *const u8;
-            let ixp = ix_ptr as *mut i16;
-            let iyp = iy_ptr as *mut i16;
+            let sp = src_ptr.ptr();
+            let ixp = ix_ptr.ptr();
+            let iyp = iy_ptr.ptr();
             let row0 = unsafe { core::slice::from_raw_parts(sp.add((y - 1) * width), width) };
             let row1 = unsafe { core::slice::from_raw_parts(sp.add(y * width), width) };
             let row2 = unsafe { core::slice::from_raw_parts(sp.add((y + 1) * width), width) };
@@ -100,14 +100,14 @@ pub fn harris_corners_u8(
 
     #[cfg(target_os = "macos")]
     {
-        let ix_ptr = ix.as_ptr() as usize;
-        let iy_ptr = iy.as_ptr() as usize;
-        let resp_ptr = response.as_mut_ptr() as usize;
+        let ix_ptr = super::SendConstPtr(ix.as_ptr());
+        let iy_ptr = super::SendConstPtr(iy.as_ptr());
+        let resp_ptr = super::SendPtr(response.as_mut_ptr());
         super::u8ops::gcd::parallel_for(resp_h, |ry| {
             let y = ry + margin;
-            let ixp = ix_ptr as *const i16;
-            let iyp = iy_ptr as *const i16;
-            let rp = resp_ptr as *mut f32;
+            let ixp = ix_ptr.ptr();
+            let iyp = iy_ptr.ptr();
+            let rp = resp_ptr.ptr();
             let dst = unsafe { core::slice::from_raw_parts_mut(rp.add(ry * resp_w), resp_w) };
             let ixs = unsafe { core::slice::from_raw_parts(ixp, npix) };
             let iys = unsafe { core::slice::from_raw_parts(iyp, npix) };

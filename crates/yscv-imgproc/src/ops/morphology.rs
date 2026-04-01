@@ -590,15 +590,11 @@ unsafe fn erode_avx_row_c1(
 /// Applies a 3x3 grayscale/RGB dilation (local maximum per channel).
 ///
 /// Border handling uses only in-bounds neighbors.
-#[allow(unsafe_code, clippy::uninit_vec)]
+#[allow(unsafe_code)]
 pub fn dilate_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
     let (h, w, channels) = hwc_shape(input)?;
     let total = h * w * channels;
-    // SAFETY: every element is written by interior + border paths below.
-    let mut out = Vec::with_capacity(total);
-    unsafe {
-        out.set_len(total);
-    }
+    let mut out = vec![0.0f32; total];
     let data = input.data();
     let row_len = w * channels;
     let interior_h = h.saturating_sub(2);
@@ -702,16 +698,13 @@ pub fn dilate_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
         if use_gcd {
             #[cfg(target_os = "macos")]
             {
-                let out_ptr = out.as_mut_ptr() as usize;
+                let out_ptr = super::SendPtr(out.as_mut_ptr());
                 use super::u8ops::gcd;
                 gcd::parallel_for(interior_h, |i| {
                     let y = i + 1;
                     // SAFETY: each row writes to a disjoint slice of out.
                     let row = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            (out_ptr as *mut f32).add(y * row_len),
-                            row_len,
-                        )
+                        std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len)
                     };
                     compute_interior_row(y, row);
                 });
@@ -758,15 +751,10 @@ pub fn dilate_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
 /// Applies a 3x3 grayscale/RGB erosion (local minimum per channel).
 ///
 /// Border handling uses only in-bounds neighbors.
-#[allow(unsafe_code, clippy::uninit_vec)]
 pub fn erode_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
     let (h, w, channels) = hwc_shape(input)?;
     let total = h * w * channels;
-    // SAFETY: every element is written by interior + border paths below.
-    let mut out = Vec::with_capacity(total);
-    unsafe {
-        out.set_len(total);
-    }
+    let mut out = vec![0.0f32; total];
     let data = input.data();
     let row_len = w * channels;
     let interior_h = h.saturating_sub(2);
@@ -863,16 +851,13 @@ pub fn erode_3x3(input: &Tensor) -> Result<Tensor, ImgProcError> {
         if use_gcd {
             #[cfg(target_os = "macos")]
             {
-                let out_ptr = out.as_mut_ptr() as usize;
+                let out_ptr = super::SendPtr(out.as_mut_ptr());
                 use super::u8ops::gcd;
                 gcd::parallel_for(interior_h, |i| {
                     let y = i + 1;
                     // SAFETY: each row writes to a disjoint slice of out.
                     let row = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            (out_ptr as *mut f32).add(y * row_len),
-                            row_len,
-                        )
+                        std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_len), row_len)
                     };
                     compute_interior_row(y, row);
                 });

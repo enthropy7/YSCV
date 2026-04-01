@@ -38,7 +38,7 @@ pub fn resize_nearest_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option<
     if use_rayon {
         // Identify groups of consecutive output rows sharing the same source row.
         // Each chunk is (out_y_start, out_y_end, src_y).
-        let out_base = out.as_mut_ptr() as usize;
+        let out_base = super::SendPtr(out.as_mut_ptr());
         let x_map_ref = &x_map;
 
         // Parallel over output rows
@@ -63,8 +63,8 @@ pub fn resize_nearest_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option<
                     // Duplicate row — memcpy from the previously computed row.
                     unsafe {
                         std::ptr::copy_nonoverlapping(
-                            (out_base as *const u8).add(prev_out_row),
-                            (out_base as *mut u8).add(dst_off),
+                            (out_base.ptr() as *const u8).add(prev_out_row),
+                            out_base.ptr().add(dst_off),
                             out_row_bytes,
                         );
                     }
@@ -72,7 +72,7 @@ pub fn resize_nearest_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option<
                     let src_row = &data[src_y * in_row_stride..];
                     let dst_row = unsafe {
                         std::slice::from_raw_parts_mut(
-                            (out_base as *mut u8).add(dst_off),
+                            out_base.ptr().add(dst_off),
                             out_row_bytes,
                         )
                     };
@@ -411,7 +411,7 @@ pub fn resize_bilinear_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option
         }
 
         if use_rayon {
-            let out_base = out.as_mut_ptr() as usize;
+            let out_base = super::SendPtr(out.as_mut_ptr());
             // Split into chunks aligned to reduce rayon overhead.
             // Use ~2× CPU count for good load balancing without excessive overhead.
             let n_threads = rayon::current_num_threads().max(1);
@@ -499,7 +499,7 @@ pub fn resize_bilinear_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option
                     let dst_off = oy * row_stride;
                     let dst_row = unsafe {
                         std::slice::from_raw_parts_mut(
-                            (out_base as *mut u8).add(dst_off),
+                            out_base.ptr().add(dst_off),
                             row_stride,
                         )
                     };
