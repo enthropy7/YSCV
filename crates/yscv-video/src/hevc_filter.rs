@@ -533,14 +533,14 @@ fn hevc_deblock_frame_impl(
                 )
             };
 
-            let vp3 = load4(-4);
+            let _vp3 = load4(-4);
             let vp2 = load4(-3);
             let vp1 = load4(-2);
             let vp0 = load4(-1);
             let vq0 = load4(0);
             let vq1 = load4(1);
             let vq2 = load4(2);
-            let vq3 = load4(3);
+            let _vq3 = load4(3);
 
             // dp0 = abs(p2 - 2*p1 + p0)
             let two = _mm_set1_epi32(2);
@@ -582,7 +582,7 @@ fn hevc_deblock_frame_impl(
         /// SSE2 abs(a) for epi32 (SSE2 lacks _mm_abs_epi32).
         #[cfg(target_arch = "x86_64")]
         #[target_feature(enable = "sse2")]
-        #[inline(always)]
+        #[inline]
         unsafe fn abs_epi32_sse2(a: std::arch::x86_64::__m128i) -> std::arch::x86_64::__m128i {
             use std::arch::x86_64::*;
             let mask = _mm_srai_epi32(a, 31); // arithmetic right shift → all 1s if negative
@@ -592,7 +592,7 @@ fn hevc_deblock_frame_impl(
         /// SSE2 mullo_epi32 emulation (SSE2 lacks _mm_mullo_epi32).
         #[cfg(target_arch = "x86_64")]
         #[target_feature(enable = "sse2")]
-        #[inline(always)]
+        #[inline]
         unsafe fn mullo_epi32_sse2(
             a: std::arch::x86_64::__m128i,
             b: std::arch::x86_64::__m128i,
