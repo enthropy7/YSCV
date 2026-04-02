@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use metal::*;
 
+use yscv_kernels::KernelError;
 use yscv_kernels::metal_backend::mpsgraph::{
     Conv2dDesc, MpsGraph, MpsGraphExecutable, MpsGraphTensorRef, Pool2dDesc,
 };
@@ -57,8 +58,8 @@ pub fn compile_mpsgraph_plan(
     // Create placeholder for the input tensor (NCHW, f32).
     // We accept f32 from the caller and let MPSGraph cast to f16 on GPU — this avoids
     // expensive CPU-side f32→f16 conversion (~3M elements for VballNet).
-    let input_placeholder_f32 = graph.placeholder_f32(&input_shape, input_name);
-    let input_f16 = graph.cast_to_f16(input_placeholder_f32);
+    let input_placeholder_f32 = graph.placeholder_f32(&input_shape, input_name)?;
+    let input_f16 = graph.cast_to_f16(input_placeholder_f32)?;
 
     // Map tensor name → MpsGraphTensorRef as we walk the graph.
     // Use the f16-cast tensor so all downstream ops run in f16.
@@ -99,14 +100,14 @@ pub fn compile_mpsgraph_plan(
         if final_shape.is_empty() {
             let final_shape = vec![1usize];
             let f16_data: Vec<u16> = final_data.iter().map(|&v| f32_to_f16_bits(v)).collect();
-            let t = graph.constant_f16(&f16_data, &final_shape);
+            let t = graph.constant_f16(&f16_data, &final_shape)?;
             tensors.insert(name.clone(), t);
             cpu_shapes.insert(name.clone(), final_shape);
             continue;
         }
 
         let f16_data: Vec<u16> = final_data.iter().map(|&v| f32_to_f16_bits(v)).collect();
-        let t = graph.constant_f16(&f16_data, &final_shape);
+        let t = graph.constant_f16(&f16_data, &final_shape)?;
         tensors.insert(name.clone(), t);
         cpu_shapes.insert(name.clone(), final_shape);
     }
@@ -256,7 +257,7 @@ pub fn compile_mpsgraph_plan(
                 }
                 let out_shape = vec![values.len()];
                 let f16_data: Vec<u16> = values.iter().map(|&v| f32_to_f16_bits(v)).collect();
-                let t = graph.constant_f16(&f16_data, &out_shape);
+                let t = graph.constant_f16(&f16_data, &out_shape)?;
                 tensors.insert(node.outputs[0].clone(), t);
                 cpu_shapes.insert(node.outputs[0].clone(), out_shape);
                 const_values.insert(node.outputs[0].clone(), values);
@@ -272,7 +273,7 @@ pub fn compile_mpsgraph_plan(
                 // Default fill value is 0.0
                 let fill = get_attr_float(node, "value").unwrap_or(0.0);
                 let f16_data: Vec<u16> = vec![f32_to_f16_bits(fill); n];
-                let t = graph.constant_f16(&f16_data, &out_shape);
+                let t = graph.constant_f16(&f16_data, &out_shape)?;
                 tensors.insert(node.outputs[0].clone(), t);
                 cpu_shapes.insert(node.outputs[0].clone(), out_shape);
                 continue;
@@ -292,12 +293,12 @@ pub fn compile_mpsgraph_plan(
                     .cloned()
                     .unwrap_or_else(|| vec![cv.len()]);
                 let f16_data: Vec<u16> = cv.iter().map(|&v| f32_to_f16_bits(v)).collect();
-                let t = graph.constant_f16(&f16_data, &shape);
+                let t = graph.constant_f16(&f16_data, &shape)?;
                 tensors.insert(inp_name.clone(), t);
             }
         }
 
-        let result = build_graph_node(&graph, node, &tensors, &cpu_shapes, model, &const_values);
+        let result = build_graph_node(&graph, node, &tensors, &cpu_shapes, model, &const_values)?;
 
         match result {
             Some(outputs) => {
@@ -329,7 +330,7 @@ pub fn compile_mpsgraph_plan(
     for out_name in &model.outputs {
         if let Some(&t) = tensors.get(out_name) {
             // Cast output to f32 for readback
-            let t_f32 = graph.cast_to_f32(t);
+            let t_f32 = graph.cast_to_f32(t)?;
             output_tensors.push((out_name.clone(), t_f32));
             let shape = cpu_shapes.get(out_name).cloned().unwrap_or_default();
             output_shapes.push(shape);
@@ -345,7 +346,7 @@ pub fn compile_mpsgraph_plan(
     let target_refs: Vec<MpsGraphTensorRef> = output_tensors.iter().map(|(_, t)| *t).collect();
 
     let executable = graph
-        .compile(&device, &feeds, &target_refs)
+        .compile(&device, &feeds, &target_refs)?
         .ok_or_else(|| OnnxError::DecodeFailed {
             message: "Failed to compile MPSGraph".to_string(),
         })?;
@@ -394,7 +395,7 @@ pub fn run_mpsgraph_plan(
 
     let out_bufs = plan
         .graph
-        .run_with_buffers(&plan.executable, &plan.queue, &inputs);
+        .run_with_buffers(&plan.executable, &plan.queue, &inputs)?;
 
     // Read output buffers
     let mut result = HashMap::new();
@@ -417,8 +418,8 @@ pub fn run_mpsgraph_plan(
 }
 
 /// Build a single ONNX node as MPSGraph operations.
-/// Returns None if the op is unsupported.
-/// Returns Some(vec of (output_name, tensor_ref, shape)) on success.
+/// Returns Ok(None) if the op is unsupported.
+/// Returns Ok(Some(vec of (output_name, tensor_ref, shape))) on success.
 fn build_graph_node(
     graph: &MpsGraph,
     node: &OnnxNode,
@@ -426,14 +427,22 @@ fn build_graph_node(
     shapes: &HashMap<String, Vec<usize>>,
     model: &OnnxModel,
     const_values: &HashMap<String, Vec<f32>>,
-) -> Option<Vec<(String, MpsGraphTensorRef, Vec<usize>)>> {
-    let get = |name: &str| -> Option<MpsGraphTensorRef> { tensors.get(name).copied() };
+) -> Result<Option<Vec<(String, MpsGraphTensorRef, Vec<usize>)>>, KernelError> {
+    // Helper: return Ok(None) when an input tensor is not found (unsupported path)
+    macro_rules! try_get {
+        ($name:expr) => {
+            match tensors.get($name).copied() {
+                Some(v) => v,
+                None => return Ok(None),
+            }
+        };
+    }
     let get_shape = |name: &str| -> Vec<usize> { shapes.get(name).cloned().unwrap_or_default() };
 
     match node.op_type.as_str() {
         "Conv" => {
-            let input = get(&node.inputs[0])?;
-            let weight = get(&node.inputs[1])?;
+            let input = try_get!(&node.inputs[0]);
+            let weight = try_get!(&node.inputs[1]);
             let in_shape = get_shape(&node.inputs[0]);
             let w_shape = get_shape(&node.inputs[1]);
 
@@ -462,15 +471,15 @@ fn build_graph_node(
                 groups: group,
             };
 
-            let mut out = graph.conv2d(input, weight, &desc);
+            let mut out = graph.conv2d(input, weight, &desc)?;
 
             // Add bias if present
             if node.inputs.len() > 2
                 && !node.inputs[2].is_empty()
-                && let Some(bias) = get(&node.inputs[2])
+                && let Some(bias) = tensors.get(&node.inputs[2]).copied()
             {
                 // Reshape bias [C] → [1, C, 1, 1] for NCHW broadcast
-                let bias_reshaped = graph.reshape(bias, &[1, o_ch as i64, 1, 1]);
+                let bias_reshaped = graph.reshape(bias, &[1, o_ch as i64, 1, 1])?;
                 out = graph.add(out, bias_reshaped);
             }
 
@@ -485,26 +494,30 @@ fn build_graph_node(
                     / strides[1] as usize
                     + 1;
 
-            Some(vec![(node.outputs[0].clone(), out, vec![n, o_ch, oh, ow])])
+            Ok(Some(vec![(
+                node.outputs[0].clone(),
+                out,
+                vec![n, o_ch, oh, ow],
+            )]))
         }
 
         "Relu" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let shape = get_shape(&node.inputs[0]);
             let out = graph.relu(input);
-            Some(vec![(node.outputs[0].clone(), out, shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, shape)]))
         }
 
         "Sigmoid" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let shape = get_shape(&node.inputs[0]);
             let out = graph.sigmoid(input);
-            Some(vec![(node.outputs[0].clone(), out, shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, shape)]))
         }
 
         "Add" | "Sub" | "Mul" | "Div" => {
-            let a = get(&node.inputs[0])?;
-            let b = get(&node.inputs[1])?;
+            let a = try_get!(&node.inputs[0]);
+            let b = try_get!(&node.inputs[1]);
             let a_shape = get_shape(&node.inputs[0]);
             let b_shape = get_shape(&node.inputs[1]);
             let out = match node.op_type.as_str() {
@@ -520,11 +533,11 @@ fn build_graph_node(
             } else {
                 b_shape
             };
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
         "MaxPool" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
             let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
             let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
@@ -540,7 +553,7 @@ fn build_graph_node(
                 pad_bottom: pads[2] as usize,
                 pad_right: pads[3] as usize,
             };
-            let out = graph.max_pool2d(input, &desc);
+            let out = graph.max_pool2d(input, &desc)?;
 
             let (n, c, ih, iw) = (in_shape[0], in_shape[1], in_shape[2], in_shape[3]);
             let oh = (ih + pads[0] as usize + pads[2] as usize - kernel_shape[0] as usize)
@@ -550,11 +563,15 @@ fn build_graph_node(
                 / strides[1] as usize
                 + 1;
 
-            Some(vec![(node.outputs[0].clone(), out, vec![n, c, oh, ow])])
+            Ok(Some(vec![(
+                node.outputs[0].clone(),
+                out,
+                vec![n, c, oh, ow],
+            )]))
         }
 
         "AveragePool" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
             let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
             let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
@@ -570,7 +587,7 @@ fn build_graph_node(
                 pad_bottom: pads[2] as usize,
                 pad_right: pads[3] as usize,
             };
-            let out = graph.avg_pool2d(input, &desc);
+            let out = graph.avg_pool2d(input, &desc)?;
 
             let (n, c, ih, iw) = (in_shape[0], in_shape[1], in_shape[2], in_shape[3]);
             let oh = (ih + pads[0] as usize + pads[2] as usize - kernel_shape[0] as usize)
@@ -580,35 +597,39 @@ fn build_graph_node(
                 / strides[1] as usize
                 + 1;
 
-            Some(vec![(node.outputs[0].clone(), out, vec![n, c, oh, ow])])
+            Ok(Some(vec![(
+                node.outputs[0].clone(),
+                out,
+                vec![n, c, oh, ow],
+            )]))
         }
 
         "GlobalAveragePool" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
-            let out = graph.global_avg_pool(input);
+            let out = graph.global_avg_pool(input)?;
             let (n, c) = (in_shape[0], in_shape[1]);
-            Some(vec![(node.outputs[0].clone(), out, vec![n, c, 1, 1])])
+            Ok(Some(vec![(node.outputs[0].clone(), out, vec![n, c, 1, 1])]))
         }
 
         "BatchNormalization" => {
-            let input = get(&node.inputs[0])?;
-            let gamma = get(&node.inputs[1])?;
-            let beta = get(&node.inputs[2])?;
-            let mean = get(&node.inputs[3])?;
-            let variance = get(&node.inputs[4])?;
+            let input = try_get!(&node.inputs[0]);
+            let gamma = try_get!(&node.inputs[1]);
+            let beta = try_get!(&node.inputs[2]);
+            let mean = try_get!(&node.inputs[3]);
+            let variance = try_get!(&node.inputs[4]);
             let epsilon = get_attr_float(node, "epsilon").unwrap_or(1e-5);
             let in_shape = get_shape(&node.inputs[0]);
 
             // Reshape gamma/beta/mean/var from [C] → [1, C, 1, 1] for NCHW broadcast
             let c = in_shape.get(1).copied().unwrap_or(1) as i64;
-            let gamma_r = graph.reshape(gamma, &[1, c, 1, 1]);
-            let beta_r = graph.reshape(beta, &[1, c, 1, 1]);
-            let mean_r = graph.reshape(mean, &[1, c, 1, 1]);
-            let var_r = graph.reshape(variance, &[1, c, 1, 1]);
+            let gamma_r = graph.reshape(gamma, &[1, c, 1, 1])?;
+            let beta_r = graph.reshape(beta, &[1, c, 1, 1])?;
+            let mean_r = graph.reshape(mean, &[1, c, 1, 1])?;
+            let var_r = graph.reshape(variance, &[1, c, 1, 1])?;
 
             let out = graph.batch_norm(input, mean_r, var_r, gamma_r, beta_r, epsilon);
-            Some(vec![(node.outputs[0].clone(), out, in_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, in_shape)]))
         }
 
         "Concat" => {
@@ -624,21 +645,21 @@ fn build_graph_node(
                 if name.is_empty() {
                     continue;
                 }
-                input_refs.push(get(name)?);
+                input_refs.push(try_get!(name));
                 shapes.push(get_shape(name));
             }
             for s in &shapes[1..] {
                 if s.len() != shapes[0].len() {
-                    return None;
+                    return Ok(None);
                 }
                 for (d, (&a, &b)) in shapes[0].iter().zip(s.iter()).enumerate() {
                     if d != ax && a != b {
-                        return None;
+                        return Ok(None);
                     }
                 }
             }
 
-            let out = graph.concat(&input_refs, axis);
+            let out = graph.concat(&input_refs, axis)?;
 
             let mut out_shape = first_shape.clone();
             let total_axis: usize = shapes.iter().map(|s| s.get(ax).copied().unwrap_or(0)).sum();
@@ -646,11 +667,11 @@ fn build_graph_node(
                 out_shape[ax] = total_axis;
             }
 
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
         "Reshape" | "Flatten" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
 
             // For Flatten, compute shape from axis
@@ -662,7 +683,7 @@ fn build_graph_node(
             } else {
                 // Reshape: read target shape from the shape initializer
                 if node.inputs.len() < 2 || node.inputs[1].is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 let shape_name = &node.inputs[1];
                 if let Some(shape_tensor) = model.initializers.get(shape_name) {
@@ -670,7 +691,7 @@ fn build_graph_node(
                 } else if let Some(cv) = const_values.get(shape_name) {
                     cv.iter().map(|&v| v as i64).collect()
                 } else {
-                    return None; // Dynamic shape not supported
+                    return Ok(None); // Dynamic shape not supported
                 }
             };
 
@@ -699,19 +720,19 @@ fn build_graph_node(
             let out_shape: Vec<usize> = resolved.iter().map(|&d| d as usize).collect();
             let out_total: usize = out_shape.iter().product();
             if out_total != total {
-                return None; // Shape mismatch — bail
+                return Ok(None); // Shape mismatch — bail
             }
-            let out = graph.reshape(input, &resolved);
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            let out = graph.reshape(input, &resolved)?;
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
         "Transpose" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
             let perm = get_attr_ints(node, "perm").unwrap_or_default();
 
             if perm.is_empty() {
-                return None; // Need explicit perm
+                return Ok(None); // Need explicit perm
             }
 
             // MPSGraph transpose only swaps two dims at a time.
@@ -733,11 +754,11 @@ fn build_graph_node(
 
             // Compute output shape
             let out_shape: Vec<usize> = perm_usize.iter().map(|&p| in_shape[p]).collect();
-            Some(vec![(node.outputs[0].clone(), current, out_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), current, out_shape)]))
         }
 
         "Softmax" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
             let axis = get_attr_int(node, "axis").unwrap_or(-1);
             let ndim = in_shape.len() as i64;
@@ -746,20 +767,20 @@ fn build_graph_node(
             // Run attention softmax in f32 to avoid f16 exp() underflow/overflow
             let is_attn = node.name.contains("/attn/");
             let out = if is_attn {
-                let input_f32 = graph.cast_to_f32(input);
+                let input_f32 = graph.cast_to_f32(input)?;
                 let result_f32 = graph.softmax(input_f32, ax);
-                graph.cast_to_f16(result_f32)
+                graph.cast_to_f16(result_f32)?
             } else {
                 graph.softmax(input, ax)
             };
-            Some(vec![(node.outputs[0].clone(), out, in_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, in_shape)]))
         }
 
         "Resize" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
             if in_shape.len() != 4 {
-                return None;
+                return Ok(None);
             }
             let (n, c, ih, iw) = (in_shape[0], in_shape[1], in_shape[2], in_shape[3]);
 
@@ -778,42 +799,46 @@ fn build_graph_node(
                     if d.len() >= 4 {
                         (d[2] as usize, d[3] as usize)
                     } else {
-                        return None;
+                        return Ok(None);
                     }
                 } else {
-                    return None;
+                    return Ok(None);
                 }
             } else if node.inputs.len() > 2 && !node.inputs[2].is_empty() {
                 if let Some(d) = read_data(&node.inputs[2]) {
                     if d.len() >= 4 {
                         ((ih as f32 * d[2]) as usize, (iw as f32 * d[3]) as usize)
                     } else {
-                        return None;
+                        return Ok(None);
                     }
                 } else {
-                    return None;
+                    return Ok(None);
                 }
             } else {
-                return None;
+                return Ok(None);
             };
 
-            let out = graph.resize_nearest(input, oh, ow);
-            Some(vec![(node.outputs[0].clone(), out, vec![n, c, oh, ow])])
+            let out = graph.resize_nearest(input, oh, ow)?;
+            Ok(Some(vec![(
+                node.outputs[0].clone(),
+                out,
+                vec![n, c, oh, ow],
+            )]))
         }
 
         "MatMul" => {
-            let a = get(&node.inputs[0])?;
-            let b = get(&node.inputs[1])?;
+            let a = try_get!(&node.inputs[0]);
+            let b = try_get!(&node.inputs[1]);
             let a_shape = get_shape(&node.inputs[0]);
             let b_shape = get_shape(&node.inputs[1]);
 
             // Run attention MatMul in f32 to avoid f16 accumulation errors
             let is_attn = node.name.contains("/attn/");
             let out = if is_attn {
-                let a_f32 = graph.cast_to_f32(a);
-                let b_f32 = graph.cast_to_f32(b);
+                let a_f32 = graph.cast_to_f32(a)?;
+                let b_f32 = graph.cast_to_f32(b)?;
                 let result_f32 = graph.matmul(a_f32, b_f32);
-                graph.cast_to_f16(result_f32)
+                graph.cast_to_f16(result_f32)?
             } else {
                 graph.matmul(a, b)
             };
@@ -825,11 +850,11 @@ fn build_graph_node(
             {
                 *s = *last;
             }
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
         "Split" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
             let axis = get_attr_int(node, "axis").unwrap_or(0);
             let ndim = in_shape.len() as i64;
@@ -875,18 +900,18 @@ fn build_graph_node(
                 starts[ax] = offset as i64;
                 ends[ax] = (offset + size) as i64;
 
-                let sliced = graph.slice(input, &starts, &ends, &strides);
+                let sliced = graph.slice(input, &starts, &ends, &strides)?;
                 let mut out_shape = in_shape.clone();
                 out_shape[ax] = size;
                 results.push((node.outputs[out_idx].clone(), sliced, out_shape));
                 offset += size;
             }
 
-            Some(results)
+            Ok(Some(results))
         }
 
         "Slice" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
             let rank = in_shape.len();
 
@@ -905,8 +930,14 @@ fn build_graph_node(
                 }
             };
 
-            let starts_raw = read_i64(1)?;
-            let ends_raw = read_i64(2)?;
+            let starts_raw = match read_i64(1) {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            let ends_raw = match read_i64(2) {
+                Some(v) => v,
+                None => return Ok(None),
+            };
             let axes_raw = read_i64(3);
             let steps_raw = read_i64(4);
 
@@ -953,20 +984,20 @@ fn build_graph_node(
                 .map(|d| ((ends[d] - starts[d]) as f64 / steps[d] as f64).ceil() as usize)
                 .collect();
 
-            let out = graph.slice(input, &starts, &ends, &steps);
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            let out = graph.slice(input, &starts, &ends, &steps)?;
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
         "Cast" => {
             // In our f16 graph, Cast is a no-op (everything is already f16).
             // Just pass through the tensor.
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
-            Some(vec![(node.outputs[0].clone(), input, in_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), input, in_shape)]))
         }
 
         "Unsqueeze" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
 
             // Read axes from attribute (opset < 13) or input tensor (opset 13+)
@@ -1005,12 +1036,12 @@ fn build_graph_node(
             }
 
             let shape_i64: Vec<i64> = out_shape.iter().map(|&d| d as i64).collect();
-            let out = graph.reshape(input, &shape_i64);
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            let out = graph.reshape(input, &shape_i64)?;
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
         "Squeeze" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
 
             let axes = get_attr_ints(node, "axes").or_else(|| {
@@ -1058,12 +1089,12 @@ fn build_graph_node(
             }
 
             let shape_i64: Vec<i64> = out_shape.iter().map(|&d| d as i64).collect();
-            let out = graph.reshape(input, &shape_i64);
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            let out = graph.reshape(input, &shape_i64)?;
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
         "Expand" => {
-            let input = get(&node.inputs[0])?;
+            let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
 
             // Read target shape from second input (initializer or const_values)
@@ -1074,7 +1105,7 @@ fn build_graph_node(
                 cv.iter().map(|&v| v as usize).collect()
             } else {
                 // No static target shape available — pass through
-                return Some(vec![(node.outputs[0].clone(), input, in_shape)]);
+                return Ok(Some(vec![(node.outputs[0].clone(), input, in_shape)]));
             };
 
             // Compute broadcast output shape (NumPy-style)
@@ -1097,12 +1128,12 @@ fn build_graph_node(
             // Use MPSGraph broadcast: reshape input to match ndim, then broadcast via mul with ones
             let shape_i64: Vec<i64> = out_shape.iter().map(|&d| d as i64).collect();
             let ones_data: Vec<u16> = vec![f32_to_f16_bits(1.0); out_shape.iter().product()];
-            let ones = graph.constant_f16(&ones_data, &out_shape);
+            let ones = graph.constant_f16(&ones_data, &out_shape)?;
             let out = graph.mul(input, ones);
-            Some(vec![(node.outputs[0].clone(), out, out_shape)])
+            Ok(Some(vec![(node.outputs[0].clone(), out, out_shape)]))
         }
 
-        _ => None, // Unsupported op
+        _ => Ok(None), // Unsupported op
     }
 }
 

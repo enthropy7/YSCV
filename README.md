@@ -1,3 +1,5 @@
+# Important: Current state of framework is not stable. It is in development. WIP, to be clear. If you found any issues, please report them. You can connect with me via Telegram on my GitHub page or open an issue on GitHub. Stable version will be released soon. Milestone is 0.2.0. 
+
 # yscv
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (178 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (128+ operators, INT8 quantization), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.

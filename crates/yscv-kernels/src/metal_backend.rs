@@ -4,6 +4,7 @@
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 #[allow(unexpected_cfgs)] // objc crate's msg_send! macro triggers false cfg warnings
 pub mod metal_conv {
+    use crate::KernelError;
     use foreign_types::ForeignTypeRef as _;
     use metal::*;
     pub use objc::rc::autoreleasepool;
@@ -708,7 +709,7 @@ pub mod metal_conv {
         beta: f64,
         transpose_a: bool,
         transpose_b: bool,
-    ) {
+    ) -> Result<(), KernelError> {
         use objc::runtime::{Class, NO, Object, YES};
 
         // autoreleasepool drains MPSMatrixDescriptor factory objects (autoreleased)
@@ -716,7 +717,10 @@ pub mod metal_conv {
             // MPSDataType.float16 = 0x10000000 | 16
             let mps_float16: u32 = 0x10000000 | 16;
 
-            let mps_matrix_desc_cls = Class::get("MPSMatrixDescriptor").unwrap();
+            let mps_matrix_desc_cls =
+                Class::get("MPSMatrixDescriptor").ok_or_else(|| KernelError::Gpu {
+                    message: "MPSMatrixDescriptor class not available".into(),
+                })?;
 
             let row_bytes_a = if transpose_a {
                 m as u64 * 2
@@ -751,7 +755,9 @@ pub mod metal_conv {
                 dataType: mps_float16];
 
             // MPSMatrix from buffer + descriptor
-            let mps_matrix_cls = Class::get("MPSMatrix").unwrap();
+            let mps_matrix_cls = Class::get("MPSMatrix").ok_or_else(|| KernelError::Gpu {
+                message: "MPSMatrix class not available".into(),
+            })?;
             let alloc_a: *mut Object = msg_send![mps_matrix_cls, alloc];
             let mat_a: *mut Object = msg_send![alloc_a,
                 initWithBuffer: a.as_ptr() descriptor: desc_a];
@@ -763,7 +769,10 @@ pub mod metal_conv {
                 initWithBuffer: out.as_ptr() descriptor: desc_c];
 
             // MPSMatrixMultiplication
-            let mps_mm_cls = Class::get("MPSMatrixMultiplication").unwrap();
+            let mps_mm_cls =
+                Class::get("MPSMatrixMultiplication").ok_or_else(|| KernelError::Gpu {
+                    message: "MPSMatrixMultiplication class not available".into(),
+                })?;
             let ta = if transpose_a { YES } else { NO };
             let tb = if transpose_b { YES } else { NO };
             let alloc_mm: *mut Object = msg_send![mps_mm_cls, alloc];
@@ -791,7 +800,8 @@ pub mod metal_conv {
             let _: () = msg_send![mat_a, release];
             let _: () = msg_send![mat_b, release];
             let _: () = msg_send![mat_c, release];
-        });
+            Ok(())
+        })
     }
 
     /// Encode MPS GEMM into an existing command buffer (does NOT commit).
@@ -810,13 +820,16 @@ pub mod metal_conv {
         beta: f64,
         transpose_a: bool,
         transpose_b: bool,
-    ) {
+    ) -> Result<(), KernelError> {
         use objc::runtime::{Class, NO, Object, YES};
 
         // autoreleasepool drains MPSMatrixDescriptor factory objects (autoreleased)
         autoreleasepool(|| unsafe {
             let mps_float16: u32 = 0x10000000 | 16;
-            let mps_matrix_desc_cls = Class::get("MPSMatrixDescriptor").unwrap();
+            let mps_matrix_desc_cls =
+                Class::get("MPSMatrixDescriptor").ok_or_else(|| KernelError::Gpu {
+                    message: "MPSMatrixDescriptor class not available".into(),
+                })?;
 
             let row_bytes_a = if transpose_a {
                 m as u64 * 2
@@ -850,7 +863,9 @@ pub mod metal_conv {
                 rowBytes: (n as u64) * 2
                 dataType: mps_float16];
 
-            let mps_matrix_cls = Class::get("MPSMatrix").unwrap();
+            let mps_matrix_cls = Class::get("MPSMatrix").ok_or_else(|| KernelError::Gpu {
+                message: "MPSMatrix class not available".into(),
+            })?;
             let alloc_a: *mut Object = msg_send![mps_matrix_cls, alloc];
             let mat_a: *mut Object = msg_send![alloc_a,
                 initWithBuffer: a.as_ptr() descriptor: desc_a];
@@ -861,7 +876,10 @@ pub mod metal_conv {
             let mat_c: *mut Object = msg_send![alloc_c,
                 initWithBuffer: out.as_ptr() descriptor: desc_c];
 
-            let mps_mm_cls = Class::get("MPSMatrixMultiplication").unwrap();
+            let mps_mm_cls =
+                Class::get("MPSMatrixMultiplication").ok_or_else(|| KernelError::Gpu {
+                    message: "MPSMatrixMultiplication class not available".into(),
+                })?;
             let ta = if transpose_a { YES } else { NO };
             let tb = if transpose_b { YES } else { NO };
             let alloc_mm: *mut Object = msg_send![mps_mm_cls, alloc];
@@ -884,7 +902,8 @@ pub mod metal_conv {
             let _: () = msg_send![mat_a, release];
             let _: () = msg_send![mat_b, release];
             let _: () = msg_send![mat_c, release];
-        });
+            Ok(())
+        })
     }
 
     // ── Encoder helper: records ops into a compute command encoder ──
@@ -3090,6 +3109,7 @@ pub mod metal_conv {
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 #[allow(unexpected_cfgs)]
 pub mod mpsgraph {
+    use crate::KernelError;
     use foreign_types::ForeignTypeRef as _;
     use metal::*;
     use objc::rc::autoreleasepool;
@@ -3158,9 +3178,13 @@ pub mod mpsgraph {
     }
 
     // Helper: create NSArray from a &[i64] shape
-    unsafe fn ns_array_from_shape(shape: &[i64]) -> *mut Object {
-        let ns_number_cls = Class::get("NSNumber").unwrap();
-        let ns_array_cls = Class::get("NSArray").unwrap();
+    unsafe fn ns_array_from_shape(shape: &[i64]) -> Result<*mut Object, KernelError> {
+        let ns_number_cls = Class::get("NSNumber").ok_or_else(|| KernelError::Gpu {
+            message: "NSNumber class not available".into(),
+        })?;
+        let ns_array_cls = Class::get("NSArray").ok_or_else(|| KernelError::Gpu {
+            message: "NSArray class not available".into(),
+        })?;
 
         // Build NSNumber objects
         let mut numbers: Vec<*mut Object> = Vec::with_capacity(shape.len());
@@ -3171,11 +3195,11 @@ pub mod mpsgraph {
         let arr: *mut Object = msg_send![ns_array_cls,
             arrayWithObjects: numbers.as_ptr()
             count: numbers.len()];
-        arr
+        Ok(arr)
     }
 
     // Helper: create NSArray from a &[usize] shape (converts to i64)
-    unsafe fn ns_array_from_usize(shape: &[usize]) -> *mut Object {
+    unsafe fn ns_array_from_usize(shape: &[usize]) -> Result<*mut Object, KernelError> {
         let dims: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
         unsafe { ns_array_from_shape(&dims) }
     }
@@ -3194,78 +3218,100 @@ pub mod mpsgraph {
         }
 
         /// Create a placeholder input tensor (NCHW layout, f16).
-        pub fn placeholder_f16(&self, shape: &[usize], name: &str) -> MpsGraphTensorRef {
+        pub fn placeholder_f16(
+            &self,
+            shape: &[usize],
+            name: &str,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let shape_arr = ns_array_from_usize(shape);
-                let ns_name = ns_string(name);
+                let shape_arr = ns_array_from_usize(shape)?;
+                let ns_name = ns_string(name)?;
                 let tensor: *mut Object = msg_send![self.graph,
                     placeholderWithShape: shape_arr
                     dataType: MPS_DATA_TYPE_FLOAT16
                     name: ns_name];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
         /// Create a placeholder input tensor (NCHW layout, f32).
-        pub fn placeholder_f32(&self, shape: &[usize], name: &str) -> MpsGraphTensorRef {
+        pub fn placeholder_f32(
+            &self,
+            shape: &[usize],
+            name: &str,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let shape_arr = ns_array_from_usize(shape);
-                let ns_name = ns_string(name);
+                let shape_arr = ns_array_from_usize(shape)?;
+                let ns_name = ns_string(name)?;
                 let tensor: *mut Object = msg_send![self.graph,
                     placeholderWithShape: shape_arr
                     dataType: MPS_DATA_TYPE_FLOAT32
                     name: ns_name];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
         /// Create a constant tensor from f16 data (NCHW layout).
-        pub fn constant_f16(&self, data: &[u16], shape: &[usize]) -> MpsGraphTensorRef {
+        pub fn constant_f16(
+            &self,
+            data: &[u16],
+            shape: &[usize],
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let shape_arr = ns_array_from_usize(shape);
-                let ns_data = ns_data_from_bytes(data.as_ptr() as *const u8, data.len() * 2);
+                let shape_arr = ns_array_from_usize(shape)?;
+                let ns_data = ns_data_from_bytes(data.as_ptr() as *const u8, data.len() * 2)?;
                 let tensor: *mut Object = msg_send![self.graph,
                     constantWithData: ns_data
                     shape: shape_arr
                     dataType: MPS_DATA_TYPE_FLOAT16];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
         /// Create a constant tensor from f32 data.
-        pub fn constant_f32(&self, data: &[f32], shape: &[usize]) -> MpsGraphTensorRef {
+        pub fn constant_f32(
+            &self,
+            data: &[f32],
+            shape: &[usize],
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let shape_arr = ns_array_from_usize(shape);
-                let ns_data = ns_data_from_bytes(data.as_ptr() as *const u8, data.len() * 4);
+                let shape_arr = ns_array_from_usize(shape)?;
+                let ns_data = ns_data_from_bytes(data.as_ptr() as *const u8, data.len() * 4)?;
                 let tensor: *mut Object = msg_send![self.graph,
                     constantWithData: ns_data
                     shape: shape_arr
                     dataType: MPS_DATA_TYPE_FLOAT32];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
         /// Cast tensor to f16.
-        pub fn cast_to_f16(&self, input: MpsGraphTensorRef) -> MpsGraphTensorRef {
+        pub fn cast_to_f16(
+            &self,
+            input: MpsGraphTensorRef,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let ns_name = ns_string("cast_f16");
+                let ns_name = ns_string("cast_f16")?;
                 let tensor: *mut Object = msg_send![self.graph,
                     castTensor: input.ptr
                     toType: MPS_DATA_TYPE_FLOAT16
                     name: ns_name];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
         /// Cast tensor to f32.
-        pub fn cast_to_f32(&self, input: MpsGraphTensorRef) -> MpsGraphTensorRef {
+        pub fn cast_to_f32(
+            &self,
+            input: MpsGraphTensorRef,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let ns_name = ns_string("cast_f32");
+                let ns_name = ns_string("cast_f32")?;
                 let tensor: *mut Object = msg_send![self.graph,
                     castTensor: input.ptr
                     toType: MPS_DATA_TYPE_FLOAT32
                     name: ns_name];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
@@ -3276,9 +3322,14 @@ pub mod mpsgraph {
             input: MpsGraphTensorRef,
             weights: MpsGraphTensorRef,
             desc: &Conv2dDesc,
-        ) -> MpsGraphTensorRef {
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let conv_desc_cls = Class::get("MPSGraphConvolution2DOpDescriptor").unwrap();
+                let conv_desc_cls =
+                    Class::get("MPSGraphConvolution2DOpDescriptor").ok_or_else(|| {
+                        KernelError::Gpu {
+                            message: "MPSGraphConvolution2DOpDescriptor class not available".into(),
+                        }
+                    })?;
                 let d: *mut Object = msg_send![conv_desc_cls,
                     descriptorWithStrideInX: desc.stride_w as u64
                     strideInY: desc.stride_h as u64
@@ -3298,7 +3349,7 @@ pub mod mpsgraph {
                     weightsTensor: weights.ptr
                     descriptor: d
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
@@ -3309,7 +3360,7 @@ pub mod mpsgraph {
             input: MpsGraphTensorRef,
             weights: MpsGraphTensorRef,
             desc: &Conv2dDesc,
-        ) -> MpsGraphTensorRef {
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             // Same as conv2d — MPSGraph handles depthwise when groups == in_channels
             self.conv2d(input, weights, desc)
         }
@@ -3400,9 +3451,18 @@ pub mod mpsgraph {
         }
 
         /// MaxPool2d: NCHW layout.
-        pub fn max_pool2d(&self, input: MpsGraphTensorRef, desc: &Pool2dDesc) -> MpsGraphTensorRef {
+        pub fn max_pool2d(
+            &self,
+            input: MpsGraphTensorRef,
+            desc: &Pool2dDesc,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let pool_desc_cls = Class::get("MPSGraphPooling2DOpDescriptor").unwrap();
+                let pool_desc_cls =
+                    Class::get("MPSGraphPooling2DOpDescriptor").ok_or_else(|| {
+                        KernelError::Gpu {
+                            message: "MPSGraphPooling2DOpDescriptor class not available".into(),
+                        }
+                    })?;
                 let d: *mut Object = msg_send![pool_desc_cls,
                     descriptorWithKernelWidth: desc.kernel_w as u64
                     kernelHeight: desc.kernel_h as u64
@@ -3421,14 +3481,23 @@ pub mod mpsgraph {
                     maxPooling2DWithSourceTensor: input.ptr
                     descriptor: d
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
         /// AvgPool2d: NCHW layout.
-        pub fn avg_pool2d(&self, input: MpsGraphTensorRef, desc: &Pool2dDesc) -> MpsGraphTensorRef {
+        pub fn avg_pool2d(
+            &self,
+            input: MpsGraphTensorRef,
+            desc: &Pool2dDesc,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let pool_desc_cls = Class::get("MPSGraphPooling2DOpDescriptor").unwrap();
+                let pool_desc_cls =
+                    Class::get("MPSGraphPooling2DOpDescriptor").ok_or_else(|| {
+                        KernelError::Gpu {
+                            message: "MPSGraphPooling2DOpDescriptor class not available".into(),
+                        }
+                    })?;
                 let d: *mut Object = msg_send![pool_desc_cls,
                     descriptorWithKernelWidth: desc.kernel_w as u64
                     kernelHeight: desc.kernel_h as u64
@@ -3450,20 +3519,23 @@ pub mod mpsgraph {
                     avgPooling2DWithSourceTensor: input.ptr
                     descriptor: d
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
         /// Global average pooling: reduce H and W dims. Input [N,C,H,W] → [N,C,1,1].
-        pub fn global_avg_pool(&self, input: MpsGraphTensorRef) -> MpsGraphTensorRef {
+        pub fn global_avg_pool(
+            &self,
+            input: MpsGraphTensorRef,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
                 // Reduce mean over axes [2, 3] (H, W in NCHW)
-                let axes = ns_array_from_shape(&[2i64, 3i64]);
+                let axes = ns_array_from_shape(&[2i64, 3i64])?;
                 let tensor: *mut Object = msg_send![self.graph,
                     meanOfTensor: input.ptr
                     axes: axes
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
@@ -3519,14 +3591,18 @@ pub mod mpsgraph {
         }
 
         /// Reshape tensor to new shape.
-        pub fn reshape(&self, input: MpsGraphTensorRef, shape: &[i64]) -> MpsGraphTensorRef {
+        pub fn reshape(
+            &self,
+            input: MpsGraphTensorRef,
+            shape: &[i64],
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let shape_arr = ns_array_from_shape(shape);
+                let shape_arr = ns_array_from_shape(shape)?;
                 let tensor: *mut Object = msg_send![self.graph,
                     reshapeTensor: input.ptr
                     withShape: shape_arr
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
@@ -3548,9 +3624,15 @@ pub mod mpsgraph {
         }
 
         /// Concat tensors along a given axis.
-        pub fn concat(&self, tensors: &[MpsGraphTensorRef], axis: i64) -> MpsGraphTensorRef {
+        pub fn concat(
+            &self,
+            tensors: &[MpsGraphTensorRef],
+            axis: i64,
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let ns_array_cls = Class::get("NSArray").unwrap();
+                let ns_array_cls = Class::get("NSArray").ok_or_else(|| KernelError::Gpu {
+                    message: "NSArray class not available".into(),
+                })?;
                 let ptrs: Vec<*mut Object> = tensors.iter().map(|t| t.ptr).collect();
                 let arr: *mut Object = msg_send![ns_array_cls,
                     arrayWithObjects: ptrs.as_ptr()
@@ -3559,7 +3641,7 @@ pub mod mpsgraph {
                     concatTensors: arr
                     dimension: axis
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
@@ -3570,18 +3652,18 @@ pub mod mpsgraph {
             starts: &[i64],
             ends: &[i64],
             strides: &[i64],
-        ) -> MpsGraphTensorRef {
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let starts_arr = ns_array_from_shape(starts);
-                let ends_arr = ns_array_from_shape(ends);
-                let strides_arr = ns_array_from_shape(strides);
+                let starts_arr = ns_array_from_shape(starts)?;
+                let ends_arr = ns_array_from_shape(ends)?;
+                let strides_arr = ns_array_from_shape(strides)?;
                 let tensor: *mut Object = msg_send![self.graph,
                     sliceTensor: input.ptr
                     starts: starts_arr
                     ends: ends_arr
                     strides: strides_arr
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
@@ -3602,9 +3684,9 @@ pub mod mpsgraph {
             input: MpsGraphTensorRef,
             out_h: usize,
             out_w: usize,
-        ) -> MpsGraphTensorRef {
+        ) -> Result<MpsGraphTensorRef, KernelError> {
             unsafe {
-                let size_arr = ns_array_from_shape(&[out_h as i64, out_w as i64]);
+                let size_arr = ns_array_from_shape(&[out_h as i64, out_w as i64])?;
                 // MPSGraphResizeMode: nearest=0, bilinear=1
                 let tensor: *mut Object = msg_send![self.graph,
                     resizeTensor: input.ptr
@@ -3614,7 +3696,7 @@ pub mod mpsgraph {
                     alignCorners: NO
                     layout: 0u64  // NCHW
                     name: std::ptr::null::<Object>()];
-                MpsGraphTensorRef { ptr: tensor }
+                Ok(MpsGraphTensorRef { ptr: tensor })
             }
         }
 
@@ -3636,15 +3718,21 @@ pub mod mpsgraph {
             device: &Device,
             feeds: &[(MpsGraphTensorRef, &[usize], u32)], // (placeholder, shape, datatype)
             target_tensors: &[MpsGraphTensorRef],
-        ) -> Option<MpsGraphExecutable> {
+        ) -> Result<Option<MpsGraphExecutable>, KernelError> {
             unsafe {
                 // Build feeds dictionary: MPSGraphTensor → MPSGraphShapedType
-                let ns_dict_cls = Class::get("NSMutableDictionary").unwrap();
+                let ns_dict_cls =
+                    Class::get("NSMutableDictionary").ok_or_else(|| KernelError::Gpu {
+                        message: "NSMutableDictionary class not available".into(),
+                    })?;
                 let feeds_dict: *mut Object = msg_send![ns_dict_cls, new];
 
-                let shaped_type_cls = Class::get("MPSGraphShapedType").unwrap();
+                let shaped_type_cls =
+                    Class::get("MPSGraphShapedType").ok_or_else(|| KernelError::Gpu {
+                        message: "MPSGraphShapedType class not available".into(),
+                    })?;
                 for &(ref tensor, shape, dtype) in feeds {
-                    let shape_arr = ns_array_from_usize(shape);
+                    let shape_arr = ns_array_from_usize(shape)?;
                     let shaped: *mut Object = msg_send![shaped_type_cls, alloc];
                     let shaped: *mut Object = msg_send![shaped,
                         initWithShape: shape_arr
@@ -3656,21 +3744,31 @@ pub mod mpsgraph {
                 }
 
                 // Build targets NSArray
-                let ns_array_cls = Class::get("NSArray").unwrap();
+                let ns_array_cls = Class::get("NSArray").ok_or_else(|| KernelError::Gpu {
+                    message: "NSArray class not available".into(),
+                })?;
                 let target_ptrs: Vec<*mut Object> = target_tensors.iter().map(|t| t.ptr).collect();
                 let targets: *mut Object = msg_send![ns_array_cls,
                     arrayWithObjects: target_ptrs.as_ptr()
                     count: target_ptrs.len()];
 
                 // Compilation descriptor (optional optimizations)
-                let comp_desc_cls = Class::get("MPSGraphCompilationDescriptor").unwrap();
+                let comp_desc_cls =
+                    Class::get("MPSGraphCompilationDescriptor").ok_or_else(|| {
+                        KernelError::Gpu {
+                            message: "MPSGraphCompilationDescriptor class not available".into(),
+                        }
+                    })?;
                 let comp_desc: *mut Object = msg_send![comp_desc_cls, new];
                 // optimization level 1 = default optimization
                 let _: () = msg_send![comp_desc,
                     setOptimizationLevel: 1u64];
 
                 // Create MPSGraphDevice from MTLDevice
-                let mpsg_device_cls = Class::get("MPSGraphDevice").unwrap();
+                let mpsg_device_cls =
+                    Class::get("MPSGraphDevice").ok_or_else(|| KernelError::Gpu {
+                        message: "MPSGraphDevice class not available".into(),
+                    })?;
                 let mpsg_device: *mut Object = msg_send![mpsg_device_cls,
                     deviceWithMTLDevice: device.as_ptr()];
 
@@ -3686,11 +3784,11 @@ pub mod mpsgraph {
                 let _: () = msg_send![feeds_dict, release];
 
                 if exe.is_null() {
-                    return None;
+                    return Ok(None);
                 }
                 // exe is autoreleased; retain it
                 let _: () = msg_send![exe, retain];
-                Some(MpsGraphExecutable { exe })
+                Ok(Some(MpsGraphExecutable { exe }))
             }
         }
 
@@ -3701,16 +3799,21 @@ pub mod mpsgraph {
             executable: &MpsGraphExecutable,
             queue: &CommandQueue,
             inputs: &[(MpsGraphTensorRef, &Buffer, &[usize], u32)], // (placeholder, buffer, shape, dtype)
-        ) -> Vec<Buffer> {
+        ) -> Result<Vec<Buffer>, KernelError> {
             unsafe {
                 autoreleasepool(|| {
                     // Build inputsArray: [MPSGraphTensorData]
-                    let tensor_data_cls = Class::get("MPSGraphTensorData").unwrap();
-                    let ns_array_cls = Class::get("NSArray").unwrap();
+                    let tensor_data_cls =
+                        Class::get("MPSGraphTensorData").ok_or_else(|| KernelError::Gpu {
+                            message: "MPSGraphTensorData class not available".into(),
+                        })?;
+                    let ns_array_cls = Class::get("NSArray").ok_or_else(|| KernelError::Gpu {
+                        message: "NSArray class not available".into(),
+                    })?;
 
                     let mut input_datas: Vec<*mut Object> = Vec::new();
                     for &(_, buf, shape, dtype) in inputs {
-                        let shape_arr = ns_array_from_usize(shape);
+                        let shape_arr = ns_array_from_usize(shape)?;
                         let alloc: *mut Object = msg_send![tensor_data_cls, alloc];
                         let td: *mut Object = msg_send![alloc,
                             initWithMTLBuffer: buf.as_ptr()
@@ -3769,26 +3872,30 @@ pub mod mpsgraph {
                         let _: () = msg_send![*td, release];
                     }
 
-                    out_bufs
+                    Ok(out_bufs)
                 })
             }
         }
     }
 
     // Helper: create NSString from &str
-    unsafe fn ns_string(s: &str) -> *mut Object {
-        let ns_string_cls = Class::get("NSString").unwrap();
+    unsafe fn ns_string(s: &str) -> Result<*mut Object, KernelError> {
+        let ns_string_cls = Class::get("NSString").ok_or_else(|| KernelError::Gpu {
+            message: "NSString class not available".into(),
+        })?;
         let ns_str: *mut Object = msg_send![ns_string_cls,
             stringWithUTF8String: s.as_ptr() as *const i8];
-        ns_str
+        Ok(ns_str)
     }
 
     // Helper: create NSData from raw bytes
-    unsafe fn ns_data_from_bytes(ptr: *const u8, len: usize) -> *mut Object {
-        let ns_data_cls = Class::get("NSData").unwrap();
+    unsafe fn ns_data_from_bytes(ptr: *const u8, len: usize) -> Result<*mut Object, KernelError> {
+        let ns_data_cls = Class::get("NSData").ok_or_else(|| KernelError::Gpu {
+            message: "NSData class not available".into(),
+        })?;
         let data: *mut Object = msg_send![ns_data_cls,
             dataWithBytes: ptr
             length: len];
-        data
+        Ok(data)
     }
 }

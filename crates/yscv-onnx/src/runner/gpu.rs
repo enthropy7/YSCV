@@ -2293,9 +2293,9 @@ fn exec_concat_gpu(
         .map(|n| &gc.get(n.as_str()).unwrap().buf)
         .collect();
     let out = if actual_axis == rank - 1 {
-        gpu.channel_concat_on_device(&bufs)
+        gpu.channel_concat_on_device(&bufs)?
     } else {
-        gpu.general_concat_on_device(&bufs, actual_axis)
+        gpu.general_concat_on_device(&bufs, actual_axis)?
     };
     gc.insert(
         node.outputs[0].clone(),
@@ -2371,7 +2371,7 @@ fn exec_split_gpu(
             .take(node.outputs.len())
             .copied()
             .collect();
-        let bufs = gpu.channel_split_all_on_device(input_buf, &sizes);
+        let bufs = gpu.channel_split_all_on_device(input_buf, &sizes)?;
         bufs.into_iter()
             .enumerate()
             .map(|(i, buf)| (node.outputs[i].clone(), buf))
@@ -3218,7 +3218,7 @@ fn exec_concat_f16_gpu(
     let (out, is_f16) = if actual_axis == rank - 1 && any_f16 {
         (gpu.channel_concat_f16_on_device(&bufs)?, true)
     } else if actual_axis == rank - 1 {
-        (gpu.channel_concat_on_device(&bufs), false)
+        (gpu.channel_concat_on_device(&bufs)?, false)
     } else if any_f16 {
         // Non-channel concat with f16 inputs: convert to f32, concat, convert back to f16
         let f32_bufs: Vec<GpuBuffer> = bufs
@@ -3226,11 +3226,11 @@ fn exec_concat_f16_gpu(
             .map(|b| gpu.convert_f16_to_f32_on_device(b))
             .collect::<Result<Vec<_>, _>>()?;
         let f32_refs: Vec<&GpuBuffer> = f32_bufs.iter().collect();
-        let f32_out = gpu.general_concat_on_device(&f32_refs, actual_axis);
+        let f32_out = gpu.general_concat_on_device(&f32_refs, actual_axis)?;
         let f16_out = gpu.convert_f32_to_f16_on_device(&f32_out)?;
         (f16_out, true)
     } else {
-        (gpu.general_concat_on_device(&bufs, actual_axis), false)
+        (gpu.general_concat_on_device(&bufs, actual_axis)?, false)
     };
     gc.insert(
         node.outputs[0].clone(),

@@ -188,6 +188,10 @@ impl DataLoader {
         let (tx, rx) = mpsc::sync_channel::<Result<DataLoaderBatch, String>>(channel_capacity);
 
         // Share data with workers via Arc.
+        // NOTE: cloning Vec<Tensor> here is unavoidable without changing the
+        // DataLoader field types to Arc<Vec<Tensor>>, which would alter the
+        // public API (new(), etc.).  The clone cost is amortised over the epoch
+        // and dominates only for very small datasets.
         let shared_inputs = Arc::new(self.inputs.clone());
         let shared_targets = Arc::new(self.targets.clone());
         let shared_indices = Arc::new(indices);

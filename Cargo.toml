@@ -27,13 +27,13 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["yscv contributors"]
 rust-version = "1.92"
 description = "Pure Rust computer vision and deep learning framework — image processing, neural network training, ONNX inference, object detection, tracking, and recognition in a single binary"
 repository = "https://github.com/enthropy7/yscv"
 categories = ["computer-vision", "science", "algorithms", "multimedia", "machine-learning"]
-keywords = ["tensor", "simd", "deep-learning", "image-processing", "neon"]
+keywords = ["computer-vision", "deep-learning", "image-processing", "onnx", "video"]
 
 [workspace.dependencies]
 thiserror = "2"

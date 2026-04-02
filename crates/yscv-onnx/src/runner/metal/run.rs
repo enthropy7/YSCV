@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use super::dispatch::{dispatch_compute_op, dispatch_with_mps};
 use super::types::*;
 
+use yscv_kernels::KernelError;
 use yscv_kernels::metal_backend::metal_conv::{MetalEncoder, mps_gemm_f16_encode};
 use yscv_tensor::Tensor;
 
@@ -52,13 +53,13 @@ pub fn run_metal_plan(
         .any(|op| matches!(op, MetalOp::MpsConv { .. }));
 
     // Encode all ops in a single command buffer
-    let result = autoreleasepool(|| {
+    let result: Result<HashMap<String, Tensor>, KernelError> = autoreleasepool(|| {
         let cmd = plan.inf.queue.new_command_buffer();
 
         if has_mps {
             // Segmented dispatch: split into compute segments and MPS ops.
             // Each compute segment gets its own encoder; MPS encodes directly to cmd buf.
-            dispatch_with_mps(plan, cmd);
+            dispatch_with_mps(plan, cmd)?;
         } else {
             let t_enc_start = std::time::Instant::now();
             let enc_raw = cmd.new_compute_command_encoder();
@@ -1158,7 +1159,7 @@ pub fn run_metal_plan(
                             0.0,
                             false,
                             false,
-                        );
+                        )?;
                         let penc2_raw = pcmd.new_compute_command_encoder();
                         let penc2 = MetalEncoder::new(penc2_raw, &plan.inf);
                         penc2.bias_act_f16(get_buf(output), get_buf(bias), *m * *n, *n, *act);
@@ -1640,8 +1641,8 @@ pub fn run_metal_plan(
                 t0.elapsed().as_secs_f64() * 1000.0,
             );
         }
-        result
+        Ok(result)
     });
 
-    Ok(result)
+    Ok(result?)
 }

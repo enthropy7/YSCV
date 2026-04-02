@@ -634,6 +634,11 @@ pub mod videotoolbox {
             nv12_bt601_to_rgb_neon(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
             return;
         }
+        #[cfg(target_arch = "x86_64")]
+        {
+            nv12_bt601_to_rgb_sse2(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
+            return;
+        }
         #[allow(unreachable_code)]
         nv12_bt601_to_rgb_scalar(y_ptr, y_stride, uv_ptr, uv_stride, w, h, rgb);
     }
@@ -719,6 +724,125 @@ pub mod videotoolbox {
                 // Interleave RGB and store
                 let rgb_triple = uint8x8x3_t(r8, g8, b8);
                 vst3_u8(dst_row.as_mut_ptr().add(col * 3), rgb_triple);
+
+                col += 8;
+            }
+
+            // Scalar tail
+            while col < w {
+                let y_val = *y_row.add(col) as i32;
+                let cb_val = *uv_row.add((col / 2) * 2) as i32;
+                let cr_val = *uv_row.add((col / 2) * 2 + 1) as i32;
+                let c = 298 * (y_val - 16);
+                let r = (c + 409 * (cr_val - 128) + 128) >> 8;
+                let g = (c - 208 * (cr_val - 128) - 100 * (cb_val - 128) + 128) >> 8;
+                let b = (c + 516 * (cb_val - 128) + 128) >> 8;
+                let dst = col * 3;
+                dst_row[dst] = r.clamp(0, 255) as u8;
+                dst_row[dst + 1] = g.clamp(0, 255) as u8;
+                dst_row[dst + 2] = b.clamp(0, 255) as u8;
+                col += 1;
+            }
+        }
+    }
+
+    /// SSE2-accelerated NV12 BT.601 limited range → RGB8.
+    /// Processes 8 pixels per iteration using int16 arithmetic.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "sse2")]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn nv12_bt601_to_rgb_sse2(
+        y_ptr: *const u8,
+        y_stride: usize,
+        uv_ptr: *const u8,
+        uv_stride: usize,
+        w: usize,
+        h: usize,
+        rgb: &mut [u8],
+    ) {
+        use std::arch::x86_64::*;
+
+        // BT.601 limited range half-scale coefficients (same as NEON path)
+        let c149 = _mm_set1_epi16(149); // 298/2
+        let c204 = _mm_set1_epi16(204); // 409/2
+        let c50 = _mm_set1_epi16(50); // 100/2
+        let c104 = _mm_set1_epi16(104); // 208/2
+        let c258 = _mm_set1_epi16(258u16 as i16); // 516/2
+        let v16 = _mm_set1_epi16(16);
+        let v128 = _mm_set1_epi16(128);
+        let half = _mm_set1_epi16(64); // 128/2
+        let zero = _mm_setzero_si128();
+
+        for row in 0..h {
+            let y_row = y_ptr.add(row * y_stride);
+            let uv_row = uv_ptr.add((row / 2) * uv_stride);
+            let dst_row = &mut rgb[row * w * 3..(row + 1) * w * 3];
+            let mut col = 0usize;
+
+            while col + 8 <= w {
+                // Load 8 Y values → i16
+                let y8 = _mm_loadl_epi64(y_row.add(col) as *const __m128i);
+                let y16 = _mm_unpacklo_epi8(y8, zero);
+                let y_adj = _mm_sub_epi16(y16, v16); // Y - 16
+
+                // Load 8 UV bytes (4 interleaved Cb,Cr pairs), deinterleave + duplicate
+                let mut cb_buf = [0u8; 8];
+                let mut cr_buf = [0u8; 8];
+                for i in 0..4 {
+                    cb_buf[i * 2] = *uv_row.add((col / 2 + i) * 2);
+                    cb_buf[i * 2 + 1] = *uv_row.add((col / 2 + i) * 2);
+                    cr_buf[i * 2] = *uv_row.add((col / 2 + i) * 2 + 1);
+                    cr_buf[i * 2 + 1] = *uv_row.add((col / 2 + i) * 2 + 1);
+                }
+                let cb8 = _mm_loadl_epi64(cb_buf.as_ptr() as *const __m128i);
+                let cr8 = _mm_loadl_epi64(cr_buf.as_ptr() as *const __m128i);
+                let cb_adj = _mm_sub_epi16(_mm_unpacklo_epi8(cb8, zero), v128);
+                let cr_adj = _mm_sub_epi16(_mm_unpacklo_epi8(cr8, zero), v128);
+
+                // BT.601 half-scale: c = 149*(Y-16), >>7 at the end
+                let c_val = _mm_mullo_epi16(c149, y_adj);
+                // R = (c + 204*(Cr-128) + 64) >> 7
+                let r16 = _mm_srai_epi16::<7>(_mm_add_epi16(
+                    _mm_add_epi16(c_val, _mm_mullo_epi16(c204, cr_adj)),
+                    half,
+                ));
+                // G = (c - 104*(Cr-128) - 50*(Cb-128) + 64) >> 7
+                let g16 = _mm_srai_epi16::<7>(_mm_add_epi16(
+                    _mm_sub_epi16(
+                        _mm_sub_epi16(c_val, _mm_mullo_epi16(c104, cr_adj)),
+                        _mm_mullo_epi16(c50, cb_adj),
+                    ),
+                    half,
+                ));
+                // B = (c + 258*(Cb-128) + 64) >> 7
+                let b16 = _mm_srai_epi16::<7>(_mm_add_epi16(
+                    _mm_add_epi16(c_val, _mm_mullo_epi16(c258, cb_adj)),
+                    half,
+                ));
+
+                // Clamp to [0,255] and pack to u8
+                let r_u8 = _mm_packus_epi16(_mm_max_epi16(r16, zero), zero);
+                let g_u8 = _mm_packus_epi16(_mm_max_epi16(g16, zero), zero);
+                let b_u8 = _mm_packus_epi16(_mm_max_epi16(b16, zero), zero);
+
+                // Manual RGB interleave (SSE2 has no vst3)
+                let mut rgb_buf = [0u8; 24];
+                let mut r_arr = [0u8; 8];
+                let mut g_arr = [0u8; 8];
+                let mut b_arr = [0u8; 8];
+                _mm_storel_epi64(r_arr.as_mut_ptr() as *mut __m128i, r_u8);
+                _mm_storel_epi64(g_arr.as_mut_ptr() as *mut __m128i, g_u8);
+                _mm_storel_epi64(b_arr.as_mut_ptr() as *mut __m128i, b_u8);
+                for i in 0..8 {
+                    rgb_buf[i * 3] = r_arr[i];
+                    rgb_buf[i * 3 + 1] = g_arr[i];
+                    rgb_buf[i * 3 + 2] = b_arr[i];
+                }
+                std::ptr::copy_nonoverlapping(
+                    rgb_buf.as_ptr(),
+                    dst_row.as_mut_ptr().add(col * 3),
+                    24,
+                );
 
                 col += 8;
             }

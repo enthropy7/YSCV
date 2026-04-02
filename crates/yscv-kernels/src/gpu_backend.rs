@@ -1820,8 +1820,24 @@ impl GpuBackend {
                 .ok_or_else(|| KernelError::Gpu {
                     message: "f16 channel concat pipeline not available on this device".into(),
                 })?;
-        let c_out: usize = inputs.iter().map(|b| *b.shape.last().unwrap()).sum();
-        let spatial: usize = inputs[0].size / *inputs[0].shape.last().unwrap();
+        if inputs.is_empty() {
+            return Err(KernelError::Gpu {
+                message: "empty inputs".into(),
+            });
+        }
+        let c_out: usize = {
+            let mut sum = 0usize;
+            for b in inputs {
+                sum += *b.shape.last().ok_or_else(|| KernelError::Gpu {
+                    message: "empty shape".into(),
+                })?;
+            }
+            sum
+        };
+        let spatial: usize = inputs[0].size
+            / *inputs[0].shape.last().ok_or_else(|| KernelError::Gpu {
+                message: "empty shape".into(),
+            })?;
         let total = spatial * c_out;
         let buf_out = self.output_buf_f16(total);
 
@@ -1831,7 +1847,9 @@ impl GpuBackend {
 
         let mut ch_offset = 0usize;
         for inp in inputs {
-            let c_in = *inp.shape.last().unwrap();
+            let c_in = *inp.shape.last().ok_or_else(|| KernelError::Gpu {
+                message: "empty shape".into(),
+            })?;
             #[repr(C)]
             #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
             struct P {
@@ -1874,7 +1892,9 @@ impl GpuBackend {
         self.record_compute_batch(pipeline, &bind_groups, &wg_sizes);
 
         let mut out_shape = inputs[0].shape.clone();
-        *out_shape.last_mut().unwrap() = c_out;
+        *out_shape.last_mut().ok_or_else(|| KernelError::Gpu {
+            message: "empty shape".into(),
+        })? = c_out;
         Ok(GpuBuffer {
             buffer: buf_out,
             size: total,
@@ -1895,7 +1915,9 @@ impl GpuBackend {
                 .ok_or_else(|| KernelError::Gpu {
                     message: "f16 channel split pipeline not available on this device".into(),
                 })?;
-        let c_in = *input.shape.last().unwrap();
+        let c_in = *input.shape.last().ok_or_else(|| KernelError::Gpu {
+            message: "empty shape".into(),
+        })?;
         let spatial: usize = input.size / c_in;
 
         let bgl = pipeline.get_bind_group_layout(0);
@@ -1946,7 +1968,9 @@ impl GpuBackend {
             wg_sizes.push((div_ceil(total as u32, 256), 1u32, 1u32));
 
             let mut out_shape = input.shape.clone();
-            *out_shape.last_mut().unwrap() = c_out;
+            *out_shape.last_mut().ok_or_else(|| KernelError::Gpu {
+                message: "empty shape".into(),
+            })? = c_out;
             results.push(GpuBuffer {
                 buffer: buf_out,
                 size: total,
@@ -3173,8 +3197,10 @@ impl GpuBackend {
         input: &GpuBuffer,
         c_out: usize,
         ch_offset: usize,
-    ) -> GpuBuffer {
-        let c_in = *input.shape.last().unwrap();
+    ) -> Result<GpuBuffer, KernelError> {
+        let c_in = *input.shape.last().ok_or_else(|| KernelError::Gpu {
+            message: "empty shape".into(),
+        })?;
         let spatial: usize = input.size / c_in;
         let total = spatial * c_out;
         let buf_out = self.output_buf(total);
@@ -3221,12 +3247,14 @@ impl GpuBackend {
         );
 
         let mut out_shape = input.shape.clone();
-        *out_shape.last_mut().unwrap() = c_out;
-        GpuBuffer {
+        *out_shape.last_mut().ok_or_else(|| KernelError::Gpu {
+            message: "empty shape".into(),
+        })? = c_out;
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: total,
             shape: out_shape,
-        }
+        })
     }
 
     /// Split a tensor along the last axis into multiple outputs, batched in one compute pass.
@@ -3235,8 +3263,10 @@ impl GpuBackend {
         &self,
         input: &GpuBuffer,
         split_sizes: &[usize],
-    ) -> Vec<GpuBuffer> {
-        let c_in = *input.shape.last().unwrap();
+    ) -> Result<Vec<GpuBuffer>, KernelError> {
+        let c_in = *input.shape.last().ok_or_else(|| KernelError::Gpu {
+            message: "empty shape".into(),
+        })?;
         let spatial: usize = input.size / c_in;
 
         let bgl = self.pipelines.channel_split.get_bind_group_layout(0);
@@ -3287,7 +3317,9 @@ impl GpuBackend {
             wg_sizes.push((div_ceil(total as u32, 256), 1u32, 1u32));
 
             let mut out_shape = input.shape.clone();
-            *out_shape.last_mut().unwrap() = c_out;
+            *out_shape.last_mut().ok_or_else(|| KernelError::Gpu {
+                message: "empty shape".into(),
+            })? = c_out;
             results.push(GpuBuffer {
                 buffer: buf_out,
                 size: total,
@@ -3297,16 +3329,35 @@ impl GpuBackend {
         }
 
         self.record_compute_batch(&self.pipelines.channel_split, &bind_groups, &wg_sizes);
-        results
+        Ok(results)
     }
 
     /// Concatenate multiple tensors along the last axis on device.
     /// All inputs must have the same shape except for the last dimension.
     /// Batches all input copies into a single compute pass (no RAW/WAW hazards
     /// since each input writes to a non-overlapping channel range).
-    pub fn channel_concat_on_device(&self, inputs: &[&GpuBuffer]) -> GpuBuffer {
-        let c_out: usize = inputs.iter().map(|b| *b.shape.last().unwrap()).sum();
-        let spatial: usize = inputs[0].size / *inputs[0].shape.last().unwrap();
+    pub fn channel_concat_on_device(
+        &self,
+        inputs: &[&GpuBuffer],
+    ) -> Result<GpuBuffer, KernelError> {
+        if inputs.is_empty() {
+            return Err(KernelError::Gpu {
+                message: "empty inputs".into(),
+            });
+        }
+        let c_out: usize = {
+            let mut sum = 0usize;
+            for b in inputs {
+                sum += *b.shape.last().ok_or_else(|| KernelError::Gpu {
+                    message: "empty shape".into(),
+                })?;
+            }
+            sum
+        };
+        let spatial: usize = inputs[0].size
+            / *inputs[0].shape.last().ok_or_else(|| KernelError::Gpu {
+                message: "empty shape".into(),
+            })?;
         let total = spatial * c_out;
         let buf_out = self.output_buf(total);
 
@@ -3317,7 +3368,9 @@ impl GpuBackend {
 
         let mut ch_offset = 0usize;
         for inp in inputs {
-            let c_in = *inp.shape.last().unwrap();
+            let c_in = *inp.shape.last().ok_or_else(|| KernelError::Gpu {
+                message: "empty shape".into(),
+            })?;
             #[repr(C)]
             #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
             struct P {
@@ -3361,12 +3414,14 @@ impl GpuBackend {
         self.record_compute_batch(&self.pipelines.channel_concat, &bind_groups, &wg_sizes);
 
         let mut out_shape = inputs[0].shape.clone();
-        *out_shape.last_mut().unwrap() = c_out;
-        GpuBuffer {
+        *out_shape.last_mut().ok_or_else(|| KernelError::Gpu {
+            message: "empty shape".into(),
+        })? = c_out;
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: total,
             shape: out_shape,
-        }
+        })
     }
 
     /// Nearest-neighbor resize on NHWC tensor on device.
@@ -3590,7 +3645,16 @@ impl GpuBackend {
 
     /// General concat along any axis on device.
     /// Batches all input copies into a single compute pass.
-    pub fn general_concat_on_device(&self, inputs: &[&GpuBuffer], axis: usize) -> GpuBuffer {
+    pub fn general_concat_on_device(
+        &self,
+        inputs: &[&GpuBuffer],
+        axis: usize,
+    ) -> Result<GpuBuffer, KernelError> {
+        if inputs.is_empty() {
+            return Err(KernelError::Gpu {
+                message: "empty inputs".into(),
+            });
+        }
         let inner: usize = inputs[0].shape[axis + 1..].iter().product();
         let outer: usize = inputs[0].shape[..axis].iter().product();
         let c_out: usize = inputs.iter().map(|b| b.shape[axis]).sum();
@@ -3654,11 +3718,11 @@ impl GpuBackend {
 
         let mut out_shape = inputs[0].shape.clone();
         out_shape[axis] = c_out;
-        GpuBuffer {
+        Ok(GpuBuffer {
             buffer: buf_out,
             size: total,
             shape: out_shape,
-        }
+        })
     }
 
     /// General split along any axis on device. Returns one GpuBuffer per split.
@@ -5287,7 +5351,7 @@ pub fn gpu_transpose(input: &Tensor) -> Result<Tensor, KernelError> {
         (div_ceil(cols as u32, 16), div_ceil(rows as u32, 16), 1),
     );
     let data = backend.read_buf(&buf_out, rows * cols);
-    Tensor::from_vec(vec![cols, rows], data).map_err(Into::into)
+    Tensor::from_vec(vec![cols, rows], data?).map_err(Into::into)
 }
 
 // ── f16 bit conversion (no external crate needed) ─────────────────

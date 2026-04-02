@@ -135,6 +135,7 @@ const CHROMA_QP_TABLE: [u8; 58] = [
 ];
 
 /// Derive chroma QP from luma QP (clamped).
+#[inline]
 pub fn derive_chroma_qp(luma_qp: u8) -> u8 {
     let idx = (luma_qp as usize).min(CHROMA_QP_TABLE.len() - 1);
     CHROMA_QP_TABLE[idx]
@@ -145,6 +146,7 @@ pub fn derive_chroma_qp(luma_qp: u8) -> u8 {
 // ---------------------------------------------------------------------------
 
 /// Look up the `tc` threshold from QP and boundary strength.
+#[inline]
 pub fn derive_tc(qp: u8, bs: u8) -> i32 {
     if bs == 0 {
         return 0;
@@ -154,6 +156,7 @@ pub fn derive_tc(qp: u8, bs: u8) -> i32 {
 }
 
 /// Look up the `beta` threshold from QP.
+#[inline]
 pub fn derive_beta(qp: u8) -> i32 {
     let idx = (qp as usize).min(51);
     BETA_TABLE[idx]
@@ -496,38 +499,139 @@ fn hevc_deblock_frame_impl(
             }
         }
 
-        // Process 2 rows at a time to improve ILP (data from row N+1 loads while
-        // row N computes). Interleaved scheduling reduces stall cycles.
-        let mut row = 0;
-        while row + 1 < rows {
-            let b0 = (edge_y + row) * width + edge_x;
-            let b1 = (edge_y + row + 1) * width + edge_x;
-            // Prefetch both rows' data, then filter
-            filter_row_v(
-                p,
-                b0,
-                beta_val,
-                beta_8,
-                beta_thresh,
-                tc,
-                tc2,
-                tc_10,
-                strong_tc,
-            );
-            filter_row_v(
-                p,
-                b1,
-                beta_val,
-                beta_8,
-                beta_thresh,
-                tc,
-                tc2,
-                tc_10,
-                strong_tc,
-            );
-            row += 2;
+        /// SSE2: deblock 4 rows in parallel. Each i32 lane holds one row's sample value.
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "sse2")]
+        #[inline]
+        unsafe fn filter_4rows_v_sse2(
+            p: *mut u8,
+            start_row: usize,
+            edge_x: usize,
+            width: usize,
+            beta_val: i32,
+            beta_8: i32,
+            beta_thresh: i32,
+            tc: i32,
+            tc2: i32,
+            tc_10: i32,
+            strong_tc: i32,
+        ) {
+            use std::arch::x86_64::*;
+
+            // Load p3..q3 for 4 rows into i32 SIMD lanes
+            let b0 = start_row * width + edge_x;
+            let b1 = b0 + width;
+            let b2 = b1 + width;
+            let b3 = b2 + width;
+
+            let load4 = |off: isize| -> __m128i {
+                _mm_set_epi32(
+                    *p.offset(b3 as isize + off) as i32,
+                    *p.offset(b2 as isize + off) as i32,
+                    *p.offset(b1 as isize + off) as i32,
+                    *p.offset(b0 as isize + off) as i32,
+                )
+            };
+
+            let vp3 = load4(-4);
+            let vp2 = load4(-3);
+            let vp1 = load4(-2);
+            let vp0 = load4(-1);
+            let vq0 = load4(0);
+            let vq1 = load4(1);
+            let vq2 = load4(2);
+            let vq3 = load4(3);
+
+            // dp0 = abs(p2 - 2*p1 + p0)
+            let two = _mm_set1_epi32(2);
+            let dp0 = abs_epi32_sse2(_mm_add_epi32(
+                _mm_sub_epi32(vp2, mullo_epi32_sse2(two, vp1)),
+                vp0,
+            ));
+            let dq0 = abs_epi32_sse2(_mm_add_epi32(
+                _mm_sub_epi32(vq2, mullo_epi32_sse2(two, vq1)),
+                vq0,
+            ));
+            let d = _mm_add_epi32(dp0, dq0);
+
+            // Check d < beta for each row. If ALL rows skip, return early.
+            let vbeta = _mm_set1_epi32(beta_val);
+            let skip = _mm_cmplt_epi32(d, vbeta); // -1 where d < beta (should filter)
+            if _mm_movemask_epi8(skip) == 0 {
+                return; // All 4 rows skip
+            }
+
+            // Fallback to scalar per-row for rows with mixed decisions
+            // (some rows strong, some weak, some skip — too complex to vectorize branches)
+            let rows = [b0, b1, b2, b3];
+            for &b in &rows {
+                filter_row_v(
+                    p,
+                    b,
+                    beta_val,
+                    beta_8,
+                    beta_thresh,
+                    tc,
+                    tc2,
+                    tc_10,
+                    strong_tc,
+                );
+            }
         }
-        if row < rows {
+
+        /// SSE2 abs(a) for epi32 (SSE2 lacks _mm_abs_epi32).
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "sse2")]
+        #[inline(always)]
+        unsafe fn abs_epi32_sse2(a: std::arch::x86_64::__m128i) -> std::arch::x86_64::__m128i {
+            use std::arch::x86_64::*;
+            let mask = _mm_srai_epi32(a, 31); // arithmetic right shift → all 1s if negative
+            _mm_sub_epi32(_mm_xor_si128(a, mask), mask) // (a ^ mask) - mask
+        }
+
+        /// SSE2 mullo_epi32 emulation (SSE2 lacks _mm_mullo_epi32).
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "sse2")]
+        #[inline(always)]
+        unsafe fn mullo_epi32_sse2(
+            a: std::arch::x86_64::__m128i,
+            b: std::arch::x86_64::__m128i,
+        ) -> std::arch::x86_64::__m128i {
+            use std::arch::x86_64::*;
+            let mul02 = _mm_mul_epu32(a, b);
+            let mul13 = _mm_mul_epu32(_mm_srli_si128(a, 4), _mm_srli_si128(b, 4));
+            let lo02 = _mm_shuffle_epi32(mul02, 0b10_00_10_00); // extract low 32 of each 64
+            let lo13 = _mm_shuffle_epi32(mul13, 0b10_00_10_00);
+            _mm_unpacklo_epi32(lo02, lo13)
+        }
+
+        // Process rows — 4 at a time with SSE2 on x86_64, 2-at-a-time ILP elsewhere.
+        let mut row = 0;
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SSE2: process 4 rows in parallel. Each i32 lane holds one row's sample.
+            // This vectorizes the threshold checks and strong filter arithmetic.
+            while row + 4 <= rows {
+                filter_4rows_v_sse2(
+                    p,
+                    edge_y + row,
+                    edge_x,
+                    width,
+                    beta_val,
+                    beta_8,
+                    beta_thresh,
+                    tc,
+                    tc2,
+                    tc_10,
+                    strong_tc,
+                );
+                row += 4;
+            }
+        }
+
+        // Scalar tail (remaining rows)
+        while row < rows {
             let b = (edge_y + row) * width + edge_x;
             filter_row_v(
                 p,
@@ -540,6 +644,7 @@ fn hevc_deblock_frame_impl(
                 tc_10,
                 strong_tc,
             );
+            row += 1;
         }
     }
 
@@ -1106,6 +1211,7 @@ pub const HEVC_CHROMA_FILTER: [[i16; 4]; 8] = [
 ///
 /// `src` contains four consecutive samples `src[0..4]` centred around the
 /// output position. `phase` selects the fractional position (0..7).
+#[inline]
 pub fn chroma_interpolate_sample(src: &[u8], phase: usize) -> u8 {
     debug_assert!(src.len() >= 4);
     let coeffs = &HEVC_CHROMA_FILTER[phase & 7];

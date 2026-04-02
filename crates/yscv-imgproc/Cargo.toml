@@ -14,7 +14,7 @@ keywords.workspace = true
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
 thiserror.workspace = true
-rayon = "1.10"
+rayon = "1.11"
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

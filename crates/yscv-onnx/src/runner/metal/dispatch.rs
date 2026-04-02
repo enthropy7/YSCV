@@ -3,11 +3,15 @@ use std::collections::HashMap;
 
 use super::types::*;
 
+use yscv_kernels::KernelError;
 use yscv_kernels::metal_backend::metal_conv::{MetalEncoder, mps_gemm_f16_encode};
 
 /// Dispatch ops with MPS GEMM for conv layers.
 /// Segments ops into compute-encoder blocks separated by MPS calls.
-pub(crate) fn dispatch_with_mps(plan: &MetalPlan, cmd: &CommandBufferRef) {
+pub(crate) fn dispatch_with_mps(
+    plan: &MetalPlan,
+    cmd: &CommandBufferRef,
+) -> Result<(), KernelError> {
     let bufs = &plan.bufs;
     let gb = |name: &str| -> &Buffer {
         bufs.get(name).unwrap_or_else(|| {
@@ -83,7 +87,7 @@ pub(crate) fn dispatch_with_mps(plan: &MetalPlan, cmd: &CommandBufferRef) {
                 0.0,
                 false,
                 false,
-            );
+            )?;
 
             // Step 3: bias + activation
             let enc_raw = cmd.new_compute_command_encoder();
@@ -106,6 +110,7 @@ pub(crate) fn dispatch_with_mps(plan: &MetalPlan, cmd: &CommandBufferRef) {
 
     cmd.commit();
     cmd.wait_until_completed();
+    Ok(())
 }
 
 /// Dispatch a single non-MPS compute op through the encoder.

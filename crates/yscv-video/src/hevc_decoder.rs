@@ -1356,6 +1356,10 @@ pub struct HevcDecoder {
     cu_buf: Vec<DecodedCu>,
     /// Reusable Y plane output buffer.
     y_plane_buf: Vec<u8>,
+    /// Reusable Cb chroma reconstruction buffer (avoids per-frame allocation).
+    recon_cb: Vec<i16>,
+    /// Reusable Cr chroma reconstruction buffer (avoids per-frame allocation).
+    recon_cr: Vec<i16>,
     /// Skip RGB conversion for benchmark mode.
     pub skip_rgb: bool,
 }
@@ -1371,6 +1375,8 @@ impl HevcDecoder {
             mv_field_buf: Vec::new(),
             cu_buf: Vec::new(),
             y_plane_buf: Vec::new(),
+            recon_cb: Vec::new(),
+            recon_cr: Vec::new(),
             skip_rgb: false,
             poc: 0,
             recon_buf: Vec::new(),
@@ -1602,10 +1608,14 @@ impl HevcDecoder {
         let est_ctus = w.div_ceil(64) * h.div_ceil(64);
         let mut sao_list: Vec<super::hevc_filter::SaoParams> = Vec::with_capacity(est_ctus);
 
-        // Chroma recon buffers (shared across CABAC/stub paths)
+        // Chroma recon buffers — reuse across frames to avoid per-frame allocation
         let chroma_needed = (w / 2) * (h / 2);
-        let mut recon_cb = vec![128i16; chroma_needed];
-        let mut recon_cr = vec![128i16; chroma_needed];
+        self.recon_cb.resize(chroma_needed, 128);
+        self.recon_cb.fill(128);
+        let mut recon_cb = std::mem::take(&mut self.recon_cb);
+        self.recon_cr.resize(chroma_needed, 128);
+        self.recon_cr.fill(128);
+        let mut recon_cr = std::mem::take(&mut self.recon_cr);
 
         if use_cabac {
             let slice_qp = pps.init_qp as i32;
@@ -1794,6 +1804,8 @@ impl HevcDecoder {
         self.poc += 1;
         self.y_plane_buf = y_plane;
         self.cu_buf = cus;
+        self.recon_cb = recon_cb;
+        self.recon_cr = recon_cr;
 
         Ok(Some(crate::DecodedFrame {
             width: w,
