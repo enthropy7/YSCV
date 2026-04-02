@@ -495,35 +495,46 @@ pub(crate) fn conv3d_ndhwc_backward(
         let in_data = iv.data();
         let w_data = wv.data();
 
+        // Precompute flattened (fd,fh,fw) -> (filter_flat_idx, id_offset, ih_offset, iw)
+        // offsets so the inner loops over the 3D kernel become a single flat iteration.
+        let filter_size = kd * kh * kw;
+        let mut filter_offsets: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(filter_size);
+        for fd in 0..kd {
+            for fh in 0..kh {
+                for fw in 0..kw {
+                    // flat index into kernel spatial dims: (fd*kh+fh)*kw+fw
+                    let flat = (fd * kh + fh) * kw + fw;
+                    filter_offsets.push((flat, fd, fh, fw));
+                }
+            }
+        }
+
+        #[allow(unsafe_code)]
         let gw = if graph.nodes[weight_id.0].requires_grad {
             let mut gw = vec![0.0f32; kd * kh * kw * c_in * c_out];
             for batch in 0..n {
                 for o_d in 0..od {
                     for o_h in 0..oh {
                         for o_w in 0..ow {
-                            for fd in 0..kd {
-                                let id = o_d * stride_d + fd;
-                                for fh in 0..kh {
+                            let up_base = (((batch * od + o_d) * oh + o_h) * ow + o_w) * c_out;
+                            // SAFETY: all indices are in-bounds by construction of
+                            // output/input dimensions from valid convolution params.
+                            unsafe {
+                                let up_ptr = up_data.as_ptr().add(up_base);
+                                for &(flat, fd, fh, fw) in &filter_offsets {
+                                    let id = o_d * stride_d + fd;
                                     let ih = o_h * stride_h + fh;
-                                    for fw in 0..kw {
-                                        let iw = o_w * stride_w + fw;
-                                        for ci in 0..c_in {
-                                            let in_idx =
-                                                ((((batch * in_d + id) * in_h + ih) * in_w + iw)
-                                                    * c_in)
-                                                    + ci;
-                                            let in_v = in_data[in_idx];
-                                            for co in 0..c_out {
-                                                let up_idx =
-                                                    ((((batch * od + o_d) * oh + o_h) * ow + o_w)
-                                                        * c_out)
-                                                        + co;
-                                                let gw_idx = ((((fd * kh + fh) * kw + fw) * c_in
-                                                    + ci)
-                                                    * c_out)
-                                                    + co;
-                                                gw[gw_idx] += in_v * up_data[up_idx];
-                                            }
+                                    let iw = o_w * stride_w + fw;
+                                    let in_base =
+                                        (((batch * in_d + id) * in_h + ih) * in_w + iw) * c_in;
+                                    let gw_spatial = flat * c_in * c_out;
+                                    let in_ptr = in_data.as_ptr().add(in_base);
+                                    let gw_ptr = gw.as_mut_ptr().add(gw_spatial);
+                                    for ci in 0..c_in {
+                                        let in_v = *in_ptr.add(ci);
+                                        let gw_row = gw_ptr.add(ci * c_out);
+                                        for co in 0..c_out {
+                                            *gw_row.add(co) += in_v * *up_ptr.add(co);
                                         }
                                     }
                                 }
@@ -537,35 +548,33 @@ pub(crate) fn conv3d_ndhwc_backward(
             None
         };
 
+        #[allow(unsafe_code)]
         let gi = if graph.nodes[input_id.0].requires_grad {
             let mut gi = vec![0.0f32; n * in_d * in_h * in_w * c_in];
             for batch in 0..n {
                 for o_d in 0..od {
                     for o_h in 0..oh {
                         for o_w in 0..ow {
-                            for fd in 0..kd {
-                                let id = o_d * stride_d + fd;
-                                for fh in 0..kh {
+                            let up_base = (((batch * od + o_d) * oh + o_h) * ow + o_w) * c_out;
+                            // SAFETY: same bounds guarantees as grad_weight above.
+                            unsafe {
+                                let up_ptr = up_data.as_ptr().add(up_base);
+                                for &(flat, fd, fh, fw) in &filter_offsets {
+                                    let id = o_d * stride_d + fd;
                                     let ih = o_h * stride_h + fh;
-                                    for fw in 0..kw {
-                                        let iw = o_w * stride_w + fw;
-                                        for ci in 0..c_in {
-                                            let gi_idx =
-                                                ((((batch * in_d + id) * in_h + ih) * in_w + iw)
-                                                    * c_in)
-                                                    + ci;
-                                            for co in 0..c_out {
-                                                let up_idx =
-                                                    ((((batch * od + o_d) * oh + o_h) * ow + o_w)
-                                                        * c_out)
-                                                        + co;
-                                                let w_idx = ((((fd * kh + fh) * kw + fw) * c_in
-                                                    + ci)
-                                                    * c_out)
-                                                    + co;
-                                                gi[gi_idx] += w_data[w_idx] * up_data[up_idx];
-                                            }
+                                    let iw = o_w * stride_w + fw;
+                                    let gi_base =
+                                        (((batch * in_d + id) * in_h + ih) * in_w + iw) * c_in;
+                                    let w_spatial = flat * c_in * c_out;
+                                    let gi_ptr = gi.as_mut_ptr().add(gi_base);
+                                    let w_ptr = w_data.as_ptr().add(w_spatial);
+                                    for ci in 0..c_in {
+                                        let w_row = w_ptr.add(ci * c_out);
+                                        let mut acc = *gi_ptr.add(ci);
+                                        for co in 0..c_out {
+                                            acc += *w_row.add(co) * *up_ptr.add(co);
                                         }
+                                        *gi_ptr.add(ci) = acc;
                                     }
                                 }
                             }

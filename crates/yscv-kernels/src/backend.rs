@@ -1535,29 +1535,48 @@ pub fn transpose_conv2d_nhwc(
 
     let mut out = vec![0.0f32; n * oh * ow * oc];
 
+    // Flatten the 7-deep naive loop into (b, iy, ix, ky, kx) outer loops
+    // with a vectorised inner body: for each spatial scatter position we
+    // compute  out[oy,ox,:] += input[iy,ix,:] · kernel[ky,kx,:,:]
+    // i.e. a vector-matrix multiply of [ic] x [ic, oc] → [oc].
+    #[allow(unsafe_code)]
     for b in 0..n {
+        let in_batch = b * ih * iw * ic;
+        let out_batch = b * oh * ow * oc;
         for iy in 0..ih {
             for ix in 0..iw {
-                for ci in 0..ic {
-                    let in_val = in_d[((b * ih + iy) * iw + ix) * ic + ci];
-                    for ky in 0..kh {
-                        for kx in 0..kw {
-                            let oy = iy * stride_h + ky;
-                            let ox = ix * stride_w + kx;
-                            for co in 0..oc {
-                                let k_val = k_d[((ky * kw + kx) * ic + ci) * oc + co];
-                                out[((b * oh + oy) * ow + ox) * oc + co] += in_val * k_val;
+                let in_base = in_batch + (iy * iw + ix) * ic;
+                for ky in 0..kh {
+                    let oy = iy * stride_h + ky;
+                    for kx in 0..kw {
+                        let ox = ix * stride_w + kx;
+                        let out_base = out_batch + (oy * ow + ox) * oc;
+                        let k_spatial = (ky * kw + kx) * ic * oc;
+                        // SAFETY: all indices are within bounds because:
+                        // - in_base + ci < n*ih*iw*ic (input dims)
+                        // - out_base + co < n*oh*ow*oc (output dims)
+                        // - k_spatial + ci*oc + co < kh*kw*ic*oc (kernel dims)
+                        unsafe {
+                            let in_ptr = in_d.as_ptr().add(in_base);
+                            let out_ptr = out.as_mut_ptr().add(out_base);
+                            let k_ptr = k_d.as_ptr().add(k_spatial);
+                            for ci in 0..ic {
+                                let in_val = *in_ptr.add(ci);
+                                let k_row = k_ptr.add(ci * oc);
+                                for co in 0..oc {
+                                    *out_ptr.add(co) += in_val * *k_row.add(co);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        for oy in 0..oh {
-            for ox in 0..ow {
-                for co in 0..oc {
-                    out[((b * oh + oy) * ow + ox) * oc + co] += bias_d[co];
-                }
+        // Add bias
+        for idx in 0..(oh * ow) {
+            let base = out_batch + idx * oc;
+            for co in 0..oc {
+                out[base + co] += bias_d[co];
             }
         }
     }

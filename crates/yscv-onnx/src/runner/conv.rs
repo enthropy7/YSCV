@@ -174,35 +174,57 @@ pub(super) fn exec_conv(
         let in_data = input_padded.data();
         let w_data = weight.data();
 
+        // Pre-permute weights from OIHW to [oc, kh, kw, ic_per_group] so the
+        // inner ci dimension is contiguous, enabling a slice dot-product.
+        let w_khwc_stride = kh * kw * ic_per_group;
+        let mut w_reordered = vec![0.0f32; o_ch * w_khwc_stride];
+        for oc in 0..o_ch {
+            for ki in 0..kh {
+                for kj in 0..kw {
+                    let dst_base = oc * w_khwc_stride + (ki * kw + kj) * ic_per_group;
+                    for ci in 0..ic_per_group {
+                        w_reordered[dst_base + ci] =
+                            w_data[((oc * ic_per_group + ci) * kh + ki) * kw + kj];
+                    }
+                }
+            }
+        }
+
+        let bias_data: &[f32] = match &bias {
+            Some(b) => b.data(),
+            None => &[],
+        };
+
         for batch in 0..n {
             for g in 0..group {
                 let ic_start = g * ic_per_group;
                 let oc_start = g * oc_per_group;
-                for or in 0..oh {
-                    for oc_col in 0..ow {
+                for orow in 0..oh {
+                    for ocol in 0..ow {
+                        let out_base = ((batch * oh + orow) * ow + ocol) * o_ch + oc_start;
                         for oc in 0..oc_per_group {
                             let abs_oc = oc_start + oc;
-                            let mut val = if let Some(b) = bias {
-                                b.data()[abs_oc]
+                            let mut val = if !bias_data.is_empty() {
+                                bias_data[abs_oc]
                             } else {
                                 0.0
                             };
+                            let w_oc_base = abs_oc * w_khwc_stride;
                             for ki in 0..kh {
+                                let ir = orow * sh + ki;
                                 for kj in 0..kw {
-                                    let ir = or * sh + ki;
-                                    let ic_pos = oc_col * sw + kj;
+                                    let ic_pos = ocol * sw + kj;
+                                    let in_base =
+                                        ((batch * ih + ir) * iw + ic_pos) * total_ic + ic_start;
+                                    let w_base = w_oc_base + (ki * kw + kj) * ic_per_group;
+                                    let in_slice = &in_data[in_base..in_base + ic_per_group];
+                                    let w_slice = &w_reordered[w_base..w_base + ic_per_group];
                                     for ci in 0..ic_per_group {
-                                        let in_idx = ((batch * ih + ir) * iw + ic_pos) * total_ic
-                                            + ic_start
-                                            + ci;
-                                        let w_idx =
-                                            ((abs_oc * ic_per_group + ci) * kh + ki) * kw + kj;
-                                        val += in_data[in_idx] * w_data[w_idx];
+                                        val += in_slice[ci] * w_slice[ci];
                                     }
                                 }
                             }
-                            let out_idx = ((batch * oh + or) * ow + oc_col) * o_ch + abs_oc;
-                            out_data[out_idx] = val;
+                            out_data[out_base + oc] = val;
                         }
                     }
                 }
@@ -242,71 +264,18 @@ pub(super) fn exec_conv_transpose(node: &OnnxNode, env: &mut TensorEnv) -> Resul
     } else {
         nchw_to_nhwc(input)?
     };
-    let w_shape = weight.shape();
-    // ONNX ConvTranspose weight: [C_in, C_out, KH, KW]
-    let (ic, oc, kh, kw) = (w_shape[0], w_shape[1], w_shape[2], w_shape[3]);
-    let wd = weight.data();
-    let mut w_nhwc = vec![0.0f32; kh * kw * ic * oc];
-    for ci in 0..ic {
-        for co in 0..oc {
-            for ky in 0..kh {
-                for kx in 0..kw {
-                    w_nhwc[((ky * kw + kx) * ic + ci) * oc + co] =
-                        wd[((ci * oc + co) * kh + ky) * kw + kx];
-                }
-            }
-        }
-    }
-    let w_t =
-        Tensor::from_vec(vec![kh, kw, ic, oc], w_nhwc).map_err(|e| OnnxError::DecodeFailed {
+    // ONNX ConvTranspose weight: [C_in, C_out, KH, KW] → [KH, KW, C_in, C_out]
+    let w_t = weight
+        .permute(&[2, 3, 0, 1])
+        .map_err(|e| OnnxError::DecodeFailed {
             message: e.to_string(),
         })?;
 
-    let n = input_nhwc.shape()[0];
-    let ih = input_nhwc.shape()[1];
-    let iw = input_nhwc.shape()[2];
-    let oh = (ih - 1) * sh + kh;
-    let ow = (iw - 1) * sw + kw;
-
-    let bias_data = match &bias {
-        Some(b) => b.data().to_vec(),
-        None => vec![0.0f32; oc],
-    };
-
-    let in_d = input_nhwc.data();
-    let w_d = w_t.data();
-    let mut out = vec![0.0f32; n * oh * ow * oc];
-
-    for b in 0..n {
-        for iy in 0..ih {
-            for ix in 0..iw {
-                for ci in 0..ic {
-                    let in_val = in_d[((b * ih + iy) * iw + ix) * ic + ci];
-                    for ky in 0..kh {
-                        for kx in 0..kw {
-                            let oy = iy * sh + ky;
-                            let ox = ix * sw + kx;
-                            for co in 0..oc {
-                                let w_val = w_d[((ky * kw + kx) * ic + ci) * oc + co];
-                                out[((b * oh + oy) * ow + ox) * oc + co] += in_val * w_val;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for oy in 0..oh {
-            for ox in 0..ow {
-                for co in 0..oc {
-                    out[((b * oh + oy) * ow + ox) * oc + co] += bias_data[co];
-                }
-            }
-        }
-    }
-
     let out_nhwc =
-        Tensor::from_vec(vec![n, oh, ow, oc], out).map_err(|e| OnnxError::DecodeFailed {
-            message: e.to_string(),
+        yscv_kernels::transpose_conv2d_nhwc(&input_nhwc, &w_t, bias, sh, sw).map_err(|e| {
+            OnnxError::DecodeFailed {
+                message: e.to_string(),
+            }
         })?;
     env.insert(node.outputs[0].clone(), out_nhwc);
     env.mark_nhwc(&node.outputs[0]);

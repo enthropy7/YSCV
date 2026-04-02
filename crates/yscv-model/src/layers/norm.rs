@@ -299,38 +299,39 @@ impl GroupNormLayer {
         }
         let (n, h, w, c) = (shape[0], shape[1], shape[2], shape[3]);
         let channels_per_group = c / self.num_groups;
-        let spatial = h * w;
         let data = input.data();
         let gamma = graph.value(self.gamma)?.data().to_vec();
         let beta = graph.value(self.beta)?.data().to_vec();
         let mut out = vec![0.0f32; data.len()];
 
+        // Two-pass GroupNorm: pass 1 uses Welford's online algorithm to compute
+        // mean and variance in a single sweep, pass 2 normalises.
         for ni in 0..n {
             for gi in 0..self.num_groups {
                 let c_start = gi * channels_per_group;
                 let c_end = c_start + channels_per_group;
-                let group_size = spatial * channels_per_group;
-                let mut sum = 0.0f32;
+
+                // Pass 1: Welford online mean + variance
+                let mut mean = 0.0f32;
+                let mut m2 = 0.0f32;
+                let mut count = 0u32;
                 for hi in 0..h {
                     for wi in 0..w {
                         let base = ((ni * h + hi) * w + wi) * c;
                         for ci in c_start..c_end {
-                            sum += data[base + ci];
+                            count += 1;
+                            let val = data[base + ci];
+                            let delta = val - mean;
+                            mean += delta / count as f32;
+                            let delta2 = val - mean;
+                            m2 += delta * delta2;
                         }
                     }
                 }
-                let mean = sum / group_size as f32;
-                let mut var_sum = 0.0f32;
-                for hi in 0..h {
-                    for wi in 0..w {
-                        let base = ((ni * h + hi) * w + wi) * c;
-                        for ci in c_start..c_end {
-                            let d = data[base + ci] - mean;
-                            var_sum += d * d;
-                        }
-                    }
-                }
-                let inv_std = 1.0 / (var_sum / group_size as f32 + self.eps).sqrt();
+                let variance = m2 / count as f32;
+                let inv_std = 1.0 / (variance + self.eps).sqrt();
+
+                // Pass 2: normalise
                 for hi in 0..h {
                     for wi in 0..w {
                         let base = ((ni * h + hi) * w + wi) * c;

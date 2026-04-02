@@ -686,22 +686,43 @@ pub(super) fn exec_depth_to_space(node: &OnnxNode, env: &mut TensorEnv) -> Resul
     let mut out = vec![0.0f32; n * new_c * new_h * new_w];
     let dcr = mode != "CRD";
 
+    // Restructured to eliminate per-element modulo/division.
+    // Iterate over block offsets (bh, bw) and input spatial dims (ih, iw),
+    // then copy contiguous channel blocks via copy_from_slice.
     for nn in 0..n {
-        for oc in 0..new_c {
-            for oh in 0..new_h {
-                for ow in 0..new_w {
-                    let bh = oh % blocksize;
-                    let bw = ow % blocksize;
-                    let ih = oh / blocksize;
-                    let iw = ow / blocksize;
-                    let ic = if dcr {
-                        (bh * blocksize + bw) * new_c + oc
-                    } else {
-                        oc * bs2 + bh * blocksize + bw
-                    };
-                    let src_idx = ((nn * c + ic) * h + ih) * w + iw;
-                    let dst_idx = ((nn * new_c + oc) * new_h + oh) * new_w + ow;
-                    out[dst_idx] = data[src_idx];
+        for bh in 0..blocksize {
+            for bw in 0..blocksize {
+                for ih in 0..h {
+                    let oh = ih * blocksize + bh;
+                    let dst_row_base = (nn * new_c) * new_h * new_w + oh * new_w;
+                    for iw in 0..w {
+                        let ow = iw * blocksize + bw;
+                        // Copy all new_c channels at once via contiguous src slice.
+                        // In DCR mode: ic = (bh*bs+bw)*new_c + oc  (contiguous in oc)
+                        // In CRD mode: ic = oc*bs2 + bh*bs + bw      (stride bs2 in oc)
+                        if dcr {
+                            let ic_base = (bh * blocksize + bw) * new_c;
+                            let src_base = (nn * c + ic_base) * h * w + ih * w + iw;
+                            // Source channels ic_base..ic_base+new_c are contiguous
+                            // in memory since input is NCHW and they are adjacent channels
+                            // at the same spatial position — but in NCHW, channel stride
+                            // is h*w, so we must gather.
+                            let src_stride = h * w;
+                            for oc in 0..new_c {
+                                let src_idx = src_base + oc * src_stride;
+                                let dst_idx = dst_row_base + oc * new_h * new_w + ow;
+                                out[dst_idx] = data[src_idx];
+                            }
+                        } else {
+                            let block_off = bh * blocksize + bw;
+                            for oc in 0..new_c {
+                                let ic = oc * bs2 + block_off;
+                                let src_idx = ((nn * c + ic) * h + ih) * w + iw;
+                                let dst_idx = dst_row_base + oc * new_h * new_w + ow;
+                                out[dst_idx] = data[src_idx];
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -740,18 +761,23 @@ pub(super) fn exec_space_to_depth(node: &OnnxNode, env: &mut TensorEnv) -> Resul
     let data = input.data();
     let mut out = vec![0.0f32; n * new_c * new_h * new_w];
 
+    // Restructured to eliminate per-element modulo/division.
+    // For each (bh, bw) block offset and each input channel, copy a row of
+    // new_w elements using strided access (source stride = blocksize).
     for nn in 0..n {
         for ic in 0..c {
-            for ih in 0..h {
-                for iw in 0..w {
-                    let bh = ih % blocksize;
-                    let bw = iw % blocksize;
-                    let oh = ih / blocksize;
-                    let ow = iw / blocksize;
+            for bh in 0..blocksize {
+                for bw in 0..blocksize {
                     let oc = (bh * blocksize + bw) * c + ic;
-                    let src_idx = ((nn * c + ic) * h + ih) * w + iw;
-                    let dst_idx = ((nn * new_c + oc) * new_h + oh) * new_w + ow;
-                    out[dst_idx] = data[src_idx];
+                    let dst_ch_base = (nn * new_c + oc) * new_h * new_w;
+                    for oh in 0..new_h {
+                        let ih = oh * blocksize + bh;
+                        let src_row_base = ((nn * c + ic) * h + ih) * w + bw;
+                        let dst_row_base = dst_ch_base + oh * new_w;
+                        for ow in 0..new_w {
+                            out[dst_row_base + ow] = data[src_row_base + ow * blocksize];
+                        }
+                    }
                 }
             }
         }

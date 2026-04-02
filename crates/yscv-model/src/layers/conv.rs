@@ -929,24 +929,35 @@ impl ConvTranspose2dLayer {
         let data = input.data();
         let wt = self.weight.data();
 
-        let mut out = vec![0.0f32; batch * out_h * out_w * self.out_channels];
+        let ic = self.in_channels;
+        let oc = self.out_channels;
+        let mut out = vec![0.0f32; batch * out_h * out_w * oc];
+
+        // Flatten the 7-deep loop: for each scatter position (b, ih, iw, kh, kw)
+        // compute out[oh,ow,o] += dot(input[ih,iw,:], weight[kh,kw,o,:]) for each o.
+        // Weight layout [KH,KW,C_out,C_in] makes the ic dimension contiguous per oc,
+        // so each output channel is a dot product of two contiguous ic-length slices.
         for b in 0..batch {
+            let in_batch = b * h * w * ic;
+            let out_batch = b * out_h * out_w * oc;
             for ih in 0..h {
-                for iw in 0..w {
-                    for ic in 0..self.in_channels {
-                        let val = data[((b * h + ih) * w + iw) * self.in_channels + ic];
-                        for kh in 0..self.kernel_h {
-                            for kw in 0..self.kernel_w {
-                                let oh = ih * self.stride_h + kh;
-                                let ow = iw * self.stride_w + kw;
-                                for oc in 0..self.out_channels {
-                                    let w_idx = ((kh * self.kernel_w + kw) * self.out_channels
-                                        + oc)
-                                        * self.in_channels
-                                        + ic;
-                                    out[((b * out_h + oh) * out_w + ow) * self.out_channels
-                                        + oc] += val * wt[w_idx];
+                for iw_idx in 0..w {
+                    let in_base = in_batch + (ih * w + iw_idx) * ic;
+                    let in_slice = &data[in_base..in_base + ic];
+                    for kh in 0..self.kernel_h {
+                        let oh = ih * self.stride_h + kh;
+                        for kw in 0..self.kernel_w {
+                            let ow = iw_idx * self.stride_w + kw;
+                            let out_base = out_batch + (oh * out_w + ow) * oc;
+                            let k_spatial = (kh * self.kernel_w + kw) * oc * ic;
+                            for o in 0..oc {
+                                let k_start = k_spatial + o * ic;
+                                let k_slice = &wt[k_start..k_start + ic];
+                                let mut acc = 0.0f32;
+                                for c in 0..ic {
+                                    acc += in_slice[c] * k_slice[c];
                                 }
+                                out[out_base + o] += acc;
                             }
                         }
                     }
