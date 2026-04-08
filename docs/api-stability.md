@@ -6,7 +6,7 @@ This document explains how yscv handles versioning, what stability guarantees ea
 
 All workspace crates follow [Semantic Versioning 2.0](https://semver.org/). During pre-1.0 development (the current stage), minor version bumps may include breaking changes. Once a crate reaches 1.0, breaking changes will require a major version bump.
 
-All crates are currently at 0.1.0. The public API is functional and tested, but not yet frozen.
+All crates currently share workspace version `0.1.7` (defined in the root `Cargo.toml`). The public API is functional and tested, but not yet frozen.
 
 ## Stability tiers
 
@@ -40,7 +40,9 @@ Before any version bump, all of these must be true:
 
 Crates must be published in dependency order because each crate depends on the ones before it. The order is automated via `scripts/publish.sh`:
 
-1. yscv-tensor → 2. yscv-kernels → 3. yscv-autograd → 4. yscv-optim → 5. yscv-imgproc → 6. yscv-video → 7. yscv-onnx → 8. yscv-detect → 9. yscv-recognize → 10. yscv-track → 11. yscv-eval → 12. yscv-model → 13. yscv-cli → 14. yscv (umbrella) → 15. camera-face-tool
+1. yscv-tensor → 2. yscv-kernels → 3. yscv-autograd → 4. yscv-optim → 5. yscv-imgproc → 6. yscv-video → 7. yscv-onnx → 8. yscv-detect → 9. yscv-recognize → 10. yscv-track → 11. yscv-eval → 12. yscv-model → 13. yscv-cli → 14. yscv (umbrella)
+
+The `apps/bench` and `apps/camera-face-tool` binaries live in the workspace but are not part of the 14-crate library set and are not published to crates.io.
 
 To bump all crate versions at once, run `scripts/bump-version.sh <version>`.
 

@@ -26,9 +26,9 @@ while let Some(frame) = reader.next_frame()? {
 
 ## Performance
 
-- H.264 decode: **4.5x faster** than ffmpeg (1080p, Apple M-series)
-- HEVC decode: **1.3x faster** than ffmpeg (P/B frames)
-- 29 NEON + 31 SSE2 SIMD functions with runtime dispatch
+- H.264 decode: **4.5x faster** than ffmpeg (1080p real camera, Apple M-series)
+- HEVC decode: **1.4x faster** than ffmpeg (P/B frames, full color)
+- 21 named SIMD functions (8 NEON + 11 SSE2 + 2 AVX2) with `#[target_feature]` runtime dispatch on x86 and compile-time gating on aarch64
 
 ## Features
 

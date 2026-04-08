@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **docs**: Synced root `README.md`, `docs/*`, per-crate READMEs, and `CONTRIBUTING.md` with workspace version `0.1.7` and the actual code state. Corrected stale numerical claims to match the current source: 14 crates (was 15 in several files), 1,693 cargo-test count (was 1,678 in one place), 128 ONNX CPU operators (was 126 in `crates/yscv-onnx/README.md`), 115 `Tensor` ops in `ops.rs` (was 80+), 159 `pub fn` items in `crates/yscv-imgproc/src/ops/` (was 100+ / 178), 17 loss functions (was 14+), 61 autograd `Op` variants (was 40+), 50 WGSL + 4 Metal compute shaders (was 20), 21 named SIMD functions in `yscv-video` (was 29 NEON + 31 SSE2), 13 model-zoo architectures, and HEVC software-decode speedup `1.4×` end-to-end (per-crate `yscv-video/README.md` previously said `1.3×`). Added missing `yscv-cli` and `yscv-autograd` rows to the root README crate table. Updated `docs/api-stability.md` to reflect that all crates share workspace version `0.1.7` and that `apps/` binaries are not part of the 14-crate publish set.
+
 ### Added
 - **yscv-video**: HEVC chroma motion compensation (4-tap filter) — full color YUV420→RGB output instead of grayscale
 - **yscv-video**: Streaming MP4 reader — O(1) memory (27MB RSS for 41MB file), lazy seek-based sample reading

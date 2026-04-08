@@ -16,22 +16,26 @@ let mut trainer = Trainer::new(model, Adam::new(1e-3), CrossEntropyLoss);
 trainer.fit(&train_loader, &val_loader, 100);
 ```
 
-## Layers (39)
+## Layers (39 `ModelLayer` variants)
 
 | Category | Layers |
 |----------|--------|
-| **Conv** | Conv1d, Conv2d, Conv3d, DepthwiseConv2d, SeparableConv2d, TransposeConv2d, DeformableConv2d |
-| **Linear** | Linear, Bilinear, Embedding |
-| **Norm** | BatchNorm1d/2d, LayerNorm, GroupNorm, RMSNorm, InstanceNorm |
-| **Activation** | ReLU, GELU, SiLU, Mish, Softmax, LogSoftmax |
-| **Pool** | MaxPool2d, AvgPool2d, GlobalAvgPool2d, AdaptiveAvgPool2d |
-| **Attention** | MultiHeadAttention, TransformerEncoder/Decoder |
-| **Recurrent** | RNN, LSTM, GRU |
-| **Regularization** | Dropout, DropPath |
+| **Conv** | Conv1d, Conv2d, Conv3d, DepthwiseConv2d, SeparableConv2d, ConvTranspose2d, DeformableConv2d |
+| **Linear / Embedding** | Linear, LoraLinear, Embedding, FeedForward |
+| **Norm** | BatchNorm2d, LayerNorm, GroupNorm, InstanceNorm |
+| **Activation** | ReLU, LeakyReLU, PReLU, Sigmoid, Tanh, GELU, SiLU, Mish, Softmax |
+| **Pool** | MaxPool2d, AvgPool2d, GlobalAvgPool2d, AdaptiveAvgPool2d, AdaptiveMaxPool2d |
+| **Attention** | MultiHeadAttention, TransformerEncoder |
+| **Recurrent** | Rnn, Lstm, Gru |
+| **Spatial / Misc** | Flatten, Dropout, PixelShuffle, Upsample, ResidualBlock |
 
-## Architectures
+## Loss Functions (17)
 
-ResNet (18/34/50/101/152), MobileNetV2/V3, EfficientNet, Vision Transformer (ViT), UNet, YOLO backbone
+mse, mae, huber, smooth_l1, hinge, bce, nll, cross_entropy, label_smoothing_cross_entropy, focal, dice, triplet, contrastive, cosine_embedding, kl_div, ctc, distillation — all live in `src/loss.rs`.
+
+## Architectures (13 in `zoo.rs`)
+
+ResNet18 / ResNet34 / ResNet50 / ResNet101, VGG16 / VGG19, MobileNetV2, EfficientNetB0, AlexNet, ViTTiny / ViTBase / ViTLarge, DeiTTiny — all loadable through `ModelHub` with remote weight download.
 
 ## Training
 

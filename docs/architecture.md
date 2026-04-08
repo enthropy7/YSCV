@@ -10,19 +10,19 @@ The crates form a layered architecture. Lower layers know nothing about higher l
 `yscv-tensor` provides the `Tensor` type with 115+ operations, f32/f16/bf16 dtype support, operator overloading (`+`, `-`, `*`, `/`), `Display` impl, and SIMD-accelerated reductions. Everything else depends on this.
 
 **Layer 1 — Compute:**
-`yscv-kernels` provides the `Backend` trait with 50+ methods (conv2d, matmul, pool, normalization, activation, backward ops). It has a `CpuBackend` (deterministic, single-threaded for training reproducibility), a `ThreadedCpuBackend` (rayon-backed), and an optional `GpuBackend` using wgpu compute shaders (20 WGSL shaders including backward kernels). The public free functions (used by the ONNX runner) use `ParallelElementwiseConfig::default()` for automatic parallelism. The SIMD code lives in `crates/yscv-kernels/src/ops/simd/` with AVX, SSE, and NEON implementations for every kernel. Depthwise conv2d has dedicated NEON (4-wide FMA), AVX (8-wide), and SSE (4-wide) kernels for `depth_multiplier == 1`.
+`yscv-kernels` provides the `Backend` trait (conv2d, matmul, pool, normalization, activation, backward ops). It has a `CpuBackend` (deterministic, single-threaded for training reproducibility), a `ThreadedCpuBackend` (rayon-backed), and an optional `GpuBackend` using wgpu compute shaders (50 WGSL + 4 Metal shaders including backward kernels). The public free functions (used by the ONNX runner) use `ParallelElementwiseConfig::default()` for automatic parallelism. The SIMD code lives in `crates/yscv-kernels/src/ops/simd/` with AVX, SSE, and NEON implementations for every kernel. Depthwise conv2d has dedicated NEON (4-wide FMA), AVX (8-wide), and SSE (4-wide) kernels for `depth_multiplier == 1`.
 
 **Layer 2 — Autograd and Optimization:**
 `yscv-autograd` builds on kernels to provide a dynamic computation graph with tape-based reverse-mode autodiff. `yscv-optim` provides optimizers and schedulers.
 
 **Layer 3 — Model and Training:**
-`yscv-model` combines autograd, kernels, and optim into a high-level training API with 39 layer types (25 trainable), the `Trainer` helper, model zoo (13 architectures), TensorBoard logging, StreamingDataLoader, LoRA, EMA, mixed precision, distributed training (AllReduce + pipeline parallel + tensor sharding), and gradient clipping.
+`yscv-model` combines autograd, kernels, and optim into a high-level training API with 39 layer types, 17 loss functions, the `Trainer` helper, model zoo (13 architectures), TensorBoard logging, StreamingDataLoader, LoRA, EMA, mixed precision, distributed training (AllReduce + pipeline parallel + tensor sharding), and gradient clipping.
 
 **Layer 4 — Domain:**
-`yscv-imgproc` (image processing), `yscv-video` (codecs and camera), `yscv-detect` (YOLOv8), `yscv-track` (DeepSORT/ByteTrack), `yscv-recognize` (VP-Tree matching), `yscv-eval` (metrics), and `yscv-onnx` (128+ op runtime) each handle a specific domain. They depend on the foundation but not on each other (except detect → video for frame types, track → detect for detection types).
+`yscv-imgproc` (159 image processing ops), `yscv-video` (H.264/HEVC codecs, hardware decode, MP4/MKV containers, camera, audio metadata), `yscv-detect` (YOLOv8/v11), `yscv-track` (DeepSORT/ByteTrack/Kalman), `yscv-recognize` (VP-Tree matching, Recognizer), `yscv-eval` (classification/detection/tracking/regression/image-quality metrics + 8 dataset adapters), and `yscv-onnx` (128 CPU op runtime + ~17-op Metal/MPSGraph plan compiler) each handle a specific domain. They depend on the foundation but not on each other (except detect → video for frame types, track → detect for detection types).
 
 **Layer 5 — Applications:**
-`yscv-cli` and `camera-face-tool` are end-to-end binaries that wire everything together.
+`yscv-cli` (in-workspace crate) plus `apps/bench` and `apps/camera-face-tool` are end-to-end binaries that wire everything together. The `apps/` programs are not part of the 14-crate workspace library set; they live alongside it as standalone applications.
 
 ## SIMD dispatch model
 

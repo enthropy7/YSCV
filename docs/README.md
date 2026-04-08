@@ -18,7 +18,7 @@ How the framework is put together. Explains the crate dependency layers, the SIM
 
 ### [performance-benchmarks.md](performance-benchmarks.md)
 
-How we measure performance and how yscv compares to OpenCV, ffmpeg, NumPy, PyTorch, onnxruntime, and CoreML. Covers the full benchmark methodology (hardware, measurement protocol, warm-up, statistical aggregation). Overall scorecard: **85 wins, ~4 parity, 1 close, 0 losses** across all categories. H.264 decode **4.5× faster than ffmpeg**, HEVC decode **1.4× faster** (full color). 1693 tests across 15 crates. Includes exact commands to reproduce every number.
+How we measure performance and how yscv compares to OpenCV, ffmpeg, NumPy, PyTorch, onnxruntime, and CoreML. Covers the full benchmark methodology (hardware, measurement protocol, warm-up, statistical aggregation). Overall scorecard: **85 wins, ~4 parity, 1 close, 0 losses** across all categories. H.264 decode **4.5× faster than ffmpeg**, HEVC decode **1.4× faster** (full color). 1,693 tests across 14 crates. Includes exact commands to reproduce every number.
 
 ### [ecosystem-capability-matrix.md](ecosystem-capability-matrix.md)
 
@@ -26,11 +26,11 @@ The canonical map of what yscv can do today and what gaps remain relative to a f
 
 ### [api-stability.md](api-stability.md)
 
-Versioning policy, stability tiers for each crate, the release checklist, and the publish order for the 15 crates in the workspace. Currently pre-1.0 (semver 0.x.y), so breaking changes are expected but tracked in the changelog.
+Versioning policy, stability tiers for each crate, the release checklist, and the publish order for the 14 crates in the workspace. Currently pre-1.0 (workspace version `0.1.7`), so breaking changes are still possible but tracked in the changelog.
 
 ### [training-optimizers.md](training-optimizers.md)
 
-Reference for the training subsystem: 8 optimizers (SGD through LARS), the Lookahead meta-optimizer, 11 learning-rate schedulers, 14+ loss functions, gradient clipping utilities, and the high-level Trainer API that ties them together.
+Reference for the training subsystem: 8 optimizers (SGD through LARS), the Lookahead meta-optimizer, 11 learning-rate schedulers, 17 loss functions, gradient clipping utilities, and the high-level Trainer API that ties them together.
 
 ### [training-augmentation.md](training-augmentation.md)
 
@@ -50,4 +50,4 @@ Step-by-step checklist for validating native camera capture on macOS, Linux, and
 
 ### [video-pipeline.md](video-pipeline.md)
 
-Video decode pipeline: H.264/HEVC software decode (faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), MP4/MKV container parsing, streaming reader, audio metadata extraction, SIMD coverage (29 NEON + 31 SSE2), fuzz testing.
+Video decode pipeline: H.264/HEVC software decode (faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), MP4/MKV container parsing, streaming reader, audio metadata extraction, SIMD coverage (21 named functions: 8 NEON + 11 SSE2 + 2 AVX2), fuzz testing.

@@ -15,13 +15,13 @@ for epoch in 0..100 {
 }
 ```
 
-## Optimizers
+## Optimizers (8 + Lookahead meta-optimizer)
 
-SGD, Adam, AdamW, RMSprop, RAdam, LARS, LAMB, AdaGrad, Lookahead (wrapper)
+`Sgd`, `Adam`, `AdamW`, `RmsProp`, `RAdam`, `Lars`, `Lamb`, `Adagrad`, plus `Lookahead<O>` which wraps any of them.
 
-## LR Schedulers
+## LR Schedulers (11)
 
-Step, MultiStep, Exponential, Cosine, CosineWarmRestart, Linear, Polynomial, OneCycle, ReduceOnPlateau, Warmup
+`StepLr`, `MultiStepLr`, `ExponentialLr`, `CosineAnnealingLr`, `CosineAnnealingWarmRestarts`, `LinearWarmupLr`, `PolynomialDecayLr`, `OneCycleLr`, `ReduceLrOnPlateau`, `CyclicLr`, `LambdaLr`.
 
 ## Gradient Clipping
 

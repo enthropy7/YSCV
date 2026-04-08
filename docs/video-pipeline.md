@@ -71,15 +71,20 @@ All numbers: Apple M-series, `--release`, LTO=thin, single-threaded, best of 5. 
 
 ### SIMD Coverage
 
-29 NEON (aarch64) + 31 SSE2 (x86_64) blocks across:
-- MC 8-tap horizontal/vertical filter
-- Bipred average / Unipred clip
-- DC intra prediction (broadcast fill)
-- Dequantization
-- DCT 16x16/32x32 (NEON native, SSE2 via auto-vectorized scalar)
-- i16-to-u8 saturation clamp
-- Y-to-grayscale RGB interleave (NEON vst3q_u8)
-- BGRA-to-RGB (NEON vld4q/vst3q)
+`yscv-video` ships **21 named SIMD functions** (8 NEON + 11 SSE2 + 2 AVX2) plus their scalar fallbacks. Each is suffixed with `_neon` / `_sse2` / `_avx2` for grep visibility:
+
+| Domain | NEON | SSE2 | AVX2 |
+|---|---|---|---|
+| HEVC inverse DCT 4×4 / 16×16 / 32×32 | ✓ ✓ ✓ | ✓ ✓ | — |
+| HEVC inverse-DCT 16×16 (separable) | — | ✓ | — |
+| HEVC dequant | ✓ | ✓ | — |
+| HEVC inter 8-tap horizontal/vertical filters | ✓ | ✓ ✓ | — |
+| HEVC inter helpers (`abs_epi32`, `mullo_epi32`, `filter_4rows_v`) | — | ✓ ✓ ✓ | — |
+| YUV420 → RGB8 row converter | ✓ | ✓ | ✓ |
+| NV12 BT.601 → RGB | ✓ | ✓ | — |
+| u8 → f32 normalize for ML preprocessing | ✓ | ✓ | ✓ |
+
+In addition to these named functions, the H.264 path uses scalar code that the Rust compiler auto-vectorises with `-C target-cpu=native`. The pure-Rust SIMD implementations are gated by `#[cfg(target_arch)]` (NEON is compile-time, SSE2/AVX2 use `is_x86_feature_detected!` runtime dispatch).
 
 ### Memory
 

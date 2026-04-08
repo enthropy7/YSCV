@@ -1,6 +1,6 @@
 # yscv-onnx
 
-Pure Rust ONNX runtime. 126 operators, graph optimization, CPU and GPU inference.
+Pure Rust ONNX runtime. 128 CPU operators, graph optimization, CPU and Metal GPU inference.
 
 ```rust
 use yscv_onnx::*;
@@ -14,10 +14,10 @@ let outputs = runner.run(&[("images", &input)])?;
 
 ## Capabilities
 
-- **126 ONNX operators**: Conv, MatMul, Relu, Sigmoid, Softmax, Resize, Concat, Split, Gather, Scatter, LSTM, GRU, Attention, ...
+- **128 ONNX CPU operators**: Conv, MatMul, Gemm, Relu/LeakyRelu/Sigmoid/Tanh/Gelu/Erf/Mish/HardSwish/Softmax/LogSoftmax, BatchNormalization/LayerNormalization/InstanceNormalization, MaxPool/AveragePool/GlobalAveragePool, Resize/Upsample, Concat/Split/Reshape/Flatten/Transpose/Gather/GatherElements/GatherND/ScatterElements/ScatterND/Slice/Tile/Expand, Cast/Pad/Clip/Where/Identity/CumSum/ArgMax/ArgMin/TopK, DepthToSpace/SpaceToDepth, GridSample/RoiAlign/NonMaxSuppression, full quantized stack (QuantizeLinear/DequantizeLinear/QLinearConv/QLinearMatMul/MatMulInteger/ConvInteger/DynamicQuantizeLinear), trig + hyperbolic, logical, fused `Conv_Relu` / `BatchNormalization_Relu`, … (verified against the dispatch in `src/runner/mod.rs`)
 - **Graph optimizations**: constant folding, Conv+BN fusion, Conv+Relu fusion, dead node elimination
-- **Quantization**: INT8 inference support
-- **GPU inference**: wgpu (Vulkan/Metal/DX12) and native Metal (MPSGraph)
+- **Quantization**: INT8 symmetric/asymmetric/per-channel inference support
+- **GPU inference**: wgpu (Vulkan/Metal/DX12) and native Metal/MPSGraph plan compiler (~17 op kinds, with automatic CPU fallback for unsupported subgraphs)
 - **Model export**: save optimized graphs back to ONNX format
 
 ## Features

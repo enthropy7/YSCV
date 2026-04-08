@@ -1,6 +1,6 @@
 # yscv-imgproc
 
-100+ SIMD-accelerated image processing operations for f32 and u8 images. Covers everything from basic filters to feature detection.
+159 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images. Covers everything from basic filters to feature detection.
 
 ```rust
 use yscv_imgproc::*;

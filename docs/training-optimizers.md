@@ -130,24 +130,29 @@ println!("Final loss: {:.6}", result.final_loss);
 - `train_epoch_{...}(...)` and `train_epoch_{...}_with_loss(...)`,
 - `train_epochs_{...}_with_scheduler(...)` and `train_epochs_{...}_with_scheduler_and_loss(...)`.
 
-## Loss Functions (14+)
+## Loss Functions (17)
+
+All 17 loss functions live in `crates/yscv-model/src/loss.rs` as `pub fn` items:
 
 | Loss | Function | Notes |
 |------|----------|-------|
 | MSE | `mse_loss(...)` | Mean squared error |
 | MAE | `mae_loss(...)` | Mean absolute error |
 | Huber | `huber_loss(...)` | Smooth L1 (`delta > 0`) |
+| Smooth L1 | `smooth_l1_loss(...)` | Smooth L1 (β-parameterised) |
 | Hinge | `hinge_loss(...)` | SVM margin loss |
 | BCE | `bce_loss(...)` | Binary cross-entropy |
 | NLL | `nll_loss(...)` | Negative log-likelihood |
 | CrossEntropy | `cross_entropy_loss(...)` | Softmax + NLL |
+| Label Smoothing CE | `label_smoothing_cross_entropy(...)` | Regularised cross-entropy |
 | Focal | `focal_loss(...)` | Class-imbalance focal loss |
 | Dice | `dice_loss(...)` | Segmentation overlap loss |
 | Triplet | `triplet_loss(...)` | Metric learning (anchor/pos/neg) |
 | Contrastive | `contrastive_loss(...)` | Pair-based metric learning |
+| Cosine Embedding | `cosine_embedding_loss(...)` | Cosine similarity margin |
 | KL Divergence | `kl_div_loss(...)` | Distribution matching |
 | CTC | `ctc_loss(...)` | Sequence-to-sequence alignment |
-| Label Smoothing | `label_smoothing_loss(...)` | Regularized cross-entropy |
+| Distillation | `distillation_loss(...)` | Knowledge distillation (soft + hard targets) |
 
 ## Example (Low-Level API)
 

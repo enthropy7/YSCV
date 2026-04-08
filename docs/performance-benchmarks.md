@@ -2,12 +2,12 @@
 
 Comprehensive benchmark results comparing yscv against NumPy, PyTorch, OpenCV, ffmpeg, onnxruntime, and CoreML.
 
-**Last updated**: April 2026 | **Tests**: 1693 across 15 crates | **CI**: macOS + Linux + Windows + ARM64
+**Last updated**: April 2026 | **Tests**: 1,693 across 14 crates | **CI**: macOS + Linux + Windows + ARM64
 
 ## Hardware & Methodology
 
 - **CPU**: Apple M-series (unified memory architecture)
-- **SIMD**: NEON (aarch64, 29 blocks), SSE2 (x86_64, 31 blocks), all compile-time dispatched
+- **SIMD**: 315 `#[target_feature]`-gated SIMD functions across the workspace (NEON / AVX / AVX2 / SSE / SSE2 / SSSE3), runtime-dispatched on x86 and compile-time-gated on aarch64
 - **Threading**: GCD dispatch_apply (macOS), std::thread::scope (Linux/Windows), rayon work-stealing
 - **Allocator**: mimalloc (global)
 - **Rust**: stable 1.92+, `--release` with `lto = "thin"`, `codegen-units = 1`
@@ -346,7 +346,7 @@ yscv CPU (124.1ms) is **1.6× faster than onnxruntime CPU** (196.7ms) on depthwi
 
 ## Optimization Techniques
 
-- **295 SIMD functions** with runtime CPU detection
+- **315 `#[target_feature]`-gated SIMD functions** with runtime CPU detection
 - **All dispatch functions `#[inline]`** for cross-crate inlining
 - **AlignedVec::uninitialized** — skip output zeroing in hot paths
 - **ImageU8/ImageF32** — zero-overhead wrappers bypass Tensor allocation
