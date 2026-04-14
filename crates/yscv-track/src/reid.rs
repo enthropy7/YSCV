@@ -148,8 +148,8 @@ mod tests {
             0.7, 0.8, 0.9, // pixel (1,0)
             0.0, 0.1, 0.2, // pixel (1,1)
         ];
-        let crop = Tensor::from_vec(vec![2, 2, 3], data).unwrap();
-        let embedding = extractor.extract(&crop).unwrap();
+        let crop = Tensor::from_vec(vec![2, 2, 3], data).expect("valid tensor shape");
+        let embedding = extractor.extract(&crop).expect("extraction should succeed");
 
         // Verify dimension matches
         assert_eq!(embedding.len(), extractor.dim());

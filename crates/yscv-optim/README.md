@@ -2,7 +2,7 @@
 
 Optimizers, learning rate schedulers, and gradient clipping for neural network training.
 
-```rust
+```rust,ignore
 use yscv_optim::*;
 
 let mut optimizer = Adam::new(parameters, 1e-3);

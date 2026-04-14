@@ -1,3 +1,11 @@
+//! # Safety contract
+//!
+//! Unsafe code categories:
+//! 1. **SIMD intrinsics (NEON / SSE)** — ISA guard via runtime detection or `#[target_feature]`.
+//! 2. **`SendConstPtr` / `SendPtr` for rayon** — each chunk writes non-overlapping rows.
+//! 3. **`get_unchecked` in FAST detection** — 3-pixel border margin ensures valid access.
+//! 4. **Pointer arithmetic in distance transform** — offsets bounded by `h * w` allocation.
+
 use rayon::prelude::*;
 use yscv_tensor::Tensor;
 
@@ -38,6 +46,7 @@ pub fn harris_corners(
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             sobel_products_interleaved_neon(data, &mut prods, h, w);
         }
@@ -48,6 +57,7 @@ pub fn harris_corners(
     {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+            // SAFETY: ISA guard (feature detection) above.
             unsafe {
                 sobel_products_interleaved_sse(data, &mut prods, h, w);
             }
@@ -179,6 +189,7 @@ fn vec_add_row(acc: &mut [f32], src: &[f32]) {
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) {
+        // SAFETY: ISA guard (cfg aarch64 guarantees NEON); i+4 <= n bounds checked.
         unsafe {
             use std::arch::aarch64::*;
             let ap = acc.as_mut_ptr();
@@ -194,6 +205,7 @@ fn vec_add_row(acc: &mut [f32], src: &[f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if !cfg!(miri) {
+        // SAFETY: ISA guard (feature detection) inside; i+4 <= n bounds checked.
         unsafe {
             #[cfg(target_arch = "x86")]
             use std::arch::x86::*;
@@ -227,6 +239,7 @@ fn vec_sub_row(acc: &mut [f32], src: &[f32]) {
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) {
+        // SAFETY: ISA guard (cfg aarch64 guarantees NEON); i+4 <= n bounds checked.
         unsafe {
             use std::arch::aarch64::*;
             let ap = acc.as_mut_ptr();
@@ -242,6 +255,7 @@ fn vec_sub_row(acc: &mut [f32], src: &[f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if !cfg!(miri) {
+        // SAFETY: ISA guard (feature detection) inside; i+4 <= n bounds checked.
         unsafe {
             #[cfg(target_arch = "x86")]
             use std::arch::x86::*;
@@ -491,6 +505,7 @@ pub fn fast_corners(
         let row_base = y * w;
         for x in 3..w.saturating_sub(3) {
             let idx = row_base + x;
+            // SAFETY: bounds checked by loop range [3, w-3) and [3, h-3).
             let center = unsafe { *data.get_unchecked(idx) };
             let bright_thresh = center + threshold;
             let dark_thresh = center - threshold;
@@ -499,6 +514,7 @@ pub fn fast_corners(
             let mut bc = 0u32;
             let mut dc = 0u32;
             for &co in &card {
+                // SAFETY: bounds checked by 3-pixel border; cardinal offsets within radius 3.
                 let v = unsafe { *data.get_unchecked((idx as isize + co) as usize) };
                 bc += (v > bright_thresh) as u32;
                 dc += (v < dark_thresh) as u32;
@@ -513,6 +529,7 @@ pub fn fast_corners(
             let mut bright_mask = 0u32;
             let mut dark_mask = 0u32;
             for i in 0..16 {
+                // SAFETY: bounds checked by 3-pixel border; circle offsets within radius 3.
                 let v = unsafe { *data.get_unchecked((idx as isize + offsets[i]) as usize) };
                 if v > bright_thresh {
                     bright_mask |= 1 << i;
@@ -528,6 +545,7 @@ pub fn fast_corners(
                 // Compute score: sum of absolute differences
                 let mut score = 0.0f32;
                 for i in 0..16 {
+                    // SAFETY: bounds checked by 3-pixel border; circle offsets within radius 3.
                     let v = unsafe { *data.get_unchecked((idx as isize + offsets[i]) as usize) };
                     score += (v - center).abs();
                 }
@@ -733,6 +751,7 @@ pub fn distance_transform(input: &Tensor) -> Result<Tensor, ImgProcError> {
     let mut dist = vec![0.0f32; h * w];
     for i in 0..h * w {
         if data[i] > 0.5 {
+            // SAFETY: i < h*w = dist.len().
             unsafe {
                 *dist.as_mut_ptr().add(i) = inf;
             }
@@ -744,6 +763,7 @@ pub fn distance_transform(input: &Tensor) -> Result<Tensor, ImgProcError> {
     // Eliminates store→load forwarding latency (4→1 cycle per element).
     {
         let p = dist.as_mut_ptr();
+        // SAFETY: pointer offsets 0..w within dist allocation.
         unsafe {
             let mut run = *p; // register
             for x in 1..w {
@@ -759,7 +779,9 @@ pub fn distance_transform(input: &Tensor) -> Result<Tensor, ImgProcError> {
     }
     for y in 1..h {
         dt_vertical_min_forward(&mut dist, (y - 1) * w, y * w, w);
+        // SAFETY: pointer offset y*w within dist allocation (y < h).
         let p = unsafe { dist.as_mut_ptr().add(y * w) };
+        // SAFETY: pointer offsets 0..w within row starting at p.
         unsafe {
             let mut run = *p;
             for x in 1..w {
@@ -776,7 +798,9 @@ pub fn distance_transform(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
     // === Backward pass: bottom→top, register-scan R→L ===
     {
+        // SAFETY: pointer offset (h-1)*w within dist allocation.
         let p = unsafe { dist.as_mut_ptr().add((h - 1) * w) };
+        // SAFETY: pointer offsets 0..w within row starting at p.
         unsafe {
             let mut run = *p.add(w - 1);
             for x in (0..w.saturating_sub(1)).rev() {
@@ -792,7 +816,9 @@ pub fn distance_transform(input: &Tensor) -> Result<Tensor, ImgProcError> {
     }
     for y in (0..h.saturating_sub(1)).rev() {
         dt_vertical_min_forward(&mut dist, (y + 1) * w, y * w, w);
+        // SAFETY: pointer offset y*w within dist allocation (y < h).
         let p = unsafe { dist.as_mut_ptr().add(y * w) };
+        // SAFETY: pointer offsets 0..w within row starting at p.
         unsafe {
             let mut run = *p.add(w - 1);
             for x in (0..w.saturating_sub(1)).rev() {
@@ -818,6 +844,7 @@ fn dt_vertical_min_forward(dist: &mut [f32], src_start: usize, cur_start: usize,
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vertical_neon(dist, src_start, cur_start, w) };
         }
     }
@@ -825,6 +852,7 @@ fn dt_vertical_min_forward(dist: &mut [f32], src_start: usize, cur_start: usize,
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if std::is_x86_feature_detected!("sse") {
+            // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vertical_sse(dist, src_start, cur_start, w) };
         }
     }

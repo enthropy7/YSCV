@@ -33,6 +33,10 @@ pub enum ModelArchitecture {
     ViTBase,
     ViTLarge,
     DeiTTiny,
+    ClipViTB32,
+    DINOv2ViTS14,
+    WhisperTiny,
+    SAMViTB,
 }
 
 impl ModelArchitecture {
@@ -117,6 +121,30 @@ impl ModelArchitecture {
                 stage_channels: vec![192],
                 blocks_per_stage: vec![12],
             },
+            Self::ClipViTB32 => ArchitectureConfig {
+                input_channels: 3,
+                num_classes: 512,
+                stage_channels: vec![768],
+                blocks_per_stage: vec![12],
+            },
+            Self::DINOv2ViTS14 => ArchitectureConfig {
+                input_channels: 3,
+                num_classes: 384,
+                stage_channels: vec![384],
+                blocks_per_stage: vec![12],
+            },
+            Self::WhisperTiny => ArchitectureConfig {
+                input_channels: 1,
+                num_classes: 51865,
+                stage_channels: vec![384],
+                blocks_per_stage: vec![4],
+            },
+            Self::SAMViTB => ArchitectureConfig {
+                input_channels: 3,
+                num_classes: 256,
+                stage_channels: vec![768],
+                blocks_per_stage: vec![12],
+            },
         }
     }
 
@@ -136,6 +164,10 @@ impl ModelArchitecture {
             Self::ViTBase => "vit_base",
             Self::ViTLarge => "vit_large",
             Self::DeiTTiny => "deit_tiny",
+            Self::ClipViTB32 => "clip_vit_b32",
+            Self::DINOv2ViTS14 => "dinov2_vit_s14",
+            Self::WhisperTiny => "whisper_tiny",
+            Self::SAMViTB => "sam_vit_b",
         }
     }
 
@@ -155,6 +187,10 @@ impl ModelArchitecture {
             Self::ViTBase,
             Self::ViTLarge,
             Self::DeiTTiny,
+            Self::ClipViTB32,
+            Self::DINOv2ViTS14,
+            Self::WhisperTiny,
+            Self::SAMViTB,
         ]
     }
 }
@@ -609,7 +645,11 @@ pub fn build_feature_extractor(
         ModelArchitecture::ViTTiny
         | ModelArchitecture::ViTBase
         | ModelArchitecture::ViTLarge
-        | ModelArchitecture::DeiTTiny => {
+        | ModelArchitecture::DeiTTiny
+        | ModelArchitecture::ClipViTB32
+        | ModelArchitecture::DINOv2ViTS14
+        | ModelArchitecture::WhisperTiny
+        | ModelArchitecture::SAMViTB => {
             let embed_dim = config.stage_channels.first().copied().unwrap_or(192);
             let mut model = SequentialModel::new(graph);
             model.add_conv2d_zero(config.input_channels, embed_dim, 16, 16, 16, 16, false)?;
@@ -648,7 +688,11 @@ fn build_architecture(
         ModelArchitecture::ViTTiny
         | ModelArchitecture::ViTBase
         | ModelArchitecture::ViTLarge
-        | ModelArchitecture::DeiTTiny => {
+        | ModelArchitecture::DeiTTiny
+        | ModelArchitecture::ClipViTB32
+        | ModelArchitecture::DINOv2ViTS14
+        | ModelArchitecture::WhisperTiny
+        | ModelArchitecture::SAMViTB => {
             let embed_dim = config.stage_channels.first().copied().unwrap_or(192);
             let mut model = SequentialModel::new(graph);
             model.add_conv2d_zero(config.input_channels, embed_dim, 16, 16, 16, 16, false)?;

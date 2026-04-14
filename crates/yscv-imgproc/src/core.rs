@@ -12,6 +12,10 @@ mod shape;
 
 pub use error::ImgProcError;
 
+#[cfg(test)]
+#[path = "proptest_tests.rs"]
+mod proptest_tests;
+
 // ── F32 tensor image operations ─────────────────────────────────────────
 //
 // Functions in this block operate on `Tensor` (f32) images, typically shaped
@@ -332,6 +336,8 @@ pub use ops::fast9_detect_u8;
 pub use ops::fill_poly;
 /// 3x3 Gaussian blur on u8 image.
 pub use ops::gaussian_blur_3x3_u8;
+/// Add Gaussian noise to an image.
+pub use ops::gaussian_noise;
 /// Convert u8 RGB image to grayscale.
 pub use ops::grayscale_u8;
 /// Harris corner detection on u8 image.

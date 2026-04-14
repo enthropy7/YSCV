@@ -22,6 +22,10 @@ pub use aligned::AlignedVec;
 pub use error::{DType, TensorError};
 pub use tensor::{Device, Tensor};
 
+#[cfg(test)]
+#[path = "proptest_tests.rs"]
+mod proptest_tests;
+
 #[path = "tests/mod.rs"]
 #[cfg(test)]
 mod tests;

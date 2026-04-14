@@ -17,6 +17,7 @@ mkl = []
 armpl = []
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 metal-backend = ["dep:metal", "dep:objc", "dep:block", "dep:foreign-types"]
+rknn = ["dep:libc", "dep:tempfile"]
 
 [dependencies]
 bytemuck = { version = "1", optional = true, features = ["derive"] }
@@ -29,13 +30,19 @@ metal = { version = "0.18", optional = true }
 objc = { version = "0.2", optional = true }
 block = { version = "0.1", optional = true }
 foreign-types = { version = "0.3", optional = true }
+libc = { version = "0.2", optional = true }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1"
 
 [[bench]]
 name = "kernels_cpu_ops"
 harness = false
+
+[package.metadata.docs.rs]
+features = ["gpu", "metal-backend", "rknn"]
 
 [lints]
 workspace = true

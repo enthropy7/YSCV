@@ -20,7 +20,7 @@ fn zoo_architecture_names() {
 #[test]
 fn zoo_all_architectures_listed() {
     let all = crate::ModelArchitecture::all();
-    assert_eq!(all.len(), 13);
+    assert_eq!(all.len(), 17);
 }
 
 #[test]

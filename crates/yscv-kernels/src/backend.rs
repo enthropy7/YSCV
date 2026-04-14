@@ -291,6 +291,761 @@ pub trait BackwardOps: Backend {
         Ok((grad_lhs, grad_rhs))
     }
 
+    /// Conv2d weight backward: compute dL/dWeights from upstream gradient and forward input.
+    fn conv2d_weight_backward(
+        &self,
+        upstream: &Tensor,
+        forward_input: &Tensor,
+        kernel_shape: &[usize],
+        stride_h: usize,
+        stride_w: usize,
+    ) -> Result<Tensor, KernelError> {
+        // upstream: [N, OH, OW, OC], forward_input: [N, IH, IW, IC]
+        // kernel_shape: [KH, KW, IC, OC]
+        let us = upstream.shape();
+        let fs = forward_input.shape();
+        if us.len() != 4 || fs.len() != 4 || kernel_shape.len() != 4 {
+            return Err(KernelError::InvalidConvRank {
+                input_rank: fs.len(),
+                kernel_rank: kernel_shape.len(),
+            });
+        }
+        let (n, oh, ow, oc) = (us[0], us[1], us[2], us[3]);
+        let (kh, kw, ic, _) = (
+            kernel_shape[0],
+            kernel_shape[1],
+            kernel_shape[2],
+            kernel_shape[3],
+        );
+
+        let u_data = upstream.data();
+        let f_data = forward_input.data();
+        let ih = fs[1];
+        let iw = fs[2];
+        let mut grad_kernel = vec![0.0f32; kh * kw * ic * oc];
+
+        for b in 0..n {
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    for co in 0..oc {
+                        let g = u_data[((b * oh + oy) * ow + ox) * oc + co];
+                        if g == 0.0 {
+                            continue;
+                        }
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                let iy = oy * stride_h + ky;
+                                let ix = ox * stride_w + kx;
+                                if iy < ih && ix < iw {
+                                    for ci in 0..ic {
+                                        let input_val = f_data[((b * ih + iy) * iw + ix) * ic + ci];
+                                        grad_kernel[((ky * kw + kx) * ic + ci) * oc + co] +=
+                                            g * input_val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Tensor::from_vec(kernel_shape.to_vec(), grad_kernel).map_err(Into::into)
+    }
+
+    /// Conv2d bias backward: sum upstream gradient over all spatial/batch dims.
+    fn conv2d_bias_backward(&self, upstream: &Tensor, c_out: usize) -> Result<Tensor, KernelError> {
+        // upstream: [N, OH, OW, OC] — sum over N, OH, OW
+        let us = upstream.shape();
+        if us.len() != 4 || us[3] != c_out {
+            return Err(KernelError::ConvBiasShapeMismatch {
+                bias_shape: vec![us.get(3).copied().unwrap_or(0)],
+                out_channels: c_out,
+            });
+        }
+        let u_data = upstream.data();
+        let spatial = us[0] * us[1] * us[2];
+        let mut grad_bias = vec![0.0f32; c_out];
+        for i in 0..spatial {
+            let base = i * c_out;
+            for c in 0..c_out {
+                grad_bias[c] += u_data[base + c];
+            }
+        }
+        Tensor::from_vec(vec![c_out], grad_bias).map_err(Into::into)
+    }
+
+    /// BatchNorm2d input backward: scale upstream by gamma / sqrt(var + eps).
+    fn batch_norm2d_input_backward(
+        &self,
+        upstream: &Tensor,
+        gamma: &Tensor,
+        running_var: &Tensor,
+        epsilon: f32,
+    ) -> Result<Tensor, KernelError> {
+        let us = upstream.shape();
+        if us.len() != 4 {
+            return Err(KernelError::InvalidBatchNormRank { got_rank: us.len() });
+        }
+        let c = us[3];
+        let g_data = gamma.data();
+        let v_data = running_var.data();
+        let u_data = upstream.data();
+        let total = us.iter().product::<usize>();
+        let mut out = vec![0.0f32; total];
+
+        for i in 0..total {
+            let ci = i % c;
+            let scale = g_data[ci] / (v_data[ci] + epsilon).sqrt();
+            out[i] = u_data[i] * scale;
+        }
+        Tensor::from_vec(us.to_vec(), out).map_err(Into::into)
+    }
+
+    /// LayerNorm input backward (simplified inference-mode approximation).
+    fn layer_norm_input_backward(
+        &self,
+        upstream: &Tensor,
+        forward_input: &Tensor,
+        gamma: &Tensor,
+        epsilon: f32,
+    ) -> Result<Tensor, KernelError> {
+        let shape = upstream.shape();
+        if shape.is_empty() {
+            return Err(KernelError::InvalidLayerNormRank { got_rank: 0 });
+        }
+        let d = *shape.last().expect("checked non-empty");
+        let n = d as f32;
+        let u_data = upstream.data();
+        let f_data = forward_input.data();
+        let g_data = gamma.data();
+        let total = shape.iter().product::<usize>();
+        let num_vecs = total / d;
+        let mut out = vec![0.0f32; total];
+
+        for v in 0..num_vecs {
+            let base = v * d;
+            let mean: f32 = f_data[base..base + d].iter().sum::<f32>() / n;
+            let var: f32 = f_data[base..base + d]
+                .iter()
+                .map(|&x| (x - mean) * (x - mean))
+                .sum::<f32>()
+                / n;
+            let inv_std = 1.0 / (var + epsilon).sqrt();
+
+            // Compute dy * gamma
+            let mut dy_gamma = vec![0.0f32; d];
+            let mut x_hat = vec![0.0f32; d];
+            for i in 0..d {
+                x_hat[i] = (f_data[base + i] - mean) * inv_std;
+                dy_gamma[i] = u_data[base + i] * g_data[i];
+            }
+            let mean_dy_gamma = dy_gamma.iter().sum::<f32>() / n;
+            let mean_xhat_dy_gamma: f32 = x_hat
+                .iter()
+                .zip(dy_gamma.iter())
+                .map(|(x, d)| x * d)
+                .sum::<f32>()
+                / n;
+
+            // Full layer norm backward: inv_std * (dy*gamma - mean(dy*gamma) - x_hat * mean(x_hat * dy*gamma))
+            for i in 0..d {
+                out[base + i] =
+                    inv_std * (dy_gamma[i] - mean_dy_gamma - x_hat[i] * mean_xhat_dy_gamma);
+            }
+        }
+        Tensor::from_vec(shape.to_vec(), out).map_err(Into::into)
+    }
+
+    /// MaxPool2d backward: route gradient to argmax positions.
+    fn max_pool2d_backward(
+        &self,
+        upstream: &Tensor,
+        forward_input: &Tensor,
+        input_shape: &[usize],
+        kernel_h: usize,
+        kernel_w: usize,
+        stride_h: usize,
+        stride_w: usize,
+    ) -> Result<Tensor, KernelError> {
+        let us = upstream.shape();
+        if us.len() != 4 || input_shape.len() != 4 {
+            return Err(KernelError::InvalidPoolRank {
+                got_rank: input_shape.len(),
+            });
+        }
+        let (n, ih, iw, c) = (
+            input_shape[0],
+            input_shape[1],
+            input_shape[2],
+            input_shape[3],
+        );
+        let (_n, oh, ow, _c) = (us[0], us[1], us[2], us[3]);
+        let u_data = upstream.data();
+        let f_data = forward_input.data();
+        let mut grad_input = vec![0.0f32; n * ih * iw * c];
+
+        for b in 0..n {
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    for ch in 0..c {
+                        let g = u_data[((b * oh + oy) * ow + ox) * c + ch];
+                        // Find argmax in the window
+                        let mut max_val = f32::NEG_INFINITY;
+                        let mut max_iy = 0usize;
+                        let mut max_ix = 0usize;
+                        for ky in 0..kernel_h {
+                            for kx in 0..kernel_w {
+                                let iy = oy * stride_h + ky;
+                                let ix = ox * stride_w + kx;
+                                if iy < ih && ix < iw {
+                                    let val = f_data[((b * ih + iy) * iw + ix) * c + ch];
+                                    if val > max_val {
+                                        max_val = val;
+                                        max_iy = iy;
+                                        max_ix = ix;
+                                    }
+                                }
+                            }
+                        }
+                        grad_input[((b * ih + max_iy) * iw + max_ix) * c + ch] += g;
+                    }
+                }
+            }
+        }
+        Tensor::from_vec(input_shape.to_vec(), grad_input).map_err(Into::into)
+    }
+
+    /// AvgPool2d backward: distribute gradient equally across the pooling window.
+    fn avg_pool2d_backward(
+        &self,
+        upstream: &Tensor,
+        input_shape: &[usize],
+        kernel_h: usize,
+        kernel_w: usize,
+        stride_h: usize,
+        stride_w: usize,
+    ) -> Result<Tensor, KernelError> {
+        let us = upstream.shape();
+        if us.len() != 4 || input_shape.len() != 4 {
+            return Err(KernelError::InvalidPoolRank {
+                got_rank: input_shape.len(),
+            });
+        }
+        let (n, ih, iw, c) = (
+            input_shape[0],
+            input_shape[1],
+            input_shape[2],
+            input_shape[3],
+        );
+        let (_n, oh, ow, _c) = (us[0], us[1], us[2], us[3]);
+        let u_data = upstream.data();
+        let inv_area = 1.0 / (kernel_h * kernel_w) as f32;
+        let mut grad_input = vec![0.0f32; n * ih * iw * c];
+
+        for b in 0..n {
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    for ch in 0..c {
+                        let g = u_data[((b * oh + oy) * ow + ox) * c + ch] * inv_area;
+                        for ky in 0..kernel_h {
+                            for kx in 0..kernel_w {
+                                let iy = oy * stride_h + ky;
+                                let ix = ox * stride_w + kx;
+                                if iy < ih && ix < iw {
+                                    grad_input[((b * ih + iy) * iw + ix) * c + ch] += g;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Tensor::from_vec(input_shape.to_vec(), grad_input).map_err(Into::into)
+    }
+
+    /// Softmax backward: `grad_input = softmax_output * (upstream - sum(upstream * softmax_output))`.
+    fn softmax_backward(
+        &self,
+        upstream: &Tensor,
+        forward_output: &Tensor,
+    ) -> Result<Tensor, KernelError> {
+        let shape = forward_output.shape();
+        if shape.is_empty() {
+            return Err(KernelError::InvalidSoftmaxRank { got_rank: 0 });
+        }
+        let d = *shape.last().expect("checked non-empty");
+        let u_data = upstream.data();
+        let s_data = forward_output.data();
+        let total = shape.iter().product::<usize>();
+        let num_vecs = total / d;
+        let mut out = vec![0.0f32; total];
+
+        for v in 0..num_vecs {
+            let base = v * d;
+            let dot: f32 = (0..d).map(|i| u_data[base + i] * s_data[base + i]).sum();
+            for i in 0..d {
+                out[base + i] = s_data[base + i] * (u_data[base + i] - dot);
+            }
+        }
+        Tensor::from_vec(shape.to_vec(), out).map_err(Into::into)
+    }
+
+    /// Embedding backward: scatter upstream gradients back to the embedding table.
+    fn embedding_backward(
+        &self,
+        upstream: &Tensor,
+        indices: &[usize],
+        num_embeddings: usize,
+        embed_dim: usize,
+    ) -> Result<Tensor, KernelError> {
+        let u_data = upstream.data();
+        let mut grad_table = vec![0.0f32; num_embeddings * embed_dim];
+        for (i, &idx) in indices.iter().enumerate() {
+            if idx >= num_embeddings {
+                return Err(KernelError::EmbeddingIndexOutOfBounds {
+                    index: idx,
+                    vocab_size: num_embeddings,
+                });
+            }
+            let src_base = i * embed_dim;
+            let dst_base = idx * embed_dim;
+            for d in 0..embed_dim {
+                grad_table[dst_base + d] += u_data[src_base + d];
+            }
+        }
+        Tensor::from_vec(vec![num_embeddings, embed_dim], grad_table).map_err(Into::into)
+    }
+
+    /// Attention backward: compute gradients for query, key, and value.
+    fn attention_backward(
+        &self,
+        upstream: &Tensor,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        attn_weights: &Tensor,
+    ) -> Result<(Tensor, Tensor, Tensor), KernelError> {
+        // upstream: [seq_q, d_v], attn_weights: [seq_q, seq_k]
+        // grad_value = attn_weights^T @ upstream  [seq_k, d_v]
+        let at = self.transpose_2d(attn_weights)?;
+        let grad_value = self.matmul_2d(&at, upstream)?;
+
+        // grad_attn = upstream @ value^T  [seq_q, seq_k]
+        let vt = self.transpose_2d(value)?;
+        let grad_attn = self.matmul_2d(upstream, &vt)?;
+
+        // softmax backward on attn_weights
+        let grad_scores = self.softmax_backward(&grad_attn, attn_weights)?;
+
+        // scale by 1/sqrt(d_k)
+        let d_k = query.shape().get(1).copied().unwrap_or(1);
+        let scale = 1.0 / (d_k as f32).sqrt();
+        let grad_scores_scaled = self.mul_scalar(&grad_scores, scale);
+
+        // grad_query = grad_scores_scaled @ key  [seq_q, d_k]
+        let grad_query = self.matmul_2d(&grad_scores_scaled, key)?;
+
+        // grad_key = grad_scores_scaled^T @ query  [seq_k, d_k]
+        let gst = self.transpose_2d(&grad_scores_scaled)?;
+        let grad_key = self.matmul_2d(&gst, query)?;
+
+        Ok((grad_query, grad_key, grad_value))
+    }
+
+    /// RNN backward (BPTT with tanh activation).
+    ///
+    /// Returns the gradient tensor for the input with shape `[seq_len, input_size]`.
+    /// `upstream` has shape `[seq_len, hidden_size]`.
+    /// `forward_input` has shape `[seq_len, input_size]`.
+    /// `hidden` stores the concatenated hidden states `[(seq_len+1) * hidden_size]`
+    /// where entry 0 is h_0 and entry t+1 is h_t (post-tanh).
+    /// `weights_ih` has shape `[input_size, hidden_size]`.
+    /// `weights_hh` has shape `[hidden_size, hidden_size]`.
+    fn rnn_backward(
+        &self,
+        upstream: &Tensor,
+        forward_input: &Tensor,
+        hidden: &Tensor,
+        weights_ih: &Tensor,
+        weights_hh: &Tensor,
+    ) -> Result<Tensor, KernelError> {
+        let in_shape = forward_input.shape();
+        if in_shape.len() != 2 {
+            return Err(KernelError::UnsupportedOperation(format!(
+                "rnn/lstm/gru backward requires rank-2 input, got rank {}",
+                in_shape.len()
+            )));
+        }
+        let seq_len = in_shape[0];
+        let input_size = in_shape[1];
+        let hidden_size = weights_ih.shape().get(1).copied().unwrap_or(0);
+        if hidden_size == 0 {
+            return Err(KernelError::UnsupportedOperation(format!(
+                "rnn_backward: weights_ih second dim must be > 0, got shape {:?}",
+                weights_ih.shape()
+            )));
+        }
+
+        let _in_data = forward_input.data();
+        let wih_data = weights_ih.data();
+        let whh_data = weights_hh.data();
+        let up_data = upstream.data();
+        let h_data = hidden.data();
+
+        let mut grad_input = vec![0.0f32; seq_len * input_size];
+        let mut dh_next = vec![0.0f32; hidden_size];
+
+        for t in (0..seq_len).rev() {
+            // h_t = hidden[(t+1)*hidden_size .. (t+2)*hidden_size]
+            let h_t_base = (t + 1) * hidden_size;
+
+            // dh = upstream[t] + dh_next
+            // d_raw = dh * (1 - h_t^2)  (tanh derivative)
+            let mut d_raw = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                let dh_j = up_data[t * hidden_size + j] + dh_next[j];
+                let h_val = h_data[h_t_base + j];
+                d_raw[j] = dh_j * (1.0 - h_val * h_val);
+            }
+
+            // grad_input[t] = d_raw @ W_ih^T
+            let x_base = t * input_size;
+            for i in 0..input_size {
+                let mut s = 0.0f32;
+                for j in 0..hidden_size {
+                    s += d_raw[j] * wih_data[i * hidden_size + j];
+                }
+                grad_input[x_base + i] = s;
+            }
+
+            // dh_next = d_raw @ W_hh^T
+            dh_next.fill(0.0);
+            for i in 0..hidden_size {
+                for j in 0..hidden_size {
+                    dh_next[i] += d_raw[j] * whh_data[i * hidden_size + j];
+                }
+            }
+        }
+
+        Ok(Tensor::from_vec(in_shape.to_vec(), grad_input)?)
+    }
+
+    /// LSTM backward (BPTT through forget/input/output/cell gates).
+    ///
+    /// Returns the gradient tensor for the input with shape `[seq_len, input_size]`.
+    /// `upstream` has shape `[seq_len, hidden_size]`.
+    /// `forward_input` has shape `[seq_len, input_size]`.
+    /// `hidden` stores concatenated hidden states `[(seq_len+1) * hidden_size]`.
+    /// `cell` stores concatenated cell states `[(seq_len+1) * hidden_size]`.
+    /// `weights_ih` has shape `[input_size, 4*hidden_size]`.
+    /// `weights_hh` has shape `[hidden_size, 4*hidden_size]`.
+    fn lstm_backward(
+        &self,
+        upstream: &Tensor,
+        forward_input: &Tensor,
+        hidden: &Tensor,
+        cell: &Tensor,
+        weights_ih: &Tensor,
+        weights_hh: &Tensor,
+    ) -> Result<Tensor, KernelError> {
+        let in_shape = forward_input.shape();
+        if in_shape.len() != 2 {
+            return Err(KernelError::UnsupportedOperation(format!(
+                "rnn/lstm/gru backward requires rank-2 input, got rank {}",
+                in_shape.len()
+            )));
+        }
+        let seq_len = in_shape[0];
+        let input_size = in_shape[1];
+        let h4 = weights_ih.shape().get(1).copied().unwrap_or(0);
+        let hidden_size = h4 / 4;
+        if hidden_size == 0 || h4 % 4 != 0 {
+            return Err(KernelError::UnsupportedOperation(format!(
+                "lstm_backward: weights_ih second dim must be divisible by 4, got shape {:?}",
+                weights_ih.shape()
+            )));
+        }
+
+        let in_data = forward_input.data();
+        let wih_data = weights_ih.data();
+        let whh_data = weights_hh.data();
+        let up_data = upstream.data();
+        let h_data = hidden.data();
+        let c_data = cell.data();
+
+        let mut grad_input = vec![0.0f32; seq_len * input_size];
+        let mut dh_next = vec![0.0f32; hidden_size];
+        let mut dc_next = vec![0.0f32; hidden_size];
+
+        // Recompute gates for each timestep during backward pass.
+        // Gate layout in weights: [i, f, g, o] each of size hidden_size.
+        for t in (0..seq_len).rev() {
+            let h_prev_base = t * hidden_size;
+            let c_prev_base = t * hidden_size;
+            let c_t_base = (t + 1) * hidden_size;
+            let x_base = t * input_size;
+
+            // Recompute gate pre-activations and activations
+            let mut i_gate = vec![0.0f32; hidden_size];
+            let mut f_gate = vec![0.0f32; hidden_size];
+            let mut g_gate = vec![0.0f32; hidden_size];
+            let mut o_gate = vec![0.0f32; hidden_size];
+
+            for j in 0..hidden_size {
+                let mut sum_i = 0.0f32;
+                let mut sum_f = 0.0f32;
+                let mut sum_g = 0.0f32;
+                let mut sum_o = 0.0f32;
+                for i in 0..input_size {
+                    sum_i += in_data[x_base + i] * wih_data[i * h4 + j];
+                    sum_f += in_data[x_base + i] * wih_data[i * h4 + hidden_size + j];
+                    sum_g += in_data[x_base + i] * wih_data[i * h4 + 2 * hidden_size + j];
+                    sum_o += in_data[x_base + i] * wih_data[i * h4 + 3 * hidden_size + j];
+                }
+                for i in 0..hidden_size {
+                    sum_i += h_data[h_prev_base + i] * whh_data[i * h4 + j];
+                    sum_f += h_data[h_prev_base + i] * whh_data[i * h4 + hidden_size + j];
+                    sum_g += h_data[h_prev_base + i] * whh_data[i * h4 + 2 * hidden_size + j];
+                    sum_o += h_data[h_prev_base + i] * whh_data[i * h4 + 3 * hidden_size + j];
+                }
+                // sigmoid for i, f, o; tanh for g
+                i_gate[j] = 1.0 / (1.0 + (-sum_i).exp());
+                f_gate[j] = 1.0 / (1.0 + (-sum_f).exp());
+                g_gate[j] = sum_g.tanh();
+                o_gate[j] = 1.0 / (1.0 + (-sum_o).exp());
+            }
+
+            // dh = upstream[t] + dh_next
+            let mut dh = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                dh[j] = up_data[t * hidden_size + j] + dh_next[j];
+            }
+
+            // d_o = dh * tanh(c_t) * o * (1 - o)
+            let mut d_o = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                let tanh_c = c_data[c_t_base + j].tanh();
+                d_o[j] = dh[j] * tanh_c * o_gate[j] * (1.0 - o_gate[j]);
+            }
+
+            // dc = dh * o * (1 - tanh(c_t)^2) + dc_next
+            let mut dc = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                let tanh_c = c_data[c_t_base + j].tanh();
+                dc[j] = dh[j] * o_gate[j] * (1.0 - tanh_c * tanh_c) + dc_next[j];
+            }
+
+            // d_f = dc * c_prev * f * (1 - f)
+            let mut d_f = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                d_f[j] = dc[j] * c_data[c_prev_base + j] * f_gate[j] * (1.0 - f_gate[j]);
+            }
+
+            // d_i = dc * g * i * (1 - i)
+            let mut d_i = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                d_i[j] = dc[j] * g_gate[j] * i_gate[j] * (1.0 - i_gate[j]);
+            }
+
+            // d_g = dc * i * (1 - g^2)
+            let mut d_g = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                d_g[j] = dc[j] * i_gate[j] * (1.0 - g_gate[j] * g_gate[j]);
+            }
+
+            // Concatenated gate gradients [d_i, d_f, d_g, d_o]
+            let mut d_gates = vec![0.0f32; h4];
+            for j in 0..hidden_size {
+                d_gates[j] = d_i[j];
+                d_gates[hidden_size + j] = d_f[j];
+                d_gates[2 * hidden_size + j] = d_g[j];
+                d_gates[3 * hidden_size + j] = d_o[j];
+            }
+
+            // grad_input[t] = d_gates @ W_ih^T
+            for i in 0..input_size {
+                let mut s = 0.0f32;
+                for j in 0..h4 {
+                    s += d_gates[j] * wih_data[i * h4 + j];
+                }
+                grad_input[x_base + i] = s;
+            }
+
+            // dh_next = d_gates @ W_hh^T
+            dh_next.fill(0.0);
+            for i in 0..hidden_size {
+                for j in 0..h4 {
+                    dh_next[i] += d_gates[j] * whh_data[i * h4 + j];
+                }
+            }
+
+            // dc_next = dc * f
+            for j in 0..hidden_size {
+                dc_next[j] = dc[j] * f_gate[j];
+            }
+        }
+
+        Ok(Tensor::from_vec(in_shape.to_vec(), grad_input)?)
+    }
+
+    /// GRU backward (BPTT through reset/update gates).
+    ///
+    /// Returns the gradient tensor for the input with shape `[seq_len, input_size]`.
+    /// `upstream` has shape `[seq_len, hidden_size]`.
+    /// `forward_input` has shape `[seq_len, input_size]`.
+    /// `hidden` stores concatenated hidden states `[(seq_len+1) * hidden_size]`.
+    /// `weights_ih` has shape `[input_size, 3*hidden_size]`.
+    /// `weights_hh` has shape `[hidden_size, 3*hidden_size]`.
+    fn gru_backward(
+        &self,
+        upstream: &Tensor,
+        forward_input: &Tensor,
+        hidden: &Tensor,
+        weights_ih: &Tensor,
+        weights_hh: &Tensor,
+    ) -> Result<Tensor, KernelError> {
+        let in_shape = forward_input.shape();
+        if in_shape.len() != 2 {
+            return Err(KernelError::UnsupportedOperation(format!(
+                "rnn/lstm/gru backward requires rank-2 input, got rank {}",
+                in_shape.len()
+            )));
+        }
+        let seq_len = in_shape[0];
+        let input_size = in_shape[1];
+        let h3 = weights_ih.shape().get(1).copied().unwrap_or(0);
+        let hidden_size = h3 / 3;
+        if hidden_size == 0 || h3 % 3 != 0 {
+            return Err(KernelError::UnsupportedOperation(format!(
+                "gru_backward: weights_ih second dim must be divisible by 3, got shape {:?}",
+                weights_ih.shape()
+            )));
+        }
+
+        let in_data = forward_input.data();
+        let wih_data = weights_ih.data();
+        let whh_data = weights_hh.data();
+        let up_data = upstream.data();
+        let h_data = hidden.data();
+
+        let mut grad_input = vec![0.0f32; seq_len * input_size];
+        let mut dh_next = vec![0.0f32; hidden_size];
+
+        for t in (0..seq_len).rev() {
+            let h_prev_base = t * hidden_size;
+            let x_base = t * input_size;
+
+            // Recompute gates: r (reset), z (update), n (candidate)
+            let mut r_gate = vec![0.0f32; hidden_size];
+            let mut z_gate = vec![0.0f32; hidden_size];
+            let mut n_cand = vec![0.0f32; hidden_size];
+
+            // r and z: sigmoid(x @ W_ih[:, :2H] + h_prev @ W_hh[:, :2H])
+            for j in 0..hidden_size {
+                let mut sum_r = 0.0f32;
+                let mut sum_z = 0.0f32;
+                for i in 0..input_size {
+                    sum_r += in_data[x_base + i] * wih_data[i * h3 + j];
+                    sum_z += in_data[x_base + i] * wih_data[i * h3 + hidden_size + j];
+                }
+                for i in 0..hidden_size {
+                    sum_r += h_data[h_prev_base + i] * whh_data[i * h3 + j];
+                    sum_z += h_data[h_prev_base + i] * whh_data[i * h3 + hidden_size + j];
+                }
+                r_gate[j] = 1.0 / (1.0 + (-sum_r).exp());
+                z_gate[j] = 1.0 / (1.0 + (-sum_z).exp());
+            }
+
+            // n: tanh(x @ W_ih[:, 2H:] + r * (h_prev @ W_hh[:, 2H:]))
+            // First compute h_proj_n = h_prev @ W_hh[:, 2H:]
+            let mut h_proj_n = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                let mut sum = 0.0f32;
+                for i in 0..hidden_size {
+                    sum += h_data[h_prev_base + i] * whh_data[i * h3 + 2 * hidden_size + j];
+                }
+                h_proj_n[j] = sum;
+            }
+            for j in 0..hidden_size {
+                let mut sum_n = 0.0f32;
+                for i in 0..input_size {
+                    sum_n += in_data[x_base + i] * wih_data[i * h3 + 2 * hidden_size + j];
+                }
+                sum_n += r_gate[j] * h_proj_n[j];
+                n_cand[j] = sum_n.tanh();
+            }
+
+            // dh = upstream[t] + dh_next
+            let mut dh = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                dh[j] = up_data[t * hidden_size + j] + dh_next[j];
+            }
+
+            // dn = dh * (1 - z)
+            let mut dn = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                dn[j] = dh[j] * (1.0 - z_gate[j]);
+            }
+
+            // dz = dh * (h_prev - n) * z * (1 - z)
+            let mut dz = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                dz[j] =
+                    dh[j] * (h_data[h_prev_base + j] - n_cand[j]) * z_gate[j] * (1.0 - z_gate[j]);
+            }
+
+            // dn_raw = dn * (1 - n^2)  (tanh derivative)
+            let mut dn_raw = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                dn_raw[j] = dn[j] * (1.0 - n_cand[j] * n_cand[j]);
+            }
+
+            // dr = dn_raw * h_proj_n * r * (1 - r)
+            let mut dr = vec![0.0f32; hidden_size];
+            for j in 0..hidden_size {
+                dr[j] = dn_raw[j] * h_proj_n[j] * r_gate[j] * (1.0 - r_gate[j]);
+            }
+
+            // Input projection gradients: [dr, dz, dn_raw]
+            let mut d_x_proj = vec![0.0f32; h3];
+            for j in 0..hidden_size {
+                d_x_proj[j] = dr[j];
+                d_x_proj[hidden_size + j] = dz[j];
+                d_x_proj[2 * hidden_size + j] = dn_raw[j];
+            }
+
+            // grad_input[t] = d_x_proj @ W_ih^T
+            for i in 0..input_size {
+                let mut s = 0.0f32;
+                for j in 0..h3 {
+                    s += d_x_proj[j] * wih_data[i * h3 + j];
+                }
+                grad_input[x_base + i] = s;
+            }
+
+            // Hidden projection gradients: [dr, dz, dn_raw * r]
+            let mut d_h_proj = vec![0.0f32; h3];
+            for j in 0..hidden_size {
+                d_h_proj[j] = dr[j];
+                d_h_proj[hidden_size + j] = dz[j];
+                d_h_proj[2 * hidden_size + j] = dn_raw[j] * r_gate[j];
+            }
+
+            // dh_next = d_h_proj @ W_hh^T + dh * z
+            dh_next.fill(0.0);
+            for i in 0..hidden_size {
+                let mut s = 0.0f32;
+                for j in 0..h3 {
+                    s += d_h_proj[j] * whh_data[i * h3 + j];
+                }
+                dh_next[i] = s + dh[i] * z_gate[i];
+            }
+        }
+
+        Ok(Tensor::from_vec(in_shape.to_vec(), grad_input)?)
+    }
+
     /// Conv2d backward (input gradient): compute dL/dInput from dL/dOutput and weights.
     ///
     /// Default CPU implementation via full convolution with flipped kernel.

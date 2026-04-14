@@ -1,7 +1,7 @@
 use super::VideoError;
-use super::camera::{
-    CameraConfig, CameraDeviceInfo, CameraFrameSource, filter_camera_devices, select_camera_device,
-};
+#[cfg(not(feature = "native-camera"))]
+use super::camera::CameraFrameSource;
+use super::camera::{CameraConfig, CameraDeviceInfo, filter_camera_devices, select_camera_device};
 use super::convert::rgb8_bytes_to_frame;
 use super::frame::{Frame, PixelFormat, Rgb8Frame};
 use super::normalize_rgb8_to_f32_inplace;
@@ -668,4 +668,350 @@ fn video_codec_enum_basics() {
     use super::codec::VideoCodec;
     assert_eq!(VideoCodec::H264, VideoCodec::H264);
     assert_ne!(VideoCodec::H264, VideoCodec::H265);
+}
+
+// ── NV12 → RGB8 conversion tests ─────────────────────────────────────
+
+#[test]
+fn nv12_to_rgb8_pure_gray() {
+    // Pure gray: Y=128, U=128, V=128 → R=G=B=128
+    let w = 4;
+    let h = 4;
+    let y_plane = vec![128u8; w * h];
+    // UV plane: interleaved U,V pairs, half height, same width
+    let uv_plane = vec![128u8; w * (h / 2)];
+    let mut out = vec![0u8; w * h * 3];
+
+    super::h264_yuv::nv12_to_rgb8(&y_plane, &uv_plane, w, h, &mut out)
+        .expect("NV12 conversion should succeed");
+
+    for pixel in out.chunks_exact(3) {
+        assert_eq!(pixel[0], 128, "R should be 128 for neutral gray");
+        assert_eq!(pixel[1], 128, "G should be 128 for neutral gray");
+        assert_eq!(pixel[2], 128, "B should be 128 for neutral gray");
+    }
+}
+
+#[test]
+fn nv12_to_rgb8_rejects_small_y_plane() {
+    let mut out = vec![0u8; 4 * 4 * 3];
+    let result = super::h264_yuv::nv12_to_rgb8(&[0; 8], &[128; 8], 4, 4, &mut out);
+    assert!(result.is_err());
+}
+
+#[test]
+fn nv12_to_rgb8_rejects_small_uv_plane() {
+    let mut out = vec![0u8; 4 * 4 * 3];
+    let result = super::h264_yuv::nv12_to_rgb8(&[128; 16], &[128; 2], 4, 4, &mut out);
+    assert!(result.is_err());
+}
+
+#[test]
+fn nv12_to_rgb8_rejects_small_output() {
+    let result = super::h264_yuv::nv12_to_rgb8(&[128; 16], &[128; 8], 4, 4, &mut [0; 10]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn nv12_to_rgb8_non_trivial_values() {
+    // 2x2 image with specific values
+    let w = 2;
+    let h = 2;
+    let y_plane = [200u8, 100, 150, 50];
+    let uv_plane = [100u8, 200]; // one UV pair covers all 4 pixels
+    let mut out = vec![0u8; w * h * 3];
+
+    super::h264_yuv::nv12_to_rgb8(&y_plane, &uv_plane, w, h, &mut out)
+        .expect("NV12 conversion should succeed");
+
+    // Verify output is not all zeros (non-trivial conversion happened)
+    let sum: u32 = out.iter().map(|&b| b as u32).sum();
+    assert!(sum > 0, "output should not be all zeros");
+
+    // Verify output contains distinct values (not all same, indicating real conversion)
+    let distinct: std::collections::HashSet<u8> = out.iter().copied().collect();
+    assert!(distinct.len() > 1, "output should contain distinct values");
+}
+
+// ── YUYV → RGB8 conversion tests ─────────────────────────────────────
+
+#[test]
+fn yuyv_to_rgb8_pure_gray() {
+    // YUYV: Y0=128, U=128, Y1=128, V=128 → all pixels R=G=B=128
+    let w = 4;
+    let h = 2;
+    let mut data = Vec::with_capacity(w * h * 2);
+    for _ in 0..(w * h / 2) {
+        data.extend_from_slice(&[128, 128, 128, 128]); // Y0, U, Y1, V
+    }
+    let mut out = vec![0u8; w * h * 3];
+
+    super::h264_yuv::yuyv_to_rgb8(&data, w, h, &mut out).expect("YUYV conversion should succeed");
+
+    for pixel in out.chunks_exact(3) {
+        assert_eq!(pixel[0], 128, "R should be 128 for neutral gray");
+        assert_eq!(pixel[1], 128, "G should be 128 for neutral gray");
+        assert_eq!(pixel[2], 128, "B should be 128 for neutral gray");
+    }
+}
+
+#[test]
+fn yuyv_to_rgb8_rejects_odd_width() {
+    let result = super::h264_yuv::yuyv_to_rgb8(&[0; 6], 3, 1, &mut [0; 9]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn yuyv_to_rgb8_rejects_small_input() {
+    let result = super::h264_yuv::yuyv_to_rgb8(&[0; 4], 4, 2, &mut [0; 24]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn yuyv_to_rgb8_rejects_small_output() {
+    let result = super::h264_yuv::yuyv_to_rgb8(&[128; 16], 4, 2, &mut [0; 10]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn yuyv_to_rgb8_two_pixel_pair() {
+    // Single macro-pixel: Y0=235, U=128, Y1=16, V=128 (neutral chroma)
+    // Y=235 → R=G=B=235 (white-ish), Y=16 → R=G=B=16 (dark)
+    let data = [235u8, 128, 16, 128];
+    let mut out = vec![0u8; 6]; // 2 pixels * 3 channels
+
+    super::h264_yuv::yuyv_to_rgb8(&data, 2, 1, &mut out).expect("YUYV conversion should succeed");
+
+    // With neutral chroma (U=V=128), output should be close to Y values
+    assert_eq!(out[0], out[1]); // R == G for pixel 0
+    assert_eq!(out[1], out[2]); // G == B for pixel 0
+    assert!(
+        (out[0] as i16 - 235).abs() <= 1,
+        "pixel 0 should be ~235, got {}",
+        out[0]
+    );
+
+    assert_eq!(out[3], out[4]); // R == G for pixel 1
+    assert_eq!(out[4], out[5]); // G == B for pixel 1
+    assert!(
+        (out[3] as i16 - 16).abs() <= 1,
+        "pixel 1 should be ~16, got {}",
+        out[3]
+    );
+}
+
+// ── MJPEG decode tests ────────────────────────────────────────────────
+
+#[test]
+fn mjpeg_decode_rejects_non_jpeg() {
+    let result = super::mjpeg::decode_mjpeg_to_rgb8(&[0x89, 0x50, 0x4E, 0x47], &mut Vec::new());
+    assert!(
+        result.is_err(),
+        "should reject non-JPEG data (PNG signature)"
+    );
+}
+
+// ── Edge pipeline end-to-end test ─────────────────────────────────────
+
+#[test]
+fn edge_pipeline_end_to_end() {
+    use super::frame_pipeline::{FramePipeline, PipelineBBox, PipelineDetection, run_pipeline};
+    use super::h264_encoder::{H264Encoder, rgb8_to_yuv420};
+    use super::h264_yuv::yuv420_to_rgb8;
+    use super::overlay::{TelemetryData, overlay_detections, overlay_telemetry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let width: usize = 320;
+    let height: usize = 240;
+    // Width and height must be multiples of 16 for H.264 — 320 and 240 already satisfy this.
+    let rgb_bytes = width * height * 3;
+    let total_frames = 3usize;
+
+    // 1. Create FramePipeline
+    let pipeline = FramePipeline::new(4, rgb_bytes);
+    let output_count = AtomicUsize::new(0);
+    let encoded_total_size = AtomicUsize::new(0);
+    let annex_b_valid = AtomicUsize::new(0);
+
+    run_pipeline(
+        &pipeline,
+        // Stage 1: Generate synthetic YUV420 frame, convert to RGB, write to slot
+        |slot: &mut super::frame_pipeline::SlotMut<'_>| {
+            let _ts = slot.timestamp_us(); // unused but available
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let frame_idx = COUNTER.fetch_add(1, Ordering::Relaxed);
+            if frame_idx >= total_frames {
+                return false;
+            }
+
+            slot.set_width(width as u32);
+            slot.set_height(height as u32);
+            slot.set_pixel_format(2); // RGB8
+            slot.set_timestamp_us(frame_idx as u64 * 33_333);
+
+            // Generate synthetic YUV420 planar data
+            let y_size = width * height;
+            let uv_size = (width / 2) * (height / 2);
+            let mut y_plane = vec![0u8; y_size];
+            let u_plane = vec![128u8; uv_size];
+            let v_plane = vec![128u8; uv_size];
+
+            // Fill Y plane with gradient pattern
+            for py in 0..height {
+                for px in 0..width {
+                    y_plane[py * width + px] =
+                        ((px * 255 / width.max(1) + py * 255 / height.max(1)) / 2) as u8;
+                }
+            }
+
+            // Convert YUV420 to RGB8
+            let rgb = yuv420_to_rgb8(&y_plane, &u_plane, &v_plane, width, height)
+                .expect("YUV420 to RGB conversion must succeed");
+
+            // Write RGB data into the slot
+            let data = slot.data_mut();
+            let copy_len = rgb.len().min(data.len());
+            data[..copy_len].copy_from_slice(&rgb[..copy_len]);
+
+            true
+        },
+        // Stage 2: Create mock detections, overlay them
+        |slot: &mut super::frame_pipeline::SlotMut<'_>| {
+            let sw = slot.width() as usize;
+            let sh = slot.height() as usize;
+
+            // Mock detections
+            slot.detections_mut().clear();
+            slot.detections_mut().push(PipelineDetection {
+                bbox: PipelineBBox {
+                    x1: 50.0,
+                    y1: 30.0,
+                    x2: 130.0,
+                    y2: 110.0,
+                },
+                score: 0.92,
+                class_id: 0,
+            });
+            slot.detections_mut().push(PipelineDetection {
+                bbox: PipelineBBox {
+                    x1: 200.0,
+                    y1: 100.0,
+                    x2: 280.0,
+                    y2: 200.0,
+                },
+                score: 0.87,
+                class_id: 1,
+            });
+
+            // Build overlay data from detections before taking data_mut
+            let det_labels: Vec<String> = slot
+                .detections()
+                .iter()
+                .map(|d| format!("cls{}", d.class_id))
+                .collect();
+            let overlay_dets: Vec<(f32, f32, f32, f32, f32, String)> = slot
+                .detections()
+                .iter()
+                .zip(det_labels.iter())
+                .map(|(d, label)| {
+                    (
+                        d.bbox.x1,
+                        d.bbox.y1,
+                        d.bbox.x2 - d.bbox.x1,
+                        d.bbox.y2 - d.bbox.y1,
+                        d.score,
+                        label.clone(),
+                    )
+                })
+                .collect();
+            let num_dets = slot.detections().len() as u32;
+
+            // Now take mutable access for overlays
+            let frame_size = sw * sh * 3;
+            let data = slot.data_mut();
+            if data.len() >= frame_size {
+                let det_refs: Vec<(f32, f32, f32, f32, f32, &str)> = overlay_dets
+                    .iter()
+                    .map(|(x, y, w, h, s, l)| (*x, *y, *w, *h, *s, l.as_str()))
+                    .collect();
+                overlay_detections(&mut data[..frame_size], sw, sh, &det_refs);
+            }
+
+            // Overlay telemetry (mock)
+            let telemetry = TelemetryData {
+                battery_voltage: 12.4,
+                battery_current: 1.2,
+                altitude_m: 45.0,
+                speed_ms: 5.3,
+                lat: 55.7558,
+                lon: 37.6173,
+                heading_deg: 127.0,
+                ai_detections: num_dets,
+            };
+            if data.len() >= frame_size {
+                overlay_telemetry(&mut data[..frame_size], sw, sh, &telemetry);
+            }
+        },
+        // Stage 3: Convert RGB to YUV420, encode H.264, verify output
+        |slot: &super::frame_pipeline::SlotRef<'_>| {
+            let sw = slot.width() as usize;
+            let sh = slot.height() as usize;
+            let frame_size = sw * sh * 3;
+
+            // Copy frame data
+            let src = slot.data();
+            let mut rgb_frame = vec![0u8; frame_size];
+            let copy_len = frame_size.min(src.len());
+            rgb_frame[..copy_len].copy_from_slice(&src[..copy_len]);
+
+            // Convert RGB to YUV420
+            let yuv = rgb8_to_yuv420(&rgb_frame, sw, sh);
+            assert_eq!(
+                yuv.len(),
+                sw * sh + (sw / 2) * (sh / 2) * 2,
+                "YUV420 size must match expected"
+            );
+
+            // Encode with H264Encoder
+            // Use a static-ish encoder: since output runs serially, this is safe
+            let mut encoder = H264Encoder::new(sw as u32, sh as u32, 26);
+            let nal_data = encoder.encode_frame(&yuv);
+
+            // Verify output size > 0
+            assert!(
+                !nal_data.is_empty(),
+                "H.264 encoded output must not be empty"
+            );
+
+            // Verify output starts with Annex B start code (0x00 0x00 0x00 0x01)
+            if nal_data.len() >= 4
+                && nal_data[0] == 0x00
+                && nal_data[1] == 0x00
+                && nal_data[2] == 0x00
+                && nal_data[3] == 0x01
+            {
+                annex_b_valid.fetch_add(1, Ordering::Relaxed);
+            }
+
+            encoded_total_size.fetch_add(nal_data.len(), Ordering::Relaxed);
+            output_count.fetch_add(1, Ordering::Relaxed);
+        },
+        total_frames,
+    );
+
+    // Final assertions
+    assert_eq!(
+        output_count.load(Ordering::Relaxed),
+        total_frames,
+        "all frames must be processed"
+    );
+    assert!(
+        encoded_total_size.load(Ordering::Relaxed) > 0,
+        "total encoded size must be > 0"
+    );
+    assert_eq!(
+        annex_b_valid.load(Ordering::Relaxed),
+        total_frames,
+        "every encoded frame must start with Annex B start code"
+    );
 }

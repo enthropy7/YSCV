@@ -910,6 +910,8 @@ impl H264Decoder {
                     rgb8_data,
                     timestamp_us: 0,
                     keyframe: true,
+                    bit_depth: 8,
+                    rgb16_data: None,
                 }));
             }
         };
@@ -1458,6 +1460,8 @@ impl H264Decoder {
                     rgb8_data: deinterlaced,
                     timestamp_us: top.timestamp_us,
                     keyframe: true,
+                    bit_depth: 8,
+                    rgb16_data: None,
                 }));
             }
             // No top field buffered — return bottom field as-is
@@ -1469,6 +1473,8 @@ impl H264Decoder {
             rgb8_data,
             timestamp_us: 0,
             keyframe: is_idr,
+            bit_depth: 8,
+            rgb16_data: None,
         }))
     }
 }

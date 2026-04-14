@@ -2,7 +2,7 @@
 
 Neural network layers, model architectures, training loop, data loading, and model serialization.
 
-```rust
+```rust,ignore
 use yscv_model::*;
 
 let model = Sequential::new()
@@ -33,9 +33,9 @@ trainer.fit(&train_loader, &val_loader, 100);
 
 mse, mae, huber, smooth_l1, hinge, bce, nll, cross_entropy, label_smoothing_cross_entropy, focal, dice, triplet, contrastive, cosine_embedding, kl_div, ctc, distillation — all live in `src/loss.rs`.
 
-## Architectures (13 in `zoo.rs`)
+## Architectures (17 in `zoo.rs`)
 
-ResNet18 / ResNet34 / ResNet50 / ResNet101, VGG16 / VGG19, MobileNetV2, EfficientNetB0, AlexNet, ViTTiny / ViTBase / ViTLarge, DeiTTiny — all loadable through `ModelHub` with remote weight download.
+ResNet18 / ResNet34 / ResNet50 / ResNet101, VGG16 / VGG19, MobileNetV2, EfficientNetB0, AlexNet, ViTTiny / ViTBase / ViTLarge, DeiTTiny, ClipViTB32, DINOv2ViTS14, WhisperTiny, SAMViTB — all loadable through `ModelHub` with remote weight download.
 
 ## Training
 

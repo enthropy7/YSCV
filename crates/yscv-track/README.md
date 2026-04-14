@@ -2,7 +2,7 @@
 
 Multi-object tracking: DeepSORT, ByteTrack, Kalman filter, Hungarian assignment, and Re-ID.
 
-```rust
+```rust,ignore
 use yscv_track::*;
 
 let mut tracker = Tracker::new(TrackerConfig::default());

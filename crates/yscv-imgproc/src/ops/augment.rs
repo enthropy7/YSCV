@@ -30,7 +30,6 @@ impl Rng {
         lo + (hi - lo) * self.uniform()
     }
 
-    #[allow(dead_code)]
     fn normal(&mut self) -> f32 {
         let u1 = self.uniform().max(1e-10);
         let u2 = self.uniform();
@@ -277,6 +276,23 @@ pub fn color_jitter(
         *v = v.clamp(0.0, 1.0);
     }
 
+    Ok(Tensor::from_vec(vec![h, w, c], out)?)
+}
+
+/// Add Gaussian noise to an image.
+///
+/// Each pixel channel is offset by `N(0, sigma)` sampled independently.
+/// Output is clamped to `[0, 1]`.
+pub fn gaussian_noise(image: &Tensor, sigma: f32, seed: u64) -> Result<Tensor, ImgProcError> {
+    let (h, w, c) = hwc_shape(image)?;
+    let data = image.data();
+    let total = h * w * c;
+    let mut rng = Rng::new(seed);
+    let mut out = Vec::with_capacity(total);
+    for i in 0..total {
+        let noisy = data[i] + sigma * rng.normal();
+        out.push(noisy.clamp(0.0, 1.0));
+    }
     Ok(Tensor::from_vec(vec![h, w, c], out)?)
 }
 

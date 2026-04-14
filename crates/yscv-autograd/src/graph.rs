@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 
 use yscv_kernels::{
-    Backend, BatchNorm2dParams, ThreadedCpuBackend, add as kernel_add, avg_pool2d_nhwc,
+    BackwardOps, BatchNorm2dParams, ThreadedCpuBackend, add as kernel_add, avg_pool2d_nhwc,
     batch_norm2d_nhwc, conv2d_nhwc, conv3d, depthwise_conv2d_nhwc, gelu as kernel_gelu, matmul_2d,
     mish as kernel_mish, mul as kernel_mul, relu, sigmoid as kernel_sigmoid, silu as kernel_silu,
     sub as kernel_sub,
@@ -14,7 +14,7 @@ use super::node::{AuxData, Node, NodeId, Op};
 /// Eager autograd graph with explicit backward pass.
 pub struct Graph {
     pub(crate) nodes: Vec<Node>,
-    pub(crate) backend: Option<Box<dyn Backend>>,
+    pub(crate) backend: Option<Box<dyn BackwardOps>>,
 }
 
 impl Default for Graph {
@@ -32,7 +32,7 @@ impl Graph {
             .unwrap_or(NonZeroUsize::new(1).expect("1 is non-zero"));
         let backend = ThreadedCpuBackend::new(threads)
             .ok()
-            .map(|b| Box::new(b) as Box<dyn Backend>);
+            .map(|b| Box::new(b) as Box<dyn BackwardOps>);
         Self {
             nodes: Vec::new(),
             backend,
@@ -50,7 +50,7 @@ impl Graph {
     /// Set a compute backend for GPU-accelerated operations.
     /// When set, supported ops will dispatch through this backend.
     /// When None (default), ops use direct CPU kernel calls.
-    pub fn set_backend(&mut self, backend: Box<dyn Backend>) {
+    pub fn set_backend(&mut self, backend: Box<dyn BackwardOps>) {
         self.backend = Some(backend);
     }
 

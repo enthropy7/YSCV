@@ -15,5 +15,8 @@ yscv-autograd = { version = "0.1", path = "../yscv-autograd" }
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+
 [lints]
 workspace = true

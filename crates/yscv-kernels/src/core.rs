@@ -8,7 +8,7 @@ mod backend;
 #[path = "error.rs"]
 mod error;
 #[cfg(feature = "gpu")]
-#[path = "gpu_backend.rs"]
+#[path = "gpu/mod.rs"]
 mod gpu_backend;
 #[cfg(feature = "gpu")]
 #[path = "gpu_session.rs"]
@@ -53,6 +53,8 @@ pub use multi_device::{
 pub use ops::Activation;
 #[cfg(all(target_os = "macos", feature = "blas"))]
 pub use ops::bnns_conv;
+pub use ops::quantize::{dequantize_int4_to_f32, quantize_f32_to_int4};
+pub use ops::rope::apply_rotary_embedding;
 pub use ops::{
     BinaryKind, DEFAULT_ELEMENTWISE_MIN_PARALLEL_ELEMENTS,
     DEFAULT_MATMUL_MIN_PARALLEL_OUTPUT_ELEMENTS, DEFAULT_MATMUL_MIN_PARALLEL_SHARED_DIM,
@@ -70,6 +72,10 @@ pub use ops::{
     sigmoid_with_config_and_pool, softmax_last_dim_with_config_and_pool, sub_exp_slice_dispatch,
     sub_with_config_and_pool, tanh_act_with_config_and_pool, tanh_slice_dispatch,
 };
+
+#[cfg(test)]
+#[path = "proptest_tests.rs"]
+mod proptest_tests;
 
 #[path = "tests/mod.rs"]
 #[cfg(test)]

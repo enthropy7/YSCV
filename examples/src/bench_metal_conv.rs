@@ -2,7 +2,7 @@
 //! Isolates: (1) naga overhead, (2) simdgroup_matrix benefit.
 
 fn main() {
-    let metal = yscv_kernels::MetalConv::new().expect("Metal init failed");
+    let metal = yscv_kernels::MetalConv::new().expect("Metal init failed (see error above)");
     println!("Metal device: {}", metal.device_name());
 
     let layers: Vec<(

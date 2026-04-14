@@ -475,7 +475,7 @@ pub fn clahe_u8(
     let mut maps = vec![0u8; n_tiles * 256];
     let maps_base = super::SendPtr(maps.as_mut_ptr());
 
-    // Phase 1: compute histogram + clip + CDF for each tile (parallel)
+    // compute histogram + clip + CDF for each tile (parallel)
     {
         gcd::parallel_for(n_tiles, |tile_idx| {
             let tr = tile_idx / tile_cols;
@@ -542,7 +542,7 @@ pub fn clahe_u8(
         });
     }
 
-    // Phase 2: interpolate between tile maps for each pixel (parallel by row)
+    // interpolate between tile maps for each pixel (parallel by row)
     let mut out = vec![0u8; npixels];
     let out_base = super::SendPtr(out.as_mut_ptr());
 

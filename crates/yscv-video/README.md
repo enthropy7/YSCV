@@ -1,8 +1,8 @@
 # yscv-video
 
-H.264 and HEVC video decoders, MP4/MKV container parsers, hardware decode, and camera input. Pure Rust, no FFmpeg.
+H.264, HEVC, and AV1 video decoders, MP4/MKV container parsers, hardware decode, and camera input. Pure Rust, no FFmpeg.
 
-```rust
+```rust,ignore
 use yscv_video::Mp4VideoReader;
 
 let mut reader = Mp4VideoReader::open("video.mp4")?;
@@ -16,7 +16,8 @@ while let Some(frame) = reader.next_frame()? {
 | Feature | Details |
 |---------|---------|
 | **H.264 decode** | CAVLC, CABAC, I/P/B slices, 4x4/8x8 DCT, weighted prediction |
-| **HEVC decode** | CTU quad-tree, branchless CABAC, 8-tap MC, SAO, deblock |
+| **HEVC decode** | CTU quad-tree, branchless CABAC, 8-tap MC, SAO, deblock, weighted prediction, parallel tile/WPP decode, Main 10/12, 4:2:2/4:4:4 |
+| **AV1 decode** | OBU parser, intra + inter prediction, 8-tap Lanczos MC, CDEF, deblock |
 | **MP4 parse** | Streaming moov-only reader, O(1) memory per frame |
 | **MKV parse** | EBML demuxer with frame index |
 | **HW decode** | VideoToolbox (macOS), VA-API (Linux), NVDEC, MediaFoundation |

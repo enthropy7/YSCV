@@ -2,7 +2,7 @@
 
 Object detection pipeline: YOLOv8/v11 decoding, NMS, heatmap detection, ROI pooling, and anchor generation.
 
-```rust
+```rust,ignore
 use yscv_detect::*;
 
 let detections = detect_people_from_rgb8(width, height, &rgb_data, 0.5, 3, 0.45, 100)?;

@@ -80,19 +80,15 @@ pub(super) fn exec_min_max(
 ) -> Result<(), OnnxError> {
     let mut result = get_tensor(env, &node.name, &node.inputs[0])?.clone();
     for inp in &node.inputs[1..] {
-        let other = get_tensor(env, &node.name, inp)?.clone();
+        let other = get_tensor(env, &node.name, inp)?;
         result = if is_max {
-            result
-                .maximum(&other)
-                .map_err(|e| OnnxError::DecodeFailed {
-                    message: e.to_string(),
-                })?
+            result.maximum(other).map_err(|e| OnnxError::DecodeFailed {
+                message: e.to_string(),
+            })?
         } else {
-            result
-                .minimum(&other)
-                .map_err(|e| OnnxError::DecodeFailed {
-                    message: e.to_string(),
-                })?
+            result.minimum(other).map_err(|e| OnnxError::DecodeFailed {
+                message: e.to_string(),
+            })?
         };
     }
     env.insert(node.outputs[0].clone(), result);

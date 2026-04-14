@@ -52,3 +52,4 @@ onnxruntime_profile__*.json
 *.log
 *.tmp
 .env
+private/

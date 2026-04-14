@@ -16,6 +16,57 @@ use super::hevc_decoder::{HevcSliceType, HevcSps};
 use super::hevc_syntax::HevcSliceCabacState;
 
 // ---------------------------------------------------------------------------
+// Thread-safe mutable pointer wrapper (for parallel CTU row processing)
+// ---------------------------------------------------------------------------
+
+/// Wrapper around a raw mutable pointer that implements `Send` and `Sync`.
+///
+/// # Safety
+///
+/// The caller must guarantee that:
+/// - The pointed-to memory lives at least as long as the `SendMutPtr`.
+/// - No two threads write to overlapping regions simultaneously (spatial
+///   partitioning must be enforced externally, e.g. per-CTU-row slicing).
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub(crate) struct SendMutPtr<T>(pub(crate) *mut T);
+
+// SAFETY: We enforce non-overlapping writes at the call site by partitioning
+// the output buffer into disjoint CTU rows before dispatching to threads.
+#[allow(unsafe_code)]
+unsafe impl<T> Send for SendMutPtr<T> {}
+// SAFETY: Same spatial-partitioning guarantee as Send — reads from shared
+// reference data are inherently safe; writes target disjoint regions only.
+#[allow(unsafe_code)]
+unsafe impl<T> Sync for SendMutPtr<T> {}
+
+impl<T> SendMutPtr<T> {
+    /// Extract the raw pointer. Takes `self` by value (Copy) so that
+    /// edition-2024 precise field captures pick up the Send wrapper,
+    /// not the non-Send `*mut T` field.
+    #[inline(always)]
+    #[allow(clippy::wrong_self_convention)]
+    pub(crate) fn as_ptr(self) -> *mut T {
+        self.0
+    }
+}
+
+impl<T> SendMutPtr<T> {
+    /// Create a non-owning `Vec` view over the pointed-to memory.
+    ///
+    /// # Safety
+    ///
+    /// - The pointer must be valid for `len` elements.
+    /// - The caller MUST call `std::mem::forget` on the returned Vec to
+    ///   prevent a double-free -- the original owner manages deallocation.
+    /// - No other thread may write to the same elements concurrently.
+    #[allow(dead_code, unsafe_code)]
+    pub(crate) unsafe fn as_vec(&self, len: usize) -> Vec<T> {
+        unsafe { Vec::from_raw_parts(self.0, len, len) }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reference picture
 // ---------------------------------------------------------------------------
 
@@ -1804,6 +1855,7 @@ mod tests {
             vps_id: 0,
             max_sub_layers: 1,
             chroma_format_idc: 1,
+            separate_colour_plane_flag: false,
             pic_width: 64,
             pic_height: 64,
             bit_depth_luma: 8,
@@ -1821,6 +1873,7 @@ mod tests {
             long_term_ref_pics_present: false,
             sps_temporal_mvp_enabled: false,
             strong_intra_smoothing_enabled: false,
+            lt_ref_pic_poc_lsb_sps: Vec::new(),
         }
     }
 }

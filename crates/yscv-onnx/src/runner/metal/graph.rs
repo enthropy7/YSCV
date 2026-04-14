@@ -2,32 +2,83 @@
 //! Builds an MPSGraph from the ONNX model, compiles it once,
 //! then executes as a single GPU dispatch — no per-op encoder transitions.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use metal::*;
 
 use yscv_kernels::KernelError;
 use yscv_kernels::metal_backend::mpsgraph::{
-    Conv2dDesc, MpsGraph, MpsGraphExecutable, MpsGraphTensorRef, Pool2dDesc,
+    Conv2dDesc, MpsGraph, MpsGraphExecutable, MpsGraphTensorRef, Pool2dDesc, PreparedInputs,
 };
 use yscv_tensor::Tensor;
 
 use crate::error::OnnxError;
-use crate::loader::{OnnxModel, OnnxNode};
+use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
 use crate::runner::{get_attr_float, get_attr_int, get_attr_ints};
 
-/// Compiled MPSGraph plan for inference.
+/// Graph-level description of one input: name, f32 placeholder, shape,
+/// element count. Shared across all pipeline slots — only the backing
+/// buffer differs per slot.
+struct InputDesc {
+    name: String,
+    placeholder: MpsGraphTensorRef,
+    shape: Vec<usize>,
+    elems: usize,
+}
+
+/// Per-slot backing buffer for one input.
+struct InputSlot {
+    buf: Buffer,
+}
+
+/// One pipeline slot: a complete, independent set of buffers + NSArrays
+/// for a single in-flight inference. The plan holds N slots (default 3 for
+/// triple-buffering); `submit` picks the next one round-robin. While the
+/// GPU works on slot k, the CPU can marshal slot (k+1) — no buffer
+/// aliasing, no stalls.
+struct PipelineSlot {
+    input_slots: Vec<InputSlot>,
+    prepared: PreparedInputs,
+    output_bufs: Vec<Buffer>,
+    /// Most recently committed command buffer for this slot, if any.
+    /// Reused as a completion fence: `submit` waits on it before reusing
+    /// this slot's buffers; `wait` consumes it to return outputs.
+    in_flight: RefCell<Option<CommandBuffer>>,
+}
+
+/// Compiled MPSGraph plan for inference — triple-buffered pipelined.
+///
+/// Every allocation that can be lifted out of the hot path is lifted:
+/// all per-slot MTL buffers, retained `MPSGraphTensorData` NSArrays, and
+/// compile-time graph state. In steady state each `submit` is only a
+/// handful of `memcpy`s + an `encodeToCommandBuffer` + `commit`; each
+/// `wait` is `waitUntilCompleted` + NEON-widened f16→f32 readback.
+///
+/// Outputs stay in f16 end-to-end (no final GPU `cast_to_f32`); the CPU
+/// widens during `wait` via aarch64 `vcvt_f32_f16` — 4 halves per
+/// instruction, effectively free relative to GPU latency.
 pub struct MpsGraphPlan {
     graph: MpsGraph,
     executable: MpsGraphExecutable,
     #[allow(dead_code)]
     device: Device,
     queue: CommandQueue,
-    input_placeholder: MpsGraphTensorRef,
-    input_shape: Vec<usize>,
-    input_buf: Buffer, // pre-allocated shared buffer for input
-    output_tensors: Vec<(String, MpsGraphTensorRef)>,
+    input_descs: Vec<InputDesc>,
+    slots: Vec<PipelineSlot>,
+    next_slot: Cell<usize>,
+    output_names: Vec<String>,
     output_shapes: Vec<Vec<usize>>,
+    output_bytes: Vec<usize>, // f16 bytes per output
+}
+
+/// Opaque handle returned by `submit_mpsgraph_plan`. Identifies which
+/// pipeline slot's buffers hold (or will hold) the result. Pass to
+/// `wait_mpsgraph_plan` to block until the GPU finishes and widen the
+/// outputs into a `HashMap<String, Tensor>`.
+#[must_use = "an InferenceHandle represents in-flight GPU work; wait on it or the next submit will back-pressure"]
+pub struct InferenceHandle {
+    slot_idx: usize,
 }
 
 impl MpsGraphPlan {
@@ -38,12 +89,25 @@ impl MpsGraphPlan {
 }
 
 /// Compile an ONNX model into an MPSGraph execution plan.
-/// The graph operates in NCHW layout with f16 precision throughout.
+///
+/// The graph operates in NCHW layout with f16 precision throughout — each user
+/// input is declared as an f32 placeholder, then an on-GPU cast to f16 feeds
+/// the rest of the graph. This avoids CPU-side f32→f16 conversion (Apple
+/// Silicon's ALU does the cast for free on read).
+///
+/// `inputs` is a slice of `(name, tensor)` pairs. One entry per ONNX graph
+/// input. Order is preserved in the returned plan; callers must pass the same
+/// names to `run_mpsgraph_plan` (order-independent — lookup is by name).
 pub fn compile_mpsgraph_plan(
     model: &OnnxModel,
-    input_name: &str,
-    input_tensor: &Tensor,
+    inputs: &[(&str, &Tensor)],
 ) -> Result<MpsGraphPlan, OnnxError> {
+    if inputs.is_empty() {
+        return Err(OnnxError::DecodeFailed {
+            message: "compile_mpsgraph_plan: at least one input required".to_string(),
+        });
+    }
+
     let graph = MpsGraph::new().ok_or_else(|| OnnxError::DecodeFailed {
         message: "Failed to create MPSGraph".to_string(),
     })?;
@@ -53,22 +117,30 @@ pub fn compile_mpsgraph_plan(
     })?;
     let queue = device.new_command_queue();
 
-    let input_shape = input_tensor.shape().to_vec();
-
-    // Create placeholder for the input tensor (NCHW, f32).
-    // We accept f32 from the caller and let MPSGraph cast to f16 on GPU — this avoids
-    // expensive CPU-side f32→f16 conversion (~3M elements for VballNet).
-    let input_placeholder_f32 = graph.placeholder_f32(&input_shape, input_name)?;
-    let input_f16 = graph.cast_to_f16(input_placeholder_f32)?;
-
-    // Map tensor name → MpsGraphTensorRef as we walk the graph.
-    // Use the f16-cast tensor so all downstream ops run in f16.
     let mut tensors: HashMap<String, MpsGraphTensorRef> = HashMap::new();
-    tensors.insert(input_name.to_string(), input_f16);
-
-    // Track shapes for output readback
     let mut cpu_shapes: HashMap<String, Vec<usize>> = HashMap::new();
-    cpu_shapes.insert(input_name.to_string(), input_shape.clone());
+
+    // One f32 placeholder + f16-cast per user input. These go into the graph
+    // once; per-pipeline-slot backing buffers are allocated after compile.
+    let mut input_descs: Vec<InputDesc> = Vec::with_capacity(inputs.len());
+    let mut input_placeholders_f32: Vec<(MpsGraphTensorRef, Vec<usize>)> =
+        Vec::with_capacity(inputs.len());
+    for (name, tensor) in inputs {
+        let shape = tensor.shape().to_vec();
+        let placeholder_f32 = graph.placeholder_f32(&shape, name)?;
+        let input_f16 = graph.cast_to_f16(placeholder_f32)?;
+        tensors.insert((*name).to_string(), input_f16);
+        cpu_shapes.insert((*name).to_string(), shape.clone());
+
+        let elems: usize = shape.iter().product();
+        input_descs.push(InputDesc {
+            name: (*name).to_string(),
+            placeholder: placeholder_f32,
+            shape: shape.clone(),
+            elems,
+        });
+        input_placeholders_f32.push((placeholder_f32, shape));
+    }
 
     // Upload initializers as constants.
     // Conv weights may have been pre-permuted OIHW→KHWC by the loader.
@@ -121,7 +193,10 @@ pub fn compile_mpsgraph_plan(
     }
 
     // Walk ONNX nodes and build graph ops
+    #[cfg(feature = "profile")]
     let debug = std::env::var("MPSGRAPH_DEBUG").is_ok();
+    #[cfg(not(feature = "profile"))]
+    let debug = false;
     for (i, node) in model.nodes.iter().enumerate() {
         if debug {
             eprintln!(
@@ -263,6 +338,46 @@ pub fn compile_mpsgraph_plan(
                 const_values.insert(node.outputs[0].clone(), values);
                 continue;
             }
+            "Constant" => {
+                // Extract f32 data + shape from the value attribute. Populate
+                // BOTH the graph-constant tensor map (for math consumers) and
+                // const_values (for compile-time shape consumers like Reshape).
+                let (data, shape) = if let Some(OnnxAttribute::Tensor(t)) =
+                    node.attributes.get("value")
+                {
+                    (t.data().to_vec(), t.shape().to_vec())
+                } else if let Some(OnnxAttribute::Float(v)) =
+                    node.attributes.get("value_float")
+                {
+                    (vec![*v], vec![1usize])
+                } else if let Some(OnnxAttribute::Int(v)) = node.attributes.get("value_int")
+                {
+                    (vec![*v as f32], vec![1usize])
+                } else if let Some(OnnxAttribute::Floats(v)) =
+                    node.attributes.get("value_floats")
+                {
+                    let n = v.len();
+                    (v.clone(), vec![n])
+                } else if let Some(OnnxAttribute::Ints(v)) = node.attributes.get("value_ints")
+                {
+                    let n = v.len();
+                    (v.iter().map(|&i| i as f32).collect(), vec![n])
+                } else {
+                    return Err(OnnxError::DecodeFailed {
+                        message: format!(
+                            "Constant node '{}' has no recognized value attribute",
+                            node.name
+                        ),
+                    });
+                };
+                const_values.insert(node.outputs[0].clone(), data.clone());
+                let stored_shape = if shape.is_empty() { vec![1usize] } else { shape };
+                cpu_shapes.insert(node.outputs[0].clone(), stored_shape.clone());
+                let f16_data: Vec<u16> = data.iter().map(|&v| f32_to_f16_bits(v)).collect();
+                let t = graph.constant_f16(&f16_data, &stored_shape)?;
+                tensors.insert(node.outputs[0].clone(), t);
+                continue;
+            }
             "ConstantOfShape" => {
                 let shape_vals = const_values
                     .get(&node.inputs[0])
@@ -325,24 +440,32 @@ pub fn compile_mpsgraph_plan(
     }
 
     // Collect output tensors
+    // Outputs stay in f16 all the way to the shared output buffer. The
+    // final f16→f32 widening happens on the CPU during Tensor construction
+    // — roughly 1 µs per kilo-element with NEON `vcvt_f32_f16`, and skips
+    // one GPU kernel + halves output writeback bandwidth.
     let mut output_tensors = Vec::new();
     let mut output_shapes = Vec::new();
     for out_name in &model.outputs {
         if let Some(&t) = tensors.get(out_name) {
-            // Cast output to f32 for readback
-            let t_f32 = graph.cast_to_f32(t)?;
-            output_tensors.push((out_name.clone(), t_f32));
+            output_tensors.push((out_name.clone(), t));
             let shape = cpu_shapes.get(out_name).cloned().unwrap_or_default();
             output_shapes.push(shape);
         }
     }
 
-    // Compile the graph — input is f32 (GPU casts to f16 internally)
-    let feeds = vec![(
-        input_placeholder_f32,
-        input_shape.as_slice(),
-        yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT32,
-    )];
+    // Compile the graph — all user inputs are f32 placeholders; the graph
+    // casts to f16 internally on GPU.
+    let feeds: Vec<(MpsGraphTensorRef, &[usize], u32)> = input_placeholders_f32
+        .iter()
+        .map(|(ph, shape)| {
+            (
+                *ph,
+                shape.as_slice(),
+                yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT32,
+            )
+        })
+        .collect();
     let target_refs: Vec<MpsGraphTensorRef> = output_tensors.iter().map(|(_, t)| *t).collect();
 
     let executable = graph
@@ -351,70 +474,289 @@ pub fn compile_mpsgraph_plan(
             message: "Failed to compile MPSGraph".to_string(),
         })?;
 
-    // Pre-allocate a shared input buffer (f32) to avoid per-run allocation.
-    let input_elems: usize = input_shape.iter().product();
-    let input_buf = device.new_buffer(
-        (input_elems * 4) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+    // --- Build N pipeline slots ---
+    //
+    // N defaults to 3 (triple-buffering). Override via `YSCV_MPS_PIPELINE`
+    // env var; values < 1 are clamped to 1 (sync), > 8 to 8 (diminishing
+    // returns on Apple Silicon's in-flight limit).
+    let pipeline_depth: usize = std::env::var("YSCV_MPS_PIPELINE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3)
+        .clamp(1, 8);
+
+    let output_bytes: Vec<usize> = output_shapes
+        .iter()
+        .map(|s| s.iter().product::<usize>() * 2) // f16 = 2 bytes/elem
+        .collect();
+
+    let mut slots: Vec<PipelineSlot> = Vec::with_capacity(pipeline_depth);
+    for _ in 0..pipeline_depth {
+        // Per-slot input buffers — one StorageModeShared Buffer per graph input.
+        let slot_input_slots: Vec<InputSlot> = input_descs
+            .iter()
+            .map(|d| InputSlot {
+                buf: device.new_buffer(
+                    (d.elems * 4) as u64,
+                    MTLResourceOptions::StorageModeShared,
+                ),
+            })
+            .collect();
+        // Per-slot output buffers (f16).
+        let slot_output_bufs: Vec<Buffer> = output_bytes
+            .iter()
+            .map(|&b| device.new_buffer(b as u64, MTLResourceOptions::StorageModeShared))
+            .collect();
+        // Retained NSArrays of MPSGraphTensorData, wrapping this slot's buffers.
+        let prepared_feeds: Vec<(MpsGraphTensorRef, &Buffer, &[usize], u32)> = input_descs
+            .iter()
+            .zip(slot_input_slots.iter())
+            .map(|(d, s)| {
+                (
+                    d.placeholder,
+                    &s.buf,
+                    d.shape.as_slice(),
+                    yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT32,
+                )
+            })
+            .collect();
+        let prepared_outputs: Vec<(&Buffer, &[usize], u32)> = slot_output_bufs
+            .iter()
+            .zip(output_shapes.iter())
+            .map(|(buf, shape)| {
+                (
+                    buf,
+                    shape.as_slice(),
+                    yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT16,
+                )
+            })
+            .collect();
+        let prepared = graph.prepare_inputs(&prepared_feeds, &prepared_outputs)?;
+
+        slots.push(PipelineSlot {
+            input_slots: slot_input_slots,
+            prepared,
+            output_bufs: slot_output_bufs,
+            in_flight: RefCell::new(None),
+        });
+    }
+
+    let output_names: Vec<String> = output_tensors.iter().map(|(n, _)| n.clone()).collect();
 
     Ok(MpsGraphPlan {
         graph,
         executable,
         device,
         queue,
-        input_placeholder: input_placeholder_f32,
-        input_shape,
-        input_buf,
-        output_tensors,
+        input_descs,
+        slots,
+        next_slot: Cell::new(0),
+        output_names,
         output_shapes,
+        output_bytes,
     })
 }
 
-/// Execute a compiled MPSGraph plan.
-pub fn run_mpsgraph_plan(
+/// Submit a frame to the pipeline without waiting for GPU completion.
+///
+/// Picks the next slot round-robin. If that slot still has an in-flight
+/// command buffer from a previous submit (because the caller has more
+/// outstanding frames than the pipeline depth), **blocks** on its
+/// completion before reusing its buffers — this is the back-pressure
+/// mechanism that keeps buffer ownership safe without copies.
+///
+/// Returns an `InferenceHandle` that must be passed to
+/// `wait_mpsgraph_plan` to retrieve outputs. Steady-state work per call:
+/// `k` memcpys into that slot's input buffers, an encode-into-command-buffer,
+/// a `commit()`. CPU returns immediately; GPU runs in the background.
+pub fn submit_mpsgraph_plan(
     plan: &MpsGraphPlan,
-    input_data: &[f32],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
-    // Copy f32 input into pre-allocated shared buffer (memcpy, no alloc).
-    // The graph casts f32→f16 on GPU (hardware path, essentially free).
-    let input_bytes = input_data.len() * 4;
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            input_data.as_ptr() as *const u8,
-            plan.input_buf.contents() as *mut u8,
-            input_bytes,
-        );
+    inputs: &[(&str, &[f32])],
+) -> Result<InferenceHandle, OnnxError> {
+    if inputs.len() != plan.input_descs.len() {
+        return Err(OnnxError::DecodeFailed {
+            message: format!(
+                "submit_mpsgraph_plan: expected {} inputs, got {}",
+                plan.input_descs.len(),
+                inputs.len()
+            ),
+        });
     }
-    let inputs = vec![(
-        plan.input_placeholder,
-        &plan.input_buf,
-        plan.input_shape.as_slice(),
-        yscv_kernels::metal_backend::mpsgraph::MPS_DATA_TYPE_FLOAT32,
-    )];
 
-    let out_bufs = plan
-        .graph
-        .run_with_buffers(&plan.executable, &plan.queue, &inputs)?;
+    // 1. Pick the next slot; bump ring index.
+    let slot_idx = plan.next_slot.get();
+    plan.next_slot.set((slot_idx + 1) % plan.slots.len());
+    let slot = &plan.slots[slot_idx];
 
-    // Read output buffers
-    let mut result = HashMap::new();
-    for (idx, (name, _)) in plan.output_tensors.iter().enumerate() {
-        if idx < out_bufs.len() {
-            let buf = &out_bufs[idx];
-            let shape = &plan.output_shapes[idx];
-            let n: usize = shape.iter().product();
-            let ptr = buf.contents() as *const f32;
-            let data = unsafe { std::slice::from_raw_parts(ptr, n).to_vec() };
-            let tensor =
-                Tensor::from_vec(shape.clone(), data).map_err(|e| OnnxError::DecodeFailed {
-                    message: e.to_string(),
-                })?;
-            result.insert(name.clone(), tensor);
+    // 2. If this slot is still in flight (ring went all the way around),
+    //    wait for it. In steady state with pipeline_depth ≥ 3 and one
+    //    outstanding handle at a time, this is a no-op; if the user
+    //    over-submits, this is the safety net.
+    if let Some(prev_cb) = slot.in_flight.borrow_mut().take() {
+        prev_cb.wait_until_completed();
+    }
+
+    // 3. Copy fresh user data into this slot's input buffers.
+    for (desc, in_slot) in plan.input_descs.iter().zip(slot.input_slots.iter()) {
+        let data = inputs
+            .iter()
+            .find(|(n, _)| *n == desc.name.as_str())
+            .map(|(_, d)| *d)
+            .ok_or_else(|| OnnxError::DecodeFailed {
+                message: format!("submit_mpsgraph_plan: missing input '{}'", desc.name),
+            })?;
+        if data.len() != desc.elems {
+            return Err(OnnxError::DecodeFailed {
+                message: format!(
+                    "submit_mpsgraph_plan: input '{}' expects {} f32s, got {}",
+                    desc.name,
+                    desc.elems,
+                    data.len()
+                ),
+            });
+        }
+        // SAFETY: `in_slot.buf` is StorageModeShared, sized `desc.elems*4`;
+        // length verified above. GPU casts f32→f16 on read.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                in_slot.buf.contents() as *mut u8,
+                desc.elems * 4,
+            );
         }
     }
 
+    // 4. Encode + commit through the MPS command-buffer wrapper. Returns
+    //    immediately — GPU work runs in the background until
+    //    `wait_until_completed()` is later called on this CB.
+    let cb = plan.queue.new_command_buffer();
+    plan.graph
+        .encode_and_commit_with_prepared(&plan.executable, cb, &slot.prepared)?;
+
+    // 5. Stash the command buffer in the slot so next reuse waits on it.
+    *slot.in_flight.borrow_mut() = Some(cb.to_owned());
+
+    Ok(InferenceHandle { slot_idx })
+}
+
+/// Wait for the GPU work associated with `handle` and return its outputs.
+///
+/// Blocks on the slot's command buffer (`wait_until_completed` is a
+/// Mach-semaphore sleep — CPU yields while GPU runs), then widens f16
+/// output buffers into f32 `Tensor`s using aarch64 `vcvt_f32_f16`.
+pub fn wait_mpsgraph_plan(
+    plan: &MpsGraphPlan,
+    handle: InferenceHandle,
+) -> Result<HashMap<String, Tensor>, OnnxError> {
+    let slot = &plan.slots[handle.slot_idx];
+
+    // Drain the in-flight command buffer. `take` leaves `None` so a
+    // subsequent `submit` to this slot won't double-wait. If a later
+    // submit re-enters this slot, it allocates a fresh CB.
+    if let Some(cb) = slot.in_flight.borrow_mut().take() {
+        cb.wait_until_completed();
+    }
+
+    // Widen f16 outputs → f32 Tensors.
+    let mut result = HashMap::with_capacity(plan.output_names.len());
+    for (idx, name) in plan.output_names.iter().enumerate() {
+        let buf = &slot.output_bufs[idx];
+        let shape = &plan.output_shapes[idx];
+        let n: usize = plan.output_bytes[idx] / 2;
+        // SAFETY: buf is StorageModeShared, sized `output_bytes[idx]`;
+        // MPSGraph wrote exactly `n` f16 (u16) values before the CB
+        // completed (verified by wait above).
+        #[allow(unsafe_code)]
+        let f16_slice =
+            unsafe { std::slice::from_raw_parts(buf.contents() as *const u16, n) };
+        let data = f16_slice_to_f32_vec(f16_slice);
+        let tensor =
+            Tensor::from_vec(shape.clone(), data).map_err(|e| OnnxError::DecodeFailed {
+                message: e.to_string(),
+            })?;
+        result.insert(name.clone(), tensor);
+    }
+
     Ok(result)
+}
+
+/// Synchronous wrapper — submits, waits, returns outputs. Equivalent to
+/// `let h = submit(...)?; wait(h)` but one line.
+///
+/// For highest throughput, callers who can tolerate latency-of-N-frames
+/// should use `submit_mpsgraph_plan` + `wait_mpsgraph_plan` directly and
+/// keep the pipeline saturated.
+pub fn run_mpsgraph_plan(
+    plan: &MpsGraphPlan,
+    inputs: &[(&str, &[f32])],
+) -> Result<HashMap<String, Tensor>, OnnxError> {
+    let handle = submit_mpsgraph_plan(plan, inputs)?;
+    wait_mpsgraph_plan(plan, handle)
+}
+
+/// Widen an f16 (IEEE-754 binary16) slice to f32. Uses aarch64 NEON
+/// `vcvt_f32_f16` (4 halves → 4 floats per instruction) on Apple Silicon;
+/// falls back to a scalar bit-pattern conversion elsewhere.
+#[inline]
+fn f16_slice_to_f32_vec(src: &[u16]) -> Vec<f32> {
+    let n = src.len();
+    let mut dst: Vec<f32> = Vec::with_capacity(n);
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    #[allow(unsafe_code)]
+    unsafe {
+        use std::arch::aarch64::{vcvt_f32_f16, vld1_u16, vreinterpret_f16_u16, vst1q_f32};
+        let dst_ptr = dst.as_mut_ptr();
+        let chunks = n / 4;
+        for i in 0..chunks {
+            let v = vld1_u16(src.as_ptr().add(i * 4));
+            let f = vcvt_f32_f16(vreinterpret_f16_u16(v));
+            vst1q_f32(dst_ptr.add(i * 4), f);
+        }
+        // Tail.
+        for i in (chunks * 4)..n {
+            *dst_ptr.add(i) = f16_bits_to_f32_scalar(*src.as_ptr().add(i));
+        }
+        dst.set_len(n);
+        return dst;
+    }
+    #[allow(unreachable_code)]
+    {
+        dst.extend(src.iter().map(|&b| f16_bits_to_f32_scalar(b)));
+        dst
+    }
+}
+
+/// Scalar IEEE-754 binary16 → f32 conversion. Used for the NEON tail and
+/// as the fallback on non-aarch64 hosts.
+#[inline]
+fn f16_bits_to_f32_scalar(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exp = (bits >> 10) & 0x1F;
+    let mant = (bits & 0x03FF) as u32;
+    if exp == 0 {
+        if mant == 0 {
+            return f32::from_bits(sign);
+        }
+        // Subnormal: normalize into f32 range.
+        let mut e = 0i32;
+        let mut m = mant;
+        while m & 0x0400 == 0 {
+            m <<= 1;
+            e += 1;
+        }
+        let f32_exp = ((127 - 15 - e) as u32) << 23;
+        let f32_man = (m & 0x03FF) << 13;
+        return f32::from_bits(sign | f32_exp | f32_man);
+    }
+    if exp == 31 {
+        // Inf or NaN.
+        let f32_bits = sign | 0x7F80_0000 | if mant != 0 { 0x0040_0000 } else { 0 };
+        return f32::from_bits(f32_bits);
+    }
+    let f32_exp = ((exp as u32).wrapping_add(112)) << 23;
+    let f32_man = mant << 13;
+    f32::from_bits(sign | f32_exp | f32_man)
 }
 
 /// Build a single ONNX node as MPSGraph operations.
@@ -508,10 +850,27 @@ fn build_graph_node(
             Ok(Some(vec![(node.outputs[0].clone(), out, shape)]))
         }
 
+        "Identity" => {
+            // Pass-through: output gets the same tensor ref as input.
+            // No GPU op — MPSGraph tensor refs are SSA-style handles so
+            // aliasing is semantically correct.
+            let input = try_get!(&node.inputs[0]);
+            let shape = get_shape(&node.inputs[0]);
+            Ok(Some(vec![(node.outputs[0].clone(), input, shape)]))
+        }
+
+
         "Sigmoid" => {
             let input = try_get!(&node.inputs[0]);
             let shape = get_shape(&node.inputs[0]);
             let out = graph.sigmoid(input);
+            Ok(Some(vec![(node.outputs[0].clone(), out, shape)]))
+        }
+
+        "Exp" => {
+            let input = try_get!(&node.inputs[0]);
+            let shape = get_shape(&node.inputs[0]);
+            let out = graph.exp(input);
             Ok(Some(vec![(node.outputs[0].clone(), out, shape)]))
         }
 

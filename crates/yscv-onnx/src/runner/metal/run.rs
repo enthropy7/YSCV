@@ -1,3 +1,10 @@
+//! # Safety contract
+//!
+//! Unsafe code in this module: **`from_raw_parts` on Metal buffer contents** —
+//! `Buffer::contents()` returns a raw pointer to GPU-shared memory. Safety: buffer
+//! length is known from the plan's shape metadata; reads occur only after GPU
+//! completion (`wait_until_completed`).
+
 use ::metal::*;
 use ::objc::rc::autoreleasepool;
 use std::collections::HashMap;
@@ -6,7 +13,9 @@ use super::dispatch::{dispatch_compute_op, dispatch_with_mps};
 use super::types::*;
 
 use yscv_kernels::KernelError;
-use yscv_kernels::metal_backend::metal_conv::{MetalEncoder, mps_gemm_f16_encode};
+use yscv_kernels::metal_backend::metal_conv::MetalEncoder;
+#[cfg(feature = "profile")]
+use yscv_kernels::metal_backend::metal_conv::mps_gemm_f16_encode;
 use yscv_tensor::Tensor;
 
 use crate::error::OnnxError;
@@ -843,6 +852,7 @@ pub fn run_metal_plan(
                         let n = cpu_vals.len();
                         if buf.length() as usize >= n * 2 {
                             let ptr = buf.contents() as *const u16;
+                            // SAFETY: buffer contents valid after GPU completion; n from plan metadata.
                             let slice = unsafe { std::slice::from_raw_parts(ptr, n) };
                             let mut max_diff = 0.0f32;
                             let mut sum_diff = 0.0f32;
@@ -862,64 +872,74 @@ pub fn run_metal_plan(
                     }
                 }
                 errors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                eprintln!("  [COMPARE] {} buffers with max_diff > 1.0:", errors.len());
-                for (name, max_diff, mean_diff, n) in errors.iter().take(30) {
-                    let shape = plan
-                        .buf_shapes
-                        .get(name)
-                        .map(|s| format!("{:?}", s))
-                        .unwrap_or_default();
-                    let nhwc = plan.buf_nhwc.get(name).copied().unwrap_or(false);
-                    let buf = plan.bufs.get(name).unwrap();
-                    let ptr = buf.contents() as *const u16;
-                    let slice = unsafe { std::slice::from_raw_parts(ptr, *n) };
-                    let cpu_ref_vals = plan.cpu_ref.get(name).unwrap();
-                    let show = 4.min(*n);
-                    let mtl_vals: Vec<f32> = (0..show).map(|i| f16_bits_to_f32(slice[i])).collect();
-                    let cpu_vals: Vec<f32> = cpu_ref_vals[..show].to_vec();
-                    eprintln!(
-                        "    '{}' {} nhwc={} max_diff={:.2} mean={:.4} mtl={:.3?} cpu={:.3?}",
-                        name, shape, nhwc, max_diff, mean_diff, mtl_vals, cpu_vals
-                    );
-                }
-                // Dump DFL softmax I/O for first few positions
-                let dfl_names = [
-                    "/model.22/dfl/Transpose_output_0",
-                    "/model.22/dfl/Softmax_output_0",
-                    "/model.22/dfl/Transpose_1_output_0",
-                    "/model.22/dfl/conv/Conv_output_0",
-                ];
-                for dfl_name in &dfl_names {
-                    if let Some(buf) = plan.bufs.get(*dfl_name) {
-                        let shape = plan.buf_shapes.get(*dfl_name).cloned().unwrap_or_default();
-                        let n: usize = shape.iter().product();
-                        if buf.length() as usize >= n * 2 && n > 0 {
-                            let ptr = buf.contents() as *const u16;
-                            let slice = unsafe { std::slice::from_raw_parts(ptr, n.min(1000)) };
-                            let vals: Vec<f32> =
-                                slice.iter().map(|&b| f16_bits_to_f32(b)).collect();
-                            let show = 32.min(vals.len());
-                            eprintln!("  [DFL] '{}' shape={:?} first {}:", dfl_name, shape, show);
-                            eprintln!("    mtl: {:?}", &vals[..show]);
-                            if let Some(cpu) = plan.cpu_ref.get(*dfl_name) {
-                                let cpu_show = show.min(cpu.len());
-                                eprintln!("    cpu: {:?}", &cpu[..cpu_show]);
-                            }
-                            // For softmax output: check sum along last dim (should be ~1.0)
-                            if dfl_name.contains("Softmax") && shape.len() == 4 && shape[3] > 0 {
-                                let dim = shape[3];
-                                let n_positions = 4.min(n / dim);
-                                for p in 0..n_positions {
-                                    let start = p * dim;
-                                    let end = start + dim;
-                                    if end <= vals.len() {
-                                        let sum: f32 = vals[start..end].iter().sum();
-                                        eprintln!(
-                                            "    pos {} sum={:.6} vals[0..4]={:.4?}",
-                                            p,
-                                            sum,
-                                            &vals[start..start + 4.min(dim)]
-                                        );
+                #[cfg(feature = "profile")]
+                {
+                    eprintln!("  [COMPARE] {} buffers with max_diff > 1.0:", errors.len());
+                    for (name, max_diff, mean_diff, n) in errors.iter().take(30) {
+                        let shape = plan
+                            .buf_shapes
+                            .get(name)
+                            .map(|s| format!("{:?}", s))
+                            .unwrap_or_default();
+                        let nhwc = plan.buf_nhwc.get(name).copied().unwrap_or(false);
+                        let buf = plan.bufs.get(name).unwrap();
+                        let ptr = buf.contents() as *const u16;
+                        // SAFETY: buffer contents valid after GPU completion; *n from plan metadata.
+                        let slice = unsafe { std::slice::from_raw_parts(ptr, *n) };
+                        let cpu_ref_vals = plan.cpu_ref.get(name).unwrap();
+                        let show = 4.min(*n);
+                        let mtl_vals: Vec<f32> =
+                            (0..show).map(|i| f16_bits_to_f32(slice[i])).collect();
+                        let cpu_vals: Vec<f32> = cpu_ref_vals[..show].to_vec();
+                        eprintln!(
+                            "    '{}' {} nhwc={} max_diff={:.2} mean={:.4} mtl={:.3?} cpu={:.3?}",
+                            name, shape, nhwc, max_diff, mean_diff, mtl_vals, cpu_vals
+                        );
+                    }
+                    // Dump DFL softmax I/O for first few positions
+                    let dfl_names = [
+                        "/model.22/dfl/Transpose_output_0",
+                        "/model.22/dfl/Softmax_output_0",
+                        "/model.22/dfl/Transpose_1_output_0",
+                        "/model.22/dfl/conv/Conv_output_0",
+                    ];
+                    for dfl_name in &dfl_names {
+                        if let Some(buf) = plan.bufs.get(*dfl_name) {
+                            let shape = plan.buf_shapes.get(*dfl_name).cloned().unwrap_or_default();
+                            let n: usize = shape.iter().product();
+                            if buf.length() as usize >= n * 2 && n > 0 {
+                                let ptr = buf.contents() as *const u16;
+                                // SAFETY: buffer contents valid after GPU completion; n bounded by buf.length() check above.
+                                let slice = unsafe { std::slice::from_raw_parts(ptr, n.min(1000)) };
+                                let vals: Vec<f32> =
+                                    slice.iter().map(|&b| f16_bits_to_f32(b)).collect();
+                                let show = 32.min(vals.len());
+                                eprintln!(
+                                    "  [DFL] '{}' shape={:?} first {}:",
+                                    dfl_name, shape, show
+                                );
+                                eprintln!("    mtl: {:?}", &vals[..show]);
+                                if let Some(cpu) = plan.cpu_ref.get(*dfl_name) {
+                                    let cpu_show = show.min(cpu.len());
+                                    eprintln!("    cpu: {:?}", &cpu[..cpu_show]);
+                                }
+                                // For softmax output: check sum along last dim (should be ~1.0)
+                                if dfl_name.contains("Softmax") && shape.len() == 4 && shape[3] > 0
+                                {
+                                    let dim = shape[3];
+                                    let n_positions = 4.min(n / dim);
+                                    for p in 0..n_positions {
+                                        let start = p * dim;
+                                        let end = start + dim;
+                                        if end <= vals.len() {
+                                            let sum: f32 = vals[start..end].iter().sum();
+                                            eprintln!(
+                                                "    pos {} sum={:.6} vals[0..4]={:.4?}",
+                                                p,
+                                                sum,
+                                                &vals[start..start + 4.min(dim)]
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -929,6 +949,7 @@ pub fn run_metal_plan(
             }
 
             let t_gpu_done = t0.elapsed();
+            #[cfg(feature = "profile")]
             if std::env::var("METAL_TIMING").is_ok() {
                 eprintln!(
                     "  [TIMING] upload={:.2}ms  encode={:.2}ms  gpu={:.2}ms  total={:.2}ms",
@@ -943,6 +964,7 @@ pub fn run_metal_plan(
         let t_gpu = t0.elapsed();
 
         // Per-op-type profiling: encode each op type in isolation to measure GPU time
+        #[cfg(feature = "profile")]
         if std::env::var("METAL_PROFILE").is_ok() {
             // Group ops by type name
             let op_name = |op: &MetalOp| -> &'static str {
@@ -1211,7 +1233,11 @@ pub fn run_metal_plan(
                 individual_ops.push((detail, dur));
             }
             let mut sorted: Vec<_> = type_times.into_iter().collect();
-            sorted.sort_by(|a, b| b.1.0.partial_cmp(&a.1.0).unwrap());
+            sorted.sort_by(|a, b| {
+                b.1.0
+                    .partial_cmp(&a.1.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             let total_prof: f64 = sorted.iter().map(|x| x.1.0).sum();
             eprintln!(
                 "  [PROFILE] Per-op-type GPU time (total={:.2}ms):",
@@ -1227,7 +1253,8 @@ pub fn run_metal_plan(
                 );
             }
             // Top 20 individual ops
-            individual_ops.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            individual_ops
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             eprintln!("  [PROFILE] Top 20 individual ops:");
             for (detail, ms) in individual_ops.iter().take(20) {
                 eprintln!("    {:.3}ms  {}", ms, detail);
@@ -1235,6 +1262,7 @@ pub fn run_metal_plan(
         }
 
         // Debug: find first op that produces NaN in its output buffer
+        #[cfg(feature = "profile")]
         if std::env::var("METAL_NAN").is_ok() {
             for (idx, op) in plan.ops.iter().enumerate() {
                 let (out_name, n_elems) = match op {
@@ -1444,6 +1472,7 @@ pub fn run_metal_plan(
             }
         }
 
+        #[cfg(feature = "profile")]
         if std::env::var("METAL_TIME").is_ok() {
             eprintln!(
                 "  [metal] upload={:.2}ms encode={:.2}ms gpu={:.2}ms",
@@ -1454,6 +1483,7 @@ pub fn run_metal_plan(
         }
 
         // Debug: compare all Metal buffers against CPU reference (works for both MPS and non-MPS paths)
+        #[cfg(feature = "profile")]
         if !plan.cpu_ref.is_empty() && std::env::var("METAL_COMPARE").is_ok() {
             #[inline]
             fn f16_to_f32(bits: u16) -> f32 {
@@ -1494,6 +1524,7 @@ pub fn run_metal_plan(
                         let mut max_diff = 0.0f32;
                         if is_f32 {
                             let ptr = buf.contents() as *const f32;
+                            // SAFETY: buffer contents valid after GPU completion; n from plan metadata.
                             let slice = unsafe { std::slice::from_raw_parts(ptr, n) };
                             for i in 0..n {
                                 let d = (slice[i] - cpu_vals[i]).abs();
@@ -1503,6 +1534,7 @@ pub fn run_metal_plan(
                             }
                         } else {
                             let ptr = buf.contents() as *const u16;
+                            // SAFETY: buffer contents valid after GPU completion; n from plan metadata.
                             let slice = unsafe { std::slice::from_raw_parts(ptr, n) };
                             for i in 0..n {
                                 let d = (f16_to_f32(slice[i]) - cpu_vals[i]).abs();
@@ -1514,10 +1546,12 @@ pub fn run_metal_plan(
                         if max_diff > 0.5 {
                             let nans = if is_f32 {
                                 let ptr = buf.contents() as *const f32;
+                                // SAFETY: buffer contents valid after GPU completion; n from plan metadata.
                                 let slice = unsafe { std::slice::from_raw_parts(ptr, n) };
                                 (0..n).filter(|&i| slice[i].is_nan()).count()
                             } else {
                                 let ptr = buf.contents() as *const u16;
+                                // SAFETY: buffer contents valid after GPU completion; n from plan metadata.
                                 let slice = unsafe { std::slice::from_raw_parts(ptr, n) };
                                 (0..n).filter(|&i| f16_to_f32(slice[i]).is_nan()).count()
                             };
@@ -1541,10 +1575,12 @@ pub fn run_metal_plan(
                 let show = 6.min(*n);
                 let mtl: Vec<f32> = if is_f32 {
                     let ptr = buf.contents() as *const f32;
+                    // SAFETY: buffer contents valid after GPU completion; *n from plan metadata.
                     let slice = unsafe { std::slice::from_raw_parts(ptr, *n) };
                     (0..show).map(|i| slice[i]).collect()
                 } else {
                     let ptr = buf.contents() as *const u16;
+                    // SAFETY: buffer contents valid after GPU completion; *n from plan metadata.
                     let slice = unsafe { std::slice::from_raw_parts(ptr, *n) };
                     (0..show).map(|i| f16_to_f32(slice[i])).collect()
                 };
@@ -1558,7 +1594,10 @@ pub fn run_metal_plan(
 
         // Download outputs inside autoreleasepool (read from _f32out buffers cast from f16)
         let mut result = HashMap::new();
+        #[cfg(feature = "profile")]
         let debug_dl = std::env::var("METAL_DEBUG_DL").is_ok();
+        #[cfg(not(feature = "profile"))]
+        let debug_dl = false;
         for name in &plan.output_names {
             let f32out_name = format!("{}_f32out", name);
             let read_name = if plan.bufs.contains_key(&f32out_name) {
@@ -1583,6 +1622,7 @@ pub fn run_metal_plan(
                         let f16_ptr = f16_buf.contents() as *const u16;
                         let show = 8.min(n);
                         let raw_f16: Vec<u16> =
+                            // SAFETY: buffer contents valid after GPU completion; show <= buf length.
                             unsafe { std::slice::from_raw_parts(f16_ptr, show).to_vec() };
                         let f16_as_f32: Vec<f32> = raw_f16
                             .iter()
@@ -1635,6 +1675,7 @@ pub fn run_metal_plan(
             }
         }
 
+        #[cfg(feature = "profile")]
         if std::env::var("METAL_TIMING2").is_ok() {
             eprintln!(
                 "  [TIMING2] total_with_readback={:.2}ms",

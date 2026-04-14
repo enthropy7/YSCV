@@ -19,9 +19,13 @@ vaapi = []         # Linux: VA-API HW decode
 nvdec = []         # NVIDIA: NVDEC HW decode (Linux/Windows)
 media-foundation = [] # Windows: Media Foundation HW decode
 hw-decode = []     # Enable auto-dispatch (tries HW, falls back to SW)
+rga = ["dep:libc"] # Rockchip RGA hardware 2D blitter (overlay/scale/format-convert)
+drm = ["dep:libc"] # Linux DRM/KMS atomic modeset output
 
 [dependencies]
+arc-swap = "1"
 bytes = "1"
+libc = { version = "0.2", optional = true }
 nokhwa = { version = "0.10.10", optional = true, default-features = false, features = ["input-native"] }
 rayon = "1.11"
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
@@ -35,10 +39,14 @@ thiserror.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1"
 
 [[bench]]
 name = "normalize_rgb8"
 harness = false
+
+[package.metadata.docs.rs]
+features = ["videotoolbox"]
 
 [lints]
 workspace = true

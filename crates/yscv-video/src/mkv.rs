@@ -28,6 +28,7 @@ const TIMECODE: u32 = 0xE7;
 pub enum MkvCodec {
     H264,
     Hevc,
+    Av1,
     Unknown,
 }
 
@@ -60,7 +61,7 @@ impl MkvDemuxer {
     ///
     /// **Warning**: currently reads the entire file into memory.
     /// For files > 256MB, consider using `Mp4VideoReader` instead.
-    /// TODO: streaming MKV parser.
+    /// A streaming MKV parser could reduce memory usage for large files.
     pub fn open(path: &std::path::Path) -> Result<Self, VideoError> {
         // Check file size to prevent OOM
         let meta = std::fs::metadata(path)
@@ -252,6 +253,7 @@ impl MkvDemuxer {
             self.codec = match codec_id.as_str() {
                 "V_MPEG4/ISO/AVC" => MkvCodec::H264,
                 "V_MPEGH/ISO/HEVC" => MkvCodec::Hevc,
+                "V_AV1" => MkvCodec::Av1,
                 _ => MkvCodec::Unknown,
             };
             self.codec_private = codec_private;

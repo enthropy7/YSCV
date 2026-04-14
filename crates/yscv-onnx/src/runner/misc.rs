@@ -604,10 +604,10 @@ pub(super) fn exec_variadic_mean(node: &OnnxNode, env: &mut TensorEnv) -> Result
     let n = node.inputs.len() as f32;
     let mut acc = first.data().to_vec();
     for inp in &node.inputs[1..] {
-        let t = get_tensor(env, &node.name, inp)?.clone();
-        for (a, &b) in acc.iter_mut().zip(t.data().iter()) {
-            *a += b;
-        }
+        let t = get_tensor(env, &node.name, inp)?;
+        acc.iter_mut()
+            .zip(t.data().iter())
+            .for_each(|(a, &b)| *a += b);
     }
     for v in &mut acc {
         *v /= n;
@@ -624,10 +624,10 @@ pub(super) fn exec_variadic_sum(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     let first = get_tensor(env, &node.name, &node.inputs[0])?;
     let mut acc = first.data().to_vec();
     for inp in &node.inputs[1..] {
-        let t = get_tensor(env, &node.name, inp)?.clone();
-        for (a, &b) in acc.iter_mut().zip(t.data().iter()) {
-            *a += b;
-        }
+        let t = get_tensor(env, &node.name, inp)?;
+        acc.iter_mut()
+            .zip(t.data().iter())
+            .for_each(|(a, &b)| *a += b);
     }
     let out =
         Tensor::from_vec(first.shape().to_vec(), acc).map_err(|e| OnnxError::DecodeFailed {

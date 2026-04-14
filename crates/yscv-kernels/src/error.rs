@@ -212,4 +212,9 @@ pub enum KernelError {
     },
     #[error("GPU backend error: {message}")]
     Gpu { message: String },
+    #[cfg(feature = "rknn")]
+    #[error("RKNN backend error: {message}")]
+    Rknn { message: String },
+    #[error("unsupported operation: {0}")]
+    UnsupportedOperation(String),
 }

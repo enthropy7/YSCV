@@ -9,6 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+yscv-imgproc = { path = "../crates/yscv-imgproc" }
+yscv-onnx = { path = "../crates/yscv-onnx" }
 yscv-video = { path = "../crates/yscv-video" }
 
 # Prevent this from interfering with workspaces
@@ -28,4 +30,14 @@ doc = false
 [[bin]]
 name = "fuzz_mkv"
 path = "fuzz_targets/fuzz_mkv.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_onnx_load"
+path = "fuzz_targets/fuzz_onnx_load.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_image_decode"
+path = "fuzz_targets/fuzz_image_decode.rs"
 doc = false

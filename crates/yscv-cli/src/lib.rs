@@ -1,4 +1,4 @@
-//! CLI utilities and pipeline helpers for yscv.
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
 pub mod benchmark;

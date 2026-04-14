@@ -23,5 +23,8 @@ yscv-eval = { version = "0.1", path = "../yscv-eval" }
 yscv-cli = { version = "0.1", path = "../yscv-cli" }
 yscv-onnx = { version = "0.1", path = "../yscv-onnx" }
 
+[package.metadata.docs.rs]
+all-features = true
+
 [lints]
 workspace = true

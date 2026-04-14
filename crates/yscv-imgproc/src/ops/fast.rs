@@ -1,3 +1,11 @@
+//! # Safety contract
+//!
+//! Unsafe code categories:
+//! 1. **SIMD intrinsics (NEON / SSE)** — ISA guard via runtime detection; used for cardinal
+//!    early-rejection test (4 pixels at a time).
+//! 2. **`get_unchecked`** — pixel indices are within the 3-pixel border margin enforced by
+//!    `y_start=3, y_end=h-3, x_start=3, x_end=w-3`.
+
 use yscv_tensor::Tensor;
 
 use super::super::ImgProcError;
@@ -131,6 +139,7 @@ pub fn fast9_detect_raw(
             #[cfg(target_arch = "aarch64")]
             if std::arch::is_aarch64_feature_detected!("neon") {
                 while x + 4 <= x_end {
+                    // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =
                         unsafe { fast9_cardinal_check_neon(data, row_base + x, &card, threshold) };
                     if pass_mask == 0 {
@@ -141,6 +150,7 @@ pub fn fast9_detect_raw(
                         if (pass_mask >> i) & 1 != 0 {
                             let cx = x + i;
                             let idx = row_base + cx;
+                            // SAFETY: bounds checked by border range [border, w-border).
                             let max_run =
                                 unsafe { fast9_full_check(data, idx, &offsets, threshold) };
                             if max_run >= 9 {
@@ -161,6 +171,7 @@ pub fn fast9_detect_raw(
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             if std::is_x86_feature_detected!("sse") {
                 while x + 4 <= x_end {
+                    // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =
                         unsafe { fast9_cardinal_check_sse(data, row_base + x, &card, threshold) };
                     if pass_mask == 0 {
@@ -171,6 +182,7 @@ pub fn fast9_detect_raw(
                         if (pass_mask >> i) & 1 != 0 {
                             let cx = x + i;
                             let idx = row_base + cx;
+                            // SAFETY: bounds checked by border range [border, w-border).
                             let max_run =
                                 unsafe { fast9_full_check(data, idx, &offsets, threshold) };
                             if max_run >= 9 {
@@ -190,12 +202,14 @@ pub fn fast9_detect_raw(
 
             while x < x_end {
                 let idx = row_base + x;
+                // SAFETY: bounds checked by border range [border, w-border).
                 let center = unsafe { *data.get_unchecked(idx) };
                 let bright_thresh = center + threshold;
                 let dark_thresh = center - threshold;
                 let mut bright_count = 0u32;
                 let mut dark_count = 0u32;
                 for &co in &card {
+                    // SAFETY: bounds checked by border range; cardinal offsets within 3-pixel radius.
                     let v = unsafe { *data.get_unchecked((idx as isize + co) as usize) };
                     bright_count += (v > bright_thresh) as u32;
                     dark_count += (v < dark_thresh) as u32;
@@ -204,6 +218,7 @@ pub fn fast9_detect_raw(
                     x += 1;
                     continue;
                 }
+                // SAFETY: bounds checked by border range [border, w-border).
                 let max_run = unsafe { fast9_full_check(data, idx, &offsets, threshold) };
                 if max_run >= 9 {
                     row_kps.push(Keypoint {
@@ -241,6 +256,7 @@ pub fn fast9_detect_raw(
             #[cfg(target_arch = "aarch64")]
             if std::arch::is_aarch64_feature_detected!("neon") {
                 while x + 4 <= x_end {
+                    // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =
                         unsafe { fast9_cardinal_check_neon(data, row_base + x, &card, threshold) };
                     // If no pixels passed cardinal check, skip all 4
@@ -253,6 +269,7 @@ pub fn fast9_detect_raw(
                         if (pass_mask >> i) & 1 != 0 {
                             let cx = x + i;
                             let idx = row_base + cx;
+                            // SAFETY: bounds checked by border range [border, w-border).
                             let max_run =
                                 unsafe { fast9_full_check(data, idx, &offsets, threshold) };
                             if max_run >= 9 {
@@ -273,6 +290,7 @@ pub fn fast9_detect_raw(
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             if std::is_x86_feature_detected!("sse") {
                 while x + 4 <= x_end {
+                    // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =
                         unsafe { fast9_cardinal_check_sse(data, row_base + x, &card, threshold) };
                     if pass_mask == 0 {
@@ -283,6 +301,7 @@ pub fn fast9_detect_raw(
                         if (pass_mask >> i) & 1 != 0 {
                             let cx = x + i;
                             let idx = row_base + cx;
+                            // SAFETY: bounds checked by border range [border, w-border).
                             let max_run =
                                 unsafe { fast9_full_check(data, idx, &offsets, threshold) };
                             if max_run >= 9 {
@@ -303,6 +322,7 @@ pub fn fast9_detect_raw(
             // Scalar tail for remaining pixels
             while x < x_end {
                 let idx = row_base + x;
+                // SAFETY: bounds checked by border range [border, w-border).
                 let center = unsafe { *data.get_unchecked(idx) };
                 let bright_thresh = center + threshold;
                 let dark_thresh = center - threshold;
@@ -310,6 +330,7 @@ pub fn fast9_detect_raw(
                 let mut bright_count = 0u32;
                 let mut dark_count = 0u32;
                 for &co in &card {
+                    // SAFETY: bounds checked by border range; cardinal offsets within 3-pixel radius.
                     let v = unsafe { *data.get_unchecked((idx as isize + co) as usize) };
                     bright_count += (v > bright_thresh) as u32;
                     dark_count += (v < dark_thresh) as u32;
@@ -319,6 +340,7 @@ pub fn fast9_detect_raw(
                     continue;
                 }
 
+                // SAFETY: bounds checked by border range [border, w-border).
                 let max_run = unsafe { fast9_full_check(data, idx, &offsets, threshold) };
                 if max_run >= 9 {
                     corners.push(Keypoint {

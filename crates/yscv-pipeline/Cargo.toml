@@ -1,0 +1,47 @@
+[package]
+name = "yscv-pipeline"
+description = "TOML-driven pipeline configuration + multi-accelerator dispatch for FPV/edge deployments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[features]
+default = []
+rknn = ["yscv-kernels/rknn"]
+# Enables dry-run load of `.rknn` files inside `validate_models` using the
+# SDK itself. Requires `rknn` + a loadable `librknnrt.so` at runtime; on
+# hosts where the library is missing, validation falls through the magic
+# check only. Separate from `rknn` so hosts that just want to cross-check
+# magic bytes don't pay for the optional runtime parse.
+rknn-validate = ["rknn"]
+gpu = ["yscv-kernels/gpu", "yscv-onnx/gpu"]
+metal-backend = ["yscv-kernels/metal-backend", "yscv-onnx/metal-backend"]
+# Wires `run_pipeline` to call `yscv_video::realtime::apply_rt_config`
+# when the TOML sets `[realtime] sched_fifo = true`. Pulls in yscv-video
+# as a dep; off by default so library consumers who don't run the
+# real-time stack don't carry the extra compile weight.
+realtime = ["dep:yscv-video"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+yscv-kernels = { version = "0.1", path = "../yscv-kernels" }
+yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
+# CpuDispatcher path needs the CPU ONNX runtime. Default-features off so we
+# don't drag BLAS into library consumers unless they ask.
+yscv-onnx = { version = "0.1", path = "../yscv-onnx" }
+# Optional: enables `realtime` feature — SCHED_FIFO + affinity + mlockall
+# wired from the TOML's `[realtime]` section. yscv-video pulls hardware
+# deps so we gate this on the feature.
+yscv-video = { version = "0.1", path = "../yscv-video", optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true

@@ -2,7 +2,7 @@
 
 SIMD-accelerated tensor library. 115 `Tensor` operations in `ops.rs`, f32/f16/bf16 support, NumPy-style broadcasting, 32-byte aligned memory.
 
-```rust
+```rust,ignore
 use yscv_tensor::Tensor;
 
 let a = Tensor::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])?;

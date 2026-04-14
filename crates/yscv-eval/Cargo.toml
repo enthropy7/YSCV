@@ -26,5 +26,8 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 name = "eval_metrics_ops"
 harness = false
 
+[package.metadata.docs.rs]
+all-features = true
+
 [lints]
 workspace = true

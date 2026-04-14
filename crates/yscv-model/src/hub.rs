@@ -139,6 +139,42 @@ fn build_registry() -> HashMap<String, HubEntry> {
             filename: "alexnet.safetensors".into(),
         },
     );
+    m.insert(
+        "clip_vit_b32".into(),
+        HubEntry {
+            url:
+                "https://huggingface.co/openai/clip-vit-base-patch32/resolve/main/model.safetensors"
+                    .into(),
+            expected_size: 605_552_640,
+            filename: "clip_vit_b32.safetensors".into(),
+        },
+    );
+    m.insert(
+        "dinov2_vit_s14".into(),
+        HubEntry {
+            url: "https://huggingface.co/facebook/dinov2-small/resolve/main/model.safetensors"
+                .into(),
+            expected_size: 88_222_464,
+            filename: "dinov2_vit_s14.safetensors".into(),
+        },
+    );
+    m.insert(
+        "whisper_tiny".into(),
+        HubEntry {
+            url: "https://huggingface.co/openai/whisper-tiny/resolve/main/model.safetensors".into(),
+            expected_size: 151_127_872,
+            filename: "whisper_tiny.safetensors".into(),
+        },
+    );
+    m.insert(
+        "sam_vit_b".into(),
+        HubEntry {
+            url: "https://huggingface.co/facebook/sam-vit-base/resolve/main/model.safetensors"
+                .into(),
+            expected_size: 375_042_048,
+            filename: "sam_vit_b.safetensors".into(),
+        },
+    );
 
     m
 }

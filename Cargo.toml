@@ -16,6 +16,8 @@ members = [
     "crates/yscv-eval",
     "crates/yscv-cli",
     "crates/yscv-onnx",
+    "crates/yscv-pipeline",
+    "crates/yscv-video-mpp",
     "crates/yscv",
     "examples",
 ]
@@ -29,7 +31,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 version = "0.1.7"
 authors = ["yscv contributors"]
-rust-version = "1.92"
+rust-version = "1.94"
 description = "Pure Rust computer vision and deep learning framework — image processing, neural network training, ONNX inference, object detection, tracking, and recognition in a single binary"
 repository = "https://github.com/enthropy7/yscv"
 categories = ["computer-vision", "science", "algorithms", "multimedia"]

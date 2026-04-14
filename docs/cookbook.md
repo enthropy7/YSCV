@@ -17,7 +17,12 @@ Practical recipes for common tasks. Each recipe is self-contained — copy, past
 11. [Video Processing](#video-processing)
 12. [Cross-Compilation and Deployment](#cross-compilation-and-deployment)
 13. [Feature Flags Reference](#feature-flags-reference)
-14. [Benchmarking](#benchmarking)
+14. [INT4 Quantization](#int4-quantization)
+15. [LLM Text Generation](#llm-text-generation)
+16. [AV1 Video Decode](#av1-video-decode)
+17. [Benchmarking](#benchmarking)
+18. [Edge Pipeline](#edge-pipeline)
+19. [Rockchip NPU (RKNN)](#rockchip-npu-rknn)
 
 ---
 
@@ -320,13 +325,15 @@ cargo run --release --features gpu
 
 ### Option B: Metal MPSGraph (macOS only — fastest)
 
-MPSGraph compiles the entire ONNX model into a single GPU dispatch. This is the fastest path on Apple Silicon.
+MPSGraph compiles the entire ONNX model into a single GPU dispatch and runs it triple-buffered. For sustained inference, the pipelined API (`submit_mpsgraph_plan` + `wait_mpsgraph_plan`) lets CPU-side marshaling overlap GPU work — ~3–5× higher throughput than the sync path.
 
 ```toml
 # Cargo.toml
 yscv-onnx = { version = "0.1", features = ["metal-backend"] }
 yscv-kernels = { version = "0.1", features = ["metal-backend"] }
 ```
+
+**Single-shot latency (sync):**
 
 ```rust
 use yscv_onnx::{
@@ -340,12 +347,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_name = model.inputs[0].clone();
     let input = Tensor::from_vec(vec![1, 3, 640, 640], vec![0.5f32; 1*3*640*640])?;
 
-    // Compile the graph (one-time cost, ~10-30ms)
-    let plan = compile_mpsgraph_plan(&model, &input_name, &input)?;
+    // Compile the graph once (10-80ms depending on model).
+    // Pipeline depth is controlled by YSCV_MPS_PIPELINE (default 3).
+    let plan = compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input)])?;
 
-    // Run — input as raw f32 slice
+    // Sync run — submit + wait in one call. Multi-input models pass
+    // multiple (name, &[f32]) pairs; lookup is by name.
     let input_data = vec![0.5f32; 1 * 3 * 640 * 640];
-    let outputs = run_mpsgraph_plan(&plan, &input_data)?;
+    let outputs =
+        run_mpsgraph_plan(&plan, &[(input_name.as_str(), input_data.as_slice())])?;
     for (name, t) in &outputs {
         println!("{}: {:?}", name, t.shape());
     }
@@ -353,8 +363,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+**Sustained throughput (pipelined):**
+
+```rust
+use std::collections::VecDeque;
+use yscv_onnx::{
+    compile_mpsgraph_plan, submit_mpsgraph_plan, wait_mpsgraph_plan, InferenceHandle,
+};
+
+let plan = compile_mpsgraph_plan(&model, &[(name, &input)])?;
+let feeds = [(name, input_data.as_slice())];
+
+// Prime the pipeline — 2 or 3 in-flight frames is the sweet spot.
+let depth = 3;
+let mut in_flight: VecDeque<InferenceHandle> = (0..depth)
+    .map(|_| submit_mpsgraph_plan(&plan, &feeds))
+    .collect::<Result<_, _>>()?;
+
+// Steady state: wait on oldest, submit new — GPU is always busy.
+for _ in 0..1000 {
+    let oldest = in_flight.pop_front().unwrap();
+    let outputs = wait_mpsgraph_plan(&plan, oldest)?;
+    // … consume outputs …
+    in_flight.push_back(submit_mpsgraph_plan(&plan, &feeds)?);
+}
+// Drain.
+while let Some(h) = in_flight.pop_front() {
+    let _ = wait_mpsgraph_plan(&plan, h)?;
+}
+```
+
+The plan allocates `YSCV_MPS_PIPELINE` independent buffer-sets (default `3`, clamped `1..=8`). If the caller tries to submit more outstanding frames than the pipeline depth, `submit_mpsgraph_plan` transparently blocks on the oldest slot's previous command buffer — built-in back-pressure, no buffer aliasing.
+
 ```bash
 cargo run --release --features metal-backend
+# Override pipeline depth:
+YSCV_MPS_PIPELINE=4 cargo run --release --features metal-backend
 ```
 
 ### Option C: Metal per-op (fallback for unsupported models)
@@ -468,7 +512,7 @@ MPSGraph (3.5ms)  →  Metal per-op (12.1ms)  →  CPU (31.7ms)
 // Try MPSGraph → Metal per-op → CPU
 #[cfg(feature = "metal-backend")]
 {
-    match compile_mpsgraph_plan(&model, "images", &input) {
+    match compile_mpsgraph_plan(&model, &[("images", &input)]) {
         Ok(plan) => { /* fastest path */ },
         Err(_) => {
             let plan = compile_metal_plan(&model, "images", &input)?;
@@ -643,9 +687,9 @@ cargo run --example classify_image -- photo.jpg
 
 ## Video Processing
 
-### Decode MP4 frames (H.264 / HEVC)
+### Decode MP4 frames (H.264 / HEVC / AV1)
 
-Decode any H.264 MP4 file — Baseline (CAVLC), Main, or High profile (CABAC) are all supported. The decoder auto-detects the codec from the MP4 container.
+Decode any H.264, HEVC, or AV1 MP4 file. The decoder auto-detects the codec from the MP4 container.
 
 ```rust
 use yscv_video::Mp4VideoReader;
@@ -671,6 +715,7 @@ The decoder handles:
 - **MKV/WebM container**: EBML demuxer with track/cluster parsing
 - **H.264**: Baseline (CAVLC), Main (CABAC), High (CABAC + 8x8 transform), I/P/B slices, weighted prediction, sub-MB partitions, deblocking, SIMD IDCT (NEON + SSE2)
 - **HEVC**: Main, Main10 (10-bit, u16 DPB), I/P/B slices, branchless CABAC, BS=0 deblock skip, SAO, CTU quad-tree, tiles parsing, chroma residual
+- **AV1**: OBU parser, intra + inter prediction (8-tap Lanczos MC), CDEF, reference frame management, deblocking
 - **SIMD**: 29 NEON blocks (aarch64) + 31 SSE2 blocks (x86_64) — full cross-architecture coverage
 - **Annex B**: raw H.264/HEVC stream parser
 
@@ -797,6 +842,127 @@ cargo build --release --features "gpu,mkl"
 
 ---
 
+## INT4 Quantization
+
+Quantize an ONNX model's weights to INT4 for reduced memory and faster inference on LLM-style models:
+
+```rust
+use yscv_onnx::{load_onnx_model_from_file, quantize_weights_int4, export_onnx_model_to_file};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load the original FP32 model
+    let mut model = load_onnx_model_from_file("llama-7b.onnx")?;
+    println!("Original initializers: {}", model.initializers.len());
+
+    // Quantize all weight tensors to INT4 (per-channel)
+    // This inserts DequantizeLinear nodes automatically
+    quantize_weights_int4(&mut model)?;
+
+    // Save the quantized model
+    export_onnx_model_to_file(&model, "llama-7b-int4.onnx")?;
+    println!("Quantized model saved");
+
+    Ok(())
+}
+```
+
+INT4 quantization maps each weight channel to [-8, 7] with per-channel scale and zero-point. During inference, the DequantizeLinear nodes unpack values back to f32. Typical model size reduction: 4x compared to FP32.
+
+---
+
+## LLM Text Generation
+
+Generate text from a decoder-only transformer model (GPT-2, LLaMA, Mistral) with KV-cache and sampling:
+
+```rust
+use yscv_onnx::{GenerateConfig, generate, load_onnx_model_from_file, run_onnx_model};
+use yscv_tensor::Tensor;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let model = load_onnx_model_from_file("gpt2.onnx")?;
+
+    // Tokenize your prompt (use your tokenizer of choice)
+    let prompt_tokens: Vec<u32> = vec![15496, 11, 616, 1438, 318]; // "Hello, my name is"
+
+    let config = GenerateConfig {
+        max_tokens: 100,
+        temperature: 0.8,
+        top_k: 50,
+        top_p: 0.9,
+        eos_token_id: Some(50256),    // GPT-2 EOS token
+        repetition_penalty: 1.2,
+    };
+
+    // Generate tokens autoregressively
+    let generated = generate(
+        &prompt_tokens,
+        &config,
+        |tokens| {
+            // Run the ONNX model for each step
+            let input = Tensor::from_vec(
+                vec![1, tokens.len()],
+                tokens.iter().map(|&t| t as f32).collect(),
+            )?;
+            let mut inputs = std::collections::HashMap::new();
+            inputs.insert("input_ids".to_string(), input);
+            let outputs = run_onnx_model(&model, inputs)?;
+            let logits = outputs.into_values().next()
+                .expect("model should produce at least one output");
+            Ok(logits.data().to_vec())
+        },
+    )?;
+
+    println!("Generated {} tokens: {:?}", generated.len(), generated);
+    Ok(())
+}
+```
+
+The `generate()` function supports:
+- **Temperature scaling**: `< 1.0` for sharper distributions, `> 1.0` for more randomness
+- **Top-k sampling**: keep only the k most probable next tokens
+- **Top-p (nucleus) sampling**: keep tokens until cumulative probability exceeds p
+- **Repetition penalty**: penalize tokens that have already appeared
+- **EOS stopping**: stop when the end-of-sequence token is generated
+
+---
+
+## AV1 Video Decode
+
+Decode AV1 video frames from an OBU bitstream. The decoder handles both intra (key) frames and inter frames with motion-compensated prediction.
+
+```rust
+use yscv_video::Mp4VideoReader;
+use std::path::Path;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // AV1 streams are typically in MP4 (av01 codec) or MKV/WebM containers
+    let mut reader = Mp4VideoReader::open(Path::new("video_av1.mp4"))?;
+    println!("Codec: {:?}", reader.codec());  // Av1
+
+    let mut frame_count = 0;
+    while let Some(frame) = reader.next_frame()? {
+        println!(
+            "Frame {}: {}x{} keyframe={} bit_depth={}",
+            frame_count, frame.width, frame.height,
+            frame.keyframe, frame.bit_depth
+        );
+        // frame.rgb8_data is Vec<u8> (RGB8, width * height * 3 bytes)
+        frame_count += 1;
+    }
+    println!("Total: {frame_count} AV1 frames decoded");
+    Ok(())
+}
+```
+
+The AV1 decoder supports:
+- **Intra prediction**: DC, vertical, horizontal, smooth, paeth modes
+- **Inter prediction**: single-reference motion compensation with 8-tap Lanczos sub-pixel filter
+- **CDEF**: directional enhancement filter with primary + secondary filtering
+- **Reference frames**: 8-slot buffer with `refresh_frame_flags` management
+- **show_existing_frame**: instant output from reference buffer without re-decode
+
+---
+
 ## Benchmarking
 
 ### Run all benchmarks
@@ -847,3 +1013,462 @@ python benchmarks/python/bench_opencv.py    # vs OpenCV
 | detect+track pipeline | 0.067ms | — | 15,000 FPS |
 
 Full results: [docs/performance-benchmarks.md](performance-benchmarks.md)
+
+---
+
+## Edge Pipeline
+
+Real-time camera-to-encoded-video pipeline using `FramePipeline` (lock-free ring buffer),
+V4L2 capture, YUV/RGB conversion, detection overlay, telemetry OSD, and H.264 encoding.
+
+### FramePipeline creation and usage
+
+```rust
+use yscv_video::{FramePipeline, run_pipeline, SlotMut, SlotRef};
+
+// 4-slot ring buffer, each slot holds 320*240*3 bytes (RGB8)
+let pipeline = FramePipeline::new(4, 320 * 240 * 3);
+
+run_pipeline(
+    &pipeline,
+    // Stage 1: Capture
+    |slot: &mut SlotMut<'_>| {
+        slot.set_width(320);
+        slot.set_height(240);
+        slot.set_pixel_format(2); // RGB8
+        // Fill slot.data_mut() with frame pixels...
+        true // return false to stop
+    },
+    // Stage 2: Process (inference)
+    |slot: &mut SlotMut<'_>| {
+        // Run detection, write results to slot.detections_mut()
+    },
+    // Stage 3: Output (overlay + encode)
+    |slot: &SlotRef<'_>| {
+        let _data = slot.data();
+        let _dets = slot.detections();
+        // Overlay, encode, write...
+    },
+    100, // max frames
+);
+```
+
+### V4L2 camera capture (Linux)
+
+```rust
+#[cfg(target_os = "linux")]
+{
+    use yscv_video::{V4l2Camera, V4l2PixelFormat};
+
+    let mut cam = V4l2Camera::open("/dev/video0", 640, 480, V4l2PixelFormat::Yuyv)
+        .expect("open camera");
+    cam.start_streaming().expect("start streaming");
+
+    // Capture a frame (zero-copy reference to mmap'd kernel buffer)
+    let yuyv_data = cam.capture_frame().expect("capture frame");
+    // Convert YUYV to RGB8...
+}
+```
+
+### YUV to RGB conversion
+
+```rust
+use yscv_video::{yuv420_to_rgb8, yuyv_to_rgb8};
+
+// YUV420 planar -> RGB8
+let y = vec![128u8; 640 * 480];
+let u = vec![128u8; 320 * 240];
+let v = vec![128u8; 320 * 240];
+let rgb = yuv420_to_rgb8(&y, &u, &v, 640, 480).expect("convert");
+
+// YUYV (V4L2 camera output) -> RGB8
+let yuyv = vec![128u8; 640 * 480 * 2];
+let mut rgb_out = vec![0u8; 640 * 480 * 3];
+yuyv_to_rgb8(&yuyv, 640, 480, &mut rgb_out).expect("convert");
+```
+
+### Detection overlay
+
+```rust
+use yscv_video::overlay_detections;
+
+let mut frame = vec![0u8; 640 * 480 * 3]; // RGB8
+let detections = vec![
+    (100.0, 50.0, 80.0, 120.0, 0.95, "person"),  // x, y, w, h, confidence, label
+    (300.0, 200.0, 60.0, 60.0, 0.87, "car"),
+];
+overlay_detections(&mut frame, 640, 480, &detections);
+```
+
+### H.264 encoding
+
+```rust
+use yscv_video::{H264Encoder, h264_encoder::rgb8_to_yuv420};
+
+let width = 320;
+let height = 240;
+let mut encoder = H264Encoder::new(width as u32, height as u32, 26); // QP=26
+
+let rgb_frame = vec![128u8; width * height * 3];
+let yuv = rgb8_to_yuv420(&rgb_frame, width, height);
+let nal_data = encoder.encode_frame(&yuv);
+// nal_data contains Annex B NAL units (SPS + PPS + IDR slice)
+assert!(nal_data.starts_with(&[0x00, 0x00, 0x00, 0x01]));
+```
+
+### MAVLink telemetry parsing
+
+```rust
+use yscv_video::{
+    MavlinkParser, TelemetryData, TelemetryUpdate,
+    telemetry_from_mavlink, apply_telemetry_update,
+};
+
+let mut parser = MavlinkParser::new();
+let mut telemetry = TelemetryData {
+    battery_voltage: 12.6,
+    battery_current: 0.0,
+    altitude_m: 0.0,
+    speed_ms: 0.0,
+    lat: 0.0,
+    lon: 0.0,
+    heading_deg: 0.0,
+    ai_detections: 0,
+};
+
+// Feed raw bytes from a serial port
+let raw_bytes: &[u8] = &[]; // from serial read
+let messages = parser.feed(raw_bytes);
+for msg in &messages {
+    if let Some(update) = telemetry_from_mavlink(msg) {
+        apply_telemetry_update(&mut telemetry, &update);
+    }
+}
+```
+
+On Linux, use the built-in serial port reader:
+
+```rust
+#[cfg(target_os = "linux")]
+{
+    use yscv_video::MavlinkSerial;
+
+    let mut mav = MavlinkSerial::open("/dev/ttyUSB0", 115200).expect("open serial");
+    let messages = mav.read_messages().expect("read");
+    // Process messages...
+}
+```
+
+### Telemetry OSD overlay
+
+```rust
+use yscv_video::{TelemetryData, overlay_telemetry};
+
+let mut frame = vec![0u8; 640 * 480 * 3];
+let telemetry = TelemetryData {
+    battery_voltage: 12.4,
+    battery_current: 1.2,
+    altitude_m: 45.0,
+    speed_ms: 5.3,
+    lat: 55.7558,
+    lon: 37.6173,
+    heading_deg: 127.0,
+    ai_detections: 3,
+};
+overlay_telemetry(&mut frame, 640, 480, &telemetry);
+```
+
+### Full pipeline example
+
+Run the complete edge deployment example:
+
+```bash
+# Synthetic test frames (all platforms)
+cargo run --example edge_pipeline
+
+# Real V4L2 camera (Linux)
+cargo run --example edge_pipeline -- --camera /dev/video0
+
+# Save encoded H.264 output
+cargo run --example edge_pipeline -- --output out.h264 --frames 300
+
+# With MAVLink telemetry (Linux, serial port)
+cargo run --example edge_pipeline -- --camera /dev/video0 --serial /dev/ttyUSB0 --output out.h264
+
+# Custom resolution
+cargo run --example edge_pipeline -- --width 640 --height 480 --frames 60
+```
+
+The pipeline runs three stages on separate OS threads with zero per-frame allocations.
+Typical throughput on synthetic frames: >500 FPS (capture + detect + overlay + H.264 encode).
+
+---
+
+## Rockchip NPU (RKNN)
+
+Real-time NPU inference on Rockchip SoCs (RK3588 / RK3576 / RK3566 / RV1106 /
+RV1103) via the `rknn` feature. The binary compiles on any platform; the NPU
+path activates at runtime when `librknnrt.so` is present (devices ship it
+with rknn-toolkit2-lite).
+
+### Enable the feature
+
+```toml
+[dependencies]
+yscv-kernels = { version = "0.1", features = ["rknn"] }
+```
+
+### Single-context inference
+
+```rust
+use yscv_kernels::{rknn_available, RknnBackend};
+
+if !rknn_available() {
+    eprintln!("Not on a Rockchip device — falling back to CPU");
+    return;
+}
+
+let model = std::fs::read("yolov8n.rknn")?;
+let rknn = RknnBackend::load(&model)?;
+let outputs = rknn.run(&[&rgb_frame_bytes])?;
+// outputs is Vec<Tensor> matching the model's output count
+```
+
+### Multi-core RK3588 (3 NPU cores in parallel)
+
+Synchronous round-robin (one frame per call, blocks until that core returns):
+
+```rust
+use yscv_kernels::{ContextPool, NpuCoreMask};
+
+let pool = ContextPool::new(
+    &model,
+    &[NpuCoreMask::Core0, NpuCoreMask::Core1, NpuCoreMask::Core2],
+)?;
+for frame in frames {
+    let _outputs = pool.dispatch_roundrobin(&[("images", frame)])?;
+}
+```
+
+### Pipelined RK3588 (submit/wait, overlap all 3 NPU cores)
+
+Same pattern as the MPSGraph pipelined API on Apple Silicon —
+`RknnPipelinedPool` pre-allocates an `RknnMem` per input + output per
+slot, exposes non-blocking `submit` and blocking `wait`:
+
+```rust
+use std::collections::VecDeque;
+use yscv_kernels::{NpuCoreMask, RknnInferenceHandle, RknnPipelinedPool};
+
+let pool = RknnPipelinedPool::new(
+    &model,
+    &[NpuCoreMask::Core0, NpuCoreMask::Core1, NpuCoreMask::Core2],
+)?;
+
+// Prime the pipeline.
+let mut in_flight: VecDeque<RknnInferenceHandle> = VecDeque::new();
+for frame in frames.by_ref().take(pool.slot_count()) {
+    in_flight.push_back(pool.submit(&[("images", &frame)])?);
+}
+
+// Steady state: wait on oldest, submit new — every NPU core stays hot.
+for frame in frames {
+    let oldest = in_flight.pop_front().unwrap();
+    let outputs = pool.wait(oldest)?;
+    consume(outputs);
+    in_flight.push_back(pool.submit(&[("images", &frame)])?);
+}
+
+// Drain.
+while let Some(h) = in_flight.pop_front() {
+    let _ = pool.wait(h)?;
+}
+```
+
+`RknnInferenceHandle` is `#[must_use]`. Submitting more outstanding
+frames than the pool has slots is safe: `submit` transparently waits
+on the oldest slot's previous `AsyncFrame` before reusing its buffers.
+
+
+### Zero-copy V4L2 → NPU (camera straight into NPU buffer)
+
+```rust
+use yscv_video::V4l2Camera;
+
+let mut cam = V4l2Camera::open("/dev/video0", 1280, 720,
+                                yscv_video::V4l2PixelFormat::Nv12)?;
+cam.start_streaming()?;
+
+let (idx, _slice) = cam.capture_frame_indexed()?;
+let fd = cam.export_dmabuf(idx)?;        // VIDIOC_EXPBUF
+let virt = cam.buffer_mut(idx)?;
+let mem = rknn.wrap_fd(fd, virt, 0)?;    // rknn_create_mem_from_fd
+rknn.bind_input_by_name(&mem, "images")?;
+rknn.run_bound()?;                         // no memcpy at all
+```
+
+### Async pipelining (overlap CPU & NPU work)
+
+```rust
+let handle = rknn.run_async_bound(/*frame_id=*/ 42)?;
+// CPU runs tracking / overlay / encoding while NPU computes…
+let outputs = rknn.wait(handle)?;
+```
+
+`AsyncFrame::Drop` waits if you forget to call `wait()` — no leaks even on
+panic paths.
+
+### On-chip SRAM for hot intermediate tensors (RK3588 / RK3576)
+
+```rust
+let mem_info = rknn.mem_size()?;
+if mem_info.sram_free_bytes >= 1_048_576 {
+    let scratch = rknn.alloc_sram(1 << 20)?;     // 1 MB on-chip
+    rknn.bind_internal_mem(&scratch)?;            // skips DDR for hot tensors
+}
+```
+
+### Custom op with a Rust callback
+
+For ops not in the RKNN built-in set:
+
+```rust
+use yscv_kernels::{CustomOp, CustomOpHandler, CustomOpContext, CustomOpTensor};
+use std::sync::Arc;
+
+struct ArgmaxOp;
+impl CustomOpHandler for ArgmaxOp {
+    fn compute(
+        &self,
+        _ctx: &mut CustomOpContext<'_>,
+        ins: &[CustomOpTensor<'_>],
+        outs: &[CustomOpTensor<'_>],
+    ) -> Result<(), yscv_kernels::KernelError> {
+        // SAFETY: SDK guarantees buffers are CPU-mapped for callback duration.
+        let src: &[f32] = unsafe {
+            let bytes = ins[0].as_bytes();
+            std::slice::from_raw_parts(bytes.as_ptr() as *const f32, bytes.len() / 4)
+        };
+        let dst: &mut [i32] = unsafe {
+            let bytes = outs[0].as_bytes_mut();
+            std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut i32, bytes.len() / 4)
+        };
+        let argmax = src.iter().enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i as i32).unwrap_or(0);
+        dst[0] = argmax;
+        Ok(())
+    }
+}
+
+let op = CustomOp::cpu("Argmax").with_handler(Arc::new(ArgmaxOp));
+let _registration = rknn.register_custom_ops(vec![op])?;
+// Hold _registration alive for the rest of the RknnBackend lifetime.
+```
+
+Up to 16 simultaneous Rust handlers per process. Pure OpenCL kernels (no
+Rust callback) have no slot limit — drop `with_handler(...)` and use
+`with_kernel_source(...)` instead.
+
+### Performance profiling
+
+```rust
+let rknn = RknnBackend::load_with_perf(&model)?;
+rknn.run(&[&rgb])?;
+let perf = rknn.perf_detail()?;
+for op in &perf.per_op {
+    println!("{:>6}us  {} ({})", op.duration_us, op.name, op.op_type);
+}
+println!("total: {} us", perf.total_us);
+```
+
+### On-device ONNX → RKNN compilation (limited)
+
+`librknn_api.so` (toolkit2-lite) supports only **fp16** or **int8 with
+calibration** on-device. For full configuration (target SoC, mean/std,
+asymmetric quant) use the offline Python `rknn-toolkit2` on the host.
+
+```rust
+use yscv_kernels::{compile_onnx_to_rknn, RknnCompileConfig};
+
+// fp16 — no calibration needed
+let bytes = compile_onnx_to_rknn(&onnx_model, &RknnCompileConfig::default())?;
+std::fs::write("model.rknn", bytes)?;
+
+// int8 with calibration (one preprocessed image path per line in dataset.txt)
+let cfg = RknnCompileConfig {
+    dataset_path: Some("./calibration.txt".into()),
+};
+let bytes = compile_onnx_to_rknn(&onnx_model, &cfg)?;
+```
+
+See [docs/edge-deployment.md](edge-deployment.md) for the full RKNN guide
+including MPP zero-copy, dynamic-shape matmul for LLM inference, and core
+allocation strategies.
+
+## Config-driven pipeline (TOML → running system)
+
+`yscv-pipeline` turns a declarative TOML config into a validated
+pipeline with real dispatchers per task — no hand-rolled glue. See
+[docs/pipeline-config.md](pipeline-config.md) for the schema.
+
+```rust
+use yscv_pipeline::{PipelineConfig, run_pipeline};
+
+let cfg = PipelineConfig::from_toml_path("boards/rock4d.toml")?;
+// `run_pipeline` validates everything (cycle check, accelerator
+// availability, real `.rknn` / `.onnx` magic-byte check via
+// validate_models) and builds one AcceleratorDispatcher per task.
+let handle = run_pipeline(cfg)?;
+
+// Hot loop — one call walks the task graph from camera to sink.
+for frame_bytes in camera_frames {
+    let outputs = handle.dispatch_frame(&[("images", frame_bytes)])?;
+    // `outputs` is a HashMap<String, Vec<u8>> keyed by
+    // "<task_name>.<output_tensor>" for every task's outputs, plus
+    // "camera.<name>" and "camera" echoes of the ingress.
+    let detector_out = &outputs["detector.output0"];
+    // … feed detector_out to post-processing, tracker, etc.
+}
+```
+
+Recovery + real-time:
+
+```rust
+// Transient NPU hang? Ask the pipeline to reset every dispatcher.
+if let Err(e) = handle.dispatch_frame(&feeds) {
+    eprintln!("dispatch failed: {e}");
+    handle.recover_all()?;
+}
+```
+
+Hot-reload a `.rknn` model in flight (A/B test, swap to a freshly-
+quantized variant without stopping the FPV loop):
+
+```rust
+use yscv_kernels::RknnPipelinedPool;
+
+let pool: &RknnPipelinedPool = /* from your dispatcher */;
+let new_bytes = std::fs::read("models/yolov8n-v2.rknn")?;
+pool.reload(&new_bytes)?;  // walks every slot, swaps the model atomically per-slot
+```
+
+DVFS hint — kill first-burst latency by pinning CPU governor to
+performance (TOML: `[realtime] cpu_governor = "performance"`, or
+programmatically):
+
+```rust
+use yscv_video::realtime::set_cpu_governor;
+let cores_set = set_cpu_governor("performance")?;  // best-effort sysfs writes
+println!("performance governor active on {cores_set} cores");
+```
+
+With `--features realtime`, `run_pipeline` wires SCHED_FIFO + CPU
+affinity + `mlockall` from `[realtime]` in the TOML. Graceful fallback
+on dev hosts without `CAP_SYS_NICE`.
+
+The end-to-end reference is
+[`examples/src/edge_pipeline_v2.rs`](../examples/src/edge_pipeline_v2.rs) —
+it parses a TOML, drives the hot loop against a synthetic camera
+generator, reports p50/p95/p99 latency via the new
+[`yscv_video::latency_histogram::LatencyHistogram`](../crates/yscv-video/src/latency_histogram.rs),
+and exits cleanly on repeated failures.

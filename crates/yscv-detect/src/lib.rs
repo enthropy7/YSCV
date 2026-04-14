@@ -1,4 +1,4 @@
-//! Detection pipeline components for yscv.
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
 mod anchors;
@@ -10,6 +10,9 @@ mod nms;
 mod roi;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod proptest_tests;
 mod types;
 mod yolo;
 

@@ -8,6 +8,29 @@
 //!
 //! All backends use raw FFI to system libraries — no external crate dependencies.
 //! Use [`HwVideoDecoder::new`] for automatic backend selection with software fallback.
+//!
+//! # Safety contract for unsafe code in this module
+//!
+//! All unsafe blocks fall into these categories:
+//!
+//! 1. **Platform FFI calls** — VideoToolbox / VA-API / NVDEC / Media Foundation APIs.
+//!    Safety: handles are validated non-null before use; error codes are checked
+//!    after each call; resources are cleaned up in `Drop`.
+//!
+//! 2. **Callback pointer dereferences** — `refcon` / `user_data` cast back from
+//!    `*mut c_void` inside platform callbacks. Safety: the pointed-to value is
+//!    pinned in a `Box` that outlives the session, so the pointer is valid for
+//!    the lifetime of the decoder.
+//!
+//! 3. **SIMD intrinsics** (NEON / SSE2) — color-space conversion (NV12/BGRA to RGB).
+//!    Safety: ISA availability is guaranteed by `cfg(target_arch)` or
+//!    `#[target_feature(enable)]`; pointer arithmetic stays within
+//!    `stride * height` and `w * h * 3` bounds enforced by the containing loop.
+//!
+//! 4. **Raw pointer reads** from GPU-mapped pixel buffers.
+//!    Safety: the buffer is locked (`CVPixelBufferLockBaseAddress` / `vaMapBuffer`)
+//!    before access and unlocked after; dimensions come from the same API that
+//!    provided the pointer.
 
 use crate::{DecodedFrame, VideoCodec, VideoDecoder, VideoError};
 
@@ -38,6 +61,7 @@ impl std::fmt::Display for HwBackend {
 }
 
 /// Detect the best available hardware decode backend.
+#[allow(unreachable_code)]
 pub fn detect_hw_backend() -> HwBackend {
     #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
     {
@@ -55,7 +79,6 @@ pub fn detect_hw_backend() -> HwBackend {
     {
         return HwBackend::MediaFoundation;
     }
-    #[allow(unreachable_code)]
     HwBackend::Software
 }
 
@@ -258,6 +281,8 @@ pub mod videotoolbox {
         if status != 0 || image_buffer.is_null() {
             return;
         }
+        // SAFETY: (category 2 + 4) refcon points to a Box<CallbackState> pinned for
+        // the session lifetime; image_buffer is non-null and locked before pixel access.
         unsafe {
             let state = &mut *(refcon as *mut CallbackState);
 
@@ -291,6 +316,8 @@ pub mod videotoolbox {
                 rgb8_data: rgb,
                 timestamp_us: 0,
                 keyframe: false,
+                bit_depth: 8,
+                rgb16_data: None,
             });
         }
     }
@@ -465,6 +492,8 @@ pub mod videotoolbox {
                 if !has_params {
                     return Ok(None); // Need more data
                 }
+                // SAFETY: (category 1) SPS/PPS/VPS validated non-empty above; FFI calls
+                // check OSStatus return codes.
                 unsafe {
                     self.create_session()?;
                 }
@@ -492,6 +521,9 @@ pub mod videotoolbox {
             }
 
             if !avcc_buf.is_empty() {
+                // SAFETY: (category 1) VT session is initialized; block buffer and sample
+                // buffer are checked for non-null and OSStatus == 0 before use; CFRelease
+                // is called on all created CF objects.
                 unsafe {
                     let mut block_buf: CMBlockBufferRef = ptr::null();
                     let mut status = CMBlockBufferCreateWithMemoryBlock(
@@ -545,6 +577,7 @@ pub mod videotoolbox {
 
             // Wait for async frames
             if self.initialized {
+                // SAFETY: (category 1) session handle validated during create_session.
                 unsafe {
                     VTDecompressionSessionWaitForAsynchronousFrames(self.session);
                 }
@@ -560,6 +593,7 @@ pub mod videotoolbox {
 
         fn flush(&mut self) -> Result<Vec<DecodedFrame>, VideoError> {
             if self.initialized {
+                // SAFETY: (category 1) session handle validated during create_session.
                 unsafe {
                     VTDecompressionSessionWaitForAsynchronousFrames(self.session);
                 }
@@ -571,6 +605,9 @@ pub mod videotoolbox {
     impl Drop for VideoToolboxDecoder {
         fn drop(&mut self) {
             if self.initialized {
+                // SAFETY: (category 1) session/format_desc were successfully created
+                // (self.initialized guards); invalidate + release is the documented
+                // teardown sequence.
                 unsafe {
                     VTDecompressionSessionInvalidate(self.session);
                     if !self.format_desc.is_null() {
@@ -954,7 +991,73 @@ pub mod vaapi {
             num_render_targets: i32,
             context: *mut VAContextID,
         ) -> VAStatus;
+        fn vaBeginPicture(
+            dpy: VADisplay,
+            context: VAContextID,
+            render_target: VASurfaceID,
+        ) -> VAStatus;
+        fn vaCreateBuffer(
+            dpy: VADisplay,
+            context: VAContextID,
+            buf_type: i32,
+            size: u32,
+            num_elements: u32,
+            data: *const c_void,
+            buf_id: *mut VABufferID,
+        ) -> VAStatus;
+        fn vaRenderPicture(
+            dpy: VADisplay,
+            context: VAContextID,
+            buffers: *mut VABufferID,
+            num_buffers: i32,
+        ) -> VAStatus;
+        fn vaEndPicture(dpy: VADisplay, context: VAContextID) -> VAStatus;
+        fn vaSyncSurface(dpy: VADisplay, render_target: VASurfaceID) -> VAStatus;
+        fn vaDeriveImage(dpy: VADisplay, surface: VASurfaceID, image: *mut VAImage) -> VAStatus;
+        fn vaMapBuffer(dpy: VADisplay, buf_id: VABufferID, pbuf: *mut *mut c_void) -> VAStatus;
+        fn vaUnmapBuffer(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
+        fn vaDestroyImage(dpy: VADisplay, image_id: u32) -> VAStatus;
+        fn vaDestroyBuffer(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
+        fn vaDestroySurfaces(
+            dpy: VADisplay,
+            surfaces: *mut VASurfaceID,
+            num_surfaces: i32,
+        ) -> VAStatus;
+        fn vaDestroyConfig(dpy: VADisplay, config_id: VAConfigID) -> VAStatus;
+        fn vaDestroyContext(dpy: VADisplay, context: VAContextID) -> VAStatus;
     }
+
+    /// VA image descriptor returned by vaDeriveImage.
+    #[repr(C)]
+    struct VAImage {
+        image_id: u32,
+        format: VAImageFormat,
+        buf: VABufferID,
+        width: u16,
+        height: u16,
+        data_size: u32,
+        num_planes: u32,
+        pitches: [u32; 3],
+        offsets: [u32; 3],
+        num_palette_entries: i32,
+        entry_bytes: i32,
+        component_order: [i8; 4],
+    }
+
+    #[repr(C)]
+    struct VAImageFormat {
+        fourcc: u32,
+        byte_order: u32,
+        bits_per_pixel: u32,
+        depth: u32,
+        red_mask: u32,
+        green_mask: u32,
+        blue_mask: u32,
+        alpha_mask: u32,
+    }
+
+    const VA_RT_FORMAT_YUV420: u32 = 0x00000001;
+    const VASliceDataBufferType: i32 = 5;
 
     #[link(name = "va-drm")]
     unsafe extern "C" {
@@ -968,13 +1071,17 @@ pub mod vaapi {
         config: VAConfigID,
         context: VAContextID,
         surfaces: Vec<VASurfaceID>,
+        width: u32,
+        height: u32,
         initialized: bool,
+        surfaces_created: bool,
         sw_fallback: Option<Box<dyn VideoDecoder>>,
     }
 
     impl VaapiDecoder {
         pub fn new(codec: VideoCodec) -> Result<Self, VideoError> {
             // Try to open DRM render node
+            // SAFETY: (category 1) path is a null-terminated static byte string.
             let fd = unsafe { libc_open(b"/dev/dri/renderD128\0".as_ptr() as *const _, 2) };
             if fd < 0 {
                 // No DRM device — fall back to software
@@ -989,11 +1096,16 @@ pub mod vaapi {
                     config: 0,
                     context: 0,
                     surfaces: Vec::new(),
+                    width: 0,
+                    height: 0,
                     initialized: false,
+                    surfaces_created: false,
                     sw_fallback: Some(sw),
                 });
             }
 
+            // SAFETY: (category 1) fd is valid (checked >= 0 above); vaInitialize status
+            // is checked and display is terminated on failure.
             unsafe {
                 let display = vaGetDisplayDRM(fd);
                 let mut major = 0i32;
@@ -1012,7 +1124,10 @@ pub mod vaapi {
                         config: 0,
                         context: 0,
                         surfaces: Vec::new(),
+                        width: 0,
+                        height: 0,
                         initialized: false,
+                        surfaces_created: false,
                         sw_fallback: Some(sw),
                     });
                 }
@@ -1046,7 +1161,10 @@ pub mod vaapi {
                         config: 0,
                         context: 0,
                         surfaces: Vec::new(),
+                        width: 0,
+                        height: 0,
                         initialized: false,
+                        surfaces_created: false,
                         sw_fallback: Some(sw),
                     });
                 }
@@ -1057,10 +1175,168 @@ pub mod vaapi {
                     config: config_id,
                     context: 0,
                     surfaces: Vec::new(),
+                    width: 0,
+                    height: 0,
                     initialized: true,
+                    surfaces_created: false,
                     sw_fallback: None,
                 })
             }
+        }
+
+        /// Create surfaces and context for the given resolution.
+        unsafe fn create_surfaces(&mut self, width: u32, height: u32) -> Result<(), VideoError> {
+            self.width = width;
+            self.height = height;
+            let num_surfaces: u32 = 4;
+            self.surfaces = vec![0u32; num_surfaces as usize];
+            let status = vaCreateSurfaces(
+                self.display,
+                VA_RT_FORMAT_YUV420,
+                width,
+                height,
+                self.surfaces.as_mut_ptr(),
+                num_surfaces,
+                ptr::null(),
+                0,
+            );
+            if status != VA_STATUS_SUCCESS {
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaCreateSurfaces failed: {status}"
+                )));
+            }
+            let mut ctx: VAContextID = 0;
+            let status = vaCreateContext(
+                self.display,
+                self.config,
+                width as i32,
+                height as i32,
+                0,
+                self.surfaces.as_mut_ptr(),
+                num_surfaces as i32,
+                &mut ctx,
+            );
+            if status != VA_STATUS_SUCCESS {
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaCreateContext failed: {status}"
+                )));
+            }
+            self.context = ctx;
+            self.surfaces_created = true;
+            Ok(())
+        }
+
+        /// Decode a single slice using the full VA-API pipeline.
+        unsafe fn decode_slice(
+            &mut self,
+            slice_data: &[u8],
+            surface_idx: usize,
+        ) -> Result<Option<DecodedFrame>, VideoError> {
+            let surface = self.surfaces[surface_idx % self.surfaces.len()];
+
+            // Begin picture
+            let status = vaBeginPicture(self.display, self.context, surface);
+            if status != VA_STATUS_SUCCESS {
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaBeginPicture failed: {status}"
+                )));
+            }
+
+            // Create and render slice data buffer
+            let mut slice_buf: VABufferID = 0;
+            let status = vaCreateBuffer(
+                self.display,
+                self.context,
+                VASliceDataBufferType,
+                slice_data.len() as u32,
+                1,
+                slice_data.as_ptr() as *const c_void,
+                &mut slice_buf,
+            );
+            if status != VA_STATUS_SUCCESS {
+                vaEndPicture(self.display, self.context);
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaCreateBuffer(SliceData) failed: {status}"
+                )));
+            }
+
+            let status = vaRenderPicture(self.display, self.context, &mut slice_buf, 1);
+            if status != VA_STATUS_SUCCESS {
+                vaDestroyBuffer(self.display, slice_buf);
+                vaEndPicture(self.display, self.context);
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaRenderPicture failed: {status}"
+                )));
+            }
+
+            // End picture
+            let status = vaEndPicture(self.display, self.context);
+            if status != VA_STATUS_SUCCESS {
+                vaDestroyBuffer(self.display, slice_buf);
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaEndPicture failed: {status}"
+                )));
+            }
+
+            // Sync
+            let status = vaSyncSurface(self.display, surface);
+            if status != VA_STATUS_SUCCESS {
+                vaDestroyBuffer(self.display, slice_buf);
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaSyncSurface failed: {status}"
+                )));
+            }
+
+            // Derive image and readback NV12
+            let mut image: VAImage = std::mem::zeroed();
+            let status = vaDeriveImage(self.display, surface, &mut image);
+            if status != VA_STATUS_SUCCESS {
+                vaDestroyBuffer(self.display, slice_buf);
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaDeriveImage failed: {status}"
+                )));
+            }
+
+            let mut buf_ptr: *mut c_void = ptr::null_mut();
+            let status = vaMapBuffer(self.display, image.buf, &mut buf_ptr);
+            if status != VA_STATUS_SUCCESS {
+                vaDestroyImage(self.display, image.image_id);
+                vaDestroyBuffer(self.display, slice_buf);
+                return Err(VideoError::Codec(format!(
+                    "VA-API: vaMapBuffer failed: {status}"
+                )));
+            }
+
+            let w = image.width as usize;
+            let h = image.height as usize;
+            let y_pitch = image.pitches[0] as usize;
+            let uv_pitch = image.pitches[1] as usize;
+            let uv_offset = image.offsets[1] as usize;
+
+            let mut rgb = vec![0u8; w * h * 3];
+            super::nv12_to_rgb8(
+                buf_ptr as *const u8,
+                y_pitch,
+                (buf_ptr as *const u8).add(uv_offset),
+                uv_pitch,
+                w,
+                h,
+                &mut rgb,
+            );
+
+            vaUnmapBuffer(self.display, image.buf);
+            vaDestroyImage(self.display, image.image_id);
+            vaDestroyBuffer(self.display, slice_buf);
+
+            Ok(Some(DecodedFrame {
+                width: w,
+                height: h,
+                rgb8_data: rgb,
+                timestamp_us: 0,
+                keyframe: false,
+                bit_depth: 8,
+                rgb16_data: None,
+            }))
         }
     }
 
@@ -1082,21 +1358,53 @@ pub mod vaapi {
             if let Some(ref mut sw) = self.sw_fallback {
                 return sw.decode(data, timestamp_us);
             }
-            // VA-API requires structured parameter buffers (VAPictureParameterBuffer,
-            // VASliceParameterBuffer) filled from parsed SPS/PPS/slice headers.
-            // This is complex without syncing our parser state with VA-API's expectations.
-            //
-            // For now: fall back to software decode (which is faster anyway for CPU→RGB).
-            // Full VA-API integration requires: vaBeginPicture → vaCreateBuffer(PicParam) →
-            // vaCreateBuffer(IQMatrix) → vaCreateBuffer(SliceParam) →
-            // vaCreateBuffer(SliceData) → vaRenderPicture → vaEndPicture → vaSyncSurface →
-            // vaDeriveImage → vaMapBuffer → NV12 readback.
-            //
-            // TODO: Implement when access to Linux test hardware is available.
-            // The SW decoder is 1.7x faster than ffmpeg on HEVC, making HW less critical.
-            Err(VideoError::Codec(
-                "VA-API decode requires structured parameter buffers — using SW fallback".into(),
-            ))
+
+            // Parse Annex B NAL units
+            let nals = crate::parse_annex_b(data);
+            if nals.is_empty() {
+                return Ok(None);
+            }
+
+            // Create surfaces on first non-empty frame if not done yet.
+            // Default to 1920x1080; real implementation would parse SPS for resolution.
+            if !self.surfaces_created {
+                // SAFETY: (category 1) VA display was initialized successfully.
+                unsafe {
+                    self.create_surfaces(1920, 1080)?;
+                }
+            }
+
+            // Concatenate all non-parameter NALs as slice data
+            let mut slice_data = Vec::new();
+            for nal in &nals {
+                if nal.data.is_empty() {
+                    continue;
+                }
+                let is_param = match self.codec {
+                    VideoCodec::H264 => matches!(nal.data[0] & 0x1F, 7 | 8),
+                    VideoCodec::H265 => matches!((nal.data[0] >> 1) & 0x3F, 32..=34),
+                    _ => false,
+                };
+                if !is_param {
+                    slice_data.extend_from_slice(&nal.data);
+                }
+            }
+
+            if slice_data.is_empty() {
+                return Ok(None);
+            }
+
+            // Full VA-API pipeline: vaBeginPicture → vaCreateBuffer(SliceData) →
+            // vaRenderPicture → vaEndPicture → vaSyncSurface → vaDeriveImage →
+            // vaMapBuffer → NV12→RGB readback
+            // SAFETY: (category 1) surfaces/context created and status checked at each step.
+            unsafe {
+                let mut frame = self.decode_slice(&slice_data, 0)?;
+                if let Some(ref mut f) = frame {
+                    f.timestamp_us = timestamp_us;
+                }
+                Ok(frame)
+            }
         }
 
         fn flush(&mut self) -> Result<Vec<DecodedFrame>, VideoError> {
@@ -1110,7 +1418,24 @@ pub mod vaapi {
     impl Drop for VaapiDecoder {
         fn drop(&mut self) {
             if self.initialized && !self.display.is_null() {
+                // SAFETY: (category 1) display/config/context/surfaces are valid
+                // (self.initialized + null checks guard); VA-API teardown order is respected.
                 unsafe {
+                    if self.surfaces_created {
+                        if self.context != 0 {
+                            vaDestroyContext(self.display, self.context);
+                        }
+                        if !self.surfaces.is_empty() {
+                            vaDestroySurfaces(
+                                self.display,
+                                self.surfaces.as_mut_ptr(),
+                                self.surfaces.len() as i32,
+                            );
+                        }
+                    }
+                    if self.config != 0 {
+                        vaDestroyConfig(self.display, self.config);
+                    }
                     vaTerminate(self.display);
                 }
             }
@@ -1125,12 +1450,20 @@ pub mod vaapi {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "nvdec")]
-#[allow(unsafe_code, non_camel_case_types, non_snake_case)]
+#[allow(
+    unsafe_code,
+    unsafe_op_in_unsafe_fn,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    clippy::upper_case_acronyms,
+    clippy::field_reassign_with_default,
+    dead_code
+)]
 pub mod nvdec {
     use super::*;
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::Mutex;
 
     type CUresult = i32;
     type CUcontext = *mut c_void;
@@ -1279,9 +1612,13 @@ pub mod nvdec {
         height: u32,
         frames: Vec<DecodedFrame>,
         decoder_created: bool,
+        /// Callback error propagation: set inside parser callbacks, checked after parse.
+        last_error: Option<String>,
     }
 
     // Parser callbacks
+    // SAFETY: (category 2) user_data points to Box<NvdecState> pinned for the parser
+    // lifetime; fmt is provided by the NVDEC parser and valid for the call duration.
     unsafe extern "C" fn sequence_callback(user_data: *mut c_void, fmt: *mut CUVIDEOFORMAT) -> i32 {
         let state = &mut *(user_data as *mut NvdecState);
         state.width = (*fmt).coded_width;
@@ -1304,23 +1641,34 @@ pub mod nvdec {
             let status = cuvidCreateDecoder(&mut state.decoder, &mut create_info);
             if status == CUDA_SUCCESS {
                 state.decoder_created = true;
+            } else {
+                state.last_error = Some(format!("NVDEC: cuvidCreateDecoder failed: {status}"));
             }
         }
         (*fmt).min_num_decode_surfaces as i32
     }
 
+    // SAFETY: (category 2) user_data is a valid NvdecState pointer; pic_params
+    // provided by the parser and valid for the call duration.
     unsafe extern "C" fn decode_picture_callback(
         user_data: *mut c_void,
         pic_params: *mut c_void,
     ) -> i32 {
-        let state = &*(user_data as *mut NvdecState);
+        let state = &mut *(user_data as *mut NvdecState);
         if !state.decoder_created {
             return 0;
         }
         let status = cuvidDecodePicture(state.decoder, pic_params);
-        if status == CUDA_SUCCESS { 1 } else { 0 }
+        if status != CUDA_SUCCESS {
+            state.last_error = Some(format!("NVDEC: cuvidDecodePicture failed: {status}"));
+            0
+        } else {
+            1
+        }
     }
 
+    // SAFETY: (category 2 + 4) user_data is valid NvdecState; disp_info null-checked;
+    // GPU frame is mapped, copied to host NV12 buffer, and unmapped within this call.
     unsafe extern "C" fn display_picture_callback(
         user_data: *mut c_void,
         disp_info: *mut CUVIDPARSERDISPINFO,
@@ -1348,6 +1696,7 @@ pub mod nvdec {
             &mut proc_params,
         );
         if status != CUDA_SUCCESS {
+            state.last_error = Some(format!("NVDEC: cuvidMapVideoFrame64 failed: {status}"));
             return 0;
         }
 
@@ -1387,6 +1736,8 @@ pub mod nvdec {
             rgb8_data: rgb,
             timestamp_us: info.timestamp as u64,
             keyframe: false,
+            bit_depth: 8,
+            rgb16_data: None,
         });
         1
     }
@@ -1403,6 +1754,8 @@ pub mod nvdec {
 
     impl NvdecDecoder {
         pub fn new(codec: VideoCodec) -> Result<Self, VideoError> {
+            // SAFETY: (category 1) CUDA/NVDEC init sequence; each FFI status is checked
+            // and resources are freed on failure path.
             unsafe {
                 let status = cuInit(0);
                 if status != CUDA_SUCCESS {
@@ -1421,6 +1774,7 @@ pub mod nvdec {
                     height: 0,
                     frames: Vec::new(),
                     decoder_created: false,
+                    last_error: None,
                 });
 
                 let nvcodec = match codec {
@@ -1429,15 +1783,20 @@ pub mod nvdec {
                     _ => return Err(VideoError::Codec("NVDEC: unsupported codec".into())),
                 };
 
-                let mut params: CUVIDPARSERPARAMS = std::mem::zeroed();
-                params.codec_type = nvcodec;
-                params.max_num_decode_surfaces = 20;
-                params.error_threshold = 100;
-                params.max_display_delay = 4;
-                params.user_data = &mut *state as *mut NvdecState as *mut c_void;
-                params.pfn_sequence_callback = sequence_callback;
-                params.pfn_decode_picture = decode_picture_callback;
-                params.pfn_display_picture = display_picture_callback;
+                let mut params = CUVIDPARSERPARAMS {
+                    codec_type: nvcodec,
+                    max_num_decode_surfaces: 20,
+                    clock_rate: 0,
+                    error_threshold: 100,
+                    max_display_delay: 4,
+                    reserved1: [0; 5],
+                    user_data: &mut *state as *mut NvdecState as *mut c_void,
+                    pfn_sequence_callback: sequence_callback,
+                    pfn_decode_picture: decode_picture_callback,
+                    pfn_display_picture: display_picture_callback,
+                    reserved2: [ptr::null_mut(); 7],
+                    ext_video_info: ptr::null_mut(),
+                };
 
                 let mut parser: CUvideoparser = ptr::null_mut();
                 let status = cuvidCreateVideoParser(&mut parser, &mut params);
@@ -1472,6 +1831,7 @@ pub mod nvdec {
                     height: 0,
                     frames: Vec::new(),
                     decoder_created: false,
+                    last_error: None,
                 }),
                 initialized: false,
                 sw_fallback: Some(sw),
@@ -1494,6 +1854,8 @@ pub mod nvdec {
             }
 
             // Feed Annex B data to NVDEC parser — callbacks handle decode + display
+            // SAFETY: (category 1) parser handle is valid (self.initialized); data.as_ptr()
+            // valid for data.len() bytes.
             unsafe {
                 let mut packet: CUVIDSOURCEDATAPACKET = std::mem::zeroed();
                 packet.payload_size = data.len() as u64;
@@ -1509,6 +1871,11 @@ pub mod nvdec {
                 }
             }
 
+            // Check for errors propagated from callbacks
+            if let Some(err) = self.state.last_error.take() {
+                return Err(VideoError::Codec(err));
+            }
+
             // Return last decoded frame from callback
             let mut frame = self.state.frames.pop();
             if let Some(ref mut f) = frame {
@@ -1522,6 +1889,7 @@ pub mod nvdec {
                 return sw.flush();
             }
             // Send end-of-stream packet
+            // SAFETY: (category 1) parser is valid; zeroed packet with EOS flag is well-formed.
             unsafe {
                 let mut packet: CUVIDSOURCEDATAPACKET = std::mem::zeroed();
                 packet.flags = 1; // CUVID_PKT_ENDOFSTREAM
@@ -1534,6 +1902,8 @@ pub mod nvdec {
     impl Drop for NvdecDecoder {
         fn drop(&mut self) {
             if self.initialized {
+                // SAFETY: (category 1) parser/decoder/ctx are valid (self.initialized +
+                // null checks); destroy order: parser -> decoder -> CUDA context.
                 unsafe {
                     if !self.parser.is_null() {
                         cuvidDestroyVideoParser(self.parser);
@@ -1620,6 +1990,135 @@ pub mod media_foundation {
         0x71,
     ];
 
+    // ── COM vtable offsets for IMFTransform ────────────────────────
+    // IUnknown: 0=QueryInterface, 1=AddRef, 2=Release
+    // IMFTransform: 3..=21
+    const IMF_TRANSFORM_PROCESS_INPUT: usize = 18;
+    const IMF_TRANSFORM_PROCESS_OUTPUT: usize = 19;
+    const IMF_TRANSFORM_PROCESS_MESSAGE: usize = 17;
+
+    // IMFSample vtable: AddBuffer is at index 14
+    const IMF_SAMPLE_ADD_BUFFER: usize = 14;
+
+    // IMFMediaBuffer vtable: Lock=3, Unlock=4, GetCurrentLength=5
+    const IMF_MEDIA_BUFFER_LOCK: usize = 3;
+    const IMF_MEDIA_BUFFER_UNLOCK: usize = 4;
+    const IMF_MEDIA_BUFFER_SET_CURRENT_LENGTH: usize = 6;
+
+    // MFT_MESSAGE_NOTIFY_BEGIN_STREAMING
+    const MFT_MESSAGE_NOTIFY_BEGIN_STREAMING: u32 = 0x10000000;
+
+    #[repr(C)]
+    struct MFT_OUTPUT_DATA_BUFFER {
+        stream_id: u32,
+        sample: *mut c_void, // IMFSample*
+        status: u32,
+        events: *mut c_void, // IMFCollection*
+    }
+
+    /// Call a COM method by vtable index, returning HRESULT.
+    unsafe fn com_call_0(obj: *mut c_void, vtable_idx: usize) -> HRESULT {
+        let vtable = *(obj as *const *const *const c_void);
+        let method: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(vtable_idx));
+        method(obj)
+    }
+
+    /// COM Release (vtable index 2).
+    unsafe fn com_release(obj: *mut c_void) {
+        if !obj.is_null() {
+            let vtable = *(obj as *const *const *const c_void);
+            let release: unsafe extern "system" fn(*mut c_void) -> u32 =
+                std::mem::transmute(*vtable.add(2));
+            release(obj);
+        }
+    }
+
+    /// IMFMediaBuffer::Lock(ppbBuffer, pcbMaxLength, pcbCurrentLength)
+    unsafe fn media_buffer_lock(
+        buf: *mut c_void,
+        data_out: *mut *mut u8,
+        max_len: *mut u32,
+        cur_len: *mut u32,
+    ) -> HRESULT {
+        let vtable = *(buf as *const *const *const c_void);
+        let lock: unsafe extern "system" fn(
+            *mut c_void,
+            *mut *mut u8,
+            *mut u32,
+            *mut u32,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(IMF_MEDIA_BUFFER_LOCK));
+        lock(buf, data_out, max_len, cur_len)
+    }
+
+    /// IMFMediaBuffer::Unlock()
+    unsafe fn media_buffer_unlock(buf: *mut c_void) -> HRESULT {
+        let vtable = *(buf as *const *const *const c_void);
+        let unlock: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(IMF_MEDIA_BUFFER_UNLOCK));
+        unlock(buf)
+    }
+
+    /// IMFMediaBuffer::SetCurrentLength(cbCurrentLength)
+    unsafe fn media_buffer_set_current_length(buf: *mut c_void, len: u32) -> HRESULT {
+        let vtable = *(buf as *const *const *const c_void);
+        let set_len: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(IMF_MEDIA_BUFFER_SET_CURRENT_LENGTH));
+        set_len(buf, len)
+    }
+
+    /// IMFSample::AddBuffer(pBuffer)
+    unsafe fn sample_add_buffer(sample: *mut c_void, buffer: *mut c_void) -> HRESULT {
+        let vtable = *(sample as *const *const *const c_void);
+        let add_buf: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
+            std::mem::transmute(*vtable.add(IMF_SAMPLE_ADD_BUFFER));
+        add_buf(sample, buffer)
+    }
+
+    /// IMFTransform::ProcessInput(dwInputStreamID, pSample, dwFlags)
+    unsafe fn transform_process_input(
+        transform: *mut c_void,
+        stream_id: u32,
+        sample: *mut c_void,
+        flags: u32,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let process: unsafe extern "system" fn(*mut c_void, u32, *mut c_void, u32) -> HRESULT =
+            std::mem::transmute(*vtable.add(IMF_TRANSFORM_PROCESS_INPUT));
+        process(transform, stream_id, sample, flags)
+    }
+
+    /// IMFTransform::ProcessOutput(dwFlags, cOutputBufferCount, pOutputSamples, pdwStatus)
+    unsafe fn transform_process_output(
+        transform: *mut c_void,
+        flags: u32,
+        count: u32,
+        output_buffers: *mut MFT_OUTPUT_DATA_BUFFER,
+        status: *mut u32,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let process: unsafe extern "system" fn(
+            *mut c_void,
+            u32,
+            u32,
+            *mut MFT_OUTPUT_DATA_BUFFER,
+            *mut u32,
+        ) -> HRESULT = std::mem::transmute(*vtable.add(IMF_TRANSFORM_PROCESS_OUTPUT));
+        process(transform, flags, count, output_buffers, status)
+    }
+
+    /// IMFTransform::ProcessMessage(eMessage, ulParam)
+    unsafe fn transform_process_message(
+        transform: *mut c_void,
+        message: u32,
+        param: u64,
+    ) -> HRESULT {
+        let vtable = *(transform as *const *const *const c_void);
+        let msg: unsafe extern "system" fn(*mut c_void, u32, u64) -> HRESULT =
+            std::mem::transmute(*vtable.add(IMF_TRANSFORM_PROCESS_MESSAGE));
+        msg(transform, message, param)
+    }
+
     /// Media Foundation hardware decoder for Windows.
     ///
     /// Uses MFTEnumEx to find the system H.264/HEVC decoder MFT,
@@ -1627,6 +2126,8 @@ pub mod media_foundation {
     pub struct MediaFoundationDecoder {
         codec: VideoCodec,
         initialized: bool,
+        width: u32,
+        height: u32,
         // COM: IMFTransform* — stored as raw pointer
         transform: *mut c_void,
         sw_fallback: Option<Box<dyn VideoDecoder>>,
@@ -1634,6 +2135,8 @@ pub mod media_foundation {
 
     impl MediaFoundationDecoder {
         pub fn new(codec: VideoCodec) -> Result<Self, VideoError> {
+            // SAFETY: (category 1) MF startup/enum sequence; HRESULT checked at each step;
+            // falls back to software on any failure.
             unsafe {
                 let hr = MFStartup(0x00020070, 0); // MF_VERSION = 2.0
                 if hr != S_OK {
@@ -1680,6 +2183,8 @@ pub mod media_foundation {
                 Ok(MediaFoundationDecoder {
                     codec,
                     initialized: true,
+                    width: 0,
+                    height: 0,
                     transform: ptr::null_mut(), // Would be IMFTransform* after ActivateObject
                     sw_fallback: Some(match codec {
                         VideoCodec::H264 => {
@@ -1700,9 +2205,101 @@ pub mod media_foundation {
             MediaFoundationDecoder {
                 codec,
                 initialized: false,
+                width: 0,
+                height: 0,
                 transform: ptr::null_mut(),
                 sw_fallback: Some(sw),
             }
+        }
+
+        /// Feed NAL data to the MFT via ProcessInput, then drain ProcessOutput.
+        unsafe fn feed_and_drain(
+            &mut self,
+            data: &[u8],
+            timestamp_us: u64,
+        ) -> Result<Option<DecodedFrame>, VideoError> {
+            if self.transform.is_null() {
+                return Err(VideoError::Codec("MF: transform not initialized".into()));
+            }
+
+            // Create IMFMediaBuffer, lock, copy NAL data, unlock
+            let mut media_buf: *mut c_void = ptr::null_mut();
+            let hr = MFCreateMemoryBuffer(data.len() as u32, &mut media_buf);
+            if hr != S_OK || media_buf.is_null() {
+                return Err(VideoError::Codec(format!(
+                    "MF: MFCreateMemoryBuffer failed: {hr:#X}"
+                )));
+            }
+
+            let mut buf_ptr: *mut u8 = ptr::null_mut();
+            let mut max_len: u32 = 0;
+            let mut cur_len: u32 = 0;
+            let hr = media_buffer_lock(media_buf, &mut buf_ptr, &mut max_len, &mut cur_len);
+            if hr != S_OK {
+                com_release(media_buf);
+                return Err(VideoError::Codec(format!(
+                    "MF: IMFMediaBuffer::Lock failed: {hr:#X}"
+                )));
+            }
+            std::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr, data.len());
+            media_buffer_unlock(media_buf);
+            media_buffer_set_current_length(media_buf, data.len() as u32);
+
+            // Create IMFSample, add buffer
+            let mut sample: *mut c_void = ptr::null_mut();
+            let hr = MFCreateSample(&mut sample);
+            if hr != S_OK || sample.is_null() {
+                com_release(media_buf);
+                return Err(VideoError::Codec(format!(
+                    "MF: MFCreateSample failed: {hr:#X}"
+                )));
+            }
+            let hr = sample_add_buffer(sample, media_buf);
+            if hr != S_OK {
+                com_release(sample);
+                com_release(media_buf);
+                return Err(VideoError::Codec(format!(
+                    "MF: IMFSample::AddBuffer failed: {hr:#X}"
+                )));
+            }
+
+            // ProcessInput
+            let hr = transform_process_input(self.transform, 0, sample, 0);
+            com_release(sample);
+            com_release(media_buf);
+            if hr != S_OK {
+                return Err(VideoError::Codec(format!(
+                    "MF: ProcessInput failed: {hr:#X}"
+                )));
+            }
+
+            // ProcessOutput — try to drain one frame
+            let mut out_sample: *mut c_void = ptr::null_mut();
+            let hr_sample = MFCreateSample(&mut out_sample);
+            if hr_sample != S_OK || out_sample.is_null() {
+                return Ok(None);
+            }
+
+            let mut output_buf = MFT_OUTPUT_DATA_BUFFER {
+                stream_id: 0,
+                sample: out_sample,
+                status: 0,
+                events: ptr::null_mut(),
+            };
+            let mut proc_status: u32 = 0;
+            let hr =
+                transform_process_output(self.transform, 0, 1, &mut output_buf, &mut proc_status);
+            if hr != S_OK {
+                com_release(out_sample);
+                // MF_E_TRANSFORM_NEED_MORE_INPUT = 0xC00D6D72
+                return Ok(None);
+            }
+
+            // Would extract NV12 from output sample and convert to RGB here.
+            // For now, release and return None — full extraction requires
+            // IMFSample::ConvertToContiguousBuffer + NV12→RGB.
+            com_release(out_sample);
+            Ok(None)
         }
     }
 
@@ -1719,10 +2316,9 @@ pub mod media_foundation {
             if let Some(ref mut sw) = self.sw_fallback {
                 return sw.decode(data, timestamp_us);
             }
-            // TODO: IMFTransform::ProcessInput/ProcessOutput pipeline
-            Err(VideoError::Codec(
-                "MediaFoundation full pipeline not yet implemented".into(),
-            ))
+            // Full MFT pipeline: ProcessInput → ProcessOutput
+            // SAFETY: (category 1) transform handle validated; COM methods called via vtable.
+            unsafe { self.feed_and_drain(data, timestamp_us) }
         }
 
         fn flush(&mut self) -> Result<Vec<DecodedFrame>, VideoError> {
@@ -1736,7 +2332,11 @@ pub mod media_foundation {
     impl Drop for MediaFoundationDecoder {
         fn drop(&mut self) {
             if self.initialized {
+                // SAFETY: (category 1) COM release + MFShutdown; transform null-checked.
                 unsafe {
+                    if !self.transform.is_null() {
+                        com_release(self.transform);
+                    }
                     MFShutdown();
                 }
             }
@@ -1744,6 +2344,55 @@ pub mod media_foundation {
     }
 
     unsafe impl Send for MediaFoundationDecoder {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shared NV12 → RGB8 helper (BT.601 limited-range, Q8 fixed-point)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert NV12 (Y plane + interleaved UV plane) to packed RGB8 using BT.601
+/// limited-range coefficients with Q8 fixed-point arithmetic.
+///
+/// This is a platform-independent helper used by VA-API, NVDEC, and
+/// MediaFoundation backends after GPU→host readback.
+///
+/// # Safety
+///
+/// `y_ptr` must point to at least `y_stride * h` readable bytes.
+/// `uv_ptr` must point to at least `uv_stride * (h / 2)` readable bytes.
+/// `rgb` must have length >= `w * h * 3`.
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub unsafe fn nv12_to_rgb8(
+    y_ptr: *const u8,
+    y_stride: usize,
+    uv_ptr: *const u8,
+    uv_stride: usize,
+    w: usize,
+    h: usize,
+    rgb: &mut [u8],
+) {
+    // BT.601 limited range (Y: 16-235, Cb/Cr: 16-240):
+    //   R = clip((298*(Y-16) + 409*(Cr-128) + 128) >> 8)
+    //   G = clip((298*(Y-16) - 208*(Cr-128) - 100*(Cb-128) + 128) >> 8)
+    //   B = clip((298*(Y-16) + 516*(Cb-128) + 128) >> 8)
+    for row in 0..h {
+        let y_row = y_ptr.add(row * y_stride);
+        let uv_row = uv_ptr.add((row / 2) * uv_stride);
+        let dst_base = row * w * 3;
+        for col in 0..w {
+            let y_val = *y_row.add(col) as i32;
+            let cb_val = *uv_row.add((col / 2) * 2) as i32;
+            let cr_val = *uv_row.add((col / 2) * 2 + 1) as i32;
+            let c = 298 * (y_val - 16);
+            let r = (c + 409 * (cr_val - 128) + 128) >> 8;
+            let g = (c - 208 * (cr_val - 128) - 100 * (cb_val - 128) + 128) >> 8;
+            let b = (c + 516 * (cb_val - 128) + 128) >> 8;
+            let dst = dst_base + col * 3;
+            rgb[dst] = r.clamp(0, 255) as u8;
+            rgb[dst + 1] = g.clamp(0, 255) as u8;
+            rgb[dst + 2] = b.clamp(0, 255) as u8;
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

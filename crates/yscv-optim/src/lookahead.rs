@@ -5,8 +5,14 @@ use yscv_tensor::Tensor;
 use super::error::OptimError;
 use super::{Adagrad, Adam, AdamW, Lamb, Lars, RAdam, RmsProp, Sgd};
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// Trait for optimizers that support a per-parameter `step` update.
-pub trait StepOptimizer {
+///
+/// This trait is sealed and cannot be implemented outside this crate.
+pub trait StepOptimizer: sealed::Sealed {
     fn step(
         &mut self,
         parameter_id: u64,
@@ -18,6 +24,7 @@ pub trait StepOptimizer {
 macro_rules! impl_step_optimizer {
     ($($ty:ty),*) => {
         $(
+            impl sealed::Sealed for $ty {}
             impl StepOptimizer for $ty {
                 fn step(
                     &mut self,

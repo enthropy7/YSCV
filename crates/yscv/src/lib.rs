@@ -1,39 +1,4 @@
-//! YSCV is a pure-Rust computer vision and deep learning framework with
-//! SIMD-accelerated tensor operations, image processing, model training,
-//! and ONNX inference.
-//!
-//! # Quick start
-//!
-//! ```rust
-//! use yscv::prelude::*;
-//!
-//! // Create a tensor and run a simple operation.
-//! let a = Tensor::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
-//! let b = a.scale(2.0);
-//! assert_eq!(b.sum(), 42.0);
-//!
-//! // Load an ONNX model and run inference.
-//! // let runner = yscv::onnx::OnnxRunner::load("model.onnx").unwrap();
-//! // let output = runner.run(&[("input", &input_tensor)]).unwrap();
-//! ```
-//!
-//! # Module overview
-//!
-//! | Module | Description |
-//! |--------|-------------|
-//! | [`tensor`] | N-dimensional tensor with SIMD-accelerated math |
-//! | [`autograd`] | Automatic differentiation compute graph |
-//! | [`optim`] | Optimizers (SGD, Adam, AdamW, LAMB, RAdam) |
-//! | [`kernels`] | Low-level SIMD/GPU compute kernels |
-//! | [`model`] | Model building, training, data loading, losses |
-//! | [`imgproc`] | Image I/O, filtering, color, morphology, features |
-//! | [`video`] | Video capture and frame processing |
-//! | [`detect`] | Object detection utilities |
-//! | [`recognize`] | Recognition / embedding search |
-//! | [`track`] | Multi-object tracking (Hungarian, etc.) |
-//! | [`eval`] | Evaluation metrics (accuracy, F1, confusion matrix) |
-//! | [`onnx`] | ONNX model loading and inference |
-//! | [`cli`] | Command-line interface helpers |
+#![doc = include_str!("../README.md")]
 
 pub use yscv_autograd as autograd;
 pub use yscv_cli as cli;

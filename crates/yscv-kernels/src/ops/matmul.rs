@@ -508,6 +508,8 @@ fn blocked_gemm_parallel(
 
     let mut packed_b = vec![0.0f32; div_ceil(NC, NR) * KC * NR];
 
+    let ic_blocks: Vec<usize> = (0..m).step_by(MC).collect();
+
     let mut work = || {
         for jc in (0..n).step_by(NC) {
             let nc = NC.min(n - jc);
@@ -516,7 +518,6 @@ fn blocked_gemm_parallel(
 
                 pack_b_panel(right, n, pc, kc, jc, nc, &mut packed_b);
 
-                let ic_blocks: Vec<usize> = (0..m).step_by(MC).collect();
                 let packed_b_ref = &packed_b;
                 let out_p = &out_ptr;
 

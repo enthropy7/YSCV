@@ -1,4 +1,4 @@
-//! Multi-object tracking components for yscv.
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
 mod byte_track;

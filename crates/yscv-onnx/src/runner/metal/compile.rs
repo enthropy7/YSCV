@@ -25,7 +25,10 @@ pub fn compile_metal_plan(
     })?;
 
     // Run on CPU to get all tensor shapes and intermediate data
+    #[cfg(feature = "profile")]
     let debug_metal = std::env::var("METAL_DEBUG").is_ok();
+    #[cfg(not(feature = "profile"))]
+    let debug_metal = false;
     let mut env = TensorEnv::from_model(model);
     env.insert(input_name.to_string(), input_tensor.clone());
     // We need tensor shapes AND data for fallback ops. Some ops (Split) consume
@@ -125,7 +128,10 @@ pub fn compile_metal_plan(
     // Build a set of node indices to skip (fused into a previous node)
     let mut skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
+    #[cfg(feature = "profile")]
     let debug_metal = std::env::var("METAL_DEBUG").is_ok();
+    #[cfg(not(feature = "profile"))]
+    let debug_metal = false;
 
     // Walk graph and record Metal ops with inline fusion
     for (i, node) in nodes.iter().enumerate() {
@@ -948,9 +954,12 @@ pub fn compile_metal_plan(
                 _ => {}
             }
         }
+        #[cfg(feature = "profile")]
         if aliased > 0 && std::env::var("METAL_DEBUG").is_ok() {
             eprintln!("  [metal] In-place aliased {} ops", aliased);
         }
+        #[cfg(not(feature = "profile"))]
+        let _ = aliased;
     }
 
     let input_buf_name = match &input_upload {
@@ -1036,6 +1045,7 @@ pub(crate) fn ensure_nhwc_metal(
         return name.to_string();
     }
 
+    #[cfg(feature = "profile")]
     if std::env::var("METAL_PERM_DBG").is_ok() {
         eprintln!("  NHWC perm: '{}' shape={:?}", name, shape);
     }

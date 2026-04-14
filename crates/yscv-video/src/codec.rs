@@ -6,6 +6,7 @@ use super::frame::Rgb8Frame;
 pub enum VideoCodec {
     H264,
     H265,
+    Av1,
     Raw,
 }
 
@@ -44,6 +45,8 @@ pub struct DecodedFrame {
     pub rgb8_data: Vec<u8>,
     pub timestamp_us: u64,
     pub keyframe: bool,
+    pub bit_depth: u8,
+    pub rgb16_data: Option<Vec<u16>>,
 }
 
 impl DecodedFrame {

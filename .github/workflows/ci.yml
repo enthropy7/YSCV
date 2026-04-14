@@ -59,6 +59,85 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo check -p yscv-kernels --features gpu
 
+      - name: GPU feature workspace compilation check
+        if: runner.os == 'Linux'
+        run: cargo check --workspace --features gpu
+
+      - name: GPU feature clippy (yscv-kernels)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p yscv-kernels --features gpu --all-targets -- -D warnings
+
+      - name: GPU feature clippy (yscv-onnx)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p yscv-onnx --features gpu --all-targets -- -D warnings
+
+      - name: GPU feature tests
+        if: runner.os == 'Linux'
+        run: |
+          cargo test -p yscv-kernels --features gpu --lib
+          cargo test -p yscv-onnx --features gpu --lib
+
+      - name: RKNN feature compilation check
+        if: runner.os == 'Linux'
+        run: cargo check -p yscv-kernels --features rknn
+
+      - name: RKNN feature clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy -p yscv-kernels --features rknn --all-targets -- -D warnings
+
+      - name: RKNN feature tests
+        if: runner.os == 'Linux'
+        run: cargo test -p yscv-kernels --features rknn --lib
+
+      # Cross-check on Linux ARM64 from macOS to catch cfg(target_os = "linux")
+      # bugs that pure macOS check would miss.
+      - name: Install Linux ARM64 cross target (macOS)
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: RKNN feature cross-check (Linux ARM64 from macOS)
+        if: runner.os == 'macOS'
+        run: cargo check -p yscv-kernels --features rknn --target aarch64-unknown-linux-gnu
+
+      - name: RKNN feature cross-clippy (Linux ARM64 from macOS)
+        if: runner.os == 'macOS'
+        run: cargo clippy -p yscv-kernels --features rknn --target aarch64-unknown-linux-gnu -- -D warnings
+
+      - name: Metal backend compilation check
+        if: runner.os == 'macOS'
+        run: cargo check --workspace --features metal-backend
+
+      - name: Metal backend clippy (yscv-kernels)
+        if: runner.os == 'macOS'
+        run: cargo clippy -p yscv-kernels --features metal-backend --all-targets -- -D warnings
+
+      - name: Metal backend clippy (yscv-onnx)
+        if: runner.os == 'macOS'
+        run: cargo clippy -p yscv-onnx --features metal-backend --all-targets -- -D warnings
+
+      - name: Metal backend + profile clippy (yscv-onnx)
+        if: runner.os == 'macOS'
+        run: cargo clippy -p yscv-onnx --features "metal-backend profile" --all-targets -- -D warnings
+
+      - name: Metal backend tests
+        if: runner.os == 'macOS'
+        run: cargo test --workspace --release --features metal-backend
+
+      - name: Metal backend feature-scoped tests
+        if: runner.os == 'macOS'
+        run: |
+          cargo test -p yscv-kernels --features metal-backend --lib
+          cargo test -p yscv-onnx --features metal-backend --lib
+
+      - name: Native camera compile smoke
+        run: cargo check -p yscv-video --features native-camera
+
+      - name: Native camera clippy
+        run: cargo clippy -p yscv-video --features native-camera --all-targets -- -D warnings
+
+      - name: Native camera tests
+        run: cargo test -p yscv-video --features native-camera --lib
+
   aarch64-linux:
     name: ARM64 Linux (aarch64)
     runs-on: ubuntu-24.04-arm
@@ -126,11 +205,31 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
-      - name: Clippy
+      - name: Clippy (default features)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test Workspace
+      - name: Clippy (gpu feature)
+        run: cargo clippy --workspace --all-targets --features gpu -- -D warnings
+
+      - name: Clippy (gpu + rknn + native-camera)
+        run: cargo clippy --workspace --all-targets --features "gpu rknn native-camera" -- -D warnings
+
+      - name: Clippy (profile feature)
+        run: cargo clippy -p yscv-onnx --all-targets --features "gpu profile" -- -D warnings
+
+      - name: Test Workspace (default)
         run: cargo test
+
+      - name: Test Workspace (proptest extended)
+        env:
+          PROPTEST_CASES: "4096"
+        run: cargo test --workspace --lib
+
+      - name: Doc counts gate
+        run: bash scripts/check-doc-counts.sh
+
+      - name: SAFETY comments gate
+        run: bash scripts/check-safety-comments.sh
 
       - name: Verify Camera Listing UX (No Native Feature)
         run: |

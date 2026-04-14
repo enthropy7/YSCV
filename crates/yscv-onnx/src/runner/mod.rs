@@ -16,6 +16,7 @@ mod elementwise;
 mod gather_scatter;
 #[cfg(feature = "gpu")]
 pub(crate) mod gpu;
+pub mod kv_cache;
 mod linear;
 #[cfg(feature = "metal-backend")]
 #[allow(unsafe_code)]
@@ -214,6 +215,14 @@ impl<'m> TensorEnv<'m> {
             Some(&id) => id,
             None => return,
         };
+        // If the target lives only in `initializers`, materialize it into the
+        // slot so the alias name can resolve via `get()` — which otherwise
+        // would fall back to `initializers.get(alias_name)` and miss.
+        if self.slots[target_id].is_none()
+            && let Some(t) = self.initializers.get(target_name)
+        {
+            self.slots[target_id] = Some(t.clone());
+        }
         // Point alias_name to the same slot ID as target_name.
         self.name_to_id.insert(alias_name.to_string(), target_id);
     }
@@ -252,6 +261,7 @@ fn is_nhwc_producer(op_type: &str) -> bool {
             | "BatchNormalization_Relu"
             | "Resize"
             | "Upsample"
+            | "DeformConv"
     )
 }
 
@@ -958,6 +968,7 @@ fn execute_node_inner(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxEr
         "Max" => exec_min_max(node, env, true),
         "ReduceMax" => exec_reduce_max(node, env),
         "ConvTranspose" => exec_conv_transpose(node, env),
+        "DeformConv" => exec_deform_conv(node, env),
         "Resize" => exec_resize(node, env),
         "LeakyRelu" => exec_leaky_relu(node, env),
         "Elu" => exec_elu(node, env),
@@ -1033,6 +1044,7 @@ fn execute_node_inner(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxEr
         "HardSwish" => exec_unary(node, env, |v| v * ((v + 3.0).clamp(0.0, 6.0) / 6.0)),
         "Mish" => exec_unary(node, env, |v| v * (1.0 + v.exp()).ln().tanh()),
         "NonMaxSuppression" => exec_nms(node, env),
+        "GroupQueryAttention" => exec_grouped_query_attention(node, env),
         "Conv_Relu" => {
             exec_conv(node, env, yscv_kernels::Activation::None)?;
             exec_relu_inplace(node, env)

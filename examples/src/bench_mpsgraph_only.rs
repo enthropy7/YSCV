@@ -32,17 +32,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_data = vec![0.5f32; n];
     let input_tensor = Tensor::from_vec(input_shape, input_data.clone())?;
 
-    let plan = compile_mpsgraph_plan(&model, &input_name, &input_tensor)?;
+    let plan = compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input_tensor)])?;
+
+    let inputs: [(&str, &[f32]); 1] = [(input_name.as_str(), input_data.as_slice())];
 
     // warmup
     for _ in 0..5 {
-        let _ = run_mpsgraph_plan(&plan, &input_data);
+        let _ = run_mpsgraph_plan(&plan, &inputs);
     }
 
     let mut times = Vec::new();
     for _ in 0..iters {
         let t0 = Instant::now();
-        let _ = run_mpsgraph_plan(&plan, &input_data);
+        let _ = run_mpsgraph_plan(&plan, &inputs);
         times.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());

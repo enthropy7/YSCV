@@ -211,6 +211,7 @@ impl ImageSequenceReader {
 enum Mp4Codec {
     H264,
     Hevc,
+    Av1,
 }
 
 /// Reads H.264 or HEVC encoded MP4 video files and decodes frames to RGB8.
@@ -229,6 +230,7 @@ enum Mp4Codec {
 enum Mp4Decoder {
     H264(super::h264_decoder::H264Decoder),
     Hevc(super::hevc_decoder::HevcDecoder),
+    Av1(super::av1_decoder::Av1Decoder),
     /// Hardware decoder (VideoToolbox/VAAPI/NVDEC/MediaFoundation).
     Hw(super::hw_decode::HwVideoDecoder),
 }
@@ -317,6 +319,8 @@ impl Mp4VideoReader {
         // Detect codec from moov
         detected_codec = if moov_data.windows(4).any(|w| w == b"hvc1" || w == b"hev1") {
             Mp4Codec::Hevc
+        } else if moov_data.windows(4).any(|w| w == b"av01") {
+            Mp4Codec::Av1
         } else {
             Mp4Codec::H264
         };
@@ -339,11 +343,16 @@ impl Mp4VideoReader {
             Mp4Codec::H264 => {
                 param_nals_h264 = extract_avcc_nals(&moov_data);
             }
+            Mp4Codec::Av1 => {
+                // AV1 uses av1C box; sequence header is embedded in OBU stream,
+                // no separate parameter NALs needed.
+            }
         }
 
         let decoder = match detected_codec {
             Mp4Codec::H264 => Mp4Decoder::H264(super::h264_decoder::H264Decoder::new()),
             Mp4Codec::Hevc => Mp4Decoder::Hevc(super::hevc_decoder::HevcDecoder::new()),
+            Mp4Codec::Av1 => Mp4Decoder::Av1(super::av1_decoder::Av1Decoder::new()),
         };
 
         // Parse audio track info (if present)
@@ -374,6 +383,7 @@ impl Mp4VideoReader {
         let vc = match reader.codec {
             Mp4Codec::H264 => crate::VideoCodec::H264,
             Mp4Codec::Hevc => crate::VideoCodec::H265,
+            Mp4Codec::Av1 => crate::VideoCodec::Av1,
         };
         let hw = super::hw_decode::HwVideoDecoder::new(vc)?;
         if hw.is_hardware() {
@@ -391,6 +401,9 @@ impl Mp4VideoReader {
                         init_au.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
                         init_au.extend_from_slice(nal);
                     }
+                }
+                Mp4Codec::Av1 => {
+                    // AV1: no NAL-based init; sequence header is in OBU stream
                 }
             }
 
@@ -477,7 +490,26 @@ impl Mp4VideoReader {
                         let _ = dec.decode_nal(nal);
                     }
                 }
+                Mp4Codec::Av1 => {
+                    // AV1: sequence header is part of the OBU stream, no separate init needed
+                }
             }
+        }
+
+        // AV1 SW decode path — OBU-based, not NAL-based
+        if self.codec == Mp4Codec::Av1 {
+            while self.current_sample < self.sample_table.len() {
+                let sample_data = self.read_sample(self.current_sample)?;
+                self.current_sample += 1;
+
+                let Mp4Decoder::Av1(ref mut dec) = self.decoder else {
+                    return Ok(None);
+                };
+                if let Some(frame) = dec.decode_obu(&sample_data, 0)? {
+                    return Ok(Some(frame));
+                }
+            }
+            return Ok(None);
         }
 
         // Streaming: read one sample at a time from file
@@ -514,6 +546,7 @@ impl Mp4VideoReader {
                             return Ok(Some(frame));
                         }
                     }
+                    Mp4Codec::Av1 => unreachable!("AV1 handled above"),
                 }
             }
         }
@@ -544,6 +577,9 @@ impl Mp4VideoReader {
             Mp4Codec::Hevc => {
                 self.decoder = Mp4Decoder::Hevc(super::hevc_decoder::HevcDecoder::new());
             }
+            Mp4Codec::Av1 => {
+                self.decoder = Mp4Decoder::Av1(super::av1_decoder::Av1Decoder::new());
+            }
         }
     }
 
@@ -557,6 +593,7 @@ impl Mp4VideoReader {
         match self.codec {
             Mp4Codec::H264 => super::codec::VideoCodec::H264,
             Mp4Codec::Hevc => super::codec::VideoCodec::H265,
+            Mp4Codec::Av1 => super::codec::VideoCodec::Av1,
         }
     }
 
@@ -700,9 +737,10 @@ fn parse_mp4_audio_info(trak_data: &[u8]) -> Option<super::audio::AudioTrackInfo
 
 /// Read the NAL length size from avcC/hvcC config (typically 4).
 fn find_nal_length_size(moov_data: &[u8], codec: Mp4Codec) -> usize {
-    let tag = match codec {
+    let tag: &[u8; 4] = match codec {
         Mp4Codec::H264 => b"avcC",
         Mp4Codec::Hevc => b"hvcC",
+        Mp4Codec::Av1 => return 0, // AV1 uses OBU framing, not NAL length prefixed
     };
     // Scan for the config tag
     for i in 0..moov_data.len().saturating_sub(8) {
@@ -712,6 +750,7 @@ fn find_nal_length_size(moov_data: &[u8], codec: Mp4Codec) -> usize {
                 return match codec {
                     Mp4Codec::H264 => (config[4] & 0x03) as usize + 1,
                     Mp4Codec::Hevc => (config[21] & 0x03) as usize + 1,
+                    Mp4Codec::Av1 => unreachable!(),
                 };
             }
         }

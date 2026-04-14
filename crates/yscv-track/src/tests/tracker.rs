@@ -20,7 +20,7 @@ fn tracker_keeps_stable_ids_for_smooth_motion() {
         max_missed_frames: 3,
         max_tracks: 16,
     })
-    .unwrap();
+    .expect("valid tracker config");
 
     let out1 = tracker.update(&[det(1.0, 1.0, 3.0, 3.0, 0.9)]);
     assert_eq!(out1.len(), 1);
@@ -38,7 +38,7 @@ fn tracker_creates_new_track_for_far_apart_detection() {
         max_missed_frames: 3,
         max_tracks: 16,
     })
-    .unwrap();
+    .expect("valid tracker config");
 
     let out1 = tracker.update(&[det(0.0, 0.0, 2.0, 2.0, 0.9)]);
     let id1 = out1[0].track_id;
@@ -54,7 +54,7 @@ fn tracker_removes_stale_tracks_after_miss_budget() {
         max_missed_frames: 1,
         max_tracks: 16,
     })
-    .unwrap();
+    .expect("valid tracker config");
 
     tracker.update(&[det(0.0, 0.0, 1.0, 1.0, 0.9)]);
     assert_eq!(tracker.active_tracks().len(), 1);
@@ -73,7 +73,7 @@ fn tracker_reuses_id_after_short_occlusion_with_motion_prediction() {
         max_missed_frames: 2,
         max_tracks: 16,
     })
-    .unwrap();
+    .expect("valid tracker config");
 
     let initial = tracker.update(&[det(0.0, 0.0, 2.0, 2.0, 0.9)]);
     assert_eq!(initial.len(), 1);
@@ -91,14 +91,14 @@ fn tracker_reuses_id_after_short_occlusion_with_motion_prediction() {
 
 #[test]
 fn tracker_people_count_reflects_active_tracks() {
-    let mut tracker = Tracker::new(TrackerConfig::default()).unwrap();
+    let mut tracker = Tracker::new(TrackerConfig::default()).expect("default config valid");
     tracker.update(&[det(0.0, 0.0, 2.0, 2.0, 0.9), det(3.0, 3.0, 5.0, 5.0, 0.8)]);
     assert_eq!(tracker.people_count(), 2);
 }
 
 #[test]
 fn tracker_count_by_class_reflects_active_tracks() {
-    let mut tracker = Tracker::new(TrackerConfig::default()).unwrap();
+    let mut tracker = Tracker::new(TrackerConfig::default()).expect("default config valid");
     tracker.update(&[
         det_with_class(0.0, 0.0, 2.0, 2.0, 0.9, CLASS_ID_PERSON),
         det_with_class(3.0, 3.0, 5.0, 5.0, 0.8, CLASS_ID_FACE),
@@ -131,7 +131,7 @@ fn config_validation_rejects_invalid_values() {
 
 #[test]
 fn active_tracks_exposes_track_state() {
-    let mut tracker = Tracker::new(TrackerConfig::default()).unwrap();
+    let mut tracker = Tracker::new(TrackerConfig::default()).expect("default config valid");
     let out = tracker.update(&[det(1.0, 1.0, 2.0, 2.0, 0.7)]);
     let track_id = out[0].track_id;
     let tracks = tracker.active_tracks();
@@ -165,10 +165,10 @@ fn update_into_matches_update_output() {
 
     let detections = [det(1.0, 1.0, 3.0, 3.0, 0.9), det(4.0, 1.0, 6.0, 3.0, 0.8)];
 
-    let mut tracker_a = Tracker::new(config).unwrap();
+    let mut tracker_a = Tracker::new(config).expect("valid tracker config");
     let out_a = tracker_a.update(&detections);
 
-    let mut tracker_b = Tracker::new(config).unwrap();
+    let mut tracker_b = Tracker::new(config).expect("valid tracker config");
     let mut out_b = Vec::new();
     tracker_b.update_into(&detections, &mut out_b);
 

@@ -17,5 +17,13 @@ yscv-track = { path = "../../crates/yscv-track" }
 yscv-optim = { path = "../../crates/yscv-optim" }
 mimalloc = { version = "0.1", default-features = false }
 
+[[bin]]
+name = "yscv-bench"
+path = "src/main.rs"
+
+[[bin]]
+name = "fpv-latency"
+path = "src/fpv_latency.rs"
+
 [lints]
 workspace = true

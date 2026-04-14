@@ -2,7 +2,7 @@
 
 Evaluation metrics for classification, detection, and tracking. Dataset adapters for COCO, Pascal VOC, and CSV.
 
-```rust
+```rust,ignore
 use yscv_eval::*;
 
 let ap = average_precision(&predictions, &ground_truths, 0.5);

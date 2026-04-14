@@ -9,6 +9,7 @@ publish = false
 default = []
 gpu = ["yscv-onnx/gpu", "yscv-kernels/gpu"]
 metal-backend = ["yscv-kernels/metal-backend", "yscv-onnx/metal-backend"]
+rknn = ["yscv-kernels/rknn"]
 
 [dependencies]
 yscv-tensor = { path = "../crates/yscv-tensor" }
@@ -22,6 +23,7 @@ yscv-track = { path = "../crates/yscv-track" }
 yscv-optim = { path = "../crates/yscv-optim" }
 yscv-kernels = { path = "../crates/yscv-kernels" }
 yscv-onnx = { path = "../crates/yscv-onnx" }
+yscv-pipeline = { path = "../crates/yscv-pipeline" }
 thiserror.workspace = true
 
 [[example]]
@@ -112,6 +114,18 @@ required-features = ["metal-backend"]
 [[example]]
 name = "bench_video_decode"
 path = "src/bench_video_decode.rs"
+
+[[example]]
+name = "edge_pipeline"
+path = "src/edge_pipeline.rs"
+
+[[example]]
+name = "board_pipeline"
+path = "src/board_pipeline.rs"
+
+[[example]]
+name = "edge_pipeline_v2"
+path = "src/edge_pipeline_v2.rs"
 
 [lints]
 workspace = true

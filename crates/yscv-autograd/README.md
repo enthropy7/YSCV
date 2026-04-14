@@ -2,7 +2,7 @@
 
 Dynamic computation graph with tape-based reverse-mode automatic differentiation.
 
-```rust
+```rust,ignore
 use yscv_autograd::*;
 
 let mut graph = Graph::new();

@@ -2,7 +2,7 @@
 
 159 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images. Covers everything from basic filters to feature detection.
 
-```rust
+```rust,ignore
 use yscv_imgproc::*;
 
 let img = imread("photo.jpg")?;

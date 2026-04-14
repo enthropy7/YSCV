@@ -30,6 +30,11 @@ impl<'a> BitstreamReader<'a> {
         (self.data.len() - self.byte_offset) * 8 - self.bit_offset as usize
     }
 
+    /// Returns the total number of bits consumed so far.
+    pub fn bits_consumed(&self) -> usize {
+        self.byte_offset * 8 + self.bit_offset as usize
+    }
+
     /// Reads a single bit (0 or 1).
     pub fn read_bit(&mut self) -> Result<u8, VideoError> {
         if self.byte_offset >= self.data.len() {

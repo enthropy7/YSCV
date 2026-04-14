@@ -1,4 +1,20 @@
 //! u8 feature operations: FAST-9, distance transform, warp perspective, bilateral filter.
+//!
+//! # Safety contract
+//!
+//! Unsafe code in this module falls into these categories:
+//!
+//! 1. **`SendConstPtr` / `SendPtr` slice reconstruction for rayon** — pointer derived from
+//!    a slice that outlives the parallel scope; each thread accesses non-overlapping rows.
+//!
+//! 2. **SIMD intrinsics (NEON / SSE2 / AVX2)** — ISA availability guaranteed by runtime
+//!    `is_aarch64_feature_detected!` / `is_x86_feature_detected!` guards or `#[target_feature]`.
+//!
+//! 3. **Pointer arithmetic in distance transform** — loop bounds ensure offsets stay within
+//!    the `h * w` allocation.
+//!
+//! 4. **`get_unchecked` in bilateral filter inner loops** — indices are bounded by the
+//!    kernel diameter and image dimensions validated at function entry.
 #![allow(unsafe_code)]
 
 #[cfg(target_os = "macos")]
@@ -89,6 +105,7 @@ pub fn fast9_detect_u8(image: &ImageU8, threshold: u8, nms: bool) -> Vec<(u16, u
         (border..h - border)
             .into_par_iter()
             .flat_map(|y| {
+                // SAFETY: (category 1) src_ptr from slice that outlives par_iter; h*w is the slice length.
                 let src = unsafe { std::slice::from_raw_parts(src_ptr.ptr(), h * w) };
                 let mut row_corners = Vec::new();
                 fast9_detect_row(src, y, w, border, &offsets, threshold, &mut row_corners);
@@ -171,13 +188,14 @@ fn fast9_detect_row(
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
         use std::arch::aarch64::*;
         let sp = src.as_ptr();
+        // SAFETY: (category 2) NEON guaranteed by feature detection guard above.
         let t_v = unsafe { vdupq_n_u8(t) };
         let _three = unsafe { vdupq_n_u8(3) };
         let mut x = border;
 
         while x + 16 <= w - border {
             let idx = row_start + x;
-            // Load 16 consecutive center pixels
+            // SAFETY: ISA guard (feature detection) above; idx+16 <= w-border bounded by loop condition.
             let centers = unsafe { vld1q_u8(sp.add(idx)) };
             let _c_hi = unsafe { vqaddq_u8(centers, t_v) };
             let _c_lo = unsafe { vqsubq_u8(centers, t_v) };
@@ -186,6 +204,7 @@ fn fast9_detect_row(
             // But offsets are relative to center — need gather, which NEON can't do efficiently.
             // Instead, check if ANY of the 16 could be a corner using max/min of the row.
             // Skip the batch if the entire row is uniform (common case).
+            // SAFETY: ISA guard (feature detection) above; operating on loaded register.
             let row_max = unsafe { vmaxvq_u8(centers) };
             let row_min = unsafe { vminvq_u8(centers) };
             if row_max - row_min < t {
@@ -308,6 +327,7 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
         #[cfg(target_arch = "aarch64")]
         if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
             use std::arch::aarch64::*;
+            // SAFETY: ISA guard (feature detection) above; i+16 <= total bounds checked.
             unsafe {
                 let zero_v = vdupq_n_u8(0);
                 let cap_v = vdupq_n_u16(cap);
@@ -327,6 +347,7 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
         }
 
         for j in i..total {
+            // SAFETY: j < total = h*w; sp/dp from validated slice pointers.
             unsafe {
                 *dp.add(j) = if *sp.add(j) != 0 { 0 } else { cap };
             }
@@ -348,6 +369,7 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
 
     // Forward: row 0 left-to-right only, then rows 1..h do vertical+horizontal
     #[allow(unsafe_code)]
+    // SAFETY: dp offsets 0..w within dist allocation.
     unsafe {
         let dp = dist.as_mut_ptr();
         for i in 1..w {
@@ -366,18 +388,20 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
         let mut x = 0usize;
         #[cfg(target_arch = "aarch64")]
         if has_neon {
+            // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vert_fwd_neon(&mut dist, prev, cur, w) };
         }
         #[cfg(target_arch = "x86_64")]
         if has_sse {
+            // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vert_fwd_sse(&mut dist, prev, cur, w) };
         }
         for i in x..w {
             dist[cur + i] = dist[cur + i].min(dist[prev + i].saturating_add(1));
         }
 
-        // Horizontal left-to-right: min(current, left + 1) — unsafe for speed
         #[allow(unsafe_code)]
+        // SAFETY: dp offsets 0..w within dist row; cur = y*w bounds checked by loop.
         unsafe {
             let dp = dist.as_mut_ptr().add(cur);
             for i in 1..w {
@@ -392,6 +416,7 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
 
     // Backward: last row right-to-left, then rows h-2..0 do vertical+horizontal
     #[allow(unsafe_code)]
+    // SAFETY: dp offsets 0..w within last row of dist allocation.
     unsafe {
         let dp = dist.as_mut_ptr().add((h - 1) * w);
         for i in (0..w.saturating_sub(1)).rev() {
@@ -410,18 +435,20 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
         let mut x = 0usize;
         #[cfg(target_arch = "aarch64")]
         if has_neon {
+            // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vert_bwd_neon(&mut dist, next, cur, w) };
         }
         #[cfg(target_arch = "x86_64")]
         if has_sse {
+            // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vert_bwd_sse(&mut dist, next, cur, w) };
         }
         for i in x..w {
             dist[cur + i] = dist[cur + i].min(dist[next + i].saturating_add(1));
         }
 
-        // Horizontal right-to-left — unsafe for speed
         #[allow(unsafe_code)]
+        // SAFETY: dp offsets 0..w within dist row; cur = y*w bounds checked by loop.
         unsafe {
             let dp = dist.as_mut_ptr().add(cur);
             for i in (0..w.saturating_sub(1)).rev() {
@@ -550,6 +577,7 @@ pub fn warp_perspective_u8(
         let src_ptr = super::SendConstPtr(src.as_ptr());
         let out_ptr = super::SendPtr(out.as_mut_ptr());
         (0..out_h).into_par_iter().for_each(|oy| {
+            // SAFETY: pointer and length from validated image data; parallel rows are non-overlapping.
             let src = unsafe { std::slice::from_raw_parts(src_ptr.ptr(), ih * iw * channels) };
             let out_row = unsafe {
                 std::slice::from_raw_parts_mut(
@@ -640,6 +668,7 @@ fn warp_perspective_row(
             let fx = ((sx - sxi as f32) * 256.0) as u16;
             let fy = ((sy - syi as f32) * 256.0) as u16;
 
+            // SAFETY: bounds checked by sx/sy clamp and min(iw-1)/min(ih-1) above.
             unsafe {
                 let p00 = *sp.add(syi * iw + sxi) as u16;
                 let p10 = *sp.add(syi * iw + sx1) as u16;
@@ -677,6 +706,7 @@ fn warp_perspective_row(
             let fy_inv = 256 - fy;
 
             for c in 0..channels {
+                // SAFETY: bounds checked by sx/sy clamp and min(iw-1)/min(ih-1) above.
                 unsafe {
                     let p00 = *sp.add((syi * iw + sxi) * channels + c) as u16;
                     let p10 = *sp.add((syi * iw + sx1) * channels + c) as u16;
@@ -861,10 +891,12 @@ fn bilateral_u8_parallel(
         gcd::parallel_for(height, |y| {
             let sp = sp.ptr();
             let dp = dp.ptr();
+            // SAFETY: pointer and length from validated LUT allocations.
             let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
             let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
             let combined_lut =
                 unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
+            // SAFETY: ISA guard (feature detection) above; pointers from validated image data.
             unsafe {
                 bilateral_u8_row_neon(
                     sp,
@@ -889,10 +921,12 @@ fn bilateral_u8_parallel(
         (0..height).into_par_iter().for_each(|y| {
             let sp = sp.ptr();
             let dp = dp.ptr();
+            // SAFETY: pointer and length from validated LUT allocations.
             let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
             let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
             let combined_lut =
                 unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
+            // SAFETY: ISA guard (feature detection) above; pointers from validated image data.
             unsafe {
                 bilateral_u8_row_neon(
                     sp,
@@ -914,6 +948,7 @@ fn bilateral_u8_parallel(
 
     // Sequential fallback for small images
     for y in 0..height {
+        // SAFETY: ISA guard (feature detection) above; pointers from validated image data.
         unsafe {
             bilateral_u8_row_neon(
                 sp.ptr(),
@@ -950,8 +985,10 @@ fn bilateral_u8_parallel_scalar(
     let color_ptr = super::SendConstPtr(color_lut.as_ptr());
 
     let process_row = |y: usize| {
+        // SAFETY: pointer and length from validated image data; parallel rows are non-overlapping.
         let src = unsafe { std::slice::from_raw_parts(sp.ptr(), width * height) };
         let dst = unsafe { std::slice::from_raw_parts_mut(dp.ptr(), width * height) };
+        // SAFETY: pointer and length from validated LUT allocations.
         let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
         let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
 
@@ -1026,10 +1063,12 @@ fn bilateral_u8_parallel_x86<const USE_AVX2: bool>(
     let process_row = |y: usize| {
         let sp = sp.ptr();
         let dp = dp.ptr();
+        // SAFETY: pointer and length from validated LUT allocations.
         let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
         let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };
         let combined_lut = unsafe { std::slice::from_raw_parts(combined_ptr.ptr(), combined_len) };
         if USE_AVX2 {
+            // SAFETY: ISA guard (AVX2 feature detection) in caller.
             unsafe {
                 bilateral_u8_row_avx2(
                     sp,
@@ -1046,6 +1085,7 @@ fn bilateral_u8_parallel_x86<const USE_AVX2: bool>(
                 );
             }
         } else {
+            // SAFETY: ISA guard (SSE2 feature detection) in caller.
             unsafe {
                 bilateral_u8_row_sse(
                     sp,

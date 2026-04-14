@@ -1,0 +1,1021 @@
+//! Detection overlay renderer and telemetry OSD for RGB8 frames.
+//!
+//! Provides low-level drawing primitives (rectangles, text) and high-level
+//! functions for rendering YOLO detection boxes and flight controller telemetry.
+
+// ---------------------------------------------------------------------------
+// Built-in 8x16 bitmap font (standard VGA/PC BIOS font, ASCII 32-127)
+// ---------------------------------------------------------------------------
+
+/// Standard VGA 8x16 bitmap font covering ASCII 32-127 (96 characters).
+/// Each character is 16 bytes (one per row, MSB = leftmost pixel).
+const FONT_8X16: [[u8; 16]; 96] = [
+    // 32: space
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 33: !
+    [
+        0x00, 0x00, 0x18, 0x3C, 0x3C, 0x3C, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 34: "
+    [
+        0x00, 0x66, 0x66, 0x66, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 35: #
+    [
+        0x00, 0x00, 0x00, 0x6C, 0x6C, 0xFE, 0x6C, 0x6C, 0x6C, 0xFE, 0x6C, 0x6C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 36: $
+    [
+        0x18, 0x18, 0x7C, 0xC6, 0xC2, 0xC0, 0x7C, 0x06, 0x06, 0x86, 0xC6, 0x7C, 0x18, 0x18, 0x00,
+        0x00,
+    ],
+    // 37: %
+    [
+        0x00, 0x00, 0x00, 0x00, 0xC2, 0xC6, 0x0C, 0x18, 0x30, 0x60, 0xC6, 0x86, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 38: &
+    [
+        0x00, 0x00, 0x38, 0x6C, 0x6C, 0x38, 0x76, 0xDC, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 39: '
+    [
+        0x00, 0x30, 0x30, 0x30, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 40: (
+    [
+        0x00, 0x00, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 41: )
+    [
+        0x00, 0x00, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 42: *
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 43: +
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 44: ,
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x18, 0x30, 0x00, 0x00,
+        0x00,
+    ],
+    // 45: -
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 46: .
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 47: /
+    [
+        0x00, 0x00, 0x00, 0x00, 0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x80, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 48: 0
+    [
+        0x00, 0x00, 0x38, 0x6C, 0xC6, 0xC6, 0xD6, 0xD6, 0xC6, 0xC6, 0x6C, 0x38, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 49: 1
+    [
+        0x00, 0x00, 0x18, 0x38, 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 50: 2
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0xC6, 0xFE, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 51: 3
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0x06, 0x06, 0x3C, 0x06, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 52: 4
+    [
+        0x00, 0x00, 0x0C, 0x1C, 0x3C, 0x6C, 0xCC, 0xFE, 0x0C, 0x0C, 0x0C, 0x1E, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 53: 5
+    [
+        0x00, 0x00, 0xFE, 0xC0, 0xC0, 0xC0, 0xFC, 0x06, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 54: 6
+    [
+        0x00, 0x00, 0x38, 0x60, 0xC0, 0xC0, 0xFC, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 55: 7
+    [
+        0x00, 0x00, 0xFE, 0xC6, 0x06, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 56: 8
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 57: 9
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7E, 0x06, 0x06, 0x06, 0x0C, 0x78, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 58: :
+    [
+        0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 59: ;
+    [
+        0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x18, 0x18, 0x30, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 60: <
+    [
+        0x00, 0x00, 0x00, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 61: =
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 62: >
+    [
+        0x00, 0x00, 0x00, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 63: ?
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0xC6, 0x0C, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 64: @
+    [
+        0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xDE, 0xDE, 0xDE, 0xDC, 0xC0, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 65: A
+    [
+        0x00, 0x00, 0x10, 0x38, 0x6C, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 66: B
+    [
+        0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x66, 0x66, 0xFC, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 67: C
+    [
+        0x00, 0x00, 0x3C, 0x66, 0xC2, 0xC0, 0xC0, 0xC0, 0xC0, 0xC2, 0x66, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 68: D
+    [
+        0x00, 0x00, 0xF8, 0x6C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x6C, 0xF8, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 69: E
+    [
+        0x00, 0x00, 0xFE, 0x66, 0x62, 0x68, 0x78, 0x68, 0x60, 0x62, 0x66, 0xFE, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 70: F
+    [
+        0x00, 0x00, 0xFE, 0x66, 0x62, 0x68, 0x78, 0x68, 0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 71: G
+    [
+        0x00, 0x00, 0x3C, 0x66, 0xC2, 0xC0, 0xC0, 0xDE, 0xC6, 0xC6, 0x66, 0x3A, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 72: H
+    [
+        0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 73: I
+    [
+        0x00, 0x00, 0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 74: J
+    [
+        0x00, 0x00, 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0xCC, 0xCC, 0xCC, 0x78, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 75: K
+    [
+        0x00, 0x00, 0xE6, 0x66, 0x66, 0x6C, 0x78, 0x78, 0x6C, 0x66, 0x66, 0xE6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 76: L
+    [
+        0x00, 0x00, 0xF0, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x62, 0x66, 0xFE, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 77: M
+    [
+        0x00, 0x00, 0xC6, 0xEE, 0xFE, 0xFE, 0xD6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 78: N
+    [
+        0x00, 0x00, 0xC6, 0xE6, 0xF6, 0xFE, 0xDE, 0xCE, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 79: O
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 80: P
+    [
+        0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 81: Q
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xD6, 0xDE, 0x7C, 0x0C, 0x0E, 0x00,
+        0x00,
+    ],
+    // 82: R
+    [
+        0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x66, 0xE6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 83: S
+    [
+        0x00, 0x00, 0x7C, 0xC6, 0xC6, 0x60, 0x38, 0x0C, 0x06, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 84: T
+    [
+        0x00, 0x00, 0xFF, 0xDB, 0x99, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 85: U
+    [
+        0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 86: V
+    [
+        0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x10, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 87: W
+    [
+        0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xD6, 0xD6, 0xD6, 0xFE, 0xEE, 0x6C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 88: X
+    [
+        0x00, 0x00, 0xC6, 0xC6, 0x6C, 0x7C, 0x38, 0x38, 0x7C, 0x6C, 0xC6, 0xC6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 89: Y
+    [
+        0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 90: Z
+    [
+        0x00, 0x00, 0xFE, 0xC6, 0x86, 0x0C, 0x18, 0x30, 0x60, 0xC2, 0xC6, 0xFE, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 91: [
+    [
+        0x00, 0x00, 0x3C, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 92: backslash
+    [
+        0x00, 0x00, 0x00, 0x80, 0xC0, 0xE0, 0x70, 0x38, 0x1C, 0x0E, 0x06, 0x02, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 93: ]
+    [
+        0x00, 0x00, 0x3C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 94: ^
+    [
+        0x10, 0x38, 0x6C, 0xC6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 95: _
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00,
+        0x00,
+    ],
+    // 96: `
+    [
+        0x00, 0x30, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 97: a
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x0C, 0x7C, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 98: b
+    [
+        0x00, 0x00, 0xE0, 0x60, 0x60, 0x78, 0x6C, 0x66, 0x66, 0x66, 0x66, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 99: c
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC0, 0xC0, 0xC0, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 100: d
+    [
+        0x00, 0x00, 0x1C, 0x0C, 0x0C, 0x3C, 0x6C, 0xCC, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 101: e
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xFE, 0xC0, 0xC0, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 102: f
+    [
+        0x00, 0x00, 0x1C, 0x36, 0x32, 0x30, 0x78, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 103: g
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x76, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x7C, 0x0C, 0xCC, 0x78,
+        0x00,
+    ],
+    // 104: h
+    [
+        0x00, 0x00, 0xE0, 0x60, 0x60, 0x6C, 0x76, 0x66, 0x66, 0x66, 0x66, 0xE6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 105: i
+    [
+        0x00, 0x00, 0x18, 0x18, 0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 106: j
+    [
+        0x00, 0x00, 0x06, 0x06, 0x00, 0x0E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x66, 0x66, 0x3C,
+        0x00,
+    ],
+    // 107: k
+    [
+        0x00, 0x00, 0xE0, 0x60, 0x60, 0x66, 0x6C, 0x78, 0x78, 0x6C, 0x66, 0xE6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 108: l
+    [
+        0x00, 0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 109: m
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xEC, 0xFE, 0xD6, 0xD6, 0xD6, 0xD6, 0xC6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 110: n
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 111: o
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 112: p
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x66, 0x66, 0x66, 0x66, 0x66, 0x7C, 0x60, 0x60, 0xF0,
+        0x00,
+    ],
+    // 113: q
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x76, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x7C, 0x0C, 0x0C, 0x1E,
+        0x00,
+    ],
+    // 114: r
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x76, 0x66, 0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 115: s
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0x60, 0x38, 0x0C, 0xC6, 0x7C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 116: t
+    [
+        0x00, 0x00, 0x10, 0x30, 0x30, 0xFC, 0x30, 0x30, 0x30, 0x30, 0x36, 0x1C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 117: u
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 118: v
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 119: w
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xD6, 0xD6, 0xD6, 0xFE, 0x6C, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 120: x
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0x6C, 0x38, 0x38, 0x38, 0x6C, 0xC6, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 121: y
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7E, 0x06, 0x0C, 0xF8,
+        0x00,
+    ],
+    // 122: z
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xCC, 0x18, 0x30, 0x60, 0xC6, 0xFE, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 123: {
+    [
+        0x00, 0x00, 0x0E, 0x18, 0x18, 0x18, 0x70, 0x18, 0x18, 0x18, 0x18, 0x0E, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 124: |
+    [
+        0x00, 0x00, 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 125: }
+    [
+        0x00, 0x00, 0x70, 0x18, 0x18, 0x18, 0x0E, 0x18, 0x18, 0x18, 0x18, 0x70, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 126: ~
+    [
+        0x00, 0x00, 0x76, 0xDC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+    // 127: DEL (blank)
+    [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ],
+];
+
+// ---------------------------------------------------------------------------
+// Drawing primitives (operate on RGB8 byte slices, not Tensor)
+// ---------------------------------------------------------------------------
+
+/// Draw a rectangle border on an RGB8 frame buffer.
+///
+/// `(x, y)` is the top-left corner; `(w, h)` is the size in pixels.
+/// `thickness` specifies border width (0 = no drawing).
+pub fn draw_rect(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    thickness: u32,
+) {
+    let color = [r, g, b];
+    let fw = width;
+    let fh = height;
+
+    let set_pixel = |frame: &mut [u8], px: usize, py: usize| {
+        if px < fw && py < fh {
+            let idx = (py * fw + px) * 3;
+            frame[idx] = color[0];
+            frame[idx + 1] = color[1];
+            frame[idx + 2] = color[2];
+        }
+    };
+
+    let x = x as usize;
+    let y = y as usize;
+    let rect_w = w as usize;
+    let rect_h = h as usize;
+
+    for t in 0..thickness as usize {
+        // Top edge
+        let ty = y.wrapping_add(t); // draw outward-inward from top
+        if ty < fh {
+            for px in x..x.saturating_add(rect_w).min(fw) {
+                set_pixel(frame, px, ty);
+            }
+        }
+        // Bottom edge
+        let by = y.saturating_add(rect_h).saturating_sub(1).saturating_sub(t);
+        if by < fh && by != ty {
+            for px in x..x.saturating_add(rect_w).min(fw) {
+                set_pixel(frame, px, by);
+            }
+        }
+        // Left edge
+        let lx = x.wrapping_add(t);
+        if lx < fw {
+            for py in y..y.saturating_add(rect_h).min(fh) {
+                set_pixel(frame, lx, py);
+            }
+        }
+        // Right edge
+        let rx = x.saturating_add(rect_w).saturating_sub(1).saturating_sub(t);
+        if rx < fw && rx != lx {
+            for py in y..y.saturating_add(rect_h).min(fh) {
+                set_pixel(frame, rx, py);
+            }
+        }
+    }
+}
+
+/// Draw text at position `(x, y)` on an RGB8 frame using the built-in 8x16 VGA font.
+///
+/// Characters outside the frame bounds are silently clipped. Non-ASCII bytes
+/// and characters outside the 32-127 range are replaced with `?`.
+pub fn draw_text(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    x: u32,
+    y: u32,
+    text: &str,
+    r: u8,
+    g: u8,
+    b: u8,
+) {
+    let fw = width;
+    let fh = height;
+
+    for (ci, ch) in text.bytes().enumerate() {
+        let glyph_idx = if (32..=127).contains(&ch) {
+            (ch - 32) as usize
+        } else {
+            // '?' glyph
+            31
+        };
+        let glyph = &FONT_8X16[glyph_idx];
+        let cx = x as usize + ci * 8;
+
+        for row in 0..16 {
+            let py = y as usize + row;
+            if py >= fh {
+                break;
+            }
+            let bits = glyph[row];
+            for col in 0..8 {
+                let px = cx + col;
+                if px >= fw {
+                    break;
+                }
+                if bits & (0x80 >> col) != 0 {
+                    let idx = (py * fw + px) * 3;
+                    frame[idx] = r;
+                    frame[idx + 1] = g;
+                    frame[idx + 2] = b;
+                }
+            }
+        }
+    }
+}
+
+/// Draw detection bounding boxes with labels on an RGB8 frame.
+///
+/// Each detection is `(x, y, w, h, confidence, label)` where `(x, y)` is
+/// the top-left corner and `(w, h)` is the size in pixels.
+pub fn overlay_detections(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    detections: &[(f32, f32, f32, f32, f32, &str)],
+) {
+    // Color palette for different classes (cycled by label hash)
+    const PALETTE: [(u8, u8, u8); 10] = [
+        (255, 0, 0),     // red
+        (0, 255, 0),     // green
+        (0, 128, 255),   // blue
+        (255, 255, 0),   // yellow
+        (255, 0, 255),   // magenta
+        (0, 255, 255),   // cyan
+        (255, 128, 0),   // orange
+        (128, 0, 255),   // purple
+        (0, 128, 0),     // dark green
+        (128, 128, 128), // gray
+    ];
+
+    for &(dx, dy, dw, dh, conf, label) in detections {
+        // Simple hash of label for color selection
+        let color_idx = label
+            .bytes()
+            .fold(0usize, |acc, b| acc.wrapping_add(b as usize))
+            % PALETTE.len();
+        let (r, g, b) = PALETTE[color_idx];
+
+        let bx = dx as u32;
+        let by = dy as u32;
+        let bw = dw as u32;
+        let bh = dh as u32;
+
+        // Draw bounding box
+        draw_rect(frame, width, height, bx, by, bw, bh, r, g, b, 2);
+
+        // Draw label with confidence
+        let label_text = format!("{label} {conf:.2}");
+        let text_y = if by >= 18 { by - 18 } else { by + bh + 2 };
+        draw_text(frame, width, height, bx, text_y, &label_text, r, g, b);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry OSD
+// ---------------------------------------------------------------------------
+
+/// Telemetry data from a flight controller for OSD rendering.
+#[derive(Clone, Debug)]
+pub struct TelemetryData {
+    pub battery_voltage: f32,
+    pub battery_current: f32,
+    pub altitude_m: f32,
+    pub speed_ms: f32,
+    pub lat: f64,
+    pub lon: f64,
+    pub heading_deg: f32,
+    pub ai_detections: u32,
+}
+
+impl Default for TelemetryData {
+    fn default() -> Self {
+        Self {
+            battery_voltage: 0.0,
+            battery_current: 0.0,
+            altitude_m: 0.0,
+            speed_ms: 0.0,
+            lat: 0.0,
+            lon: 0.0,
+            heading_deg: 0.0,
+            ai_detections: 0,
+        }
+    }
+}
+
+/// Lock-free atomic-snapshot wrapper around [`TelemetryData`].
+///
+/// **Why this exists:** `TelemetryData` contains `f64` fields. On 32-bit
+/// ARM platforms (RV1106 Cortex-A7), `f64` reads decompose into two
+/// 32-bit loads which can tear if a writer interleaves between them —
+/// resulting in nonsense GPS coordinates on the OSD. `arc-swap` gives an
+/// atomic pointer swap so readers see a fully-consistent snapshot.
+///
+/// Designed for the common pattern of one MAVLink-parser writer thread
+/// and many OSD reader threads (every overlay render).
+#[derive(Clone)]
+pub struct SharedTelemetry(std::sync::Arc<arc_swap::ArcSwap<TelemetryData>>);
+
+impl SharedTelemetry {
+    /// Create with all-zero defaults.
+    pub fn new() -> Self {
+        Self(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            TelemetryData::default(),
+        )))
+    }
+
+    /// Construct from an initial value.
+    pub fn from(td: TelemetryData) -> Self {
+        Self(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(td)))
+    }
+
+    /// Atomically replace the current snapshot.
+    pub fn store(&self, td: TelemetryData) {
+        self.0.store(std::sync::Arc::new(td));
+    }
+
+    /// Atomically read the current snapshot. Returned value is a
+    /// consistent view — never torn.
+    pub fn load(&self) -> std::sync::Arc<TelemetryData> {
+        self.0.load_full()
+    }
+
+    /// Atomically read-modify-write: clone current, apply `f`, store back.
+    /// Use for batched MAVLink update applies.
+    pub fn modify<F: FnOnce(&mut TelemetryData)>(&self, f: F) {
+        let mut copy = (*self.load()).clone();
+        f(&mut copy);
+        self.store(copy);
+    }
+}
+
+impl Default for SharedTelemetry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Draw telemetry OSD overlay on an RGB8 frame.
+///
+/// Renders battery, altitude, speed, GPS coordinates, heading, and AI detection
+/// count in a fixed layout: top-left for battery/altitude, top-right for GPS,
+/// bottom-left for speed/heading, bottom-right for AI status.
+pub fn overlay_telemetry(frame: &mut [u8], width: usize, height: usize, telemetry: &TelemetryData) {
+    let white = (255u8, 255u8, 255u8);
+    let green = (0u8, 255u8, 0u8);
+    let yellow = (255u8, 255u8, 0u8);
+
+    // Battery indicator color: green > 11.5V, yellow > 10.5V, red otherwise
+    let batt_color = if telemetry.battery_voltage > 11.5 {
+        green
+    } else if telemetry.battery_voltage > 10.5 {
+        yellow
+    } else {
+        (255, 0, 0)
+    };
+
+    // Top-left: battery
+    let batt_str = format!(
+        "BAT {:.1}V {:.1}A",
+        telemetry.battery_voltage, telemetry.battery_current
+    );
+    draw_text(
+        frame,
+        width,
+        height,
+        4,
+        4,
+        &batt_str,
+        batt_color.0,
+        batt_color.1,
+        batt_color.2,
+    );
+
+    // Second line: altitude
+    let alt_str = format!("ALT {:.1}m", telemetry.altitude_m);
+    draw_text(
+        frame, width, height, 4, 22, &alt_str, white.0, white.1, white.2,
+    );
+
+    // Top-right: GPS
+    let gps_str = format!("{:.6},{:.6}", telemetry.lat, telemetry.lon);
+    let gps_x = width.saturating_sub(gps_str.len() * 8 + 4) as u32;
+    draw_text(
+        frame, width, height, gps_x, 4, &gps_str, white.0, white.1, white.2,
+    );
+
+    // Bottom-left: speed + heading
+    let spd_str = format!(
+        "SPD {:.1}m/s  HDG {:.0}",
+        telemetry.speed_ms, telemetry.heading_deg
+    );
+    let spd_y = height.saturating_sub(22) as u32;
+    draw_text(
+        frame, width, height, 4, spd_y, &spd_str, white.0, white.1, white.2,
+    );
+
+    // Bottom-right: AI detection count
+    let ai_str = format!("AI:{}", telemetry.ai_detections);
+    let ai_x = width.saturating_sub(ai_str.len() * 8 + 4) as u32;
+    draw_text(
+        frame, width, height, ai_x, spd_y, &ai_str, green.0, green.1, green.2,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draw_rect_sets_border_pixels() {
+        let w = 32;
+        let h = 32;
+        let mut frame = vec![0u8; w * h * 3];
+
+        draw_rect(&mut frame, w, h, 4, 4, 10, 10, 255, 0, 0, 1);
+
+        // Top-left corner of rect should be red
+        let idx = (4 * w + 4) * 3;
+        assert_eq!(frame[idx], 255, "R at top-left corner");
+        assert_eq!(frame[idx + 1], 0, "G at top-left corner");
+        assert_eq!(frame[idx + 2], 0, "B at top-left corner");
+
+        // Center should be untouched (black)
+        let center_idx = (8 * w + 8) * 3;
+        assert_eq!(frame[center_idx], 0, "center should be black");
+    }
+
+    #[test]
+    fn draw_rect_clips_out_of_bounds() {
+        let w = 16;
+        let h = 16;
+        let mut frame = vec![0u8; w * h * 3];
+
+        // Rectangle extends beyond frame bounds — should not panic
+        draw_rect(&mut frame, w, h, 10, 10, 20, 20, 255, 255, 255, 2);
+    }
+
+    #[test]
+    fn draw_text_renders_pixels() {
+        let w = 64;
+        let h = 32;
+        let mut frame = vec![0u8; w * h * 3];
+
+        draw_text(&mut frame, w, h, 0, 0, "A", 255, 255, 255);
+
+        // 'A' glyph has some set pixels — verify at least one is non-zero
+        let has_pixel = frame.iter().any(|&v| v != 0);
+        assert!(has_pixel, "drawing 'A' should produce visible pixels");
+    }
+
+    #[test]
+    fn draw_text_clips_gracefully() {
+        let w = 4;
+        let h = 4;
+        let mut frame = vec![0u8; w * h * 3];
+
+        // Text much wider than frame — should not panic
+        draw_text(&mut frame, w, h, 0, 0, "Hello World!", 255, 255, 255);
+    }
+
+    #[test]
+    fn draw_text_replaces_non_printable() {
+        let w = 64;
+        let h = 32;
+        let mut frame = vec![0u8; w * h * 3];
+
+        // DEL (0x7F) maps to index 95 (blank glyph in our table).
+        // Control char (0x01) should render as '?' with visible pixels.
+        draw_text(&mut frame, w, h, 0, 0, "\x01", 255, 255, 255);
+        let has_pixel = frame.iter().any(|&v| v != 0);
+        assert!(
+            has_pixel,
+            "non-printable should render as '?' with visible pixels"
+        );
+    }
+
+    #[test]
+    fn overlay_detections_draws_boxes() {
+        let w = 128;
+        let h = 128;
+        let mut frame = vec![0u8; w * h * 3];
+
+        let dets = [(10.0f32, 10.0, 50.0, 50.0, 0.95, "person")];
+        overlay_detections(&mut frame, w, h, &dets);
+
+        // Should have drawn something
+        let nonzero_count = frame.iter().filter(|&&v| v != 0).count();
+        assert!(
+            nonzero_count > 0,
+            "detection overlay should produce visible pixels"
+        );
+    }
+
+    #[test]
+    fn overlay_telemetry_renders_text() {
+        let w = 320;
+        let h = 240;
+        let mut frame = vec![0u8; w * h * 3];
+
+        let telemetry = TelemetryData {
+            battery_voltage: 12.4,
+            battery_current: 2.1,
+            altitude_m: 45.5,
+            speed_ms: 8.2,
+            lat: 55.753215,
+            lon: 37.622504,
+            heading_deg: 270.0,
+            ai_detections: 3,
+        };
+        overlay_telemetry(&mut frame, w, h, &telemetry);
+
+        let nonzero_count = frame.iter().filter(|&&v| v != 0).count();
+        assert!(
+            nonzero_count > 100,
+            "telemetry overlay should produce many visible pixels"
+        );
+    }
+
+    #[test]
+    fn font_table_dimensions() {
+        assert_eq!(FONT_8X16.len(), 96);
+        for glyph in &FONT_8X16 {
+            assert_eq!(glyph.len(), 16);
+        }
+    }
+
+    #[test]
+    fn shared_telemetry_default_zero() {
+        let st = SharedTelemetry::new();
+        let snap = st.load();
+        assert_eq!(snap.battery_voltage, 0.0);
+        assert_eq!(snap.lat, 0.0);
+        assert_eq!(snap.ai_detections, 0);
+    }
+
+    #[test]
+    fn shared_telemetry_atomic_swap_observed() {
+        let st = SharedTelemetry::new();
+        st.store(TelemetryData {
+            lat: 55.7558,
+            lon: 37.6173,
+            battery_voltage: 12.4,
+            ..TelemetryData::default()
+        });
+        let snap = st.load();
+        assert!((snap.lat - 55.7558).abs() < 1e-9);
+        assert!((snap.lon - 37.6173).abs() < 1e-9);
+        assert!((snap.battery_voltage - 12.4).abs() < 1e-3);
+    }
+
+    /// Multi-thread torn-read safety check: writer thread spams updates
+    /// with sentinel-paired f64 fields (lat == lon mathematically), reader
+    /// thread verifies invariant. Without atomic snapshot, on 32-bit ARM
+    /// this would observe lat from one update and lon from another.
+    #[test]
+    fn shared_telemetry_no_torn_read_under_contention() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+
+        let st = Arc::new(SharedTelemetry::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let observed_torn = Arc::new(AtomicBool::new(false));
+
+        // Writer: alternates lat/lon between (1.0,1.0) and (-1.0,-1.0)
+        let st_w = Arc::clone(&st);
+        let stop_w = Arc::clone(&stop);
+        let writer = thread::spawn(move || {
+            let mut sign = 1.0f64;
+            while !stop_w.load(Ordering::Relaxed) {
+                st_w.store(TelemetryData {
+                    lat: sign,
+                    lon: sign,
+                    ..TelemetryData::default()
+                });
+                sign = -sign;
+            }
+        });
+
+        // Reader: invariant `lat == lon` must always hold.
+        for _ in 0..200_000 {
+            let snap = st.load();
+            if (snap.lat - snap.lon).abs() > 1e-9 {
+                observed_torn.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert!(
+            !observed_torn.load(Ordering::Relaxed),
+            "torn read observed — atomic snapshot broken"
+        );
+    }
+
+    #[test]
+    fn shared_telemetry_modify_rmw() {
+        let st = SharedTelemetry::new();
+        st.modify(|td| {
+            td.battery_voltage = 11.5;
+            td.ai_detections = 7;
+        });
+        let snap = st.load();
+        assert!((snap.battery_voltage - 11.5).abs() < 1e-3);
+        assert_eq!(snap.ai_detections, 7);
+    }
+}

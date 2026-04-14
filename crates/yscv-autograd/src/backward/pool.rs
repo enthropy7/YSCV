@@ -47,6 +47,21 @@ pub(crate) fn avg_pool2d_nhwc_backward(
     if input_shape.len() < 4 {
         return Ok(());
     }
+
+    // Try BackwardOps for GPU-accelerated avg_pool backward
+    if let Some(ref backend) = graph.backend {
+        match backend.avg_pool2d_backward(upstream, &input_shape, kh, kw, sh, sw) {
+            Ok(gi) => {
+                graph.accumulate_grad(input_id, gi)?;
+                return Ok(());
+            }
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[autograd] avg_pool2d_backward GPU fallback: {_e}");
+                // fall through to CPU
+            }
+        }
+    }
     let (n, ih, iw, c) = (
         input_shape[0],
         input_shape[1],

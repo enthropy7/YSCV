@@ -184,23 +184,21 @@ pub(crate) fn clamp_backward(
 #[inline(always)]
 fn abs_backward_slice(grad: &mut [f32], input: &[f32]) {
     debug_assert_eq!(grad.len(), input.len());
-    for i in 0..grad.len() {
-        let v = input[i];
+    grad.iter_mut().zip(input.iter()).for_each(|(g, &v)| {
         if v < 0.0 {
-            grad[i] = -grad[i];
+            *g = -*g;
         } else if v == 0.0 {
-            grad[i] = 0.0;
+            *g = 0.0;
         }
-    }
+    });
 }
 
 #[inline(always)]
 fn clamp_backward_slice(grad: &mut [f32], input: &[f32], min_val: f32, max_val: f32) {
     debug_assert_eq!(grad.len(), input.len());
-    for i in 0..grad.len() {
-        let v = input[i];
+    grad.iter_mut().zip(input.iter()).for_each(|(g, &v)| {
         if v < min_val || v > max_val {
-            grad[i] = 0.0;
+            *g = 0.0;
         }
-    }
+    });
 }

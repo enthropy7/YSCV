@@ -1,4 +1,11 @@
 //! u8 filter operations: grayscale, dilate, erode, gaussian, box_blur, sobel, median.
+//!
+//! # Safety contract
+//!
+//! Unsafe code categories:
+//! 1. **SIMD intrinsics (NEON / SSE2)** — ISA guard via runtime detection or `#[target_feature]`.
+//! 2. **`SendConstPtr` / `SendPtr` for rayon** — each chunk writes non-overlapping rows.
+//! 3. **Pointer arithmetic in row kernels** — bounded by image width validated at entry.
 #![allow(unsafe_code)]
 
 use super::u8ops::{ImageU8, RAYON_THRESHOLD, gcd};
@@ -32,9 +39,11 @@ pub fn grayscale_u8(input: &ImageU8) -> Option<ImageU8> {
             let y_start = chunk_idx * rows_per_chunk;
             let y_end = (y_start + rows_per_chunk).min(h_c);
             let chunk_pixels = (y_end - y_start) * w_c;
+            // SAFETY: pointer and length from validated image data; parallel chunks are non-overlapping.
             let src_chunk = unsafe {
                 std::slice::from_raw_parts(sp.ptr().add(y_start * w_c * 3), chunk_pixels * 3)
             };
+            // SAFETY: pointer and length from validated image data; parallel chunks are non-overlapping.
             let dst_chunk = unsafe {
                 std::slice::from_raw_parts_mut(dp.ptr().add(y_start * w_c), chunk_pixels)
             };
@@ -76,15 +85,18 @@ fn grayscale_u8_simd_row(src: &[u8], dst: &mut [u8]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_u8_neon(src, dst, w) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_u8_avx2(src, dst, w) };
         }
         if is_x86_feature_detected!("ssse3") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_u8_sse(src, dst, w) };
         }
     }
@@ -213,6 +225,7 @@ fn morph_3x3_separable(input: &ImageU8, is_dilate: bool) -> Option<ImageU8> {
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             if is_dilate {
                 morph_3x3_direct_neon::<true>(src, &mut out, h, w);
@@ -225,6 +238,7 @@ fn morph_3x3_separable(input: &ImageU8, is_dilate: bool) -> Option<ImageU8> {
 
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) && is_x86_feature_detected!("avx2") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             if is_dilate {
                 morph_3x3_direct_avx2::<true>(src, &mut out, h, w);
@@ -237,6 +251,7 @@ fn morph_3x3_separable(input: &ImageU8, is_dilate: bool) -> Option<ImageU8> {
 
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) && is_x86_feature_detected!("ssse3") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             if is_dilate {
                 morph_3x3_direct_sse::<true>(src, &mut out, h, w);
@@ -1642,6 +1657,7 @@ pub fn gaussian_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
     // Same approach as morph: vextq for horizontal shifts, GCD for parallelism.
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             gauss_3x3_direct_neon(src, &mut out, h, w);
         }
@@ -1650,6 +1666,7 @@ pub fn gaussian_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
 
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) && is_x86_feature_detected!("ssse3") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             gauss_3x3_direct_sse(src, &mut out, h, w);
         }
@@ -1875,16 +1892,26 @@ pub fn box_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: (category 1) NEON guaranteed by feature detection; src/out same h*w allocation.
         unsafe {
             box_3x3_direct_neon(src, &mut out, h, w);
+        }
+        // Fix border pixels with accurate variable-count averaging
+        if h >= 2 && w >= 2 {
+            border_blur(src, &mut out, h, w);
         }
         return ImageU8::new(out, h, w, 1);
     }
 
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+        // SAFETY: (category 1) SSE2 guaranteed by feature detection; src/out same h*w allocation.
         unsafe {
             box_3x3_direct_sse(src, &mut out, h, w);
+        }
+        // Fix border pixels with accurate variable-count averaging
+        if h >= 2 && w >= 2 {
+            border_blur(src, &mut out, h, w);
         }
         return ImageU8::new(out, h, w, 1);
     }
@@ -2144,7 +2171,6 @@ unsafe fn box_3x3_direct_sse(src: &[u8], out: &mut [u8], h: usize, w: usize) {
 }
 
 /// Shared border handling (variable-count average for edge pixels).
-#[allow(dead_code)]
 fn border_blur(src: &[u8], out: &mut [u8], h: usize, w: usize) {
     for y in [0, h - 1] {
         for x in 0..w {
@@ -2182,7 +2208,7 @@ fn border_blur(src: &[u8], out: &mut [u8], h: usize, w: usize) {
     }
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 fn box_h_u8_simd(src: &[u8], dst: &mut [u16], w: usize) -> usize {
     if cfg!(miri) || w < 18 {
         return 1;
@@ -2191,12 +2217,14 @@ fn box_h_u8_simd(src: &[u8], dst: &mut [u16], w: usize) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { box_h_u8_neon(src, dst, w) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("sse2") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { box_h_u8_sse(src, dst, w) };
         }
     }
@@ -2290,7 +2318,7 @@ unsafe fn box_h_u8_neon(src: &[u8], dst: &mut [u16], w: usize) -> usize {
     x
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 fn box_v_u16_simd(above: &[u16], center: &[u16], below: &[u16], dst: &mut [u8], w: usize) -> usize {
     if cfg!(miri) || w < 8 {
         return 0;
@@ -2299,12 +2327,14 @@ fn box_v_u16_simd(above: &[u16], center: &[u16], below: &[u16], dst: &mut [u8], 
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { box_v_u16_neon(above, center, below, dst, w) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("sse2") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { box_v_u16_sse(above, center, below, dst, w) };
         }
     }
@@ -2443,6 +2473,7 @@ pub fn sobel_3x3_magnitude_u8(input: &ImageU8) -> Option<ImageU8> {
         let mut done = 1usize;
         #[cfg(target_arch = "aarch64")]
         if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             done = unsafe {
                 sobel_row_neon(
                     row0.as_ptr(),
@@ -2455,6 +2486,7 @@ pub fn sobel_3x3_magnitude_u8(input: &ImageU8) -> Option<ImageU8> {
         }
         #[cfg(target_arch = "x86_64")]
         if !cfg!(miri) && is_x86_feature_detected!("ssse3") {
+            // SAFETY: ISA guard (feature detection) above.
             done = unsafe {
                 sobel_row_sse(
                     row0.as_ptr(),
@@ -2550,6 +2582,7 @@ pub fn median_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
             let sp = src_ptr.ptr();
             let dp = out_ptr.ptr();
             let y = i + 1;
+            // SAFETY: pointer and length from validated image data; rows are non-overlapping.
             let row0 = unsafe { core::slice::from_raw_parts(sp.add((y - 1) * w), w) };
             let row1 = unsafe { core::slice::from_raw_parts(sp.add(y * w), w) };
             let row2 = unsafe { core::slice::from_raw_parts(sp.add((y + 1) * w), w) };
@@ -2659,12 +2692,14 @@ fn median_u8_simd_row(row0: &[u8], row1: &[u8], row2: &[u8], out: &mut [u8], w: 
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { median_u8_neon_row(row0, row1, row2, out, w) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("sse2") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe {
                 median_row_sse(
                     row0.as_ptr(),

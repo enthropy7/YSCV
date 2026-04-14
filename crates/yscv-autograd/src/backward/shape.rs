@@ -252,9 +252,7 @@ pub(crate) fn scatter_backward(
         for &raw_idx in &idx_data {
             let row = raw_idx as usize;
             let offset = row * d;
-            for j in 0..d {
-                grad_input_data[offset + j] = 0.0;
-            }
+            grad_input_data[offset..offset + d].fill(0.0);
         }
         let grad_input = Tensor::from_vec(input_shape, grad_input_data)?;
         graph.accumulate_grad(input, grad_input)?;
@@ -286,16 +284,35 @@ pub(crate) fn embedding_lookup_backward(
     if graph.nodes[weight.0].requires_grad {
         let weight_shape = graph.nodes[weight.0].value.shape().to_vec();
         let embed_dim = weight_shape[1];
+        let num_embeddings = weight_shape[0];
         let idx_data = graph.nodes[indices.0].value.data();
+
+        // Try BackwardOps for GPU-accelerated embedding backward
+        if let Some(ref backend) = graph.backend {
+            let indices_usize: Vec<usize> = idx_data.iter().map(|&v| v as usize).collect();
+            match backend.embedding_backward(&upstream, &indices_usize, num_embeddings, embed_dim) {
+                Ok(gw) => {
+                    graph.accumulate_grad(weight, gw)?;
+                    return Ok(());
+                }
+                Err(_e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[autograd] embedding_backward GPU fallback: {_e}");
+                    // fall through to CPU
+                }
+            }
+        }
+
         let up_data = upstream.data();
         let mut grad_weight_data = vec![0.0f32; weight_shape.iter().product::<usize>()];
         for (i, &raw_idx) in idx_data.iter().enumerate() {
             let row = raw_idx as usize;
             let src_off = i * embed_dim;
             let dst_off = row * embed_dim;
-            for j in 0..embed_dim {
-                grad_weight_data[dst_off + j] += up_data[src_off + j];
-            }
+            grad_weight_data[dst_off..dst_off + embed_dim]
+                .iter_mut()
+                .zip(&up_data[src_off..src_off + embed_dim])
+                .for_each(|(g, &u)| *g += u);
         }
         let grad_weight = Tensor::from_vec(weight_shape, grad_weight_data)?;
         graph.accumulate_grad(weight, grad_weight)?;

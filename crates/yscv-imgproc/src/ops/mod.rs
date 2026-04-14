@@ -59,8 +59,8 @@ mod u8_resize;
 mod u8ops;
 
 pub use augment::{
-    color_jitter, elastic_transform, random_crop, random_erasing, random_horizontal_flip,
-    random_rotation, random_vertical_flip,
+    color_jitter, elastic_transform, gaussian_noise, random_crop, random_erasing,
+    random_horizontal_flip, random_rotation, random_vertical_flip,
 };
 pub use bitwise::{add_weighted, bitwise_and, bitwise_not, bitwise_or, in_range};
 pub use brief::{BriefDescriptor, compute_brief, hamming_distance};

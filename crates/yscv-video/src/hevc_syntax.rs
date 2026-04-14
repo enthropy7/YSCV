@@ -122,6 +122,10 @@ pub struct HevcSliceCabacState<'a> {
     pub contexts: Vec<ContextModel>,
     /// The arithmetic decoder reading from the slice payload.
     pub cabac: CabacDecoder<'a>,
+    /// Persistent Rice parameter for coefficient level coding (Table 9-42).
+    pub rice_param_persistent: u32,
+    /// Whether CABAC bypass alignment is enabled in the current PPS.
+    pub cabac_bypass_alignment_enabled: bool,
 }
 
 impl<'a> HevcSliceCabacState<'a> {
@@ -137,13 +141,97 @@ impl<'a> HevcSliceCabacState<'a> {
             contexts.push(ctx);
         }
         let cabac = CabacDecoder::new(slice_data);
-        HevcSliceCabacState { contexts, cabac }
+        HevcSliceCabacState {
+            contexts,
+            cabac,
+            rice_param_persistent: 0,
+            cabac_bypass_alignment_enabled: false,
+        }
     }
 
     /// Re-initialise all context models for a given QP (e.g. at WPP row start).
     pub fn reinit_contexts(&mut self, slice_qp: i32) {
         for (ctx, &iv) in self.contexts.iter_mut().zip(INIT_VALUES_I_SLICE.iter()) {
             ctx.init(slice_qp, iv);
+        }
+    }
+
+    /// Clone the current context models into a new `Vec`.
+    pub fn snapshot_contexts(&self) -> Vec<ContextModel> {
+        self.contexts.clone()
+    }
+
+    /// Clone the current context models into an existing buffer,
+    /// reusing its allocation.
+    pub fn snapshot_contexts_into(&self, buf: &mut Vec<ContextModel>) {
+        buf.clear();
+        buf.extend_from_slice(&self.contexts);
+    }
+
+    /// Restore context models from a previously captured snapshot.
+    ///
+    /// The snapshot must have the same length as the current context vector;
+    /// otherwise this is a no-op (defensive against mismatched snapshots).
+    pub fn restore_contexts(&mut self, snap: &[ContextModel]) {
+        if snap.len() == self.contexts.len() {
+            self.contexts
+                .iter_mut()
+                .zip(snap.iter())
+                .for_each(|(dst, src)| *dst = src.clone());
+        }
+    }
+
+    /// Create a new slice CABAC state starting at `byte_offset` within the
+    /// given slice data, with fresh context models initialised at `slice_qp`.
+    pub fn new_at_offset(slice_data: &'a [u8], slice_qp: i32, byte_offset: usize) -> Self {
+        let mut state = Self::new(slice_data, slice_qp);
+        state.cabac.reinit_at_offset(byte_offset);
+        state
+    }
+
+    /// Reinitialise contexts from init table values at the given QP and
+    /// reset the CABAC arithmetic decoder to start reading from `offset`
+    /// in the slice payload. Used when entering a new tile.
+    pub fn reinit_at_byte(&mut self, qp: i32, offset: usize) {
+        self.reinit_contexts(qp);
+        self.cabac.reinit_at_offset(offset);
+        self.rice_param_persistent = 0;
+    }
+
+    /// Restore contexts from a WPP-inherited snapshot and reset the CABAC
+    /// arithmetic decoder to start reading from `offset`. Used at WPP row
+    /// boundaries where contexts are inherited from the second CTU of the
+    /// row above.
+    pub fn wpp_inherit_at_byte(&mut self, snap: &[ContextModel], offset: usize) {
+        self.restore_contexts(snap);
+        self.cabac.reinit_at_offset(offset);
+        self.rice_param_persistent = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tile bounds (reference sample clipping at tile boundaries)
+// ---------------------------------------------------------------------------
+
+/// Bounding box of a tile in pixel coordinates, used to gate reference sample
+/// reads at tile boundaries so that intra prediction does not fetch samples
+/// across a tile edge when `loop_filter_across_tiles_enabled` is false.
+#[derive(Debug, Clone, Copy)]
+pub struct TileBounds {
+    pub col_start: usize,
+    pub col_end: usize,
+    pub row_start: usize,
+    pub row_end: usize,
+}
+
+impl TileBounds {
+    /// Construct bounds that cover the entire picture (no clipping).
+    pub fn full(w: usize, h: usize) -> Self {
+        TileBounds {
+            col_start: 0,
+            col_end: w,
+            row_start: 0,
+            row_end: h,
         }
     }
 }
@@ -953,8 +1041,9 @@ fn local_pos_to_scan_idx(lx: u32, ly: u32) -> u32 {
 
 /// Recursively decode a coding tree using CABAC, producing decoded CU leaves.
 ///
-/// This replaces the stub `decode_coding_tree` in `hevc_decoder.rs` with
-/// actual CABAC-driven split decisions and CU parsing.
+/// Full CABAC-driven split decisions and CU parsing. The legacy
+/// `decode_coding_tree` in `hevc_decoder.rs` is kept only as a
+/// fallback for synthetic payloads in unit tests.
 #[allow(unsafe_code)]
 #[allow(clippy::too_many_arguments)]
 pub fn decode_coding_tree_cabac(
@@ -969,12 +1058,13 @@ pub fn decode_coding_tree_cabac(
     slice_type: HevcSliceType,
     pic_width: usize,
     pic_height: usize,
-    recon_luma: &mut Vec<i16>,
-    recon_cb: &mut Vec<i16>,
-    recon_cr: &mut Vec<i16>,
+    recon_luma: &mut [i16],
+    recon_cb: &mut [i16],
+    recon_cr: &mut [i16],
     results: &mut Vec<super::hevc_decoder::DecodedCu>,
     dpb: &super::hevc_inter::HevcDpb,
-    mv_field: &mut Vec<HevcMvField>,
+    mv_field: &mut [HevcMvField],
+    weight_table: Option<&super::hevc_params::HevcWeightTable>,
 ) {
     let cu_size = 1usize << log2_cu_size;
 
@@ -1002,8 +1092,24 @@ pub fn decode_coding_tree_cabac(
         let half_size = 1usize << half;
         let nd = depth + 1;
         decode_coding_tree_cabac(
-            state, x, y, half, nd, max_depth, sps, pps, slice_type, pic_width, pic_height,
-            recon_luma, recon_cb, recon_cr, results, dpb, mv_field,
+            state,
+            x,
+            y,
+            half,
+            nd,
+            max_depth,
+            sps,
+            pps,
+            slice_type,
+            pic_width,
+            pic_height,
+            recon_luma,
+            recon_cb,
+            recon_cr,
+            results,
+            dpb,
+            mv_field,
+            weight_table,
         );
         decode_coding_tree_cabac(
             state,
@@ -1023,6 +1129,7 @@ pub fn decode_coding_tree_cabac(
             results,
             dpb,
             mv_field,
+            weight_table,
         );
         decode_coding_tree_cabac(
             state,
@@ -1042,6 +1149,7 @@ pub fn decode_coding_tree_cabac(
             results,
             dpb,
             mv_field,
+            weight_table,
         );
         decode_coding_tree_cabac(
             state,
@@ -1061,6 +1169,7 @@ pub fn decode_coding_tree_cabac(
             results,
             dpb,
             mv_field,
+            weight_table,
         );
     } else {
         // Leaf CU — parse prediction/residual via CABAC
@@ -1158,6 +1267,27 @@ pub fn decode_coding_tree_cabac(
                     cu_size,
                     pred,
                 );
+                // Apply weighted prediction to luma (ITU-T H.265 eq 8-201)
+                if let Some(wt) = weight_table {
+                    let ref_idx = inter_mv.ref_idx[0].max(0) as usize;
+                    if let Some(we) = wt.luma_l0.get(ref_idx) {
+                        let log2_wd = wt.luma_log2_denom;
+                        let w = we.weight;
+                        let off = we.offset;
+                        let round = if log2_wd > 0 {
+                            1i32 << (log2_wd - 1)
+                        } else {
+                            0
+                        };
+                        let max_val = (1i32 << sps.bit_depth_luma) - 1;
+                        for sample in pred.iter_mut() {
+                            let s = *sample as i32;
+                            *sample = ((w * s + round) >> log2_wd)
+                                .saturating_add(off)
+                                .clamp(0, max_val) as i16;
+                        }
+                    }
+                }
                 // Chroma MC (4:2:0)
                 let cs = cu_size / 2;
                 if cs > 0 && !ref_pic.cb.is_empty() {
@@ -1368,6 +1498,7 @@ mod tests {
             vps_id: 0,
             max_sub_layers: 1,
             chroma_format_idc: 1,
+            separate_colour_plane_flag: false,
             pic_width: 64,
             pic_height: 64,
             bit_depth_luma: 8,
@@ -1385,6 +1516,7 @@ mod tests {
             long_term_ref_pics_present: false,
             sps_temporal_mvp_enabled: false,
             strong_intra_smoothing_enabled: false,
+            lt_ref_pic_poc_lsb_sps: Vec::new(),
         }
     }
 
@@ -1411,6 +1543,13 @@ mod tests {
             loop_filter_across_slices_enabled: false,
             tiles_enabled: false,
             entropy_coding_sync_enabled: false,
+            num_tile_columns: 1,
+            num_tile_rows: 1,
+            tile_col_widths_ctu: Vec::new(),
+            tile_row_heights_ctu: Vec::new(),
+            loop_filter_across_tiles_enabled: true,
+            weighted_pred_flag: false,
+            weighted_bipred_flag: false,
         }
     }
 
@@ -1611,6 +1750,7 @@ mod tests {
             &mut results,
             &dpb,
             &mut mv_field,
+            None,
         );
         // Should produce at least one CU
         assert!(!results.is_empty());
@@ -1651,6 +1791,7 @@ mod tests {
             &mut results,
             &dpb,
             &mut mv_field,
+            None,
         );
         assert!(!results.is_empty());
         for cu in &results {

@@ -398,6 +398,74 @@ pub(super) fn exec_conv_integer(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     Ok(())
 }
 
+/// ONNX DeformConv: deformable convolution with learned offsets.
+///
+/// Inputs: X (NCHW), offset, W (OIHW), [bias]
+/// Attributes: strides, pads, group (only group=1 supported currently)
+///
+/// Converts NCHW inputs to NHWC, permutes weight from OIHW to [KH,KW,C_in,C_out],
+/// and delegates to the `deformable_conv2d_nhwc` kernel.
+pub(super) fn exec_deform_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
+    let input_is_nhwc = env.is_nhwc(&node.inputs[0]);
+
+    let input = get_tensor(env, &node.name, &node.inputs[0])?;
+    let offset = get_tensor(env, &node.name, &node.inputs[1])?;
+    let weight = get_tensor(env, &node.name, &node.inputs[2])?;
+    let bias = if node.inputs.len() > 3 && !node.inputs[3].is_empty() {
+        Some(get_tensor(env, &node.name, &node.inputs[3])?)
+    } else {
+        None
+    };
+
+    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+
+    let stride = strides[0] as usize;
+    // Symmetric padding only — use first pad value
+    let padding = pads[0] as usize;
+
+    // Convert input to NHWC if needed
+    let input_nhwc = if input_is_nhwc {
+        input.clone()
+    } else {
+        nchw_to_nhwc(input)?
+    };
+
+    // Convert offset from NCHW [N, kH*kW*2, out_H, out_W] to NHWC [N, out_H, out_W, kH*kW*2]
+    let offset_nhwc = if offset.rank() == 4 {
+        offset
+            .permute(&[0, 2, 3, 1])
+            .map_err(|e| OnnxError::DecodeFailed {
+                message: e.to_string(),
+            })?
+    } else {
+        offset.clone()
+    };
+
+    // Weight: ONNX [O, I, KH, KW] → kernel expects [KH, KW, I, O]
+    let w_nhwc = weight
+        .permute(&[2, 3, 1, 0])
+        .map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+
+    let out_nhwc = yscv_kernels::deformable_conv2d_nhwc(
+        &input_nhwc,
+        &w_nhwc,
+        &offset_nhwc,
+        bias,
+        stride,
+        padding,
+    )
+    .map_err(|e| OnnxError::DecodeFailed {
+        message: e.to_string(),
+    })?;
+
+    env.insert(node.outputs[0].clone(), out_nhwc);
+    env.mark_nhwc(&node.outputs[0]);
+    Ok(())
+}
+
 // ── layout conversion helpers ──────────────────────────────────────
 
 pub(super) fn nchw_to_nhwc(input: &Tensor) -> Result<Tensor, OnnxError> {

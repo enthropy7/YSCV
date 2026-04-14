@@ -35,7 +35,11 @@ cargo run --release --features metal-backend
 
 ### MPSGraph (recommended — fastest)
 
-MPSGraph compiles the entire ONNX model into an optimized GPU execution plan and runs it as a single dispatch. This eliminates per-op encoder transitions and lets Apple's Metal driver fuse operations automatically.
+MPSGraph compiles the entire ONNX model into an optimized GPU execution plan and runs it as a single dispatch. The plan is triple-buffered by default — each `submit` lands in a different slot, so CPU can marshal frame N+1 while the GPU finishes frame N.
+
+Zero-allocation hot path: `MPSGraphTensorData` objects and their NSArray wrappers are built once at compile time, output buffers are pre-allocated f16 `StorageModeShared`, and the final `f16→f32` widening happens on the CPU via aarch64 `vcvt_f32_f16`.
+
+#### Synchronous API
 
 ```rust
 use yscv_onnx::{
@@ -48,18 +52,54 @@ let model = load_onnx_model_from_file("model.onnx")?;
 let input_name = model.inputs[0].clone();
 let input_tensor = Tensor::zeros(vec![1, 3, 640, 640])?;
 
-// Compile (one-time cost, ~10-30ms)
-let plan = compile_mpsgraph_plan(&model, &input_name, &input_tensor)?;
+// Compile (one-time cost, ~10-80ms). `inputs` is a slice of
+// (name, tensor) pairs — one entry per ONNX graph input.
+let plan = compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input_tensor)])?;
 
-// Run — input as raw f32 slice, output as named tensors
+// Run — each input as a named raw f32 slice. Order doesn't matter;
+// lookup is by name. Outputs come back as a HashMap.
 let input_data = vec![0.5f32; 1 * 3 * 640 * 640];
-let outputs = run_mpsgraph_plan(&plan, &input_data)?;
+let outputs = run_mpsgraph_plan(&plan, &[(input_name.as_str(), input_data.as_slice())])?;
 for (name, tensor) in &outputs {
     println!("{}: {:?}", name, tensor.shape());
 }
 ```
 
-MPSGraph supports: Conv (including depthwise), Relu, Sigmoid, Add/Sub/Mul/Div, MaxPool, AvgPool, GlobalAvgPool, BatchNorm, Concat, Reshape, Flatten, Transpose, Softmax, Resize, MatMul, Split, Slice, Squeeze, Unsqueeze, Expand.
+#### Pipelined (async) API — 3–5× higher throughput
+
+For sustained high-throughput (batch inference, video processing), keep multiple frames in flight:
+
+```rust
+use std::collections::VecDeque;
+use yscv_onnx::{submit_mpsgraph_plan, wait_mpsgraph_plan, InferenceHandle};
+
+// Prime the pipeline — 2 to 4 frames is usually the sweet spot.
+let mut in_flight: VecDeque<InferenceHandle> = VecDeque::new();
+let pipeline_depth = 3;
+for _ in 0..pipeline_depth {
+    in_flight.push_back(submit_mpsgraph_plan(&plan, &feeds)?);
+}
+
+// Steady state: submit a new frame and collect the oldest one.
+for _ in 0..remaining_frames {
+    let oldest = in_flight.pop_front().unwrap();
+    let outputs = wait_mpsgraph_plan(&plan, oldest)?;  // GPU is ≥ depth frames back
+    process(outputs);
+    in_flight.push_back(submit_mpsgraph_plan(&plan, &feeds)?);
+}
+
+// Drain the last in-flight frames.
+while let Some(h) = in_flight.pop_front() {
+    let outputs = wait_mpsgraph_plan(&plan, h)?;
+    process(outputs);
+}
+```
+
+Pipeline depth is set by the `YSCV_MPS_PIPELINE` env var (default `3`, clamped to `1..=8`). The plan allocates that many independent input/output buffer sets; `submit` picks the next one round-robin and only blocks if the caller has more outstanding handles than the pipeline depth (built-in back-pressure — no silent buffer aliasing).
+
+`InferenceHandle` is `#[must_use]`: drop one without calling `wait_mpsgraph_plan` and the next `submit` to that slot will transparently block waiting for the GPU before reusing its buffers.
+
+MPSGraph supports: Conv (including depthwise), Relu, Sigmoid, Exp, Identity, Constant, Add/Sub/Mul/Div, MaxPool, AvgPool, GlobalAvgPool, BatchNorm, Concat, Reshape, Flatten, Transpose, Softmax, Resize, MatMul, Split, Slice, Squeeze, Unsqueeze, Expand.
 
 ### Metal Per-Op (fallback)
 
@@ -90,15 +130,16 @@ Per-op Metal benefits:
 
 ### Choosing a backend
 
-| | MPSGraph | Metal per-op | CPU |
-|---|---------|-------------|-----|
-| Speed | Fastest (4.8-7.8ms) | Fast (22-47ms) | Baseline (33-124ms) |
-| Op coverage | Most common ops | All ops | All ops |
-| Dynamic shapes | Static only | Static only | Dynamic |
-| Platform | macOS (Apple Silicon) | macOS (Apple Silicon) | All |
-| Feature flag | `metal-backend` | `metal-backend` | none |
+| | MPSGraph (pipelined) | MPSGraph (sync) | Metal per-op | CPU |
+|---|---|---|---|---|
+| Speed | Fastest (0.37-3.5ms p50) | Fast (1.3-5ms) | Fast (22-47ms) | Baseline (33-124ms) |
+| Multi-input | ✅ | ✅ | ❌ (single input) | ✅ |
+| Op coverage | Most common ops | Most common ops | All ops | All ops |
+| Dynamic shapes | Static only | Static only | Static only | Dynamic |
+| Platform | macOS (Apple Silicon) | macOS (Apple Silicon) | macOS (Apple Silicon) | All |
+| Feature flag | `metal-backend` | `metal-backend` | `metal-backend` | none |
 
-Recommended approach: try MPSGraph first, fall back to Metal per-op if compilation fails, fall back to CPU for unsupported platforms.
+Recommended approach: try pipelined MPSGraph first (for throughput) or sync MPSGraph (for single-shot latency); fall back to Metal per-op if compilation fails; fall back to CPU for non-macOS platforms.
 
 ## Benchmark Examples
 

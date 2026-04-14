@@ -2181,6 +2181,225 @@ fn add_bias_silu_nhwc(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
     super::simd::bias_silu_nhwc_dispatch(output, bias, m, n);
 }
 
+// ---------------------------------------------------------------------------
+// Winograd F(2×2, 3×3) for non-Apple platforms
+// ---------------------------------------------------------------------------
+//
+// On macOS, Apple Accelerate's AMX-backed sgemm is fast enough that Winograd's
+// 16 smaller GEMMs lose more in BLAS efficiency than they gain in FLOPs.
+// On other platforms (OpenBLAS, MKL, etc.) the arithmetic saving wins.
+
+/// Transform 3×3 NHWC weights for Winograd F(2,3): G * g * G^T.
+///
+/// Input `kernel` is `[kH=3, kW=3, c_in, c_out]` (NHWC / HWIO).
+/// Output is `[16, c_in, c_out]` (alpha-major, then c_in, then c_out).
+#[cfg(all(feature = "blas", not(target_os = "macos")))]
+fn winograd_transform_weights_f32(kernel: &[f32], c_in: usize, c_out: usize) -> Vec<f32> {
+    // G = [[1,0,0],[0.5,0.5,0.5],[0.5,-0.5,0.5],[0,0,1]]
+    let mut out = vec![0.0f32; 16 * c_in * c_out];
+    for ci in 0..c_in {
+        for co in 0..c_out {
+            // HWIO layout: kernel[ h*kw*c_in*c_out + w*c_in*c_out + ci*c_out + co ]
+            let g = |r: usize, s: usize| {
+                kernel[r * 3 * c_in * c_out + s * c_in * c_out + ci * c_out + co]
+            };
+
+            // G * g → 4×3
+            let mut gg = [0.0f32; 12];
+            for s in 0..3 {
+                gg[s] = g(0, s);
+                gg[3 + s] = 0.5 * (g(0, s) + g(1, s) + g(2, s));
+                gg[6 + s] = 0.5 * (g(0, s) - g(1, s) + g(2, s));
+                gg[9 + s] = g(2, s);
+            }
+
+            // (G * g) * G^T → 4×4
+            let mut u = [0.0f32; 16];
+            for r in 0..4 {
+                let row = &gg[r * 3..r * 3 + 3];
+                u[r * 4] = row[0];
+                u[r * 4 + 1] = 0.5 * (row[0] + row[1] + row[2]);
+                u[r * 4 + 2] = 0.5 * (row[0] - row[1] + row[2]);
+                u[r * 4 + 3] = row[2];
+            }
+
+            // Scatter to [alpha, c_in, c_out]
+            for a in 0..16 {
+                out[a * c_in * c_out + ci * c_out + co] = u[a];
+            }
+        }
+    }
+    out
+}
+
+/// Winograd input transform: B^T * d * B for one 4×4 tile.
+///
+/// B^T = [[1,0,-1,0],[0,1,1,0],[0,-1,1,0],[0,1,0,-1]]
+#[cfg(all(feature = "blas", not(target_os = "macos")))]
+#[inline]
+fn winograd_input_tile(d: &[f32; 16], out: &mut [f32; 16]) {
+    // B^T * d → 4×4 intermediate (rows transformed)
+    let mut bd = [0.0f32; 16];
+    for col in 0..4 {
+        bd[col] = d[col] - d[2 * 4 + col];
+        bd[4 + col] = d[4 + col] + d[2 * 4 + col];
+        bd[8 + col] = -d[4 + col] + d[2 * 4 + col];
+        bd[12 + col] = d[4 + col] - d[3 * 4 + col];
+    }
+    // (B^T * d) * B → 4×4 (columns transformed)
+    for row in 0..4 {
+        let r = row * 4;
+        out[r] = bd[r] - bd[r + 2];
+        out[r + 1] = bd[r + 1] + bd[r + 2];
+        out[r + 2] = -bd[r + 1] + bd[r + 2];
+        out[r + 3] = bd[r + 1] - bd[r + 3];
+    }
+}
+
+/// Winograd output transform: A^T * m * A, yielding 2×2 output from 4×4 product.
+///
+/// A^T = [[1,1,1,0],[0,1,-1,-1]]
+#[cfg(all(feature = "blas", not(target_os = "macos")))]
+#[inline]
+fn winograd_output_tile(m: &[f32; 16], out: &mut [f32; 4]) {
+    // A^T * m → 2×4 intermediate (rows transformed)
+    let mut am = [0.0f32; 8];
+    for col in 0..4 {
+        am[col] = m[col] + m[4 + col] + m[8 + col];
+        am[4 + col] = m[4 + col] - m[8 + col] - m[12 + col];
+    }
+    // (A^T * m) * A → 2×2 (columns transformed)
+    out[0] = am[0] + am[1] + am[2];
+    out[1] = am[1] - am[2] - am[3];
+    out[2] = am[4] + am[5] + am[6];
+    out[3] = am[5] - am[6] - am[7];
+}
+
+/// Full Winograd F(2×2, 3×3) convolution for NHWC layout.
+///
+/// Only valid for 3×3 kernels with stride=1.
+/// `input` NHWC `[batch, H, W, c_in]` (unpadded), `kernel` `[3, 3, c_in, c_out]`.
+#[cfg(all(feature = "blas", not(target_os = "macos")))]
+fn winograd_conv2d_nhwc(
+    input: &[f32],
+    kernel: &[f32],
+    bias: Option<&[f32]>,
+    batch: usize,
+    in_h: usize,
+    in_w: usize,
+    c_in: usize,
+    c_out: usize,
+    pad_top: usize,
+    pad_left: usize,
+    pad_bottom: usize,
+    pad_right: usize,
+    activation: Activation,
+) -> Result<Tensor, KernelError> {
+    let padded_h = in_h + pad_top + pad_bottom;
+    let padded_w = in_w + pad_left + pad_right;
+    let out_h = padded_h - 2; // (padded_h - 3) / 1 + 1
+    let out_w = padded_w - 2;
+
+    // Number of 2×2 output tiles
+    let tile_h = out_h.div_ceil(2);
+    let tile_w = out_w.div_ceil(2);
+    let n_tiles = tile_h * tile_w;
+
+    // 1. Transform weights: [16, c_in, c_out]
+    let u = winograd_transform_weights_f32(kernel, c_in, c_out);
+
+    // SAFETY: every element written by the GEMM + output transform.
+    #[allow(unsafe_code)]
+    let mut output = AlignedVec::<f32>::uninitialized(batch * out_h * out_w * c_out);
+
+    for b in 0..batch {
+        let in_batch = &input[b * in_h * in_w * c_in..(b + 1) * in_h * in_w * c_in];
+
+        // 2. Input transform: for each tile, for each channel, compute B^T * d * B
+        //    Result layout: [16, n_tiles, c_in]
+        let mut v = vec![0.0f32; 16 * n_tiles * c_in];
+        for th in 0..tile_h {
+            for tw in 0..tile_w {
+                let tile_idx = th * tile_w + tw;
+                // Top-left corner of the 4×4 input tile in padded coords
+                let py0 = th * 2;
+                let px0 = tw * 2;
+
+                for ci in 0..c_in {
+                    // Load 4×4 tile with implicit zero-padding
+                    let mut d = [0.0f32; 16];
+                    for dy in 0..4 {
+                        for dx in 0..4 {
+                            let iy = (py0 + dy).wrapping_sub(pad_top);
+                            let ix = (px0 + dx).wrapping_sub(pad_left);
+                            if iy < in_h && ix < in_w {
+                                d[dy * 4 + dx] = in_batch[iy * in_w * c_in + ix * c_in + ci];
+                            }
+                        }
+                    }
+                    let mut vt = [0.0f32; 16];
+                    winograd_input_tile(&d, &mut vt);
+                    for a in 0..16 {
+                        v[a * n_tiles * c_in + tile_idx * c_in + ci] = vt[a];
+                    }
+                }
+            }
+        }
+
+        // 3. Batched GEMM: for each alpha ∈ 0..16,
+        //    M[alpha] = V[alpha] * U[alpha]
+        //    V[alpha]: [n_tiles, c_in], U[alpha]: [c_in, c_out]
+        //    M[alpha]: [n_tiles, c_out]
+        let mut m_buf = vec![0.0f32; 16 * n_tiles * c_out];
+        for a in 0..16 {
+            let v_slice = &v[a * n_tiles * c_in..(a + 1) * n_tiles * c_in];
+            let u_slice = &u[a * c_in * c_out..(a + 1) * c_in * c_out];
+            let m_slice = &mut m_buf[a * n_tiles * c_out..(a + 1) * n_tiles * c_out];
+            super::matmul::blas_sgemm(v_slice, u_slice, m_slice, n_tiles, c_in, c_out);
+        }
+
+        // 4. Output transform: A^T * M * A → 2×2 output per tile, with bias + activation
+        let out_batch = &mut output[b * out_h * out_w * c_out..(b + 1) * out_h * out_w * c_out];
+        for th in 0..tile_h {
+            for tw in 0..tile_w {
+                let tile_idx = th * tile_w + tw;
+                let oy0 = th * 2;
+                let ox0 = tw * 2;
+                // Clamp: last tile row/col may produce fewer than 2 valid outputs
+                let valid_h = (out_h - oy0).min(2);
+                let valid_w = (out_w - ox0).min(2);
+
+                for co in 0..c_out {
+                    // Gather the 4×4 product elements for this (tile, channel)
+                    let mut mt = [0.0f32; 16];
+                    for a in 0..16 {
+                        mt[a] = m_buf[a * n_tiles * c_out + tile_idx * c_out + co];
+                    }
+                    let mut otile = [0.0f32; 4];
+                    winograd_output_tile(&mt, &mut otile);
+
+                    // Add bias
+                    let bias_val = bias.map_or(0.0, |bd| bd[co]);
+                    for dy in 0..valid_h {
+                        for dx in 0..valid_w {
+                            let idx = (oy0 + dy) * out_w * c_out + (ox0 + dx) * c_out + co;
+                            out_batch[idx] = otile[dy * 2 + dx] + bias_val;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply activation on the whole batch output
+        match activation {
+            Activation::Silu => silu_slice_inplace(out_batch),
+            Activation::None => {}
+        }
+    }
+
+    Tensor::from_aligned(vec![batch, out_h, out_w, c_out], output).map_err(Into::into)
+}
+
 /// Conv2D with implicit zero-padding — avoids separate padded tensor allocation.
 ///
 /// `input` is NHWC `[batch, H, W, C_in]` (unpadded).
@@ -2222,10 +2441,27 @@ pub fn conv2d_nhwc_padded(
     let kernel_data = kernel.data();
     let bias_data = bias.map(|b| b.data());
 
-    // Winograd F(2×2,3×3): disabled. Apple Accelerate's AMX-backed sgemm is so
-    // efficient for large GEMMs that Winograd's 16 smaller GEMMs (K=c_in vs
-    // K=9·c_in) lose more in BLAS efficiency than they gain in FLOPs.
-    // Keep the implementation for non-Apple BLAS where Winograd may win.
+    // Winograd F(2×2,3×3): on non-Apple platforms, use Winograd for 3×3 stride-1
+    // convolutions with enough spatial output to amortise the transform overhead.
+    // On macOS, Apple Accelerate's AMX-backed sgemm makes im2col+GEMM faster.
+    #[cfg(not(target_os = "macos"))]
+    if kh == 3 && kw == 3 && stride_h == 1 && stride_w == 1 && out_h * out_w >= 64 {
+        return winograd_conv2d_nhwc(
+            in_data,
+            kernel_data,
+            bias_data,
+            batch,
+            in_h,
+            in_w,
+            c_in,
+            c_out,
+            pad_top,
+            pad_left,
+            pad_bottom,
+            pad_right,
+            activation,
+        );
+    }
 
     // Tile size: keep im2col_tile + output_tile in ~2 MB per thread.
     let bytes_per_row = (k + n) * std::mem::size_of::<f32>();

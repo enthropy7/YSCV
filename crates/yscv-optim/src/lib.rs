@@ -1,4 +1,4 @@
-//! Optimizers and training helpers for yscv models.
+#![doc = include_str!("../README.md")]
 #![deny(unsafe_code)]
 
 mod core;

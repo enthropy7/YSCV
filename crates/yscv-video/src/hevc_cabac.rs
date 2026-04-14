@@ -399,6 +399,35 @@ impl<'a> CabacDecoder<'a> {
         self.data.len().saturating_sub(consumed) + partial
     }
 
+    /// Reinitialise the arithmetic decoder at a new byte offset within the
+    /// same NAL payload. Used for tile/WPP entry points where CABAC state
+    /// is reset to a fresh decode position.
+    pub fn reinit_at_offset(&mut self, byte_offset: usize) {
+        self.offset = byte_offset.min(self.data.len());
+        self.bit_buf = 0;
+        self.bits_left = 0;
+        self.range = 510;
+        // Bootstrap: read 9 bits into `value` (spec 9.3.2.2).
+        self.value = self.read_bits(9);
+    }
+
+    /// Return the current byte offset into the underlying data slice.
+    pub fn current_byte_offset(&self) -> usize {
+        // Subtract any bytes still buffered but not yet consumed.
+        let buffered_bytes = (self.bits_left / 8) as usize;
+        self.offset.saturating_sub(buffered_bytes)
+    }
+
+    /// Byte-align the decoder by discarding any partial bits remaining
+    /// in the bit buffer. After this call, the next read starts at a
+    /// byte-aligned position.
+    pub fn byte_align(&mut self) {
+        let discard = self.bits_left % 8;
+        if discard > 0 {
+            self.bits_left -= discard;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Syntax-element binarization helpers
     // ------------------------------------------------------------------

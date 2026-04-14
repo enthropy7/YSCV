@@ -10,12 +10,12 @@ The framework covers the full pipeline: tensors and autograd, neural network lay
 
 ## Project shape
 
-The workspace has 14 library crates, 2 application binaries (`apps/bench`, `apps/camera-face-tool`), and an examples crate (21 examples in `examples/src/`). There are 1,693 tests across the 14 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.1.7`.
+The workspace has 14 library crates, 2 application binaries (`apps/bench`, `apps/camera-face-tool`), and an examples crate (21 examples in `examples/src/`). There are 1,861 default tests (1,897 with `--features "rknn metal-backend gpu realtime rknn-validate"`) across the 14 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.1.7`.
 
 Key crates and what they do:
 
 - **yscv-tensor** — the foundation. 115 tensor ops in `ops.rs`, f32/f16/bf16 dtype, SIMD (AVX/SSE/NEON).
-- **yscv-kernels** — CPU and GPU compute backends. SIMD dispatch (AVX + SSE + NEON with scalar fallback), 50 WGSL + 4 Metal compute shaders, rayon threading.
+- **yscv-kernels** — CPU and GPU compute backends. SIMD dispatch (AVX + SSE + NEON with scalar fallback), 61 WGSL + 4 Metal compute shaders, rayon threading.
 - **yscv-autograd** — dynamic computation graph with 61 `Op` variants and gradient checkpointing.
 - **yscv-optim** — 8 optimizers (SGD/Adam/AdamW/RAdam/RmsProp/Adagrad/Lamb/Lars) all with NEON+AVX+SSE SIMD, Lookahead meta-optimizer, 11 LR schedulers.
 - **yscv-model** — 39 `ModelLayer` variants, Trainer API, model zoo (13 architectures: ResNet18/34/50/101, VGG16/19, MobileNetV2, EfficientNetB0, AlexNet, ViTTiny/Base/Large, DeiTTiny), 17 loss functions, LoRA, EMA, mixed precision, TensorBoard logging, StreamingDataLoader, distributed training.

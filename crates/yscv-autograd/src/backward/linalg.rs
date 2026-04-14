@@ -47,6 +47,106 @@ pub(crate) fn conv2d_nhwc_backward(
     stride_h: usize,
     stride_w: usize,
 ) -> Result<(), AutogradError> {
+    // Try BackwardOps trait first for GPU-accelerated conv2d backward.
+    // Compute GPU results first (immutable borrow), then accumulate (mutable borrow).
+    {
+        let gpu_result = if let Some(ref backend) = graph.backend {
+            let iv = &graph.nodes[input_id.0].value;
+            let wv = &graph.nodes[weight_id.0].value;
+            let w_shape = wv.shape().to_vec();
+            let c_out = *w_shape.last().unwrap_or(&0);
+            let needs_weight = graph.nodes[weight_id.0].requires_grad;
+            let needs_bias = bias_id
+                .map(|b| graph.nodes[b.0].requires_grad)
+                .unwrap_or(false);
+
+            let gw = if needs_weight {
+                match backend.conv2d_weight_backward(upstream, iv, &w_shape, stride_h, stride_w) {
+                    Ok(t) => Some(t),
+                    Err(_e) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!("[autograd] conv2d_weight_backward GPU fallback: {_e}");
+                        None
+                    }
+                }
+            } else {
+                Some(Tensor::zeros(vec![1])?) // placeholder, won't be used
+            };
+
+            let gb = if gw.is_some() && needs_bias {
+                match backend.conv2d_bias_backward(upstream, c_out) {
+                    Ok(t) => Some(t),
+                    Err(_e) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!("[autograd] conv2d_bias_backward GPU fallback: {_e}");
+                        None
+                    }
+                }
+            } else if gw.is_some() {
+                Some(Tensor::zeros(vec![1])?) // placeholder, won't be used
+            } else {
+                None
+            };
+
+            match (gw, gb) {
+                (Some(w), Some(b)) if needs_weight || needs_bias => {
+                    Some((w, b, needs_weight, needs_bias))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some((gw, gb, needs_weight, needs_bias)) = gpu_result {
+            if needs_weight {
+                graph.accumulate_grad(weight_id, gw)?;
+            }
+            if needs_bias && let Some(b_id) = bias_id {
+                graph.accumulate_grad(b_id, gb)?;
+            }
+            // GPU handled weight+bias; still need CPU for input grad.
+            // Skip the weight/bias parts of CPU fallback below.
+            let iv = &graph.nodes[input_id.0].value;
+            let wv = &graph.nodes[weight_id.0].value;
+            if graph.nodes[input_id.0].requires_grad {
+                let in_shape = iv.shape();
+                let w_shape = wv.shape();
+                if in_shape.len() >= 4 && w_shape.len() >= 4 {
+                    let (n, ih, iw, c_in) = (in_shape[0], in_shape[1], in_shape[2], in_shape[3]);
+                    let (kh, kw, _, c_out) = (w_shape[0], w_shape[1], w_shape[2], w_shape[3]);
+                    let (oh, ow) = (upstream.shape()[1], upstream.shape()[2]);
+                    let up_data = upstream.data();
+                    let w_data = wv.data();
+                    let mut gi = vec![0.0f32; n * ih * iw * c_in];
+                    for batch in 0..n {
+                        for or in 0..oh {
+                            for oc_col in 0..ow {
+                                for ki in 0..kh {
+                                    for kj in 0..kw {
+                                        let ir = or * stride_h + ki;
+                                        let ic = oc_col * stride_w + kj;
+                                        for co in 0..c_out {
+                                            let up_v = up_data
+                                                [((batch * oh + or) * ow + oc_col) * c_out + co];
+                                            for ci in 0..c_in {
+                                                gi[((batch * ih + ir) * iw + ic) * c_in + ci] +=
+                                                    up_v * w_data
+                                                        [((ki * kw + kj) * c_in + ci) * c_out + co];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let gi_tensor = Tensor::from_vec(in_shape.to_vec(), gi)?;
+                    graph.accumulate_grad(input_id, gi_tensor)?;
+                }
+            }
+            return Ok(());
+        }
+    }
     let up_data = upstream.data();
     let (grad_weight, grad_input, grad_bias) = {
         let iv = &graph.nodes[input_id.0].value;
@@ -125,9 +225,10 @@ pub(crate) fn conv2d_nhwc_backward(
             && graph.nodes[b_id.0].requires_grad
         {
             let mut gb = vec![0.0f32; c_out];
-            for i in 0..up_data.len() {
-                gb[i % c_out] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &v)| gb[i % c_out] += v);
             Some(Tensor::from_vec(vec![c_out], gb)?)
         } else {
             None
@@ -232,9 +333,10 @@ pub(crate) fn depthwise_conv2d_nhwc_backward(
             && graph.nodes[b_id.0].requires_grad
         {
             let mut gb = vec![0.0f32; c];
-            for i in 0..up_data.len() {
-                gb[i % c] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &u)| gb[i % c] += u);
             Some(Tensor::from_vec(vec![c], gb)?)
         } else {
             None
@@ -345,9 +447,10 @@ pub(crate) fn conv_transpose2d_nhwc_backward(
             && graph.nodes[b_id.0].requires_grad
         {
             let mut gb = vec![0.0f32; c_out];
-            for i in 0..up_data.len() {
-                gb[i % c_out] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &v)| gb[i % c_out] += v);
             Some(Tensor::from_vec(vec![c_out], gb)?)
         } else {
             None
@@ -440,9 +543,10 @@ pub(crate) fn conv1d_nlc_backward(
             && graph.nodes[b_id.0].requires_grad
         {
             let mut gb = vec![0.0f32; c_out];
-            for i in 0..up_data.len() {
-                gb[i % c_out] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &v)| gb[i % c_out] += v);
             Some(Tensor::from_vec(vec![c_out], gb)?)
         } else {
             None
@@ -591,9 +695,10 @@ pub(crate) fn conv3d_ndhwc_backward(
             && graph.nodes[b_id.0].requires_grad
         {
             let mut gb = vec![0.0f32; c_out];
-            for i in 0..up_data.len() {
-                gb[i % c_out] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &v)| gb[i % c_out] += v);
             Some(Tensor::from_vec(vec![c_out], gb)?)
         } else {
             None

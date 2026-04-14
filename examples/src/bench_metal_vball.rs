@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Nodes: {}", model.nodes.len());
 
     // VballNetGridV1b: input [1, 9, 432, 768]
-    let input_data = vec![0.0f32; 1 * 9 * 432 * 768];
+    let input_data = vec![0.0f32; 9 * 432 * 768];
     let input_tensor = Tensor::from_vec(vec![1, 9, 432, 768], input_data.clone())?;
 
     // ── CPU baseline ──

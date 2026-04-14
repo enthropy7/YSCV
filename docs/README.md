@@ -1,53 +1,149 @@
-# yscv Documentation
+# yscv documentation
 
-This directory contains the technical documentation for the yscv framework. Each document serves a specific audience — whether you are a contributor writing new ops, an engineer evaluating performance, or an AI agent reasoning about project structure.
+Pick your starting point.
 
-## Getting oriented
+## Just landed here?
 
-If you are new to the project, start with the root [README.md](../README.md) for a high-level overview, then read the **Cookbook** for hands-on recipes.
+| You want to... | Read first |
+|---|---|
+| Run something **right now** (5 min) | [QUICKSTART.md](../QUICKSTART.md) |
+| Walk through the framework end-to-end | [getting-started.md](getting-started.md) |
+| Find recipes for a specific task | [cookbook.md](cookbook.md) |
+| Try the worked examples | [../examples/README.md](../examples/README.md) |
+| Something is broken | [troubleshooting.md](troubleshooting.md) |
 
-## Documents
+---
 
-### [cookbook.md](cookbook.md)
+## By topic
 
-**Start here.** Practical recipes for every common task — from loading an image to GPU inference to cross-compilation. Each recipe is self-contained with copy-paste code and the exact `cargo run` command. Covers: image processing, training (linear/CNN), ONNX inference (CPU/GPU/Metal), YOLO detection, tracking, preprocessing pipelines, fine-tuning, video, deployment, feature flags, and benchmarking.
+### Getting started
 
-### [architecture.md](architecture.md)
+- **[QUICKSTART.md](../QUICKSTART.md)** — three 5-minute paths: image
+  processing, training, edge deployment. Pick one, copy code, you're
+  running.
+- **[getting-started.md](getting-started.md)** — full progressive
+  tutorial through every layer of the framework. Start here for a
+  proper walkthrough.
+- **[cookbook.md](cookbook.md)** — 1400-line recipe collection.
+  Self-contained code for every common task with copy-paste commands.
 
-How the framework is put together. Explains the crate dependency layers, the SIMD dispatch model (AVX/SSE/NEON with scalar fallback), the threading strategy (GCD on macOS, rayon everywhere), memory patterns, and a map of key source files. Start here if you want to understand how things connect before making changes.
+### Pipeline framework (TOML-driven runtime)
 
-### [performance-benchmarks.md](performance-benchmarks.md)
+- **[pipeline-config.md](pipeline-config.md)** — full TOML schema
+  reference: `[camera]`, `[output]`, `[encoder]`, `[[tasks]]`,
+  `[realtime]`. Validation order, accelerator-by-feature table.
+- **[edge-deployment.md](edge-deployment.md)** — Rockchip / NPU deep
+  dive: DMA-BUF zero-copy V4L2→NPU, on-chip SRAM, MPP zero-copy from
+  hardware decoder, dynamic-shape matmul for LLMs, custom OpenCL ops
+  with Rust callbacks.
 
-How we measure performance and how yscv compares to OpenCV, ffmpeg, NumPy, PyTorch, onnxruntime, and CoreML. Covers the full benchmark methodology (hardware, measurement protocol, warm-up, statistical aggregation). Overall scorecard: **85 wins, ~4 parity, 1 close, 0 losses** across all categories. H.264 decode **4.5× faster than ffmpeg**, HEVC decode **1.4× faster** (full color). 1,693 tests across 14 crates. Includes exact commands to reproduce every number.
+### Inference
 
-### [ecosystem-capability-matrix.md](ecosystem-capability-matrix.md)
+- **[onnx-inference.md](onnx-inference.md)** — ONNX runtime: CPU
+  (128+ ops), Apple MPSGraph, wgpu (cross-platform GPU). Triple-
+  buffered submit/wait API for sustained throughput.
+- **[../crates/yscv-pipeline/README.md](../crates/yscv-pipeline/README.md)** —
+  multi-accelerator dispatcher, recovery, hot-reload, watchdog.
+- **[../crates/yscv-onnx/README.md](../crates/yscv-onnx/README.md)** —
+  ONNX-specific layer documentation.
+- **[../crates/yscv-kernels/README.md](../crates/yscv-kernels/README.md)** —
+  CPU SIMD + GPU kernels, RKNN backend with full SDK 2.4.3a0
+  coverage.
 
-The canonical map of what yscv can do today and what gaps remain relative to a full Python CV/DL stack (OpenCV + NumPy + PyTorch). Organized by capability area (tensor ops, autograd, optimizers, model layers, image processing, video, detection, tracking, ONNX, GPU, etc.) with status markers. This is the primary planning artifact for deciding what to build next.
+### Video
 
-### [api-stability.md](api-stability.md)
+- **[video-pipeline.md](video-pipeline.md)** — H.264 / HEVC / AV1
+  software decode (faster than ffmpeg), hardware decode
+  (VideoToolbox / VAAPI / NVDEC / MediaFoundation), MP4 / MKV
+  container parsing, audio metadata.
+### Training
 
-Versioning policy, stability tiers for each crate, the release checklist, and the publish order for the 14 crates in the workspace. Currently pre-1.0 (workspace version `0.1.7`), so breaking changes are still possible but tracked in the changelog.
+- **[training-optimizers.md](training-optimizers.md)** — 8
+  optimizers (SGD → LARS), Lookahead meta-optimizer, 11 LR
+  schedulers, 17 loss functions, gradient clipping, the high-level
+  Trainer API.
+- **[training-augmentation.md](training-augmentation.md)** — data
+  augmentation pipeline: 12+ transforms, MixUp/CutMix, sampling,
+  reproducibility (deterministic via seed).
+- **[dataset-adapters.md](dataset-adapters.md)** — supported dataset
+  formats: training (JSONL, CSV, ImageManifest, ImageFolder),
+  evaluation (COCO, OpenImages, YOLO, VOC, KITTI, WIDER FACE, MOT
+  Challenge).
 
-### [training-optimizers.md](training-optimizers.md)
+### Architecture & references
 
-Reference for the training subsystem: 8 optimizers (SGD through LARS), the Lookahead meta-optimizer, 11 learning-rate schedulers, 17 loss functions, gradient clipping utilities, and the high-level Trainer API that ties them together.
+- **[architecture.md](architecture.md)** — crate dependency layers,
+  SIMD dispatch model (AVX/SSE/NEON + scalar fallback), threading
+  strategy, memory patterns, source-file map.
+- **[ecosystem-capability-matrix.md](ecosystem-capability-matrix.md)** —
+  canonical map of every capability area, status, and gap relative
+  to a Python CV/DL stack.
+- **[performance-benchmarks.md](performance-benchmarks.md)** — full
+  methodology + scorecard vs OpenCV / ffmpeg / NumPy / PyTorch /
+  onnxruntime / CoreML. Reproduction commands.
+- **[api-stability.md](api-stability.md)** — versioning policy,
+  per-crate stability tiers, release checklist, publish order.
 
-### [training-augmentation.md](training-augmentation.md)
+### Operations
 
-The data augmentation pipeline for training: 12+ transform operations (flips, crops, jitter, noise, cutout), batch-level regularization (MixUp, CutMix), sampling policies, dataset splitting, and the reproducibility contract (deterministic via seed).
+- **[troubleshooting.md](troubleshooting.md)** — common build /
+  runtime / performance errors with concrete fixes per platform.
 
-### [dataset-adapters.md](dataset-adapters.md)
+### Per-crate READMEs
 
-Supported dataset formats for both training (JSONL, CSV, ImageManifest, ImageFolder) and evaluation (COCO, OpenImages, YOLO, VOC, KITTI, WIDER FACE, MOTChallenge, and more). Documents the field mapping rules and CLI integration.
+| Crate | What it does |
+|---|---|
+| [yscv](../crates/yscv/README.md) | Umbrella — re-exports prelude + per-crate APIs. |
+| [yscv-tensor](../crates/yscv-tensor/README.md) | N-dim tensor with 115 ops, f32/f16/bf16, SIMD-aligned storage. |
+| [yscv-kernels](../crates/yscv-kernels/README.md) | CPU + GPU compute backends, 315 SIMD functions, RKNN bindings. |
+| [yscv-autograd](../crates/yscv-autograd/README.md) | Reverse-mode autodiff, 61 backward op variants. |
+| [yscv-optim](../crates/yscv-optim/README.md) | Optimizers + LR schedulers + Lookahead. |
+| [yscv-model](../crates/yscv-model/README.md) | 39 layer types, Trainer, model zoo (17 architectures), LoRA, EMA. |
+| [yscv-imgproc](../crates/yscv-imgproc/README.md) | 160 image-processing ops (blur, edges, morphology, features, color). |
+| [yscv-video](../crates/yscv-video/README.md) | H.264/HEVC/AV1 codecs, hardware decode, MP4/MKV, V4L2 camera, audio. |
+| [yscv-detect](../crates/yscv-detect/README.md) | YOLOv8/v11 pipeline, NMS, heatmap decoding. |
+| [yscv-track](../crates/yscv-track/README.md) | DeepSORT, ByteTrack, Kalman filter, Hungarian assignment. |
+| [yscv-recognize](../crates/yscv-recognize/README.md) | Cosine matching, VP-Tree ANN indexing, enroll/match. |
+| [yscv-eval](../crates/yscv-eval/README.md) | Classification / detection / tracking / regression / image-quality metrics. |
+| [yscv-onnx](../crates/yscv-onnx/README.md) | 128+ op ONNX CPU runtime, INT4/INT8 quantization, LLM generation, MPSGraph GPU. |
+| [yscv-pipeline](../crates/yscv-pipeline/README.md) | TOML-driven multi-accelerator dispatch, RT wiring, recovery. |
+| [yscv-cli](../crates/yscv-cli/README.md) | Inference + evaluation CLI: camera diagnostics, dataset eval, pipeline runner. |
 
-### [onnx-inference.md](onnx-inference.md)
+---
 
-ONNX model loading and inference: CPU runner (128+ operators), Metal GPU runner (MPSGraph), quantization (INT8), dynamic shapes, and operator fusion. Covers YOLOv8/v11 detection pipeline end-to-end.
+## By role
 
-### [native-camera-validation.md](native-camera-validation.md)
+### "I'm building a CV product, want a single binary"
 
-Step-by-step checklist for validating native camera capture on macOS, Linux, and Windows. Covers build verification, device discovery, capture diagnostics, and the end-to-end face detection pipeline.
+1. [QUICKSTART §1](../QUICKSTART.md#1-image-processing--detection-cv-user) — get running in 3 minutes.
+2. [cookbook.md §image processing](cookbook.md) — find the ops you need.
+3. [yscv-imgproc README](../crates/yscv-imgproc/README.md) — the full op catalogue.
 
-### [video-pipeline.md](video-pipeline.md)
+### "I'm training a model"
 
-Video decode pipeline: H.264/HEVC software decode (faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), MP4/MKV container parsing, streaming reader, audio metadata extraction, SIMD coverage (21 named functions: 8 NEON + 11 SSE2 + 2 AVX2), fuzz testing.
+1. [QUICKSTART §2](../QUICKSTART.md#2-train-a-neural-network-ml-user) — first training loop.
+2. [getting-started.md §step 4](getting-started.md#step-4--train-a-model) — full Trainer walkthrough.
+3. [training-optimizers.md](training-optimizers.md) + [training-augmentation.md](training-augmentation.md) + [dataset-adapters.md](dataset-adapters.md) — when you need control.
+
+### "I'm deploying on a Rockchip / drone / FPV board"
+
+1. [QUICKSTART §3](../QUICKSTART.md#3-edge-deployment-rockchip-npu) — minimal TOML + 5-line `main.rs`.
+2. [edge-deployment.md](edge-deployment.md) — every NPU feature (DMA-BUF, SRAM, MPP, custom ops).
+3. [pipeline-config.md](pipeline-config.md) — TOML schema reference.
+4. [yscv-pipeline README](../crates/yscv-pipeline/README.md) — runtime entry point.
+5. [troubleshooting.md](troubleshooting.md) — when `librknnrt.so` isn't found, when SCHED_FIFO needs CAP_SYS_NICE, etc.
+
+### "I'm evaluating yscv for production"
+
+1. [README.md (top-level)](../README.md) — what is yscv, what's the pitch.
+2. [performance-benchmarks.md](performance-benchmarks.md) — how fast on what hardware vs whom.
+3. [ecosystem-capability-matrix.md](ecosystem-capability-matrix.md) — capability gaps vs Python stack.
+4. [architecture.md](architecture.md) — design philosophy + crate layering.
+5. [api-stability.md](api-stability.md) — versioning + breaking-change policy.
+
+### "I want to contribute"
+
+1. [architecture.md](architecture.md) — understand the layers first.
+2. [ecosystem-capability-matrix.md](ecosystem-capability-matrix.md) — find what's missing.
+3. [api-stability.md](api-stability.md) — what's safe to change vs needs RFC.
+4. Open an issue or PR. We respond fast.

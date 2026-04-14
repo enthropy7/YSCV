@@ -24,6 +24,9 @@ jobs:
           - os: windows-latest
             features: ""
             name: Windows (SW fallback)
+          - os: [self-hosted, linux, nvidia]
+            features: nvdec
+            name: Linux + NVDEC (self-hosted)
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

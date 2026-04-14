@@ -12,6 +12,9 @@ mod types;
 
 // Re-export everything so callers don't change
 pub use compile::compile_metal_plan;
-pub use graph::{MpsGraphPlan, compile_mpsgraph_plan, run_mpsgraph_plan};
+pub use graph::{
+    InferenceHandle, MpsGraphPlan, compile_mpsgraph_plan, run_mpsgraph_plan,
+    submit_mpsgraph_plan, wait_mpsgraph_plan,
+};
 pub use run::run_metal_plan;
 pub use types::MetalPlan;

@@ -4,7 +4,7 @@
 fn main() {
     use yscv_kernels::metal_backend::metal_conv::{ConvParams, MetalInference, mps_gemm_f16};
 
-    let inf = MetalInference::new().expect("Metal init failed");
+    let inf = MetalInference::new().expect("Metal init failed (see error above)");
     println!("Metal device: {}", inf.device_name());
 
     // Representative 1x1 conv sizes from YOLOv8n (M=batch*oh*ow, K=ic, N=oc)
@@ -114,7 +114,7 @@ fn main() {
 
         // Warmup MPS
         for _ in 0..warmup {
-            mps_gemm_f16(
+            let _ = mps_gemm_f16(
                 &inf.device,
                 &inf.queue,
                 &a_buf,
@@ -133,7 +133,7 @@ fn main() {
         let mut mps_times = Vec::new();
         for _ in 0..runs {
             let t0 = std::time::Instant::now();
-            mps_gemm_f16(
+            let _ = mps_gemm_f16(
                 &inf.device,
                 &inf.queue,
                 &a_buf,

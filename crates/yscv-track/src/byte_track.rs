@@ -299,7 +299,10 @@ mod tests {
         let ids: Vec<u64> = tracked2.iter().map(|t| t.track_id).collect();
         assert!(ids.contains(&id1));
         // The new object should have a different track_id.
-        let new_id = ids.iter().find(|&&id| id != id1).unwrap();
+        let new_id = ids
+            .iter()
+            .find(|&&id| id != id1)
+            .expect("second track should exist");
         assert_ne!(*new_id, id1);
     }
 

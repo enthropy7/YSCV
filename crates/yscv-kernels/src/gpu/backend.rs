@@ -8,60 +8,12 @@ use crate::{
     RmsNormLastDimParams, SeparableConv2dParams,
 };
 
+use super::buffer::{BufferPool, GpuBuffer};
+use super::helpers::{div_ceil, f16_bits_to_f32, f32_to_f16_bits, same_shape_data};
+use super::recorded::RecordedOp;
+use super::shaders::*;
+
 const MIN_GPU_ELEMENTS: usize = 4096;
-
-// ── WGSL Shaders (loaded from external files) ────────────────────
-
-const MATMUL_WGSL: &str = include_str!("shaders/matmul.wgsl");
-const ELEMENTWISE_WGSL: &str = include_str!("shaders/elementwise.wgsl");
-const UNARY_WGSL: &str = include_str!("shaders/unary.wgsl");
-const SOFTMAX_WGSL: &str = include_str!("shaders/softmax.wgsl");
-const LOG_SOFTMAX_WGSL: &str = include_str!("shaders/log_softmax.wgsl");
-const LOGSUMEXP_WGSL: &str = include_str!("shaders/logsumexp.wgsl");
-const CONV2D_WGSL: &str = include_str!("shaders/conv2d.wgsl");
-const POOL2D_WGSL: &str = include_str!("shaders/pool2d.wgsl");
-const BATCH_NORM_WGSL: &str = include_str!("shaders/batch_norm.wgsl");
-const LAYER_NORM_WGSL: &str = include_str!("shaders/layer_norm.wgsl");
-const DEPTHWISE_CONV2D_WGSL: &str = include_str!("shaders/depthwise_conv2d.wgsl");
-const TRANSPOSE_CONV2D_WGSL: &str = include_str!("shaders/transpose_conv2d.wgsl");
-const TRANSPOSE_2D_WGSL: &str = include_str!("shaders/transpose_2d.wgsl");
-const GATHER_WGSL: &str = include_str!("shaders/gather.wgsl");
-const ATTENTION_WGSL: &str = include_str!("shaders/attention.wgsl");
-const GROUP_NORM_WGSL: &str = include_str!("shaders/group_norm.wgsl");
-const RMS_NORM_WGSL: &str = include_str!("shaders/rms_norm.wgsl");
-const BACKWARD_BINARY_WGSL: &str = include_str!("shaders/backward_binary.wgsl");
-const CONV2D_INPUT_GRAD_WGSL: &str = include_str!("shaders/conv2d_input_grad.wgsl");
-const REDUCE_SUM_BACKWARD_WGSL: &str = include_str!("shaders/reduce_sum_backward.wgsl");
-const CHANNEL_SPLIT_WGSL: &str = include_str!("shaders/channel_split.wgsl");
-const CHANNEL_CONCAT_WGSL: &str = include_str!("shaders/channel_concat.wgsl");
-const RESIZE_NEAREST_WGSL: &str = include_str!("shaders/resize_nearest.wgsl");
-const PERMUTE_NHWC_NCHW_WGSL: &str = include_str!("shaders/permute_nhwc_nchw.wgsl");
-const PERMUTE_ND_WGSL: &str = include_str!("shaders/permute_nd.wgsl");
-const GENERAL_CONCAT_WGSL: &str = include_str!("shaders/general_concat.wgsl");
-const GENERAL_SPLIT_WGSL: &str = include_str!("shaders/general_split.wgsl");
-const SLICE_ND_WGSL: &str = include_str!("shaders/slice_nd.wgsl");
-const BROADCAST_BINARY_WGSL: &str = include_str!("shaders/broadcast_binary.wgsl");
-const IM2COL_WGSL: &str = include_str!("shaders/im2col.wgsl");
-const BIAS_ADD_WGSL: &str = include_str!("shaders/bias_add.wgsl");
-const BATCHED_MATMUL_WGSL: &str = include_str!("shaders/batched_matmul.wgsl");
-const CONV_GEMM_WGSL: &str = include_str!("shaders/conv_gemm.wgsl");
-const CONV_GEMM_F16_WGSL: &str = include_str!("shaders/conv_gemm_f16.wgsl");
-const CONV_GEMM_FAST_WGSL: &str = include_str!("shaders/conv_gemm_fast.wgsl");
-const CONV_GEMM_V2_WGSL: &str = include_str!("shaders/conv_gemm_v2.wgsl");
-const CONV_GEMM_FAST_N32_WGSL: &str = include_str!("shaders/conv_gemm_fast_n32.wgsl");
-const CONV_GEMM_F16_N32_WGSL: &str = include_str!("shaders/conv_gemm_f16_n32.wgsl");
-const CONV_GEMM_F16_IO_WGSL: &str = include_str!("shaders/conv_gemm_f16_io.wgsl");
-const CONV_GEMM_F16_IO_N32_WGSL: &str = include_str!("shaders/conv_gemm_f16_io_n32.wgsl");
-const ELEMENTWISE_F16_WGSL: &str = include_str!("shaders/elementwise_f16.wgsl");
-const UNARY_F16_WGSL: &str = include_str!("shaders/unary_f16.wgsl");
-const CHANNEL_CONCAT_F16_WGSL: &str = include_str!("shaders/channel_concat_f16.wgsl");
-const CHANNEL_SPLIT_F16_WGSL: &str = include_str!("shaders/channel_split_f16.wgsl");
-const RESIZE_NEAREST_F16_WGSL: &str = include_str!("shaders/resize_nearest_f16.wgsl");
-const PERMUTE_NHWC_NCHW_F16_WGSL: &str = include_str!("shaders/permute_nhwc_nchw_f16.wgsl");
-const CONVERT_F32_TO_F16_WGSL: &str = include_str!("shaders/convert_f32_to_f16.wgsl");
-const CONVERT_F16_TO_F32_WGSL: &str = include_str!("shaders/convert_f16_to_f32.wgsl");
-const WINOGRAD_INPUT_WGSL: &str = include_str!("shaders/winograd_input_transform.wgsl");
-const WINOGRAD_OUTPUT_WGSL: &str = include_str!("shaders/winograd_output_transform.wgsl");
 
 // ── Pipeline cache ─────────────────────────────────────────────────
 
@@ -79,9 +31,7 @@ struct Pipelines {
     depthwise_conv2d: wgpu::ComputePipeline,
     transpose_conv2d: wgpu::ComputePipeline,
     transpose_2d: wgpu::ComputePipeline,
-    #[allow(dead_code)]
     gather: wgpu::ComputePipeline,
-    #[allow(dead_code)]
     attention: wgpu::ComputePipeline,
     group_norm: wgpu::ComputePipeline,
     rms_norm: wgpu::ComputePipeline,
@@ -97,9 +47,6 @@ struct Pipelines {
     general_split: wgpu::ComputePipeline,
     slice_nd: wgpu::ComputePipeline,
     broadcast_binary: wgpu::ComputePipeline,
-    #[allow(dead_code)]
-    im2col: wgpu::ComputePipeline,
-    #[allow(dead_code)]
     bias_add: wgpu::ComputePipeline,
     batched_matmul: wgpu::ComputePipeline,
     conv_gemm: wgpu::ComputePipeline,
@@ -124,158 +71,11 @@ struct Pipelines {
 
 // ── GpuBuffer ─────────────────────────────────────────────────────
 
-/// A tensor that lives on GPU memory. No host copy until explicitly requested.
-pub struct GpuBuffer {
-    buffer: wgpu::Buffer,
-    /// Number of f32 elements.
-    size: usize,
-    shape: Vec<usize>,
-}
-
-impl GpuBuffer {
-    /// Returns the shape of this GPU-resident tensor.
-    pub fn shape(&self) -> &[usize] {
-        &self.shape
-    }
-
-    /// Returns the number of f32 elements.
-    pub fn len(&self) -> usize {
-        self.size
-    }
-
-    /// Returns true if this buffer contains no elements.
-    pub fn is_empty(&self) -> bool {
-        self.size == 0
-    }
-
-    /// Consume this GpuBuffer and return the inner wgpu::Buffer + element count
-    /// so the caller can return it to a buffer pool.
-    pub fn into_raw(self) -> (wgpu::Buffer, usize) {
-        (self.buffer, self.size)
-    }
-
-    /// Get a reference to the underlying wgpu::Buffer.
-    pub fn raw_buffer(&self) -> &wgpu::Buffer {
-        &self.buffer
-    }
-
-    /// Construct a GpuBuffer from raw parts (for compiled plan replay).
-    /// The caller is responsible for ensuring the buffer matches the declared size/shape.
-    pub fn from_raw_parts(buffer: wgpu::Buffer, size: usize, shape: Vec<usize>) -> Self {
-        Self {
-            buffer,
-            size,
-            shape,
-        }
-    }
-}
-
-// ── GpuBackend ─────────────────────────────────────────────────────
-
-/// Simple size-bucketed buffer pool for GPU buffer reuse across dispatches.
-/// Uses `RefCell` for interior mutability so `&self` methods can pool/reclaim.
-struct BufferPool {
-    /// Available output buffers keyed by capacity in bytes.
-    output: std::cell::RefCell<Vec<(u64, wgpu::Buffer)>>,
-    /// Available storage buffers keyed by capacity in bytes.
-    storage: std::cell::RefCell<Vec<(u64, wgpu::Buffer)>>,
-    /// Maximum pool depth per category.
-    max_depth: usize,
-    /// Total allocations saved (diagnostic counter).
-    hits: std::cell::Cell<u64>,
-}
-
-impl BufferPool {
-    fn new(max_depth: usize) -> Self {
-        Self {
-            output: std::cell::RefCell::new(Vec::with_capacity(max_depth)),
-            storage: std::cell::RefCell::new(Vec::with_capacity(max_depth)),
-            max_depth,
-            hits: std::cell::Cell::new(0),
-        }
-    }
-
-    /// Try to reclaim an output buffer with at least `size_bytes` capacity.
-    /// Uses best-fit: picks the smallest buffer that's >= size_bytes and <= 4x.
-    fn take_output(&self, size_bytes: u64) -> Option<wgpu::Buffer> {
-        let mut pool = self.output.borrow_mut();
-        let max_cap = size_bytes.saturating_mul(4);
-        let mut best: Option<(usize, u64)> = None;
-        for (i, &(cap, _)) in pool.iter().enumerate() {
-            if cap >= size_bytes && cap <= max_cap && (best.is_none() || cap < best.unwrap().1) {
-                best = Some((i, cap));
-            }
-        }
-        if let Some((pos, _)) = best {
-            self.hits.set(self.hits.get() + 1);
-            Some(pool.swap_remove(pos).1)
-        } else {
-            None
-        }
-    }
-
-    /// Return an output buffer to the pool for future reuse.
-    fn return_output(&self, size_bytes: u64, buf: wgpu::Buffer) {
-        let mut pool = self.output.borrow_mut();
-        if pool.len() < self.max_depth {
-            pool.push((size_bytes, buf));
-        }
-        // else: drop the buffer (exceeds pool capacity)
-    }
-
-    /// Try to reclaim a storage buffer with at least `size_bytes` capacity.
-    fn take_storage(&self, size_bytes: u64) -> Option<wgpu::Buffer> {
-        let mut pool = self.storage.borrow_mut();
-        let max_cap = size_bytes.saturating_mul(4);
-        let mut best: Option<(usize, u64)> = None;
-        for (i, &(cap, _)) in pool.iter().enumerate() {
-            if cap >= size_bytes && cap <= max_cap && (best.is_none() || cap < best.unwrap().1) {
-                best = Some((i, cap));
-            }
-        }
-        if let Some((pos, _)) = best {
-            self.hits.set(self.hits.get() + 1);
-            Some(pool.swap_remove(pos).1)
-        } else {
-            None
-        }
-    }
-
-    /// Return a storage buffer to the pool.
-    fn return_storage(&self, size_bytes: u64, buf: wgpu::Buffer) {
-        let mut pool = self.storage.borrow_mut();
-        if pool.len() < self.max_depth {
-            pool.push((size_bytes, buf));
-        }
-    }
-
-    /// Total cache hits (diagnostic).
-    fn cache_hits(&self) -> u64 {
-        self.hits.get()
-    }
-}
-
 /// Cross-platform GPU compute backend via wgpu (Vulkan/Metal/DX12).
 struct DeferredDispatch {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
     wg: (u32, u32, u32),
-}
-
-/// A recorded GPU operation for compiled execution replay.
-pub enum RecordedOp {
-    /// Single dispatch in its own compute pass.
-    Single {
-        pipeline: wgpu::ComputePipeline,
-        bind_group: wgpu::BindGroup,
-        wg: (u32, u32, u32),
-    },
-    /// Multiple dispatches in one compute pass (batched, no RAW hazards).
-    Batch {
-        pipeline: wgpu::ComputePipeline,
-        bind_groups: Vec<wgpu::BindGroup>,
-        wg_sizes: Vec<(u32, u32, u32)>,
-    },
 }
 
 pub struct GpuBackend {
@@ -317,9 +117,6 @@ impl GpuBackend {
         let mut required_features = wgpu::Features::empty();
         if use_f16 {
             required_features |= wgpu::Features::SHADER_F16;
-            eprintln!("  f16 compute: enabled");
-        } else {
-            eprintln!("  f16 compute: NOT available (using f32 fallback)");
         }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -382,7 +179,6 @@ impl GpuBackend {
             general_split: pipe(&mk(GENERAL_SPLIT_WGSL)),
             slice_nd: pipe(&mk(SLICE_ND_WGSL)),
             broadcast_binary: pipe(&mk(BROADCAST_BINARY_WGSL)),
-            im2col: pipe(&mk(IM2COL_WGSL)),
             bias_add: pipe(&mk(BIAS_ADD_WGSL)),
             batched_matmul: pipe(&mk(BATCHED_MATMUL_WGSL)),
             conv_gemm: pipe(&mk(CONV_GEMM_WGSL)),
@@ -3887,6 +3683,111 @@ impl GpuBackend {
         }
     }
 
+    /// Gather elements from `data` using `indices` on device.
+    /// `indices` contains u32 indices; output has the same element count as `indices`.
+    pub fn gather_on_device(&self, data: &GpuBuffer, indices: &GpuBuffer) -> GpuBuffer {
+        let len = indices.size;
+        let buf_out = self.output_buf(len);
+        let params: [u32; 2] = [len as u32, 0];
+        let buf_p = self.uniform_buf(bytemuck::cast_slice(&params));
+
+        let bgl = self.pipelines.gather.get_bind_group_layout(0);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: data.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: indices.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buf_out.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: buf_p.as_entire_binding(),
+                },
+            ],
+        });
+        self.record_compute(
+            &self.pipelines.gather,
+            &bg,
+            (div_ceil(len as u32, 256), 1, 1),
+        );
+        GpuBuffer {
+            buffer: buf_out,
+            size: len,
+            shape: indices.shape.clone(),
+        }
+    }
+
+    /// Scaled dot-product attention on device: out = (Q @ K^T * scale) @ V.
+    /// Q shape: [seq_q, d_k], K shape: [seq_k, d_k], V shape: [seq_k, d_v].
+    pub fn attention_on_device(&self, q: &GpuBuffer, k: &GpuBuffer, v: &GpuBuffer) -> GpuBuffer {
+        let seq_q = q.shape[0];
+        let d_k = q.shape[1];
+        let seq_k = k.shape[0];
+        let d_v = v.shape[1];
+        let scale = 1.0_f32 / (d_k as f32).sqrt();
+        let out_total = seq_q * d_v;
+        let buf_out = self.output_buf(out_total);
+
+        let params: [u32; 8] = [
+            seq_q as u32,
+            seq_k as u32,
+            d_k as u32,
+            d_v as u32,
+            scale.to_bits(),
+            0,
+            0,
+            0,
+        ];
+        let buf_p = self.uniform_buf(bytemuck::cast_slice(&params));
+
+        let bgl = self.pipelines.attention.get_bind_group_layout(0);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: q.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: k.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: v.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: buf_out.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: buf_p.as_entire_binding(),
+                },
+            ],
+        });
+        self.record_compute(
+            &self.pipelines.attention,
+            &bg,
+            (div_ceil(d_v as u32, 16), div_ceil(seq_q as u32, 16), 1),
+        );
+        GpuBuffer {
+            buffer: buf_out,
+            size: out_total,
+            shape: vec![seq_q, d_v],
+        }
+    }
+
     /// Copy a GPU buffer and assign a new shape. Device-side memcpy, no sync.
     pub fn copy_reshape_on_device(&self, input: &GpuBuffer, new_shape: Vec<usize>) -> GpuBuffer {
         let size_bytes = (input.size * 4) as u64;
@@ -3909,20 +3810,6 @@ impl GpuBackend {
         }
     }
 }
-
-fn div_ceil(a: u32, b: u32) -> u32 {
-    a.div_ceil(b)
-}
-
-fn same_shape_data(lhs: &Tensor, rhs: &Tensor) -> Option<usize> {
-    if lhs.shape() == rhs.shape() {
-        Some(lhs.data().len())
-    } else {
-        None
-    }
-}
-
-// ── Backend trait implementation ───────────────────────────────────
 
 impl Backend for GpuBackend {
     fn matmul_2d(&self, lhs: &Tensor, rhs: &Tensor) -> Result<Tensor, KernelError> {
@@ -5355,56 +5242,3 @@ pub fn gpu_transpose(input: &Tensor) -> Result<Tensor, KernelError> {
 }
 
 // ── f16 bit conversion (no external crate needed) ─────────────────
-
-fn f32_to_f16_bits(val: f32) -> u16 {
-    let bits = val.to_bits();
-    let sign = ((bits >> 16) & 0x8000) as u16;
-    let exponent = ((bits >> 23) & 0xFF) as i32;
-    let mantissa = bits & 0x007FFFFF;
-
-    if exponent == 0xFF {
-        return sign | 0x7C00 | if mantissa != 0 { 0x0200 } else { 0 };
-    }
-    let unbiased = exponent - 127;
-    if unbiased < -24 {
-        return sign;
-    }
-    if unbiased < -14 {
-        let shift = -1 - unbiased;
-        let subnormal = ((mantissa | 0x00800000) >> (shift + 13)) as u16;
-        return sign | subnormal;
-    }
-    if unbiased > 15 {
-        return sign | 0x7C00;
-    }
-    let fp16_exp = ((unbiased + 15) as u16) << 10;
-    let fp16_man = (mantissa >> 13) as u16;
-    sign | fp16_exp | fp16_man
-}
-
-fn f16_bits_to_f32(half: u16) -> f32 {
-    let sign = ((half & 0x8000) as u32) << 16;
-    let exponent = (half >> 10) & 0x1F;
-    let mantissa = (half & 0x03FF) as u32;
-    if exponent == 0 {
-        if mantissa == 0 {
-            return f32::from_bits(sign);
-        }
-        let mut e = 0i32;
-        let mut m = mantissa;
-        while m & 0x0400 == 0 {
-            m <<= 1;
-            e += 1;
-        }
-        let f32_exp = ((127 - 15 - e) as u32) << 23;
-        let f32_man = (m & 0x03FF) << 13;
-        return f32::from_bits(sign | f32_exp | f32_man);
-    }
-    if exponent == 31 {
-        let f32_bits = sign | 0x7F800000 | if mantissa != 0 { 0x00400000 } else { 0 };
-        return f32::from_bits(f32_bits);
-    }
-    let f32_exp = ((exponent as u32) + 112) << 23;
-    let f32_man = mantissa << 13;
-    f32::from_bits(sign | f32_exp | f32_man)
-}

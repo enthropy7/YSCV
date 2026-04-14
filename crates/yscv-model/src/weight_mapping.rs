@@ -52,7 +52,11 @@ fn build_mapping_table(arch: ModelArchitecture) -> HashMap<&'static str, String>
         ModelArchitecture::ViTTiny
         | ModelArchitecture::ViTBase
         | ModelArchitecture::ViTLarge
-        | ModelArchitecture::DeiTTiny => HashMap::new(),
+        | ModelArchitecture::DeiTTiny
+        | ModelArchitecture::ClipViTB32
+        | ModelArchitecture::DINOv2ViTS14
+        | ModelArchitecture::WhisperTiny
+        | ModelArchitecture::SAMViTB => HashMap::new(),
     }
 }
 

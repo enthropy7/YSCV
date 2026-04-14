@@ -9,6 +9,8 @@ mod embedding;
 mod matmul;
 mod norm;
 mod pool;
+pub mod quantize;
+pub mod rope;
 pub mod simd;
 
 // Public API re-exports

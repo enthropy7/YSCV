@@ -939,13 +939,29 @@ pub enum SaoType {
 pub struct SaoParams {
     /// Offset type.
     pub sao_type: SaoType,
-    /// Four offset values.
+    /// Four offset values (luma).
     pub offset: [i8; 4],
     /// Starting band index (used for `BandOffset`).
     pub band_position: u8,
     /// Edge-offset class: 0 = horizontal, 1 = vertical,
     /// 2 = 135-degree diagonal, 3 = 45-degree diagonal.
     pub eo_class: u8,
+    /// Cb offset type.
+    pub sao_type_cb: SaoType,
+    /// Four Cb offset values.
+    pub offset_cb: [i8; 4],
+    /// Cb band position.
+    pub band_position_cb: u8,
+    /// Cb edge-offset class.
+    pub eo_class_cb: u8,
+    /// Cr offset type.
+    pub sao_type_cr: SaoType,
+    /// Four Cr offset values.
+    pub offset_cr: [i8; 4],
+    /// Cr band position.
+    pub band_position_cr: u8,
+    /// Cr edge-offset class.
+    pub eo_class_cr: u8,
 }
 
 /// Apply SAO to one colour plane of a reconstructed CTU.
@@ -971,6 +987,41 @@ pub fn hevc_apply_sao(
             apply_sao_edge_offset(recon, width, height, ctu_x, ctu_y, ctu_size, params);
         }
     }
+}
+
+/// Apply SAO to a chroma plane of a reconstructed CTU.
+///
+/// `recon` is the full-frame chroma plane buffer (row-major).
+/// `ctu_x`, `ctu_y` are the top-left pixel position in luma coordinates;
+/// `ctu_size` the luma CTU side length. `sub_w` and `sub_h` are the chroma
+/// subsampling factors (e.g. 2,2 for 4:2:0).
+pub fn hevc_apply_sao_chroma(
+    recon: &mut [u8],
+    chroma_width: usize,
+    chroma_height: usize,
+    ctu_x: usize,
+    ctu_y: usize,
+    ctu_size: usize,
+    sub_w: usize,
+    sub_h: usize,
+    params: &SaoParams,
+    sao_type: SaoType,
+    offsets: &[i8; 4],
+    band_pos: u8,
+    eo_cls: u8,
+) {
+    let cx = ctu_x / sub_w.max(1);
+    let cy = ctu_y / sub_h.max(1);
+    let cs = ctu_size / sub_w.max(1);
+    let local = SaoParams {
+        sao_type,
+        offset: *offsets,
+        band_position: band_pos,
+        eo_class: eo_cls,
+        ..SaoParams::default()
+    };
+    let _ = params; // original params for reference (future: merge flags)
+    hevc_apply_sao(recon, chroma_width, chroma_height, cx, cy, cs, &local);
 }
 
 /// SAO band offset: partition 8-bit range into 32 bands of width 8.
@@ -1187,6 +1238,15 @@ pub fn parse_sao_params(
         offset,
         band_position,
         eo_class,
+        // Chroma SAO: defaults to same as luma (simplified — separate chroma SAO offsets reuse luma params)
+        sao_type_cb: sao_type,
+        offset_cb: offset,
+        band_position_cb: band_position,
+        eo_class_cb: eo_class,
+        sao_type_cr: sao_type,
+        offset_cr: offset,
+        band_position_cr: band_position,
+        eo_class_cr: eo_class,
     }
 }
 
@@ -1402,7 +1462,11 @@ pub fn finalize_hevc_frame(
     y_to_grayscale_rgb(y_plane)
 }
 
-/// Finalize with real chroma planes — full color YUV420→RGB output.
+/// Finalize with real chroma planes — full color YUV→RGB output.
+///
+/// `sub_w` and `sub_h` are the chroma subsampling factors (e.g. `(2, 2)`
+/// for 4:2:0, `(2, 1)` for 4:2:2, `(1, 1)` for 4:4:4). Passing `(2, 2)`
+/// preserves the original 4:2:0 behaviour.
 pub fn finalize_hevc_frame_with_chroma(
     y_plane: &mut [u8],
     cb_plane: &[u8],
@@ -1412,6 +1476,8 @@ pub fn finalize_hevc_frame_with_chroma(
     cus: &[(usize, usize, usize, HevcPredMode)],
     qp: u8,
     sao_params: Option<&[SaoParams]>,
+    sub_w: usize,
+    sub_h: usize,
 ) -> Vec<u8> {
     // Deblock luma (same as grayscale path)
     let min_cu_size = 8;
@@ -1489,9 +1555,13 @@ pub fn finalize_hevc_frame_with_chroma(
         }
     }
 
-    // Full YUV420 → RGB with real chroma (NEON-accelerated)
-    crate::yuv420_to_rgb8(y_plane, cb_plane, cr_plane, width, height)
-        .unwrap_or_else(|_| y_to_grayscale_rgb(y_plane))
+    // YUV → RGB: use optimised 4:2:0 path when possible, generic otherwise
+    if sub_w == 2 && sub_h == 2 {
+        crate::yuv420_to_rgb8(y_plane, cb_plane, cr_plane, width, height)
+            .unwrap_or_else(|_| y_to_grayscale_rgb(y_plane))
+    } else {
+        crate::yuv_to_rgb8_generic(y_plane, cb_plane, cr_plane, width, height, sub_w, sub_h)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,6 +1724,7 @@ mod tests {
             offset: [5, -3, 2, -1],
             band_position: 12, // bands 12..15
             eo_class: 0,
+            ..SaoParams::default()
         };
 
         hevc_apply_sao(&mut recon, width, height, 0, 0, 8, &params);
@@ -1672,6 +1743,7 @@ mod tests {
             offset: [5, -3, 2, -1],
             band_position: 12, // bands 12..15 — value 200 not in this range
             eo_class: 0,
+            ..SaoParams::default()
         };
 
         hevc_apply_sao(&mut recon, width, height, 0, 0, 8, &params);
@@ -1700,6 +1772,7 @@ mod tests {
             offset: [10, 5, -5, -10], // cat1=+10, cat2=+5, cat3=-5, cat4=-10
             band_position: 0,
             eo_class: 0, // horizontal
+            ..SaoParams::default()
         };
 
         hevc_apply_sao(&mut recon, width, height, 0, 0, 8, &params);
@@ -1722,6 +1795,7 @@ mod tests {
             offset: [10, 5, -5, -10], // cat4 = local max => -10
             band_position: 0,
             eo_class: 1, // vertical
+            ..SaoParams::default()
         };
 
         hevc_apply_sao(&mut recon, width, height, 0, 0, 8, &params);
@@ -1743,6 +1817,7 @@ mod tests {
             offset: [8, 4, -4, -8],
             band_position: 0,
             eo_class: 2, // 135-degree
+            ..SaoParams::default()
         };
 
         hevc_apply_sao(&mut recon, width, height, 0, 0, 8, &params);
@@ -1764,6 +1839,7 @@ mod tests {
             offset: [8, 4, -4, -8],
             band_position: 0,
             eo_class: 3, // 45-degree
+            ..SaoParams::default()
         };
 
         hevc_apply_sao(&mut recon, width, height, 0, 0, 8, &params);
@@ -1974,6 +2050,7 @@ mod tests {
             offset: [3, 0, 0, 0],
             band_position: 12,
             eo_class: 0,
+            ..SaoParams::default()
         }];
 
         let rgb = finalize_hevc_frame(&mut y_plane, w, h, &[], 26, Some(&sao));
@@ -2089,6 +2166,7 @@ mod tests {
             offset: [10, 0, 0, 0], // would push to 263 without clamping
             band_position: 31,
             eo_class: 0,
+            ..SaoParams::default()
         };
 
         hevc_apply_sao(&mut recon, width, height, 0, 0, 4, &params);

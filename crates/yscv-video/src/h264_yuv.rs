@@ -309,6 +309,113 @@ pub(crate) fn yuv_to_rgb8_by_format(
         _ => yuv420_to_rgb8(y_plane, u_plane, v_plane, width, height),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Generic YUV to RGB for non-4:2:0 chroma formats
+// ---------------------------------------------------------------------------
+
+/// Converts planar YUV to RGB8 for arbitrary chroma subsampling ratios.
+///
+/// `sub_w` and `sub_h` give the horizontal and vertical chroma subsampling
+/// factors (e.g. `sub_w=2, sub_h=2` for 4:2:0, `sub_w=2, sub_h=1` for 4:2:2,
+/// `sub_w=1, sub_h=1` for 4:4:4). Uses BT.601 fixed-point conversion.
+pub fn yuv_to_rgb8_generic(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    w: usize,
+    h: usize,
+    sub_w: usize,
+    sub_h: usize,
+) -> Vec<u8> {
+    let sub_w = sub_w.max(1);
+    let sub_h = sub_h.max(1);
+    let uv_stride = w / sub_w;
+    let mut rgb = vec![0u8; w * h * 3];
+    for row in 0..h {
+        let y_off = row * w;
+        let uv_row = (row / sub_h) * uv_stride;
+        for col in 0..w {
+            let y_val = y.get(y_off + col).copied().unwrap_or(128) as i16;
+            let u_val = u.get(uv_row + col / sub_w).copied().unwrap_or(128) as i16 - 128;
+            let v_val = v.get(uv_row + col / sub_w).copied().unwrap_or(128) as i16 - 128;
+
+            let r = y_val + ((v_val * 179) >> 7);
+            let g = y_val - ((u_val * 44 + v_val * 91) >> 7);
+            let b = y_val + ((u_val * 227) >> 7);
+
+            let idx = (row * w + col) * 3;
+            rgb[idx] = r.clamp(0, 255) as u8;
+            rgb[idx + 1] = g.clamp(0, 255) as u8;
+            rgb[idx + 2] = b.clamp(0, 255) as u8;
+        }
+    }
+    rgb
+}
+
+// ---------------------------------------------------------------------------
+// HDR 10-bit YUV420 to RGB16 conversion
+// ---------------------------------------------------------------------------
+
+/// Converts 10/12-bit YUV 4:2:0 planar (u16 samples) to RGB16 interleaved
+/// using BT.709 fixed-point conversion.
+///
+/// Output values are scaled to fill the full 16-bit range.
+/// Chroma planes are `(w/2) x (h/2)` samples. Returns `3 * w * h` u16 values.
+pub fn yuv420_p16_to_rgb16(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    bit_depth: u8,
+) -> Result<Vec<u16>, VideoError> {
+    let expected_y = w * h;
+    let expected_uv = (w / 2) * (h / 2);
+    if y.len() < expected_y {
+        return Err(VideoError::Codec(format!(
+            "Y16 plane too small: expected {expected_y}, got {}",
+            y.len()
+        )));
+    }
+    if u.len() < expected_uv || v.len() < expected_uv {
+        return Err(VideoError::Codec(format!(
+            "UV16 planes too small: expected {expected_uv}, got U={} V={}",
+            u.len(),
+            v.len()
+        )));
+    }
+
+    let max_in = (1i32 << bit_depth) - 1;
+    // Scale factor to expand input range to u16: 65535 / max_in
+    let upshift = 16u32.saturating_sub(bit_depth as u32);
+    let uv_stride = w / 2;
+    let mid = 1i32 << (bit_depth - 1);
+
+    let mut rgb = vec![0u16; w * h * 3];
+    for row in 0..h {
+        let y_off = row * w;
+        let uv_off = (row / 2) * uv_stride;
+        for col in 0..w {
+            let y_val = y[y_off + col] as i32;
+            let u_val = u[uv_off + col / 2] as i32 - mid;
+            let v_val = v[uv_off + col / 2] as i32 - mid;
+
+            // BT.709: R = Y + 1.5748*V, G = Y - 0.1873*U - 0.4681*V, B = Y + 1.8556*U
+            // Fixed-point Q10: 1.5748*1024=1613, 0.1873*1024=192, 0.4681*1024=479, 1.8556*1024=1901
+            let r = y_val + ((v_val * 1613) >> 10);
+            let g = y_val - ((u_val * 192 + v_val * 479) >> 10);
+            let b = y_val + ((u_val * 1901) >> 10);
+
+            let idx = (row * w + col) * 3;
+            rgb[idx] = (r.clamp(0, max_in) as u32).wrapping_shl(upshift) as u16;
+            rgb[idx + 1] = (g.clamp(0, max_in) as u32).wrapping_shl(upshift) as u16;
+            rgb[idx + 2] = (b.clamp(0, max_in) as u32).wrapping_shl(upshift) as u16;
+        }
+    }
+    Ok(rgb)
+}
+
 // ---------------------------------------------------------------------------
 // YUV to RGB conversion
 // ---------------------------------------------------------------------------
@@ -986,6 +1093,580 @@ unsafe fn yuv420_to_rgb8_rows_sse2(
             *rgb_row_ptr.add(idx + 2) = b.clamp(0, 255) as u8;
 
             col += 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NV12 → RGB8 (interleaved UV plane)
+// ---------------------------------------------------------------------------
+
+/// Converts NV12 (Y plane + interleaved UV plane) to RGB8.
+///
+/// `y` is the luma plane (`w * h` bytes), `uv` is the interleaved chroma plane
+/// (`w * (h/2)` bytes with U,V pairs). Output is `w * h * 3` bytes RGB8.
+///
+/// Uses BT.601 full-range coefficients with NEON acceleration on aarch64,
+/// SSE2 on x86_64, and a scalar fallback.
+#[allow(unsafe_code)]
+pub fn nv12_to_rgb8(
+    y: &[u8],
+    uv: &[u8],
+    w: usize,
+    h: usize,
+    out: &mut [u8],
+) -> Result<(), VideoError> {
+    let expected_y = w * h;
+    let expected_uv = w * (h / 2);
+    let expected_out = w * h * 3;
+
+    if y.len() < expected_y {
+        return Err(VideoError::Codec(format!(
+            "NV12: Y plane too small: expected {expected_y}, got {}",
+            y.len()
+        )));
+    }
+    if uv.len() < expected_uv {
+        return Err(VideoError::Codec(format!(
+            "NV12: UV plane too small: expected {expected_uv}, got {}",
+            uv.len()
+        )));
+    }
+    if out.len() < expected_out {
+        return Err(VideoError::Codec(format!(
+            "NV12: output buffer too small: expected {expected_out}, got {}",
+            out.len()
+        )));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                nv12_to_rgb8_neon(y, uv, w, h, out);
+            }
+            return Ok(());
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                nv12_to_rgb8_sse2(y, uv, w, h, out);
+            }
+            return Ok(());
+        }
+    }
+
+    nv12_to_rgb8_scalar(y, uv, w, h, out);
+    Ok(())
+}
+
+/// Scalar NV12 → RGB8 fallback.
+fn nv12_to_rgb8_scalar(y: &[u8], uv: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    for row in 0..h {
+        let y_off = row * w;
+        let uv_off = (row / 2) * w; // UV plane has same width, half height
+        let dst_off = row * w * 3;
+
+        for col in 0..w {
+            let y_val = y[y_off + col] as i16;
+            let u_val = uv[uv_off + (col & !1)] as i16 - 128;
+            let v_val = uv[uv_off + (col | 1)] as i16 - 128;
+
+            let r = y_val + ((v_val * 179) >> 7);
+            let g = y_val - ((u_val * 44 + v_val * 91) >> 7);
+            let b = y_val + ((u_val * 227) >> 7);
+
+            let idx = dst_off + col * 3;
+            out[idx] = r.clamp(0, 255) as u8;
+            out[idx + 1] = g.clamp(0, 255) as u8;
+            out[idx + 2] = b.clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// NEON-accelerated NV12 → RGB8 (aarch64). Processes 16 pixels per iteration.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn nv12_to_rgb8_neon(y: &[u8], uv: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    use std::arch::aarch64::*;
+
+    let c_179 = vdupq_n_s16(179);
+    let c_44 = vdupq_n_s16(44);
+    let c_91 = vdupq_n_s16(91);
+    let c_227 = vdupq_n_s16(227);
+    let c_128 = vdupq_n_s16(128);
+
+    for row in 0..h {
+        let y_row = y.as_ptr().add(row * w);
+        let uv_row = uv.as_ptr().add((row / 2) * w);
+        let dst_row = out.as_mut_ptr().add(row * w * 3);
+
+        let mut col = 0usize;
+
+        // Process 16 luma pixels at a time (8 UV pairs)
+        while col + 16 <= w {
+            let y16 = vld1q_u8(y_row.add(col));
+
+            // Load 16 bytes of interleaved UV (8 U-V pairs)
+            let uv16 = vld2_u8(uv_row.add(col));
+            let u8_vals = uv16.0; // 8 U values
+            let v8_vals = uv16.1; // 8 V values
+
+            // Duplicate each U/V value for 2 horizontal pixels
+            let u_dup = vcombine_u8(vzip1_u8(u8_vals, u8_vals), vzip2_u8(u8_vals, u8_vals));
+            let v_dup = vcombine_u8(vzip1_u8(v8_vals, v8_vals), vzip2_u8(v8_vals, v8_vals));
+
+            // Low 8 pixels
+            let y_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(y16)));
+            let u_lo = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(u_dup))), c_128);
+            let v_lo = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(v_dup))), c_128);
+
+            let r_lo = vaddq_s16(y_lo, vshrq_n_s16::<7>(vmulq_s16(v_lo, c_179)));
+            let g_lo = vsubq_s16(
+                y_lo,
+                vshrq_n_s16::<7>(vaddq_s16(vmulq_s16(u_lo, c_44), vmulq_s16(v_lo, c_91))),
+            );
+            let b_lo = vaddq_s16(y_lo, vshrq_n_s16::<7>(vmulq_s16(u_lo, c_227)));
+
+            let rgb_lo = uint8x8x3_t(vqmovun_s16(r_lo), vqmovun_s16(g_lo), vqmovun_s16(b_lo));
+            vst3_u8(dst_row.add(col * 3), rgb_lo);
+
+            // High 8 pixels
+            let y_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(y16)));
+            let u_hi = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(u_dup))), c_128);
+            let v_hi = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(v_dup))), c_128);
+
+            let r_hi = vaddq_s16(y_hi, vshrq_n_s16::<7>(vmulq_s16(v_hi, c_179)));
+            let g_hi = vsubq_s16(
+                y_hi,
+                vshrq_n_s16::<7>(vaddq_s16(vmulq_s16(u_hi, c_44), vmulq_s16(v_hi, c_91))),
+            );
+            let b_hi = vaddq_s16(y_hi, vshrq_n_s16::<7>(vmulq_s16(u_hi, c_227)));
+
+            let rgb_hi = uint8x8x3_t(vqmovun_s16(r_hi), vqmovun_s16(g_hi), vqmovun_s16(b_hi));
+            vst3_u8(dst_row.add((col + 8) * 3), rgb_hi);
+
+            col += 16;
+        }
+
+        // Scalar tail
+        while col < w {
+            let y_val = *y_row.add(col) as i16;
+            let u_val = *uv_row.add(col & !1) as i16 - 128;
+            let v_val = *uv_row.add(col | 1) as i16 - 128;
+
+            let r = y_val + ((v_val * 179) >> 7);
+            let g = y_val - ((u_val * 44 + v_val * 91) >> 7);
+            let b = y_val + ((u_val * 227) >> 7);
+
+            let idx = col * 3;
+            *dst_row.add(idx) = r.clamp(0, 255) as u8;
+            *dst_row.add(idx + 1) = g.clamp(0, 255) as u8;
+            *dst_row.add(idx + 2) = b.clamp(0, 255) as u8;
+
+            col += 1;
+        }
+    }
+}
+
+/// SSE2-accelerated NV12 → RGB8 (x86_64). Processes 8 pixels per iteration.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn nv12_to_rgb8_sse2(y: &[u8], uv: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    use std::arch::x86_64::*;
+
+    let c_179 = _mm_set1_epi16(179);
+    let c_44 = _mm_set1_epi16(44);
+    let c_91 = _mm_set1_epi16(91);
+    let c_227 = _mm_set1_epi16(227);
+    let c_128 = _mm_set1_epi16(128);
+    let zero = _mm_setzero_si128();
+
+    for row in 0..h {
+        let y_row = y.as_ptr().add(row * w);
+        let uv_row = uv.as_ptr().add((row / 2) * w);
+        let dst_row = out.as_mut_ptr().add(row * w * 3);
+
+        let mut col = 0usize;
+
+        while col + 8 <= w {
+            let y8 = _mm_loadl_epi64(y_row.add(col) as *const __m128i);
+            let y_i16 = _mm_unpacklo_epi8(y8, zero);
+
+            // Load 8 bytes of UV (4 pairs), deinterleave manually
+            let mut u_buf = [0u8; 8];
+            let mut v_buf = [0u8; 8];
+            for i in 0..4 {
+                let u_val = *uv_row.add(col + i * 2);
+                let v_val = *uv_row.add(col + i * 2 + 1);
+                u_buf[i * 2] = u_val;
+                u_buf[i * 2 + 1] = u_val;
+                v_buf[i * 2] = v_val;
+                v_buf[i * 2 + 1] = v_val;
+            }
+
+            let u8_dup = _mm_loadl_epi64(u_buf.as_ptr() as *const __m128i);
+            let v8_dup = _mm_loadl_epi64(v_buf.as_ptr() as *const __m128i);
+
+            let u_i16 = _mm_sub_epi16(_mm_unpacklo_epi8(u8_dup, zero), c_128);
+            let v_i16 = _mm_sub_epi16(_mm_unpacklo_epi8(v8_dup, zero), c_128);
+
+            let r = _mm_add_epi16(y_i16, _mm_srai_epi16::<7>(_mm_mullo_epi16(v_i16, c_179)));
+            let g = _mm_sub_epi16(
+                y_i16,
+                _mm_srai_epi16::<7>(_mm_add_epi16(
+                    _mm_mullo_epi16(u_i16, c_44),
+                    _mm_mullo_epi16(v_i16, c_91),
+                )),
+            );
+            let b = _mm_add_epi16(y_i16, _mm_srai_epi16::<7>(_mm_mullo_epi16(u_i16, c_227)));
+
+            let r_u8 = _mm_packus_epi16(r, zero);
+            let g_u8 = _mm_packus_epi16(g, zero);
+            let b_u8 = _mm_packus_epi16(b, zero);
+
+            let mut r_arr = [0u8; 8];
+            let mut g_arr = [0u8; 8];
+            let mut b_arr = [0u8; 8];
+            _mm_storel_epi64(r_arr.as_mut_ptr() as *mut __m128i, r_u8);
+            _mm_storel_epi64(g_arr.as_mut_ptr() as *mut __m128i, g_u8);
+            _mm_storel_epi64(b_arr.as_mut_ptr() as *mut __m128i, b_u8);
+
+            let mut rgb_buf = [0u8; 24];
+            for i in 0..8 {
+                rgb_buf[i * 3] = r_arr[i];
+                rgb_buf[i * 3 + 1] = g_arr[i];
+                rgb_buf[i * 3 + 2] = b_arr[i];
+            }
+            std::ptr::copy_nonoverlapping(rgb_buf.as_ptr(), dst_row.add(col * 3), 24);
+
+            col += 8;
+        }
+
+        // Scalar tail
+        while col < w {
+            let y_val = *y_row.add(col) as i16;
+            let u_val = *uv_row.add(col & !1) as i16 - 128;
+            let v_val = *uv_row.add(col | 1) as i16 - 128;
+
+            let r = y_val + ((v_val * 179) >> 7);
+            let g = y_val - ((u_val * 44 + v_val * 91) >> 7);
+            let b = y_val + ((u_val * 227) >> 7);
+
+            let idx = col * 3;
+            *dst_row.add(idx) = r.clamp(0, 255) as u8;
+            *dst_row.add(idx + 1) = g.clamp(0, 255) as u8;
+            *dst_row.add(idx + 2) = b.clamp(0, 255) as u8;
+
+            col += 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// YUYV (4:2:2 packed) → RGB8
+// ---------------------------------------------------------------------------
+
+/// Converts YUYV (YUY2) packed 4:2:2 to RGB8.
+///
+/// Each 4 bytes encode 2 pixels: `[Y0, U, Y1, V]`.
+/// `data` is `w * h * 2` bytes, `out` must be at least `w * h * 3` bytes.
+///
+/// Uses BT.601 full-range coefficients with NEON acceleration on aarch64,
+/// SSE2 on x86_64, and a scalar fallback.
+#[allow(unsafe_code)]
+pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(), VideoError> {
+    let expected_in = w * h * 2;
+    let expected_out = w * h * 3;
+
+    if data.len() < expected_in {
+        return Err(VideoError::Codec(format!(
+            "YUYV: input too small: expected {expected_in}, got {}",
+            data.len()
+        )));
+    }
+    if out.len() < expected_out {
+        return Err(VideoError::Codec(format!(
+            "YUYV: output too small: expected {expected_out}, got {}",
+            out.len()
+        )));
+    }
+    if !w.is_multiple_of(2) {
+        return Err(VideoError::Codec("YUYV: width must be even".into()));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                yuyv_to_rgb8_neon(data, w, h, out);
+            }
+            return Ok(());
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                yuyv_to_rgb8_sse2(data, w, h, out);
+            }
+            return Ok(());
+        }
+    }
+
+    yuyv_to_rgb8_scalar(data, w, h, out);
+    Ok(())
+}
+
+/// Scalar YUYV → RGB8 fallback.
+fn yuyv_to_rgb8_scalar(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    let pairs = w / 2;
+    for row in 0..h {
+        let src_off = row * w * 2;
+        let dst_off = row * w * 3;
+
+        for pair in 0..pairs {
+            let si = src_off + pair * 4;
+            let y0 = data[si] as i16;
+            let u_val = data[si + 1] as i16 - 128;
+            let y1 = data[si + 2] as i16;
+            let v_val = data[si + 3] as i16 - 128;
+
+            let r0 = y0 + ((v_val * 179) >> 7);
+            let g0 = y0 - ((u_val * 44 + v_val * 91) >> 7);
+            let b0 = y0 + ((u_val * 227) >> 7);
+
+            let r1 = y1 + ((v_val * 179) >> 7);
+            let g1 = y1 - ((u_val * 44 + v_val * 91) >> 7);
+            let b1 = y1 + ((u_val * 227) >> 7);
+
+            let di = dst_off + pair * 6;
+            out[di] = r0.clamp(0, 255) as u8;
+            out[di + 1] = g0.clamp(0, 255) as u8;
+            out[di + 2] = b0.clamp(0, 255) as u8;
+            out[di + 3] = r1.clamp(0, 255) as u8;
+            out[di + 4] = g1.clamp(0, 255) as u8;
+            out[di + 5] = b1.clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// NEON-accelerated YUYV → RGB8 (aarch64). Processes 16 pixels (32 YUYV bytes) per iteration.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn yuyv_to_rgb8_neon(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    use std::arch::aarch64::*;
+
+    let c_179 = vdupq_n_s16(179);
+    let c_44 = vdupq_n_s16(44);
+    let c_91 = vdupq_n_s16(91);
+    let c_227 = vdupq_n_s16(227);
+    let c_128 = vdupq_n_s16(128);
+
+    for row in 0..h {
+        let src_row = data.as_ptr().add(row * w * 2);
+        let dst_row = out.as_mut_ptr().add(row * w * 3);
+
+        let mut col = 0usize;
+
+        // 16 pixels = 32 YUYV bytes = 8 macro-pixels (each Y0,U,Y1,V)
+        while col + 16 <= w {
+            // Load 32 bytes, deinterleave as 4 channels of 8 bytes each
+            let yuyv = vld4_u8(src_row.add(col * 2));
+            // yuyv.0 = Y0 (8 values), yuyv.1 = U (8 values)
+            // yuyv.2 = Y1 (8 values), yuyv.3 = V (8 values)
+            let y0_8 = yuyv.0;
+            let u_8 = yuyv.1;
+            let y1_8 = yuyv.2;
+            let v_8 = yuyv.3;
+
+            // Process first 8 pixels (Y0 values with their U/V)
+            let y0_i16 = vreinterpretq_s16_u16(vmovl_u8(y0_8));
+            let u_i16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(u_8)), c_128);
+            let v_i16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(v_8)), c_128);
+
+            let r0 = vaddq_s16(y0_i16, vshrq_n_s16::<7>(vmulq_s16(v_i16, c_179)));
+            let g0 = vsubq_s16(
+                y0_i16,
+                vshrq_n_s16::<7>(vaddq_s16(vmulq_s16(u_i16, c_44), vmulq_s16(v_i16, c_91))),
+            );
+            let b0 = vaddq_s16(y0_i16, vshrq_n_s16::<7>(vmulq_s16(u_i16, c_227)));
+
+            // Process second 8 pixels (Y1 values with same U/V)
+            let y1_i16 = vreinterpretq_s16_u16(vmovl_u8(y1_8));
+
+            let r1 = vaddq_s16(y1_i16, vshrq_n_s16::<7>(vmulq_s16(v_i16, c_179)));
+            let g1 = vsubq_s16(
+                y1_i16,
+                vshrq_n_s16::<7>(vaddq_s16(vmulq_s16(u_i16, c_44), vmulq_s16(v_i16, c_91))),
+            );
+            let b1 = vaddq_s16(y1_i16, vshrq_n_s16::<7>(vmulq_s16(u_i16, c_227)));
+
+            // Interleave: pixel order is Y0[0], Y1[0], Y0[1], Y1[1], ...
+            // So we need to zip the R/G/B pairs together.
+            let r_lo = vqmovun_s16(r0);
+            let r_hi = vqmovun_s16(r1);
+            let g_lo = vqmovun_s16(g0);
+            let g_hi = vqmovun_s16(g1);
+            let b_lo = vqmovun_s16(b0);
+            let b_hi = vqmovun_s16(b1);
+
+            // Zip Y0 and Y1 results: R = [r0_0, r1_0, r0_1, r1_1, ...]
+            let r_zip = vzip1_u8(r_lo, r_hi);
+            let r_zip2 = vzip2_u8(r_lo, r_hi);
+            let g_zip = vzip1_u8(g_lo, g_hi);
+            let g_zip2 = vzip2_u8(g_lo, g_hi);
+            let b_zip = vzip1_u8(b_lo, b_hi);
+            let b_zip2 = vzip2_u8(b_lo, b_hi);
+
+            // Store first 8 pixels
+            let rgb_first = uint8x8x3_t(r_zip, g_zip, b_zip);
+            vst3_u8(dst_row.add(col * 3), rgb_first);
+
+            // Store second 8 pixels
+            let rgb_second = uint8x8x3_t(r_zip2, g_zip2, b_zip2);
+            vst3_u8(dst_row.add((col + 8) * 3), rgb_second);
+
+            col += 16;
+        }
+
+        // Scalar tail (always an even number remaining since w is even)
+        while col + 2 <= w {
+            let si = col * 2;
+            let y0 = *src_row.add(si) as i16;
+            let u_val = *src_row.add(si + 1) as i16 - 128;
+            let y1 = *src_row.add(si + 2) as i16;
+            let v_val = *src_row.add(si + 3) as i16 - 128;
+
+            let r0 = y0 + ((v_val * 179) >> 7);
+            let g0 = y0 - ((u_val * 44 + v_val * 91) >> 7);
+            let b0 = y0 + ((u_val * 227) >> 7);
+            let r1 = y1 + ((v_val * 179) >> 7);
+            let g1 = y1 - ((u_val * 44 + v_val * 91) >> 7);
+            let b1 = y1 + ((u_val * 227) >> 7);
+
+            let di = col * 3;
+            *dst_row.add(di) = r0.clamp(0, 255) as u8;
+            *dst_row.add(di + 1) = g0.clamp(0, 255) as u8;
+            *dst_row.add(di + 2) = b0.clamp(0, 255) as u8;
+            *dst_row.add(di + 3) = r1.clamp(0, 255) as u8;
+            *dst_row.add(di + 4) = g1.clamp(0, 255) as u8;
+            *dst_row.add(di + 5) = b1.clamp(0, 255) as u8;
+
+            col += 2;
+        }
+    }
+}
+
+/// SSE2-accelerated YUYV → RGB8 (x86_64). Processes 8 pixels (16 YUYV bytes) per iteration.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn yuyv_to_rgb8_sse2(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    use std::arch::x86_64::*;
+
+    let c_179 = _mm_set1_epi16(179);
+    let c_44 = _mm_set1_epi16(44);
+    let c_91 = _mm_set1_epi16(91);
+    let c_227 = _mm_set1_epi16(227);
+    let c_128_16 = _mm_set1_epi16(128);
+    let zero = _mm_setzero_si128();
+
+    for row in 0..h {
+        let src_row = data.as_ptr().add(row * w * 2);
+        let dst_row = out.as_mut_ptr().add(row * w * 3);
+
+        let mut col = 0usize;
+
+        // 8 pixels = 16 bytes YUYV = 4 macro-pixels
+        while col + 8 <= w {
+            // Load 16 bytes of YUYV, manually deinterleave
+            let mut y_buf = [0u8; 8];
+            let mut u_buf = [0u8; 8];
+            let mut v_buf = [0u8; 8];
+            for i in 0..4 {
+                let si = col * 2 + i * 4;
+                y_buf[i * 2] = *src_row.add(si);
+                y_buf[i * 2 + 1] = *src_row.add(si + 2);
+                let u = *src_row.add(si + 1);
+                let v = *src_row.add(si + 3);
+                u_buf[i * 2] = u;
+                u_buf[i * 2 + 1] = u;
+                v_buf[i * 2] = v;
+                v_buf[i * 2 + 1] = v;
+            }
+
+            let y8 = _mm_loadl_epi64(y_buf.as_ptr() as *const __m128i);
+            let u8_dup = _mm_loadl_epi64(u_buf.as_ptr() as *const __m128i);
+            let v8_dup = _mm_loadl_epi64(v_buf.as_ptr() as *const __m128i);
+
+            let y_i16 = _mm_unpacklo_epi8(y8, zero);
+            let u_i16 = _mm_sub_epi16(_mm_unpacklo_epi8(u8_dup, zero), c_128_16);
+            let v_i16 = _mm_sub_epi16(_mm_unpacklo_epi8(v8_dup, zero), c_128_16);
+
+            let r = _mm_add_epi16(y_i16, _mm_srai_epi16::<7>(_mm_mullo_epi16(v_i16, c_179)));
+            let g = _mm_sub_epi16(
+                y_i16,
+                _mm_srai_epi16::<7>(_mm_add_epi16(
+                    _mm_mullo_epi16(u_i16, c_44),
+                    _mm_mullo_epi16(v_i16, c_91),
+                )),
+            );
+            let b = _mm_add_epi16(y_i16, _mm_srai_epi16::<7>(_mm_mullo_epi16(u_i16, c_227)));
+
+            let r_u8 = _mm_packus_epi16(r, zero);
+            let g_u8 = _mm_packus_epi16(g, zero);
+            let b_u8 = _mm_packus_epi16(b, zero);
+
+            let mut r_arr = [0u8; 8];
+            let mut g_arr = [0u8; 8];
+            let mut b_arr = [0u8; 8];
+            _mm_storel_epi64(r_arr.as_mut_ptr() as *mut __m128i, r_u8);
+            _mm_storel_epi64(g_arr.as_mut_ptr() as *mut __m128i, g_u8);
+            _mm_storel_epi64(b_arr.as_mut_ptr() as *mut __m128i, b_u8);
+
+            let mut rgb_buf = [0u8; 24];
+            for i in 0..8 {
+                rgb_buf[i * 3] = r_arr[i];
+                rgb_buf[i * 3 + 1] = g_arr[i];
+                rgb_buf[i * 3 + 2] = b_arr[i];
+            }
+            std::ptr::copy_nonoverlapping(rgb_buf.as_ptr(), dst_row.add(col * 3), 24);
+
+            col += 8;
+        }
+
+        // Scalar tail
+        while col + 2 <= w {
+            let si = col * 2;
+            let y0 = *src_row.add(si) as i16;
+            let u_val = *src_row.add(si + 1) as i16 - 128;
+            let y1 = *src_row.add(si + 2) as i16;
+            let v_val = *src_row.add(si + 3) as i16 - 128;
+
+            let r0 = y0 + ((v_val * 179) >> 7);
+            let g0 = y0 - ((u_val * 44 + v_val * 91) >> 7);
+            let b0 = y0 + ((u_val * 227) >> 7);
+            let r1 = y1 + ((v_val * 179) >> 7);
+            let g1 = y1 - ((u_val * 44 + v_val * 91) >> 7);
+            let b1 = y1 + ((u_val * 227) >> 7);
+
+            let di = col * 3;
+            *dst_row.add(di) = r0.clamp(0, 255) as u8;
+            *dst_row.add(di + 1) = g0.clamp(0, 255) as u8;
+            *dst_row.add(di + 2) = b0.clamp(0, 255) as u8;
+            *dst_row.add(di + 3) = r1.clamp(0, 255) as u8;
+            *dst_row.add(di + 4) = g1.clamp(0, 255) as u8;
+            *dst_row.add(di + 5) = b1.clamp(0, 255) as u8;
+
+            col += 2;
         }
     }
 }

@@ -78,7 +78,7 @@ fn bench_model(
     // ── MPSGraph (whole-model) ──
     println!("\n--- MPSGraph (whole-model) ---");
     let compile_start = Instant::now();
-    let mpsg_plan = match compile_mpsgraph_plan(&model, &input_name, &input_tensor) {
+    let mpsg_plan = match compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input_tensor)]) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("MPSGraph compile FAILED: {e}");
@@ -88,15 +88,17 @@ fn bench_model(
     let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
     println!("Compiled in {compile_ms:.1} ms");
 
+    let mpsg_inputs: [(&str, &[f32]); 1] = [(input_name.as_str(), input_data.as_slice())];
+
     // warmup
     for _ in 0..10 {
-        let _ = run_mpsgraph_plan(&mpsg_plan, &input_data);
+        let _ = run_mpsgraph_plan(&mpsg_plan, &mpsg_inputs);
     }
 
     let mut mpsg_times = Vec::new();
     for i in 0..iterations {
         let t0 = Instant::now();
-        let result = run_mpsgraph_plan(&mpsg_plan, &input_data);
+        let result = run_mpsgraph_plan(&mpsg_plan, &mpsg_inputs);
         let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
         mpsg_times.push(elapsed);
         if i == 0 {
@@ -120,7 +122,7 @@ fn bench_model(
 
     // ── Accuracy check: MPSGraph vs CPU ──
     println!("\n--- Accuracy (MPSGraph vs CPU) ---");
-    let mpsg_out = run_mpsgraph_plan(&mpsg_plan, &input_data)?;
+    let mpsg_out = run_mpsgraph_plan(&mpsg_plan, &mpsg_inputs)?;
     let mut cpu_inputs = HashMap::new();
     cpu_inputs.insert(input_name.clone(), input_tensor.clone());
     let cpu_out = run_onnx_model(&model, cpu_inputs)?;

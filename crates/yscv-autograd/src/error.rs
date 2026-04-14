@@ -32,4 +32,6 @@ pub enum AutogradError {
     },
     #[error("invalid truncate request: requested={requested}, available={available}")]
     InvalidTruncate { requested: usize, available: usize },
+    #[error("backend error: {0}")]
+    BackendError(String),
 }

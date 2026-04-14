@@ -24,6 +24,32 @@ pub(crate) fn scaled_dot_product_attention_backward(
         }
     };
 
+    // Try BackwardOps for GPU-accelerated attention backward
+    if let Some(ref backend) = graph.backend {
+        let qv = &graph.nodes[query_id.0].value;
+        let kv = &graph.nodes[key_id.0].value;
+        let vv = &graph.nodes[value_id.0].value;
+        match backend.attention_backward(upstream, qv, kv, vv, &attn_weights) {
+            Ok((gq, gk, gv)) => {
+                if graph.nodes[query_id.0].requires_grad {
+                    graph.accumulate_grad(query_id, gq)?;
+                }
+                if graph.nodes[key_id.0].requires_grad {
+                    graph.accumulate_grad(key_id, gk)?;
+                }
+                if graph.nodes[value_id.0].requires_grad {
+                    graph.accumulate_grad(value_id, gv)?;
+                }
+                return Ok(());
+            }
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[autograd] attention_backward GPU fallback: {_e}");
+                // fall through to CPU
+            }
+        }
+    }
+
     let qv = &graph.nodes[query_id.0].value;
     let kv = &graph.nodes[key_id.0].value;
     let vv = &graph.nodes[value_id.0].value;
@@ -152,19 +178,19 @@ pub(crate) fn prelu_backward(
         let alpha_len = alpha_data.len();
 
         let gi = if graph.nodes[input_id.0].requires_grad {
-            let mut gi = vec![0.0f32; iv.len()];
-            for i in 0..iv.len() {
-                let a = if alpha_len == 1 {
-                    alpha_data[0]
-                } else {
-                    alpha_data[i % alpha_len]
-                };
-                gi[i] = if in_data[i] > 0.0 {
-                    up_data[i]
-                } else {
-                    up_data[i] * a
-                };
-            }
+            let gi: Vec<f32> = in_data
+                .iter()
+                .zip(up_data.iter())
+                .enumerate()
+                .map(|(i, (&x, &u))| {
+                    let a = if alpha_len == 1 {
+                        alpha_data[0]
+                    } else {
+                        alpha_data[i % alpha_len]
+                    };
+                    if x > 0.0 { u } else { u * a }
+                })
+                .collect();
             Some(Tensor::from_vec(iv.shape().to_vec(), gi)?)
         } else {
             None
@@ -172,12 +198,16 @@ pub(crate) fn prelu_backward(
 
         let ga = if graph.nodes[alpha_id.0].requires_grad {
             let mut ga = vec![0.0f32; alpha_len];
-            for i in 0..iv.len() {
-                let ch = if alpha_len == 1 { 0 } else { i % alpha_len };
-                if in_data[i] <= 0.0 {
-                    ga[ch] += up_data[i] * in_data[i];
-                }
-            }
+            in_data
+                .iter()
+                .zip(up_data.iter())
+                .enumerate()
+                .for_each(|(i, (&x, &u))| {
+                    if x <= 0.0 {
+                        let ch = if alpha_len == 1 { 0 } else { i % alpha_len };
+                        ga[ch] += u * x;
+                    }
+                });
             Some(Tensor::from_vec(av.shape().to_vec(), ga)?)
         } else {
             None

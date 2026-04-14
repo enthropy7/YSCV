@@ -220,6 +220,114 @@ pub(super) fn exec_qlinear_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Resul
     Ok(())
 }
 
+/// Execute the ONNX GroupQueryAttention operator.
+///
+/// Inputs:
+///   0: query  — `[batch, seq_q, num_q_heads * d_head]`
+///   1: key    — `[batch, seq_k, num_kv_heads * d_head]`
+///   2: value  — `[batch, seq_k, num_kv_heads * d_head]`
+///
+/// Attributes:
+///   num_heads  (int) — number of query heads
+///   kv_num_heads (int, optional) — number of KV heads (defaults to num_heads)
+///
+/// Output: `[batch, seq_q, num_q_heads * d_head]`
+pub(super) fn exec_grouped_query_attention(
+    node: &OnnxNode,
+    env: &mut TensorEnv,
+) -> Result<(), OnnxError> {
+    let q = get_tensor(env, &node.name, &node.inputs[0])?;
+    let k = get_tensor(env, &node.name, &node.inputs[1])?;
+    let v = get_tensor(env, &node.name, &node.inputs[2])?;
+
+    let num_q_heads = get_attr_int(node, "num_heads").unwrap_or(1) as usize;
+    let num_kv_heads = get_attr_int(node, "kv_num_heads")
+        .map(|v| v as usize)
+        .unwrap_or(num_q_heads);
+
+    let q_shape = q.shape();
+    let k_shape = k.shape();
+    let v_shape = v.shape();
+
+    let batch = q_shape[0];
+    let seq_q = q_shape[1];
+    let seq_k = k_shape[1];
+    let d_head = q_shape[2] / num_q_heads;
+    let d_v = v_shape[2] / num_kv_heads;
+
+    let groups = num_q_heads / num_kv_heads;
+    let scale = 1.0 / (d_head as f32).sqrt();
+
+    let q_data = q.data();
+    let k_data = k.data();
+    let v_data = v.data();
+
+    let mut out_data = vec![0.0f32; batch * seq_q * num_q_heads * d_head];
+
+    for b in 0..batch {
+        let q_batch_off = b * seq_q * num_q_heads * d_head;
+        let k_batch_off = b * seq_k * num_kv_heads * d_head;
+        let v_batch_off = b * seq_k * num_kv_heads * d_v;
+        let o_batch_off = b * seq_q * num_q_heads * d_head;
+
+        for qh in 0..num_q_heads {
+            let kv_h = qh / groups;
+
+            for sq in 0..seq_q {
+                // Compute attention scores: dot(q, k^T) * scale
+                let mut scores = Vec::with_capacity(seq_k);
+                let mut max_score = f32::NEG_INFINITY;
+                for sk in 0..seq_k {
+                    let mut dot = 0.0f32;
+                    for d in 0..d_head {
+                        let qi = q_data[q_batch_off + sq * num_q_heads * d_head + qh * d_head + d];
+                        let ki =
+                            k_data[k_batch_off + sk * num_kv_heads * d_head + kv_h * d_head + d];
+                        dot += qi * ki;
+                    }
+                    let s = dot * scale;
+                    if s > max_score {
+                        max_score = s;
+                    }
+                    scores.push(s);
+                }
+
+                // Softmax
+                let mut sum_exp = 0.0f32;
+                for s in &mut scores {
+                    *s = (*s - max_score).exp();
+                    sum_exp += *s;
+                }
+                if sum_exp > 0.0 {
+                    let inv = 1.0 / sum_exp;
+                    for s in &mut scores {
+                        *s *= inv;
+                    }
+                }
+
+                // Weighted sum of values
+                for d in 0..d_head {
+                    let mut acc = 0.0f32;
+                    for sk in 0..seq_k {
+                        let vi = v_data[v_batch_off + sk * num_kv_heads * d_v + kv_h * d_v + d];
+                        acc += scores[sk] * vi;
+                    }
+                    out_data[o_batch_off + sq * num_q_heads * d_head + qh * d_head + d] = acc;
+                }
+            }
+        }
+    }
+
+    let out =
+        Tensor::from_vec(vec![batch, seq_q, num_q_heads * d_head], out_data).map_err(|e| {
+            OnnxError::DecodeFailed {
+                message: e.to_string(),
+            }
+        })?;
+    env.insert(node.outputs[0].clone(), out);
+    Ok(())
+}
+
 pub(super) fn exec_matmul_integer(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let a = get_tensor(env, &node.name, &node.inputs[0])?;
     let b = get_tensor(env, &node.name, &node.inputs[1])?;

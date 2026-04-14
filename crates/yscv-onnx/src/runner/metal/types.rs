@@ -31,6 +31,7 @@ pub struct MetalPlan {
     #[allow(dead_code)]
     pub(crate) cpu_ref: HashMap<String, Vec<f32>>,
     /// Buffers that hold f32 data (for attention chain)
+    #[cfg_attr(not(feature = "profile"), allow(dead_code))]
     pub(crate) buf_f32: HashSet<String>,
 }
 
@@ -279,6 +280,7 @@ impl MetalPlan {
     }
 
     /// Print op distribution and key dimensions for diagnostics.
+    #[cfg(feature = "profile")]
     pub fn dump_op_stats(&self) {
         let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for op in &self.ops {
@@ -432,4 +434,8 @@ impl MetalPlan {
             conv_1x1_flops + conv_3x3_flops + conv_other_flops
         );
     }
+
+    /// Stub: compiled only when `profile` feature is off.
+    #[cfg(not(feature = "profile"))]
+    pub fn dump_op_stats(&self) {}
 }

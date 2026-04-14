@@ -2,7 +2,7 @@
 
 Comprehensive benchmark results comparing yscv against NumPy, PyTorch, OpenCV, ffmpeg, onnxruntime, and CoreML.
 
-**Last updated**: April 2026 | **Tests**: 1,693 across 14 crates | **CI**: macOS + Linux + Windows + ARM64
+**Last updated**: April 2026 | **Tests**: 1,861 default / 1,897 all-features across 14 crates | **CI**: macOS + Linux + Windows + ARM64
 
 ## Hardware & Methodology
 
@@ -10,7 +10,7 @@ Comprehensive benchmark results comparing yscv against NumPy, PyTorch, OpenCV, f
 - **SIMD**: 315 `#[target_feature]`-gated SIMD functions across the workspace (NEON / AVX / AVX2 / SSE / SSE2 / SSSE3), runtime-dispatched on x86 and compile-time-gated on aarch64
 - **Threading**: GCD dispatch_apply (macOS), std::thread::scope (Linux/Windows), rayon work-stealing
 - **Allocator**: mimalloc (global)
-- **Rust**: stable 1.92+, `--release` with `lto = "thin"`, `codegen-units = 1`
+- **Rust**: stable 1.94+, `--release` with `lto = "thin"`, `codegen-units = 1`
 - **Measurement**: Best-of-100 for microbenchmarks (minimum of 100 runs after 1 warmup); best-of-5 for video decode
 - **Memory**: Streaming I/O — O(1) relative to file size for MP4; bounded DPB for video decoders
 - **Correctness**: All results verified against reference implementations (pixel-exact for video, tolerance-based for float ops)
@@ -264,6 +264,26 @@ yscv MPSGraph is **4× faster than ORT CoreML** on YOLOv8n (3.5ms vs 15.5ms). OR
 
 yscv is the only runtime that runs both YOLOv8n and YOLO11n on GPU. CoreML fails on YOLO11n (opset 22).
 
+### Pipelined Throughput (MPSGraph submit/wait, Apple M1)
+
+The pipelined API (`submit_mpsgraph_plan` + `wait_mpsgraph_plan`) triple-buffers input/output buffers and overlaps CPU marshaling with GPU compute. Sustained per-frame wall-time (1000 iter, Siamese tracker, 2 inputs @ 1×3×128×128 + 1×3×256×256):
+
+| Mode | p50 | p99 | Sustained FPS |
+|---|---:|---:|---:|
+| yscv sync (`--pipeline 1`) | 1.65 ms | 3.15 ms | 605 |
+| yscv `--pipeline 2` | **0.37 ms** | **0.62 ms** | **2688** |
+| yscv `--pipeline 3` | 0.46 ms | 1.01 ms | 2155 |
+| yscv `--pipeline 4` | 0.55 ms | 0.64 ms | 1818 |
+| onnxruntime CoreML MLProgram | 1.58 ms | 2.18 ms | 631 |
+
+Depth 2 is the throughput sweet spot (4.3× vs ORT CoreML); depth 4 trades raw p50 for the tightest tail (p99=0.64 ms, max=0.78 ms). Pipeline depth is chosen via `YSCV_MPS_PIPELINE` env var (default 3, clamped 1..=8). The API itself is safe regardless: `submit_mpsgraph_plan` back-pressures if the caller has more outstanding handles than the pipeline depth.
+
+### Pipelined Throughput (RKNN submit/wait, RK3588)
+
+`RknnPipelinedPool` applies the same pattern to Rockchip NPU cores: one slot per `NpuCoreMask`, pre-allocated + pre-bound `RknnMem` per input and output, back-pressured `submit`/`wait`. On RK3588 the pool can drive all 3 NPU cores concurrently; on RV1106 pass `&[Core0]` for a cleanly-typed single-slot async path.
+
+On-device numbers (YOLO / Siamese tracker, int8-quantized `.rknn`) will be added once captured against a physical Rock 4D. Relative gains are expected to mirror the MPSGraph path — pipeline depth equal to NPU-core count ≈ 3× sync throughput, with tail latency tightening as CPU and NPU stop serialising their handshake.
+
 ### Metal Pipeline Architecture
 
 The Metal backend compiles an ONNX graph into a sequence of `MetalOp`s executed in a single
@@ -365,18 +385,18 @@ yscv CPU (124.1ms) is **1.6× faster than onnxruntime CPU** (196.7ms) on depthwi
 |-------|-------|----------|
 | yscv-model | 365 | Serialization, training loops, data loading, distributed |
 | yscv-imgproc | 225 | All u8/f32 ops, SIMD paths, color conversion |
-| yscv-video | 220 | H.264/HEVC decode, MP4/MKV parsing, HW detect |
+| yscv-video | 230 | H.264/HEVC decode (Main + Main10 + Rext + weighted prediction + tiles + WPP + chroma deblock/SAO), MP4/MKV parsing, HW detect |
 | yscv-tensor | 207 | Elementwise, matmul, broadcast, BLAS dispatch |
 | yscv-kernels | 120 | CPU ops, GPU backend, SIMD activation, GEMM |
 | yscv-autograd | 106 | Forward/backward graph, all op gradients |
 | yscv-eval | 95 | COCO/YOLO/VOC/KITTI/WiderFace/MOT metrics |
-| yscv-onnx | 77 | Model loading, graph optimization, inference |
+| yscv-onnx | 166 | Per-operator coverage for all 128 CPU dispatch arms, fusion regressions, quantization, vision ops |
 | yscv-optim | 76 | SGD, Adam, LR schedulers, weight decay |
 | yscv-detect | 60 | YOLOv8/v11 decode, NMS, letterbox |
 | yscv-track | 57 | Hungarian, Kalman, IoU matching |
 | yscv-cli | 42 | Config parsing, diagnostics |
 | yscv-recognize | 16 | Embedding extraction, cosine similarity |
-| **Total** | **1693** | |
+| **Total** | **1808** | |
 
 ### CI Matrix
 

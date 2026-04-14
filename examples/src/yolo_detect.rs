@@ -179,9 +179,10 @@ fn main() {
     #[cfg(feature = "metal-backend")]
     if use_mpsgraph {
         println!("\n=== MPSGraph ===");
-        let plan = yscv_onnx::compile_mpsgraph_plan(&model, "images", &input_tensor)
+        let plan = yscv_onnx::compile_mpsgraph_plan(&model, &[("images", &input_tensor)])
             .expect("MPSGraph compile failed");
-        let result = yscv_onnx::run_mpsgraph_plan(&plan, &nchw).expect("MPSGraph run failed");
+        let result = yscv_onnx::run_mpsgraph_plan(&plan, &[("images", nchw.as_slice())])
+            .expect("MPSGraph run failed");
         for (name, t) in &result {
             println!("  Output '{}': {:?}", name, t.shape());
             let dets = decode(t, &config, orig_w, orig_h);

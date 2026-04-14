@@ -244,6 +244,32 @@ pub(crate) fn remove_emulation_prevention(data: &[u8]) -> Vec<u8> {
     result
 }
 
+/// Removes emulation prevention bytes and returns both the RBSP data and a
+/// mapping from each RBSP byte index to its corresponding raw byte index.
+///
+/// This is needed when a parser operates on RBSP but must later translate a
+/// byte offset back to the original NAL payload (e.g. to locate the CABAC
+/// data start position after parsing a slice header in RBSP space).
+pub fn remove_emulation_prevention_with_mapping(data: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let mut result = Vec::with_capacity(data.len());
+    let mut mapping = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if i + 2 < data.len() && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x03 {
+            result.push(0x00);
+            mapping.push(i);
+            result.push(0x00);
+            mapping.push(i + 1);
+            i += 3; // skip the 0x03 emulation prevention byte
+        } else {
+            result.push(data[i]);
+            mapping.push(i);
+            i += 1;
+        }
+    }
+    (result, mapping)
+}
+
 // ---------------------------------------------------------------------------
 // PPS parsing
 // ---------------------------------------------------------------------------

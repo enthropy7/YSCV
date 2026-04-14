@@ -1,8 +1,19 @@
 # Important: Current state of framework is not stable. It is in development. WIP, to be clear. If you found any issues, please report them. You can connect with me via Telegram on my GitHub page or open an issue on GitHub. Stable version will be released soon. Milestone is 0.2.0. 
 
 # yscv
+![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?logo=rust)
+![Rust](https://img.shields.io/badge/Rust-2024_edition-orange?logo=rust)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20ARM64-lightgrey)
+[![GitHub stars](https://img.shields.io/github/stars/enthropy7/yscv?style=flat&logo=github)](https://github.com/enthropy7/yscv/stargazers)
+[![CI](https://github.com/enthropy7/yscv/actions/workflows/ci.yml/badge.svg)](https://github.com/enthropy7/yscv/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-1861%20passing%20%7C%201897%20all--features-brightgreen.svg)]()
+[![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
+[![docs.rs](https://img.shields.io/docsrs/yscv)](https://docs.rs/yscv)
 
-A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (159 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (128 operators, INT8 quantization), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (128+ operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+
+> **First time here?** → **[QUICKSTART](QUICKSTART.md)** (5 minutes to a running program) · **[Tutorial](docs/getting-started.md)** (full walkthrough) · **[Cookbook](docs/cookbook.md)** (recipes by task) · **[Edge / Rockchip](docs/edge-deployment.md)** (NPU deployment) · **[Examples](examples/README.md)** (worked code) · **[Troubleshooting](docs/troubleshooting.md)** (when things break) · **[Docs hub](docs/README.md)** (everything else)
 
 We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 315 `#[target_feature]`-gated functions with runtime dispatch. It's faster than NumPy, PyTorch, OpenCV, and ffmpeg on every operation we benchmarked (85 wins, 0 losses).
 
@@ -15,7 +26,7 @@ yscv = "0.1.7"
 
 Load an image, process it, save the result — three lines:
 
-```rust
+```rust,ignore
 use yscv::prelude::*;
 
 let img = imread("photo.jpg")?;
@@ -45,7 +56,7 @@ YSCV covers the full pipeline — from reading pixels off a camera to training a
 
 Build a CNN, train it, done:
 
-```rust
+```rust,ignore
 use yscv::prelude::*;
 
 let mut graph = Graph::new();
@@ -67,9 +78,9 @@ let result = Trainer::new(config).fit(&mut model, &mut graph, &inputs, &targets)
 println!("Final loss: {:.4}", result.final_loss);
 ```
 
-13 pretrained architectures available out of the box — ResNet, VGG, MobileNet, EfficientNet, ViT, DeiT. Weights download automatically:
+17 pretrained architectures available out of the box — ResNet, VGG, MobileNet, EfficientNet, ViT, DeiT. Weights download automatically:
 
-```rust
+```rust,ignore
 let hub = ModelHub::new(); // caches in ~/.yscv/models/
 let weights = hub.load_weights("resnet50")?;
 ```
@@ -78,7 +89,7 @@ let weights = hub.load_weights("resnet50")?;
 
 YOLOv8 detection with tracking and recognition:
 
-```rust
+```rust,ignore
 use yscv::detect::{detect_yolov8_from_rgb, yolov8_coco_config, non_max_suppression};
 
 let img = imread("scene.jpg")?;
@@ -90,7 +101,7 @@ The detect → track → recognize pipeline runs in 67µs per frame end-to-end. 
 
 ## Performance
 
-We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1,693 tests across 14 crates.
+We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1,861 default tests / 1,897 with all features, across 14 crates.
 
 Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on x86, with optional Intel MKL and ARM Performance Libraries for the last few percent.
 
@@ -127,17 +138,17 @@ The framework is split into 14 crates, each doing one thing well:
 | Crate | Purpose |
 |-------|---------|
 | `yscv-tensor` | N-dimensional tensor with 115 ops, f32/f16/bf16, SIMD-accelerated |
-| `yscv-kernels` | CPU + GPU compute backends, 315 SIMD functions, 50 WGSL + 4 Metal shaders |
+| `yscv-kernels` | CPU + GPU compute backends, 315 SIMD functions, 61 WGSL + 4 Metal shaders |
 | `yscv-autograd` | Reverse-mode autodiff with 61 backward op variants |
 | `yscv-optim` | SGD, Adam, AdamW, Adagrad, RAdam, RmsProp, Lamb, Lars + Lookahead, 11 LR schedulers |
-| `yscv-model` | 39 layer types, 17 loss functions, Trainer API, model zoo (13 architectures), LoRA |
-| `yscv-imgproc` | 159 image processing ops (blur, edges, morphology, features, color) |
-| `yscv-video` | H.264/HEVC decoder, hardware decode, camera I/O, MP4 / MKV parsing, audio metadata |
+| `yscv-model` | 39 layer types, 17 loss functions, Trainer API, model zoo (17 architectures), LoRA |
+| `yscv-imgproc` | 160 image processing ops (blur, edges, morphology, features, color) |
+| `yscv-video` | H.264/HEVC/AV1 decoder (parallel tile/WPP, weighted prediction, AV1 inter MC), hardware decode, camera I/O, MP4 / MKV parsing, audio metadata |
 | `yscv-detect` | YOLOv8/v11 pipeline, NMS, heatmap decoding |
 | `yscv-track` | DeepSORT, ByteTrack, Kalman filter, Hungarian assignment, Re-ID |
 | `yscv-recognize` | Cosine matching, VP-Tree ANN indexing, Recognizer with enroll/match |
 | `yscv-eval` | Classification/detection/tracking/regression/image-quality metrics, 8 dataset adapters |
-| `yscv-onnx` | 128 op ONNX CPU runtime, INT8 quantization, graph optimizer, Metal/MPSGraph GPU |
+| `yscv-onnx` | 128+ op ONNX CPU runtime, INT4/INT8 quantization, LLM generation (KV-cache, RoPE, GQA), graph optimizer, Metal/MPSGraph GPU |
 | `yscv-cli` | Inference + evaluation CLI: camera diagnostics, dataset eval, pipeline runner |
 | `yscv` | Umbrella crate re-exporting the prelude and per-crate APIs |
 
@@ -145,7 +156,7 @@ The framework is split into 14 crates, each doing one thing well:
 
 ```bash
 cargo build --workspace --release
-cargo test --workspace --release      # 1,693 tests
+cargo test --workspace --release      # 1,861 tests (default)
 cargo run --example train_cnn         # train a CNN on synthetic data
 cargo run --example train_linear      # linear regression
 cargo run --example image_processing  # image pipeline demo
@@ -169,7 +180,7 @@ cargo test --workspace --features metal-backend
 cargo clippy --workspace --features metal-backend
 ```
 
-The `gpu` feature uses wgpu and works on any platform with Vulkan, Metal, or DX12. The `metal-backend` feature talks to Metal directly via `metal-rs` and provides two backends: **MPSGraph** (whole-model graph compilation, fastest — 4.8ms YOLOv8n) and **Metal per-op** (individual op dispatch with Winograd + MPS GEMM, fallback for unsupported models). On macOS, `metal-backend` is what you want.
+The `gpu` feature uses wgpu and works on any platform with Vulkan, Metal, or DX12. The `metal-backend` feature talks to Metal directly via `metal-rs` and provides two backends: **MPSGraph** (whole-model graph compilation, fastest — 4.8 ms YOLOv8n; also exposes a triple-buffered `submit_mpsgraph_plan` / `wait_mpsgraph_plan` pipelined API that overlaps CPU marshaling with GPU compute for 3–5× throughput on sustained inference, multi-input models supported) and **Metal per-op** (individual op dispatch with Winograd + MPS GEMM, fallback for unsupported models). On macOS, `metal-backend` is what you want.
 
 ### System dependencies
 
@@ -184,6 +195,7 @@ YSCV builds with zero required system dependencies. Optional:
 |------|-------------|-----------|
 | `gpu` | GPU acceleration via wgpu (Vulkan / Metal / DX12) | All |
 | `metal-backend` | Metal-native GPU pipeline — fastest on Apple Silicon | macOS only |
+| `rknn` | Rockchip NPU via `librknnrt.so` (RK3588 / RK3576 / RV1106) — `dlopen` at runtime, full SDK 2.4.3a0 | Linux ARM64 (Rockchip device) |
 | `native-camera` | Real camera capture (V4L2 / AVFoundation / MediaFoundation) | All |
 | `blas` | Hardware BLAS — Accelerate on macOS, OpenBLAS on Linux/Windows | All (default) |
 | `mkl` | Intel MKL for vectorized math on x86 | x86/x86_64 |
@@ -232,7 +244,7 @@ yscv (prelude)
 ┌─────────────┐ ┌──────────┐ ┌───────────┐
 │ yscv-model   │ │ yscv-    │ │ yscv-     │
 │ (39 layers,  │ │ imgproc  │ │ detect/   │
-│  trainer,    │ │ (159 ops)│ │ track/    │
+│  trainer,    │ │ (160 ops)│ │ track/    │
 │  zoo, LoRA)  │ │          │ │ recognize │
 └──────┬───────┘ └────┬─────┘ └─────┬─────┘
        ↓              ↓             ↓
@@ -240,7 +252,7 @@ yscv (prelude)
 │ yscv-autograd│ │ yscv-    │ │ yscv-    │
 │ (61 backward │ │ kernels  │ │ video    │
 │  op variants)│ │ (SIMD+   │ │ (H.264,  │
-└──────┬───────┘ │ GPU)     │ │ HEVC,    │
+└──────┬───────┘ │ GPU)     │ │ HEVC,AV1,│
        ↓         └────┬─────┘ │ camera)  │
 ┌──────────────┐      ↓       └──────────┘
 │ yscv-tensor  │←─────┘

@@ -2,7 +2,7 @@
 
 Face and object recognition with embedding matching and VP-Tree approximate nearest neighbor search.
 
-```rust
+```rust,ignore
 use yscv_recognize::*;
 
 let mut recognizer = Recognizer::new();

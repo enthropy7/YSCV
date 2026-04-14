@@ -16,6 +16,25 @@ pub(crate) fn batch_norm2d_nhwc_backward(
     running_var_id: NodeId,
     epsilon: f32,
 ) -> Result<(), AutogradError> {
+    // Try BackwardOps for input gradient (the most expensive part)
+    let mut gpu_handled_input = false;
+    if let Some(ref backend) = graph.backend
+        && graph.nodes[input_id.0].requires_grad
+    {
+        let gamma = &graph.nodes[gamma_id.0].value;
+        let running_var = &graph.nodes[running_var_id.0].value;
+        match backend.batch_norm2d_input_backward(upstream, gamma, running_var, epsilon) {
+            Ok(gi) => {
+                graph.accumulate_grad(input_id, gi)?;
+                gpu_handled_input = true;
+            }
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[autograd] batch_norm2d_input_backward GPU fallback: {_e}");
+            }
+        }
+    }
+
     let up_data = upstream.data();
     let (grad_beta, grad_gamma, grad_input) = {
         let gamma_data = graph.nodes[gamma_id.0].value.data();
@@ -28,9 +47,10 @@ pub(crate) fn batch_norm2d_nhwc_backward(
 
         let gb = if graph.nodes[beta_id.0].requires_grad {
             let mut gb = vec![0.0f32; c];
-            for i in 0..up_data.len() {
-                gb[i % c] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &v)| gb[i % c] += v);
             Some(Tensor::from_vec(vec![c], gb)?)
         } else {
             None
@@ -48,22 +68,25 @@ pub(crate) fn batch_norm2d_nhwc_backward(
                 }
             };
             let mut gg = vec![0.0f32; c];
-            for i in 0..up_data.len() {
-                gg[i % c] += up_data[i] * norm_data[i];
-            }
+            up_data
+                .iter()
+                .zip(norm_data.iter())
+                .enumerate()
+                .for_each(|(i, (&u, &n))| gg[i % c] += u * n);
             Some(Tensor::from_vec(vec![c], gg)?)
         } else {
             None
         };
 
-        let gi = if graph.nodes[input_id.0].requires_grad {
-            let total = upstream.len();
-            let mut gi = vec![0.0f32; total];
-            for i in 0..total {
-                let ch = i % c;
-                let inv_std = 1.0 / (var_data[ch] + epsilon).sqrt();
-                gi[i] = up_data[i] * gamma_data[ch] * inv_std;
-            }
+        let gi = if graph.nodes[input_id.0].requires_grad && !gpu_handled_input {
+            let gi: Vec<f32> = up_data
+                .iter()
+                .enumerate()
+                .map(|(i, &u)| {
+                    let ch = i % c;
+                    u * gamma_data[ch] / (var_data[ch] + epsilon).sqrt()
+                })
+                .collect();
             Some(Tensor::from_vec(input_shape, gi)?)
         } else {
             None
@@ -96,6 +119,25 @@ pub(crate) fn layer_norm_backward(
     beta_id: NodeId,
     epsilon: f32,
 ) -> Result<(), AutogradError> {
+    // Try BackwardOps for input gradient
+    let mut gpu_handled_input = false;
+    if let Some(ref backend) = graph.backend
+        && graph.nodes[input_id.0].requires_grad
+    {
+        let iv = &graph.nodes[input_id.0].value;
+        let gamma = &graph.nodes[gamma_id.0].value;
+        match backend.layer_norm_input_backward(upstream, iv, gamma, epsilon) {
+            Ok(gi) => {
+                graph.accumulate_grad(input_id, gi)?;
+                gpu_handled_input = true;
+            }
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[autograd] layer_norm_input_backward GPU fallback: {_e}");
+            }
+        }
+    }
+
     let up_data = upstream.data();
     let (grad_beta, grad_gamma, grad_input) = {
         let iv = &graph.nodes[input_id.0].value;
@@ -122,10 +164,10 @@ pub(crate) fn layer_norm_backward(
         let gb = if graph.nodes[beta_id.0].requires_grad {
             let mut gb = vec![0.0f32; last_dim];
             for g in 0..num_groups {
-                let base = g * last_dim;
-                for i in 0..last_dim {
-                    gb[i] += up_data[base + i];
-                }
+                let up_row = &up_data[g * last_dim..(g + 1) * last_dim];
+                gb.iter_mut()
+                    .zip(up_row.iter())
+                    .for_each(|(acc, &u)| *acc += u);
             }
             Some(Tensor::from_vec(vec![last_dim], gb)?)
         } else {
@@ -136,16 +178,18 @@ pub(crate) fn layer_norm_backward(
             let mut gg = vec![0.0f32; last_dim];
             for g in 0..num_groups {
                 let base = g * last_dim;
-                for i in 0..last_dim {
-                    gg[i] += x_hat_data[base + i] * up_data[base + i];
-                }
+                let xh_row = &x_hat_data[base..base + last_dim];
+                let up_row = &up_data[base..base + last_dim];
+                gg.iter_mut()
+                    .zip(xh_row.iter().zip(up_row.iter()))
+                    .for_each(|(acc, (&x, &u))| *acc += x * u);
             }
             Some(Tensor::from_vec(vec![last_dim], gg)?)
         } else {
             None
         };
 
-        let gi = if graph.nodes[input_id.0].requires_grad {
+        let gi = if graph.nodes[input_id.0].requires_grad && !gpu_handled_input {
             let mut gi = vec![0.0f32; iv.len()];
             let n = last_dim as f32;
             for g in 0..num_groups {
@@ -155,21 +199,28 @@ pub(crate) fn layer_norm_backward(
                 let var = slice.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / n;
                 let inv_std = 1.0 / (var + epsilon).sqrt();
 
-                let mut dy_gamma = vec![0.0f32; last_dim];
-                for i in 0..last_dim {
-                    dy_gamma[i] = up_data[base + i] * gamma_data[i];
-                }
+                let up_row = &up_data[base..base + last_dim];
+                let dy_gamma: Vec<f32> = up_row
+                    .iter()
+                    .zip(gamma_data.iter())
+                    .map(|(&u, &g)| u * g)
+                    .collect();
                 let mean_dy_gamma = dy_gamma.iter().sum::<f32>() / n;
-                let mut mean_xhat_dy_gamma = 0.0f32;
-                for i in 0..last_dim {
-                    mean_xhat_dy_gamma += x_hat_data[base + i] * dy_gamma[i];
-                }
-                mean_xhat_dy_gamma /= n;
+                let xh_row = &x_hat_data[base..base + last_dim];
+                let mean_xhat_dy_gamma: f32 = xh_row
+                    .iter()
+                    .zip(dy_gamma.iter())
+                    .map(|(&x, &d)| x * d)
+                    .sum::<f32>()
+                    / n;
 
-                for i in 0..last_dim {
-                    gi[base + i] = inv_std
-                        * (dy_gamma[i] - mean_dy_gamma - x_hat_data[base + i] * mean_xhat_dy_gamma);
-                }
+                let gi_row = &mut gi[base..base + last_dim];
+                gi_row
+                    .iter_mut()
+                    .zip(dy_gamma.iter().zip(xh_row.iter()))
+                    .for_each(|(g, (&dy, &xh))| {
+                        *g = inv_std * (dy - mean_dy_gamma - xh * mean_xhat_dy_gamma);
+                    });
             }
             Some(Tensor::from_vec(input_shape, gi)?)
         } else {
@@ -242,9 +293,10 @@ pub(crate) fn group_norm_backward(
 
         let gb = if graph.nodes[beta_id.0].requires_grad {
             let mut gb = vec![0.0f32; c];
-            for i in 0..up_data.len() {
-                gb[i % c] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &v)| gb[i % c] += v);
             Some(Tensor::from_vec(vec![c], gb)?)
         } else {
             None
@@ -252,9 +304,11 @@ pub(crate) fn group_norm_backward(
 
         let gg = if graph.nodes[gamma_id.0].requires_grad {
             let mut gg = vec![0.0f32; c];
-            for i in 0..up_data.len() {
-                gg[i % c] += x_hat_data[i] * up_data[i];
-            }
+            x_hat_data
+                .iter()
+                .zip(up_data.iter())
+                .enumerate()
+                .for_each(|(i, (&x, &u))| gg[i % c] += x * u);
             Some(Tensor::from_vec(vec![c], gg)?)
         } else {
             None
@@ -385,9 +439,10 @@ pub(crate) fn instance_norm_nhwc_backward(
 
         let gb = if graph.nodes[beta_id.0].requires_grad {
             let mut gb = vec![0.0f32; c];
-            for i in 0..up_data.len() {
-                gb[i % c] += up_data[i];
-            }
+            up_data
+                .iter()
+                .enumerate()
+                .for_each(|(i, &v)| gb[i % c] += v);
             Some(Tensor::from_vec(vec![c], gb)?)
         } else {
             None
@@ -395,9 +450,11 @@ pub(crate) fn instance_norm_nhwc_backward(
 
         let gg = if graph.nodes[gamma_id.0].requires_grad {
             let mut gg = vec![0.0f32; c];
-            for i in 0..up_data.len() {
-                gg[i % c] += x_hat_data[i] * up_data[i];
-            }
+            x_hat_data
+                .iter()
+                .zip(up_data.iter())
+                .enumerate()
+                .for_each(|(i, (&x, &u))| gg[i % c] += x * u);
             Some(Tensor::from_vec(vec![c], gg)?)
         } else {
             None

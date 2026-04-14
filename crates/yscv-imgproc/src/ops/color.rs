@@ -1,3 +1,10 @@
+//! # Safety contract
+//!
+//! Unsafe code categories:
+//! 1. **SIMD intrinsics (NEON / AVX / SSE)** — ISA guard via runtime detection or `#[target_feature]`.
+//! 2. **`SendConstPtr` / `SendPtr` for rayon** — each chunk writes non-overlapping rows.
+//! 3. **`get_unchecked` in inner loops** — indices bounded by validated image dimensions.
+
 use rayon::prelude::*;
 use yscv_tensor::{AlignedVec, Tensor};
 
@@ -36,8 +43,10 @@ pub fn rgb_to_grayscale(input: &Tensor) -> Result<Tensor, ImgProcError> {
             let n = (y_end - y_start) * w_c;
             let src_off = y_start * w_c * 3;
             let dst_off = y_start * w_c;
+            // SAFETY: pointer and length from validated image data; parallel chunks are non-overlapping.
             let chunk_src = unsafe { std::slice::from_raw_parts(src_ptr.ptr(), data_len) };
             let chunk_src = &chunk_src[src_off..src_off + n * 3];
+            // SAFETY: dst_off + n bounded by output allocation; chunks are disjoint.
             let chunk_dst =
                 unsafe { std::slice::from_raw_parts_mut(dst_ptr.ptr().add(dst_off), n) };
             let done = grayscale_simd_row(chunk_src, chunk_dst);
@@ -75,6 +84,7 @@ fn grayscale_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_neon_row(src, dst) };
         }
     }
@@ -82,9 +92,11 @@ fn grayscale_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if std::is_x86_feature_detected!("avx") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_avx_row(src, dst) };
         }
         if std::is_x86_feature_detected!("sse") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_sse_row(src, dst) };
         }
     }
@@ -282,9 +294,11 @@ pub fn rgb_to_hsv(input: &Tensor) -> Result<Tensor, ImgProcError> {
         #[cfg(target_os = "macos")]
         {
             super::u8ops::gcd::parallel_for(h, |y| {
+                // SAFETY: pointer and length from validated image data; rows are non-overlapping.
                 let src = unsafe {
                     std::slice::from_raw_parts(_src_ptr.ptr().add(y * row_stride), row_stride)
                 };
+                // SAFETY: pointer and length from validated image data; rows are non-overlapping.
                 let dst = unsafe {
                     std::slice::from_raw_parts_mut(_dst_ptr.ptr().add(y * row_stride), row_stride)
                 };
@@ -354,6 +368,7 @@ fn hsv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { hsv_neon_row(src, dst) };
         }
     }
@@ -361,9 +376,11 @@ fn hsv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if std::is_x86_feature_detected!("avx") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { hsv_avx_row(src, dst) };
         }
         if std::is_x86_feature_detected!("sse") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { hsv_sse_row(src, dst) };
         }
     }
@@ -777,25 +794,31 @@ pub fn rgb_to_lab(input: &Tensor) -> Result<Tensor, ImgProcError> {
         let row_stride = w * 3;
 
         let process_row = |row: usize| {
+            // SAFETY: pointer and length from validated image data; rows are non-overlapping.
             let src_row = unsafe {
                 std::slice::from_raw_parts(src_ptr.ptr().add(row * row_stride), row_stride)
             };
+            // SAFETY: pointer and length from validated image data; rows are non-overlapping.
             let out_row = unsafe {
                 std::slice::from_raw_parts_mut(dst_ptr.ptr().add(row * row_stride), row_stride)
             };
             for px in 0..w {
                 let base = px * 3;
+                // SAFETY: base+2 < row_stride = w*3, indices ri/gi/bi clamped to 0..255 by u8 cast.
                 let ri = unsafe { (src_row.get_unchecked(base) * 255.0) as u8 as usize };
                 let gi = unsafe { (src_row.get_unchecked(base + 1) * 255.0) as u8 as usize };
                 let bi = unsafe { (src_row.get_unchecked(base + 2) * 255.0) as u8 as usize };
 
                 // XYZ / white_point via precomputed per-channel LUTs (3 adds per component)
+                // SAFETY: ri/gi/bi are u8 values (0..255); LUT size is 256.
                 let xn = unsafe {
                     x_r.get_unchecked(ri) + x_g.get_unchecked(gi) + x_b.get_unchecked(bi)
                 };
+                // SAFETY: ri/gi/bi are u8 values (0..255); LUT size is 256.
                 let yn = unsafe {
                     y_r.get_unchecked(ri) + y_g.get_unchecked(gi) + y_b.get_unchecked(bi)
                 };
+                // SAFETY: ri/gi/bi are u8 values (0..255); LUT size is 256.
                 let zn = unsafe {
                     z_r.get_unchecked(ri) + z_g.get_unchecked(gi) + z_b.get_unchecked(bi)
                 };
@@ -804,6 +827,7 @@ pub fn rgb_to_lab(input: &Tensor) -> Result<Tensor, ImgProcError> {
                 let fy = lab_f_fast(yn);
                 let fz = lab_f_fast(zn);
 
+                // SAFETY: base+2 < row_stride = w*3, bounds checked by px < w loop.
                 unsafe {
                     *out_row.get_unchecked_mut(base) = 116.0 * fy - 16.0;
                     *out_row.get_unchecked_mut(base + 1) = 500.0 * (fx - fy);
@@ -875,6 +899,7 @@ fn lab_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { lab_neon_row(src, dst) };
         }
     }
@@ -882,9 +907,11 @@ fn lab_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if std::is_x86_feature_detected!("avx") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { lab_avx_row(src, dst) };
         }
         if std::is_x86_feature_detected!("sse") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { lab_sse_row(src, dst) };
         }
     }
@@ -1305,6 +1332,7 @@ pub fn rgb_to_yuv(input: &Tensor) -> Result<Tensor, ImgProcError> {
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let src_row = &data[y * row_stride..(y + 1) * row_stride];
+            // SAFETY: pointer and length from validated image data; rows are non-overlapping.
             let dst_row = unsafe {
                 std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_stride), row_stride)
             };
@@ -1374,6 +1402,7 @@ fn yuv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { yuv_neon_row(src, dst) };
         }
     }
@@ -1381,9 +1410,11 @@ fn yuv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if std::is_x86_feature_detected!("avx") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { yuv_avx_row(src, dst) };
         }
         if std::is_x86_feature_detected!("sse") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { yuv_sse_row(src, dst) };
         }
     }
@@ -1667,6 +1698,7 @@ fn lab_f_fast(t: f32) -> f32 {
     let scaled = t * LAB_F_LUT_SCALE as f32;
     let lo = (scaled as usize).min(LAB_F_LUT_SIZE - 2);
     let frac = scaled - lo as f32;
+    // SAFETY: lo clamped to 0..LAB_F_LUT_SIZE-2; lo+1 < LAB_F_LUT_SIZE.
     unsafe {
         let a = *lut.get_unchecked(lo);
         // a + frac * (b - a) = lerp with one FMA
@@ -1707,6 +1739,7 @@ pub fn rgb_to_bgr(input: &Tensor) -> Result<Tensor, ImgProcError> {
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
             let src_row = &data[y * row_stride..(y + 1) * row_stride];
+            // SAFETY: pointer and length from validated image data; rows are non-overlapping.
             let dst_row = unsafe {
                 std::slice::from_raw_parts_mut(out_ptr.ptr().add(y * row_stride), row_stride)
             };
@@ -1767,6 +1800,7 @@ fn bgr_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { bgr_neon_row(src, dst) };
         }
     }
@@ -1774,9 +1808,11 @@ fn bgr_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if std::is_x86_feature_detected!("avx") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { bgr_avx_row(src, dst) };
         }
         if std::is_x86_feature_detected!("sse") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { bgr_sse_row(src, dst) };
         }
     }

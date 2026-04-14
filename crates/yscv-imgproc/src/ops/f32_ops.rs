@@ -1,4 +1,11 @@
 //! f32 image operations — direct slice processing, zero Tensor overhead.
+//!
+//! # Safety contract
+//!
+//! Unsafe code categories:
+//! 1. **SIMD intrinsics (NEON / SSE)** — ISA guard via `#[target_feature]` or runtime detection.
+//! 2. **`SendConstPtr` / `SendPtr` for rayon** — non-overlapping chunk access.
+//! 3. **Pointer arithmetic in row kernels** — bounded by image width/height validated at entry.
 #![allow(unsafe_code)]
 
 #[cfg(target_os = "macos")]
@@ -23,9 +30,9 @@ pub fn grayscale_f32(input: &ImageF32) -> Option<ImageF32> {
     let src = input.data();
     let total = h * w;
 
-    // SAFETY: every element written by SIMD + scalar tail + GCD chunks.
     let mut out: Vec<f32> = Vec::with_capacity(total);
     #[allow(unsafe_code)]
+    // SAFETY: every element written by SIMD + scalar tail + GCD chunks.
     unsafe {
         out.set_len(total);
     }
@@ -45,6 +52,7 @@ pub fn grayscale_f32(input: &ImageF32) -> Option<ImageF32> {
             let n = (y_end - y_start) * w;
             let src_off = y_start * w * 3;
             let dst_off = y_start * w;
+            // SAFETY: pointer and length from validated image data; parallel chunks are non-overlapping.
             let chunk_src = unsafe { core::slice::from_raw_parts(sp.add(src_off), n * 3) };
             let chunk_dst = unsafe { core::slice::from_raw_parts_mut(dp.add(dst_off), n) };
             let done = grayscale_f32_simd(chunk_src, chunk_dst, n);
@@ -76,12 +84,14 @@ fn grayscale_f32_simd(src: &[f32], dst: &mut [f32], total: usize) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_f32_neon(src, dst, total) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("sse2") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_f32_sse(src, dst, total) };
         }
     }
@@ -178,6 +188,7 @@ pub fn gaussian_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             gauss_3x3_direct_f32_neon(src, &mut out, h, w);
         }
@@ -186,6 +197,7 @@ pub fn gaussian_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             gauss_3x3_direct_f32_sse(src, &mut out, h, w);
         }
@@ -495,6 +507,7 @@ pub fn box_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             box_3x3_direct_f32_neon(src, &mut out, h, w);
         }
@@ -503,6 +516,7 @@ pub fn box_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             box_3x3_direct_f32_sse(src, &mut out, h, w);
         }
@@ -807,6 +821,7 @@ pub fn dilate_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             dilate_3x3_direct_f32_neon(src, &mut out, h, w);
         }
@@ -815,6 +830,7 @@ pub fn dilate_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+        // SAFETY: ISA guard (feature detection) above.
         unsafe {
             dilate_3x3_direct_f32_sse(src, &mut out, h, w);
         }
@@ -1146,12 +1162,14 @@ fn sobel_f32_simd_row(
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { sobel_f32_neon_row(row0, row1, row2, dst, w) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("sse2") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { sobel_f32_sse_row(row0, row1, row2, dst, w) };
         }
     }
@@ -1263,6 +1281,7 @@ pub fn threshold_binary_f32(input: &ImageF32, thresh: f32, max_val: f32) -> Opti
 
     let mut out: Vec<f32> = Vec::with_capacity(total);
     #[allow(unsafe_code)]
+    // SAFETY: every element written by SIMD + scalar tail below.
     unsafe {
         out.set_len(total);
     }
@@ -1280,6 +1299,7 @@ pub fn threshold_binary_f32(input: &ImageF32, thresh: f32, max_val: f32) -> Opti
             let start = chunk * chunk_h * w;
             let end = (((chunk + 1) * chunk_h).min(h)) * w;
             let n = end - start;
+            // SAFETY: pointer and length from validated image data; parallel chunks are non-overlapping.
             let chunk_src = unsafe { core::slice::from_raw_parts(sp.add(start), n) };
             let chunk_dst = unsafe { core::slice::from_raw_parts_mut(dp.add(start), n) };
             let done = threshold_f32_simd(chunk_src, chunk_dst, n, thresh, max_val);
@@ -1312,12 +1332,14 @@ fn threshold_f32_simd(
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { threshold_f32_neon(src, dst, total, thresh, max_val) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("sse2") {
+            // SAFETY: ISA guard (feature detection) above.
             return unsafe { threshold_f32_sse(src, dst, total, thresh, max_val) };
         }
     }

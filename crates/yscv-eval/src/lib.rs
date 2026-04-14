@@ -1,4 +1,4 @@
-//! Evaluation and benchmarking utilities for yscv.
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
 mod camera_diagnostics;
