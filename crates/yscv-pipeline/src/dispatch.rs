@@ -49,10 +49,7 @@ pub trait AcceleratorDispatcher: Send + Sync {
     /// caller doesn't have to know the model's internal input order.
     /// Returns output tensors as `(name, f32_le_bytes)` in the model's
     /// declared output order.
-    fn dispatch(
-        &self,
-        inputs: &[(&str, &[u8])],
-    ) -> Result<Vec<(String, Vec<u8>)>, Error>;
+    fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error>;
 
     /// Attempt to recover this dispatcher after a transient fault
     /// (NPU hang, lost GPU context, etc.). Default: no-op. Backends
@@ -170,12 +167,8 @@ impl AcceleratorDispatcher for CpuDispatcher {
         &self.label
     }
 
-    fn dispatch(
-        &self,
-        inputs: &[(&str, &[u8])],
-    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
-        let mut feed: HashMap<String, yscv_tensor::Tensor> =
-            HashMap::with_capacity(inputs.len());
+    fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let mut feed: HashMap<String, yscv_tensor::Tensor> = HashMap::with_capacity(inputs.len());
         for &(name, bytes) in inputs {
             if bytes.len() % 4 != 0 {
                 return Err(Error::Other(format!(
@@ -197,20 +190,22 @@ impl AcceleratorDispatcher for CpuDispatcher {
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| vec![n]);
-            let t = yscv_tensor::Tensor::from_vec(shape, data).map_err(|e| {
-                Error::Other(format!("input '{name}': tensor build failed — {e}"))
-            })?;
+            let t = yscv_tensor::Tensor::from_vec(shape, data)
+                .map_err(|e| Error::Other(format!("input '{name}': tensor build failed — {e}")))?;
             feed.insert(name.to_string(), t);
         }
         let outs = yscv_onnx::run_onnx_model(&self.model, feed)
             .map_err(|e| Error::Other(format!("CPU ONNX run failed — {e}")))?;
-        Ok(outs.into_iter().map(|(name, t)| {
-            let mut bytes = Vec::with_capacity(t.data().len() * 4);
-            for &v in t.data() {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            (name, bytes)
-        }).collect())
+        Ok(outs
+            .into_iter()
+            .map(|(name, t)| {
+                let mut bytes = Vec::with_capacity(t.data().len() * 4);
+                for &v in t.data() {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+                (name, bytes)
+            })
+            .collect())
     }
 }
 
@@ -289,11 +284,12 @@ fn load_or_compile_rknn(task: &InferenceTask) -> Result<Vec<u8>, Error> {
         if let Ok(cached) = std::fs::read(&cache_path) {
             return Ok(cached);
         }
-        let rknn_bytes = yscv_kernels::compile_onnx_to_rknn(&onnx_bytes, &cfg)
-            .map_err(|e| Error::Kernel(format!(
+        let rknn_bytes = yscv_kernels::compile_onnx_to_rknn(&onnx_bytes, &cfg).map_err(|e| {
+            Error::Kernel(format!(
                 "task '{}': compile {:?} → .rknn failed — {e}",
                 task.name, task.model_path
-            )))?;
+            ))
+        })?;
         // Best-effort cache write — not fatal if it fails (e.g. read-only fs).
         if let Err(e) = std::fs::write(cache_str, &rknn_bytes) {
             eprintln!(
@@ -324,10 +320,7 @@ impl AcceleratorDispatcher for RknnDispatcher {
         &self.label
     }
 
-    fn dispatch(
-        &self,
-        inputs: &[(&str, &[u8])],
-    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
         let outs = self
             .pool
             .run(inputs)
@@ -394,13 +387,8 @@ impl RknnMatmulDispatcher {
                 task.name
             )));
         }
-        let matmul = yscv_kernels::RknnMatmul::new(
-            m as i32,
-            k as i32,
-            n as i32,
-            dtype.to_rknn(),
-        )
-        .map_err(|e| Error::Kernel(e.to_string()))?;
+        let matmul = yscv_kernels::RknnMatmul::new(m as i32, k as i32, n as i32, dtype.to_rknn())
+            .map_err(|e| Error::Kernel(e.to_string()))?;
 
         let a_size = matmul.a_attr().size as usize;
         let b_size = matmul.b_attr().size as usize;
@@ -446,10 +434,7 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
         &self.label
     }
 
-    fn dispatch(
-        &self,
-        inputs: &[(&str, &[u8])],
-    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
         // Contract: inputs must contain exactly two named "a" and "b"
         // tensors with the SDK-declared byte counts. Output is a
         // single named "c" tensor.
@@ -466,10 +451,10 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
                 }
             }
         }
-        let a_bytes = a_bytes
-            .ok_or_else(|| Error::Other("matmul dispatcher: missing input 'a'".into()))?;
-        let b_bytes = b_bytes
-            .ok_or_else(|| Error::Other("matmul dispatcher: missing input 'b'".into()))?;
+        let a_bytes =
+            a_bytes.ok_or_else(|| Error::Other("matmul dispatcher: missing input 'a'".into()))?;
+        let b_bytes =
+            b_bytes.ok_or_else(|| Error::Other("matmul dispatcher: missing input 'b'".into()))?;
 
         if a_bytes.len() != self.a_size {
             return Err(Error::Other(format!(
@@ -490,18 +475,22 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
 
         // Memcpy → flush → run → invalidate → readback.
         {
-            let mut a = self.a_mem.lock().map_err(|_| {
-                Error::Other("matmul a_mem lock poisoned".into())
-            })?;
+            let mut a = self
+                .a_mem
+                .lock()
+                .map_err(|_| Error::Other("matmul a_mem lock poisoned".into()))?;
             a.as_mut_slice().copy_from_slice(a_bytes);
-            a.sync_to_device().map_err(|e| Error::Kernel(e.to_string()))?;
+            a.sync_to_device()
+                .map_err(|e| Error::Kernel(e.to_string()))?;
         }
         {
-            let mut b = self.b_mem.lock().map_err(|_| {
-                Error::Other("matmul b_mem lock poisoned".into())
-            })?;
+            let mut b = self
+                .b_mem
+                .lock()
+                .map_err(|_| Error::Other("matmul b_mem lock poisoned".into()))?;
             b.as_mut_slice().copy_from_slice(b_bytes);
-            b.sync_to_device().map_err(|e| Error::Kernel(e.to_string()))?;
+            b.sync_to_device()
+                .map_err(|e| Error::Kernel(e.to_string()))?;
         }
 
         self.matmul
@@ -509,9 +498,10 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
             .map_err(|e| Error::Kernel(e.to_string()))?;
 
         let c_bytes = {
-            let c = self.c_mem.lock().map_err(|_| {
-                Error::Other("matmul c_mem lock poisoned".into())
-            })?;
+            let c = self
+                .c_mem
+                .lock()
+                .map_err(|_| Error::Other("matmul c_mem lock poisoned".into()))?;
             c.sync_from_device()
                 .map_err(|e| Error::Kernel(e.to_string()))?;
             c.as_slice()[..self.c_size].to_vec()
@@ -580,10 +570,7 @@ impl AcceleratorDispatcher for MetalDispatcher {
         &self.label
     }
 
-    fn dispatch(
-        &self,
-        inputs: &[(&str, &[u8])],
-    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
         // Interpret input bytes as f32 LE — same contract as
         // `CpuDispatcher`. For each input we also materialise a Tensor
         // so we can pass its view to `compile_mpsgraph_plan` on the
@@ -614,10 +601,8 @@ impl AcceleratorDispatcher for MetalDispatcher {
             .lock()
             .map_err(|_| Error::Other("MetalDispatcher plan lock poisoned".into()))?;
         if guard.is_none() {
-            let pairs: Vec<(&str, &yscv_tensor::Tensor)> = input_tensors
-                .iter()
-                .map(|(n, t)| (n.as_str(), t))
-                .collect();
+            let pairs: Vec<(&str, &yscv_tensor::Tensor)> =
+                input_tensors.iter().map(|(n, t)| (n.as_str(), t)).collect();
             let plan = yscv_onnx::compile_mpsgraph_plan(&self.model, &pairs)
                 .map_err(|e| Error::Other(format!("MPSGraph compile failed: {e}")))?;
             *guard = Some(plan);
@@ -684,10 +669,7 @@ impl AcceleratorDispatcher for GpuDispatcher {
         &self.label
     }
 
-    fn dispatch(
-        &self,
-        inputs: &[(&str, &[u8])],
-    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
         // Same f32-LE byte contract as the other dispatchers.
         let mut feed: std::collections::HashMap<String, yscv_tensor::Tensor> =
             std::collections::HashMap::with_capacity(inputs.len());
@@ -703,20 +685,22 @@ impl AcceleratorDispatcher for GpuDispatcher {
             for chunk in bytes.chunks_exact(4) {
                 data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
-            let t = yscv_tensor::Tensor::from_vec(vec![n], data).map_err(|e| {
-                Error::Other(format!("input '{name}': tensor build failed — {e}"))
-            })?;
+            let t = yscv_tensor::Tensor::from_vec(vec![n], data)
+                .map_err(|e| Error::Other(format!("input '{name}': tensor build failed — {e}")))?;
             feed.insert(name.to_string(), t);
         }
         let outs = yscv_onnx::run_onnx_model_gpu(&self.model, feed)
             .map_err(|e| Error::Other(format!("wgpu GPU run failed — {e}")))?;
-        Ok(outs.into_iter().map(|(name, t)| {
-            let mut bytes = Vec::with_capacity(t.data().len() * 4);
-            for &v in t.data() {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            (name, bytes)
-        }).collect())
+        Ok(outs
+            .into_iter()
+            .map(|(name, t)| {
+                let mut bytes = Vec::with_capacity(t.data().len() * 4);
+                for &v in t.data() {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+                (name, bytes)
+            })
+            .collect())
     }
 }
 

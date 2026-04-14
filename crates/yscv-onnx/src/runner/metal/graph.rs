@@ -346,20 +346,14 @@ pub fn compile_mpsgraph_plan(
                     node.attributes.get("value")
                 {
                     (t.data().to_vec(), t.shape().to_vec())
-                } else if let Some(OnnxAttribute::Float(v)) =
-                    node.attributes.get("value_float")
-                {
+                } else if let Some(OnnxAttribute::Float(v)) = node.attributes.get("value_float") {
                     (vec![*v], vec![1usize])
-                } else if let Some(OnnxAttribute::Int(v)) = node.attributes.get("value_int")
-                {
+                } else if let Some(OnnxAttribute::Int(v)) = node.attributes.get("value_int") {
                     (vec![*v as f32], vec![1usize])
-                } else if let Some(OnnxAttribute::Floats(v)) =
-                    node.attributes.get("value_floats")
-                {
+                } else if let Some(OnnxAttribute::Floats(v)) = node.attributes.get("value_floats") {
                     let n = v.len();
                     (v.clone(), vec![n])
-                } else if let Some(OnnxAttribute::Ints(v)) = node.attributes.get("value_ints")
-                {
+                } else if let Some(OnnxAttribute::Ints(v)) = node.attributes.get("value_ints") {
                     let n = v.len();
                     (v.iter().map(|&i| i as f32).collect(), vec![n])
                 } else {
@@ -371,7 +365,11 @@ pub fn compile_mpsgraph_plan(
                     });
                 };
                 const_values.insert(node.outputs[0].clone(), data.clone());
-                let stored_shape = if shape.is_empty() { vec![1usize] } else { shape };
+                let stored_shape = if shape.is_empty() {
+                    vec![1usize]
+                } else {
+                    shape
+                };
                 cpu_shapes.insert(node.outputs[0].clone(), stored_shape.clone());
                 let f16_data: Vec<u16> = data.iter().map(|&v| f32_to_f16_bits(v)).collect();
                 let t = graph.constant_f16(&f16_data, &stored_shape)?;
@@ -496,10 +494,7 @@ pub fn compile_mpsgraph_plan(
         let slot_input_slots: Vec<InputSlot> = input_descs
             .iter()
             .map(|d| InputSlot {
-                buf: device.new_buffer(
-                    (d.elems * 4) as u64,
-                    MTLResourceOptions::StorageModeShared,
-                ),
+                buf: device.new_buffer((d.elems * 4) as u64, MTLResourceOptions::StorageModeShared),
             })
             .collect();
         // Per-slot output buffers (f16).
@@ -668,8 +663,7 @@ pub fn wait_mpsgraph_plan(
         // MPSGraph wrote exactly `n` f16 (u16) values before the CB
         // completed (verified by wait above).
         #[allow(unsafe_code)]
-        let f16_slice =
-            unsafe { std::slice::from_raw_parts(buf.contents() as *const u16, n) };
+        let f16_slice = unsafe { std::slice::from_raw_parts(buf.contents() as *const u16, n) };
         let data = f16_slice_to_f32_vec(f16_slice);
         let tensor =
             Tensor::from_vec(shape.clone(), data).map_err(|e| OnnxError::DecodeFailed {
@@ -858,7 +852,6 @@ fn build_graph_node(
             let shape = get_shape(&node.inputs[0]);
             Ok(Some(vec![(node.outputs[0].clone(), input, shape)]))
         }
-
 
         "Sigmoid" => {
             let input = try_get!(&node.inputs[0]);

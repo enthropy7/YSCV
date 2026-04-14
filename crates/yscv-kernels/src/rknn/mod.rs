@@ -63,7 +63,6 @@ pub use backend::{
     MatmulQuantParams, MemSize, OpPerf, PerfDetail, RknnBackend, RknnMatmul, RknnMem,
     detect_backend, rknn_available,
 };
-pub use pipeline::{RknnInferenceHandle, RknnPipelinedPool};
 pub use compile::{
     RknnCompileConfig, compile_onnx_to_rknn, load_onnx_as_rknn, rknn_compiler_available,
 };
@@ -102,3 +101,4 @@ pub use custom_op::{
     CustomOpAttr, CustomOpContext, CustomOpHandler, CustomOpTensor, MAX_CUSTOM_OP_SLOTS,
 };
 pub use ffi::{RknnMatmulIoAttr, RknnMatmulShape, RknnMatmulTensorAttr, RknnTensorAttr};
+pub use pipeline::{RknnInferenceHandle, RknnPipelinedPool};

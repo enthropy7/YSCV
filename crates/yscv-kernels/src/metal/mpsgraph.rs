@@ -939,16 +939,10 @@ impl MpsGraph {
                     .iter()
                     .map(|&(_, buf, shape, dtype)| (buf, shape, dtype))
                     .collect();
-                let inputs_ns_array = build_retained_tensor_data_array(
-                    tensor_data_cls,
-                    ns_array_cls,
-                    &input_specs,
-                )?;
-                let results_ns_array = build_retained_tensor_data_array(
-                    tensor_data_cls,
-                    ns_array_cls,
-                    outputs,
-                )?;
+                let inputs_ns_array =
+                    build_retained_tensor_data_array(tensor_data_cls, ns_array_cls, &input_specs)?;
+                let results_ns_array =
+                    build_retained_tensor_data_array(tensor_data_cls, ns_array_cls, outputs)?;
 
                 Ok(PreparedInputs {
                     inputs_ns_array,

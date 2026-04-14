@@ -19,16 +19,14 @@ pub mod drm_output;
 mod error;
 #[path = "frame.rs"]
 mod frame;
+#[path = "frame_common.rs"]
+pub mod frame_common;
 #[path = "frame_pipeline.rs"]
 #[allow(unsafe_code)]
 pub mod frame_pipeline;
 #[path = "frame_pipeline_5stage.rs"]
 #[allow(unsafe_code)]
 pub mod frame_pipeline_5stage;
-#[path = "latency_histogram.rs"]
-pub mod latency_histogram;
-#[path = "frame_common.rs"]
-pub mod frame_common;
 #[cfg(target_os = "linux")]
 #[path = "framebuffer.rs"]
 #[allow(unsafe_code)]
@@ -73,6 +71,8 @@ pub mod hevc_syntax;
 pub mod hevc_transform;
 #[path = "hw_decode.rs"]
 pub mod hw_decode;
+#[path = "latency_histogram.rs"]
+pub mod latency_histogram;
 #[path = "mavlink.rs"]
 pub mod mavlink;
 #[path = "mjpeg.rs"]

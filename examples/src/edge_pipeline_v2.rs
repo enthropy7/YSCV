@@ -44,10 +44,7 @@ fn main() -> ExitCode {
         eprintln!("usage: edge_pipeline_v2 <config.toml> [max_seconds]");
         return ExitCode::FAILURE;
     };
-    let max_seconds: u64 = args
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+    let max_seconds: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
 
     if let Err(e) = run(&config_path, max_seconds) {
         eprintln!("error: {e}");
@@ -122,7 +119,12 @@ fn run(config_path: &PathBuf, max_seconds: u64) -> Result<(), Box<dyn std::error
             break;
         }
 
-        generate_synthetic_frame(&mut frame_buf, cfg.camera.width, cfg.camera.height, frame_idx);
+        generate_synthetic_frame(
+            &mut frame_buf,
+            cfg.camera.width,
+            cfg.camera.height,
+            frame_idx,
+        );
         let payload = FramePayload::owned(frame_buf.clone()); // copy-based ingress
         // `payload` demonstrates the FramePayload API; real FPV swaps to
         // `FramePayload::dma_buf(fd, len)` against V4L2 export_dmabuf.
@@ -184,9 +186,19 @@ fn run(config_path: &PathBuf, max_seconds: u64) -> Result<(), Box<dyn std::error
     let snap = stats.snapshot();
     let d = dispatch_latency.snapshot();
     eprintln!();
-    eprintln!("=== Final ({} frames, {:.1}s wall) ===", snap.processed, t_start.elapsed().as_secs_f64());
-    eprintln!("  dispatch_frame  p50={} µs  p95={} µs  p99={} µs  max={} µs  FPS(p50)≈{:.1}",
-        d.p50_us, d.p95_us, d.p99_us, d.max_us, d.fps_p50());
+    eprintln!(
+        "=== Final ({} frames, {:.1}s wall) ===",
+        snap.processed,
+        t_start.elapsed().as_secs_f64()
+    );
+    eprintln!(
+        "  dispatch_frame  p50={} µs  p95={} µs  p99={} µs  max={} µs  FPS(p50)≈{:.1}",
+        d.p50_us,
+        d.p95_us,
+        d.p99_us,
+        d.max_us,
+        d.fps_p50()
+    );
     Ok(())
 }
 
@@ -216,4 +228,3 @@ fn generate_synthetic_frame(buf: &mut [u8], width: u32, height: u32, frame_idx: 
         }
     }
 }
-

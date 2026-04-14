@@ -342,9 +342,7 @@ impl RknnPipelinedPool {
         let mut first_err: Option<KernelError> = None;
         for idx in 0..self.slots.len() {
             if let Err(e) = self.recover_failed(idx) {
-                eprintln!(
-                    "[yscv-rknn] reload: slot {idx} failed to swap to new model: {e}"
-                );
+                eprintln!("[yscv-rknn] reload: slot {idx} failed to swap to new model: {e}");
                 if first_err.is_none() {
                     first_err = Some(e);
                 }
@@ -402,10 +400,7 @@ impl RknnPipelinedPool {
     /// submission (caller's outstanding handle count exceeds the slot
     /// count), the previous frame is waited on and its outputs
     /// discarded before the slot's buffers are reused.
-    pub fn submit(
-        &self,
-        inputs: &[(&str, &[u8])],
-    ) -> Result<RknnInferenceHandle, KernelError> {
+    pub fn submit(&self, inputs: &[(&str, &[u8])]) -> Result<RknnInferenceHandle, KernelError> {
         let slot_idx = self.next.fetch_add(1, Ordering::Relaxed) % self.slots.len();
         match self.submit_inner(slot_idx, inputs) {
             Ok(h) => {
@@ -450,13 +445,13 @@ impl RknnPipelinedPool {
                 message: format!("slot {slot_idx} mem lock poisoned"),
             })?;
             for &(name, data) in inputs {
-                let (_, mem_buf) = mem
-                    .inputs
-                    .iter_mut()
-                    .find(|(n, _)| n == name)
-                    .ok_or_else(|| KernelError::Rknn {
-                        message: format!("input '{name}' not declared by slot"),
-                    })?;
+                let (_, mem_buf) =
+                    mem.inputs
+                        .iter_mut()
+                        .find(|(n, _)| n == name)
+                        .ok_or_else(|| KernelError::Rknn {
+                            message: format!("input '{name}' not declared by slot"),
+                        })?;
                 let cap = mem_buf.size() as usize;
                 // Require EXACT match between caller-supplied bytes and
                 // the NPU input buffer size. Short writes would leave
@@ -498,10 +493,7 @@ impl RknnPipelinedPool {
     ///
     /// Errors if the slot has no pending frame (handle was already
     /// waited on, or slot was reused by a later `submit`).
-    pub fn wait(
-        &self,
-        handle: RknnInferenceHandle,
-    ) -> Result<Vec<Tensor>, KernelError> {
+    pub fn wait(&self, handle: RknnInferenceHandle) -> Result<Vec<Tensor>, KernelError> {
         let slot_idx = handle.slot_idx;
         match self.wait_inner(slot_idx) {
             Ok(v) => {

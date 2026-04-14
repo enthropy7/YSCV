@@ -6,7 +6,7 @@
 //! and is wired up in the `examples/edge_pipeline.rs` example.
 
 use crate::config::{InferenceTask, PipelineConfig};
-use crate::dispatch::{dispatcher_for, AcceleratorDispatcher};
+use crate::dispatch::{AcceleratorDispatcher, dispatcher_for};
 use crate::error::{ConfigError, Error};
 use std::collections::{HashMap, HashSet};
 
@@ -147,16 +147,19 @@ impl PipelineHandle {
             // Also expose under bare "camera" so single-input tasks
             // using `source = "camera"` find their bytes without
             // knowing a name. First camera input wins.
-            world.entry("camera".to_string()).or_insert_with(|| bytes.to_vec());
+            world
+                .entry("camera".to_string())
+                .or_insert_with(|| bytes.to_vec());
         }
 
         for task_name in &self.order {
             let task = self.tasks.get(task_name).ok_or_else(|| {
                 Error::Other(format!("unknown task '{task_name}' in scheduler order"))
             })?;
-            let dispatcher = self.dispatchers.get(task_name).ok_or_else(|| {
-                Error::Other(format!("no dispatcher for task '{task_name}'"))
-            })?;
+            let dispatcher = self
+                .dispatchers
+                .get(task_name)
+                .ok_or_else(|| Error::Other(format!("no dispatcher for task '{task_name}'")))?;
             // Resolve each input binding to bytes in `world`.
             let mut gathered: Vec<(&str, Vec<u8>)> = Vec::with_capacity(task.inputs.len());
             for binding in &task.inputs {
@@ -169,10 +172,8 @@ impl PipelineHandle {
                 gathered.push((binding.name.as_str(), bytes));
             }
             // Slice-of-refs view for the dispatcher.
-            let view: Vec<(&str, &[u8])> = gathered
-                .iter()
-                .map(|(n, b)| (*n, b.as_slice()))
-                .collect();
+            let view: Vec<(&str, &[u8])> =
+                gathered.iter().map(|(n, b)| (*n, b.as_slice())).collect();
             let outputs = dispatcher.dispatch(&view)?;
             for (out_name, out_bytes) in outputs {
                 world.insert(format!("{task_name}.{out_name}"), out_bytes);
@@ -186,9 +187,8 @@ impl PipelineHandle {
     /// On first error, stops and returns that error.
     pub fn recover_all(&self) -> Result<(), Error> {
         for (name, d) in &self.dispatchers {
-            d.recover().map_err(|e| {
-                Error::Other(format!("recover dispatcher '{name}' failed: {e}"))
-            })?;
+            d.recover()
+                .map_err(|e| Error::Other(format!("recover dispatcher '{name}' failed: {e}")))?;
         }
         Ok(())
     }
@@ -319,21 +319,14 @@ pub fn run_pipeline(cfg: PipelineConfig) -> Result<PipelineHandle, Error> {
             .cloned()
             .unwrap_or_default();
         let governor = cfg.realtime.cpu_governor.as_deref();
-        let applied = yscv_video::realtime::apply_rt_config_with_governor(
-            prio,
-            &affinity,
-            true,
-            governor,
-        );
+        let applied =
+            yscv_video::realtime::apply_rt_config_with_governor(prio, &affinity, true, governor);
         if !applied.sched_fifo || !applied.mlockall {
             eprintln!(
                 "[yscv-pipeline] realtime partial: sched_fifo={} affinity={} mlockall={} \
                  governor_cores={} (missing CAP_SYS_NICE / RLIMIT_MEMLOCK / \
                  CAP_SYS_ADMIN? dev-host runs are fine)",
-                applied.sched_fifo,
-                applied.affinity,
-                applied.mlockall,
-                applied.cpu_governor_cores,
+                applied.sched_fifo, applied.affinity, applied.mlockall, applied.cpu_governor_cores,
             );
         }
     }

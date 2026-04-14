@@ -73,6 +73,6 @@ pub use config::{
 };
 pub use dispatch::{AcceleratorDispatcher, dispatcher_for};
 pub use error::{ConfigError, Error};
-pub use scheduler::{PipelineHandle, TaskScheduler, run_pipeline};
 #[cfg(feature = "realtime")]
 pub use scheduler::Watchdog;
+pub use scheduler::{PipelineHandle, TaskScheduler, run_pipeline};

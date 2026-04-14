@@ -266,12 +266,10 @@ impl PipelineConfig {
                     path: task.model_path.clone(),
                 });
             }
-            let bytes = std::fs::read(&task.model_path).map_err(|e| {
-                ConfigError::ModelInvalid {
-                    task: task.name.clone(),
-                    path: task.model_path.clone(),
-                    reason: format!("read failed: {e}"),
-                }
+            let bytes = std::fs::read(&task.model_path).map_err(|e| ConfigError::ModelInvalid {
+                task: task.name.clone(),
+                path: task.model_path.clone(),
+                reason: format!("read failed: {e}"),
             })?;
             if bytes.is_empty() {
                 return Err(ConfigError::ModelInvalid {
@@ -358,13 +356,12 @@ fn validate_rknn_model(
     #[cfg(feature = "rknn-validate")]
     {
         if yscv_kernels::rknn_available() {
-            let _ = yscv_kernels::RknnBackend::load(bytes).map_err(|e| {
-                ConfigError::ModelInvalid {
+            let _ =
+                yscv_kernels::RknnBackend::load(bytes).map_err(|e| ConfigError::ModelInvalid {
                     task: task.name.clone(),
                     path: task.model_path.clone(),
                     reason: format!("rknn SDK refused the file: {e}"),
-                }
-            })?;
+                })?;
         }
     }
     Ok(())

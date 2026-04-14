@@ -167,7 +167,9 @@ pub fn set_cpu_governor(governor: &str) -> Result<usize, RtError> {
         let mut applied = 0usize;
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let Some(name_str) = name.to_str() else { continue };
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
             // Match `cpuN` directories — skip `cpufreq`, `cpuidle`, etc.
             if !name_str.starts_with("cpu")
                 || !name_str

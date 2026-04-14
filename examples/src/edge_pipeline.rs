@@ -393,10 +393,14 @@ fn main() {
             #[cfg(target_os = "linux")]
             {
                 if let Some(ref mut cam) = v4l2_camera {
+                    // Cache width/height before the mutable borrow on
+                    // `capture_frame()` — `yuyv_data` borrows `cam`
+                    // immutably for the rest of the `Ok` arm, so we can't
+                    // call `cam.width()` / `cam.height()` after it.
+                    let cam_w = cam.width() as usize;
+                    let cam_h = cam.height() as usize;
                     match cam.capture_frame() {
                         Ok(yuyv_data) => {
-                            let cam_w = cam.width() as usize;
-                            let cam_h = cam.height() as usize;
                             let rgb_buf = slot.data_mut();
                             let needed = cam_w * cam_h * 3;
                             if rgb_buf.len() >= needed {

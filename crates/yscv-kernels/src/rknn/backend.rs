@@ -1125,11 +1125,7 @@ impl RknnBackend {
     /// (or any other init flag) the context was originally loaded with.
     /// `RknnPipelinedPool` uses this to recover an async context without
     /// silently falling back to synchronous mode.
-    pub fn reset_with_flags(
-        &mut self,
-        model_data: &[u8],
-        flags: u32,
-    ) -> Result<(), KernelError> {
+    pub fn reset_with_flags(&mut self, model_data: &[u8], flags: u32) -> Result<(), KernelError> {
         // SAFETY: ctx is valid (we hold &mut self). destroy is required, present.
         let _ = unsafe { (self.funcs.destroy)(self.ctx) };
         let mut new_ctx: RknnContext = 0;
@@ -1891,11 +1887,7 @@ impl RknnMatmul {
 
     /// Allocate with explicit alloc flags. Mirrors
     /// `RknnBackend::alloc_mem_ex` but scoped to this matmul ctx.
-    pub fn alloc_mem_ex(
-        &self,
-        size: usize,
-        flags: MemAllocFlags,
-    ) -> Result<RknnMem, KernelError> {
+    pub fn alloc_mem_ex(&self, size: usize, flags: MemAllocFlags) -> Result<RknnMem, KernelError> {
         let fn_ptr = self.funcs.create_mem2.ok_or_else(|| KernelError::Rknn {
             message: "rknn_create_mem2 not available".into(),
         })?;
