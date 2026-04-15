@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+# CI uses `cargo run --release -p yscv-bench` to run the main benchmark
+# suite. Without `default-run`, cargo errors out because two binaries
+# (`yscv-bench` and `fpv-latency`) are defined — this pins the default.
+default-run = "yscv-bench"
 
 [dependencies]
 yscv-tensor = { path = "../../crates/yscv-tensor" }

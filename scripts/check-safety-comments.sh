@@ -22,7 +22,8 @@ cd "$(dirname "$0")/.."
 # Files under SAFETY enforcement.
 FILES=(
     "crates/yscv-video/src/hw_decode.rs"
-    "crates/yscv-kernels/src/metal_backend.rs"
+    "crates/yscv-kernels/src/metal/metal_conv.rs"
+    "crates/yscv-kernels/src/metal/mpsgraph.rs"
     "crates/yscv-onnx/src/runner/metal/run.rs"
     "crates/yscv-imgproc/src/ops/u8_features.rs"
     "crates/yscv-imgproc/src/ops/color.rs"

@@ -882,8 +882,20 @@ unsafe fn build_retained_tensor_data_array(
 ) -> Result<*mut Object, KernelError> {
     let mut datas: Vec<*mut Object> = Vec::with_capacity(specs.len());
     for &(buf, shape, dtype) in specs {
+        // SAFETY: `shape` is a borrowed slice; `ns_array_from_usize` documents
+        // that it reads the slice and builds an autoreleased NSArray<NSNumber>.
+        // Caller of `build_retained_tensor_data_array` guarantees an active
+        // autoreleasepool per this fn's `# Safety` contract.
         let shape_arr = unsafe { ns_array_from_usize(shape)? };
+        // SAFETY: `[Class alloc]` is always safe to call on a valid Class*;
+        // `tensor_data_cls` is the MPSGraphTensorData class we looked up at
+        // compile time and retained.
         let alloc: *mut Object = unsafe { msg_send![tensor_data_cls, alloc] };
+        // SAFETY: `alloc` is a freshly-allocated MPSGraphTensorData instance
+        // (one retain). `buf.as_ptr()` returns a valid MTLBuffer pointer whose
+        // lifetime is guaranteed by this fn's contract ("buffers must outlive
+        // the returned NSArray"). `shape_arr` is a valid autoreleased
+        // NSArray<NSNumber>. `dtype` is a u32 enum value expected by the init.
         let td: *mut Object = unsafe {
             msg_send![alloc,
                 initWithMTLBuffer: buf.as_ptr()
@@ -892,13 +904,23 @@ unsafe fn build_retained_tensor_data_array(
         };
         datas.push(td);
     }
+    // SAFETY: `datas` is a contiguous slice of valid Objective-C pointers we
+    // just created; `arrayWithObjects:count:` reads `datas.len()` pointers
+    // and returns a new autoreleased NSArray that retains each element.
     let ns_array: *mut Object = unsafe {
         msg_send![ns_array_cls,
             arrayWithObjects: datas.as_ptr()
             count: datas.len()]
     };
+    // SAFETY: `ns_array` is a valid NSArray pointer returned from
+    // `arrayWithObjects:count:`. `retain` is a no-arg message on the
+    // NSObject root class — always safe on a valid pointer.
     let _: () = unsafe { msg_send![ns_array, retain] };
     for td in &datas {
+        // SAFETY: every `td` in `datas` is balanced with exactly one retain
+        // from `alloc/init` above. The NSArray took its own retain in
+        // `arrayWithObjects:count:`, so we can safely release our reference
+        // here — the array keeps the element alive.
         let _: () = unsafe { msg_send![*td, release] };
     }
     Ok(ns_array)
