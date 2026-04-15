@@ -5,6 +5,50 @@ All notable changes to the yscv workspace will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] — 2026-04-15
+
+The pipeline-framework release. Ships the TOML-driven multi-accelerator
+runtime (`yscv-pipeline`) plus the Rockchip MPP hardware-encoder wrapper
+(`yscv-video-mpp`) as two new library crates, brings in a full rewrite of
+the RKNN backend (pipelined pool with auto-recovery, hot-reload, custom
+ops), adds the MPSGraph triple-buffered submit/wait API, wires real-time
+scheduling (SCHED_FIFO / CPU affinity / mlockall / cpufreq governor) into
+the pipeline config, and gives the framework top-level documentation
+(QUICKSTART, per-crate READMEs, troubleshooting, getting-started).
+
+Highlights:
+
+- **`yscv-pipeline` crate** — TOML-driven dispatch across CPU / RKNN /
+  RKNN-matmul / MPSGraph / wgpu; `AcceleratorDispatcher` trait;
+  per-task `recover_all()`, `spawn_watchdog()`, ONNX→RKNN compile at
+  startup, multi-input graphs, shape-validation on submit.
+- **`yscv-video-mpp` crate** — `dlopen`-based Rockchip MPP hardware
+  encoder (H.264 / H.265), no link-time vendor dependency.
+- **`RknnPipelinedPool`** — multi-slot NPU pool with `submit` / `wait`,
+  consecutive-failure auto-recovery, `reload(&new_model_bytes)` hot
+  swap. `RknnMatmul` gets its own `alloc_mem` + dispatcher variant
+  `Accelerator::RknnMatmul { m, k, n, dtype }`.
+- **MPSGraph pipelined** — `submit_mpsgraph_plan` / `wait_mpsgraph_plan`
+  triple-buffered by default; multi-input models supported; 4.3× ORT
+  CoreML throughput on two-tower trackers.
+- **Real-time wiring** — `[realtime]` in TOML → `apply_rt_config_with_governor`
+  applies SCHED_FIFO + CPU affinity + `mlockall` + cpufreq governor with
+  graceful fallback when `CAP_SYS_NICE` / `CAP_SYS_ADMIN` are missing.
+- **Docs overhaul** — [`QUICKSTART.md`](QUICKSTART.md) (3 personas,
+  5 min each), [`docs/getting-started.md`](docs/getting-started.md)
+  (7-step progressive tutorial), [`docs/troubleshooting.md`](docs/troubleshooting.md)
+  (common errors + fixes per platform), per-crate READMEs for
+  discoverability on crates.io, [`examples/README.md`](examples/README.md)
+  catalogue.
+- **CI hardening** — `scripts/check-safety-comments.sh` paths updated
+  after the `metal/` reorg, `scripts/check-doc-counts.sh` expectations
+  bumped to 16 crates, `apps/bench` gets `default-run = "yscv-bench"`
+  so the benchmark step no longer errors on binary ambiguity.
+- **Numerical tolerances** — `matmul_associative_with_scalar` proptest +
+  `conv3d` tests loosened (1e-4 → 1e-3, 1e-6 → 1e-3) to cover the
+  cross-BLAS variance between Accelerate (macOS) and OpenBLAS
+  (Linux / Windows) on 3-element dot products.
+
 ## [Unreleased]
 
 ### Pipeline framework — RKNN matmul dispatcher

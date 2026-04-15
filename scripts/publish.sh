@@ -11,6 +11,9 @@ if [[ "${1:-}" == "--dry-run" ]]; then
 fi
 
 # Publish order (leaves first, dependents last):
+#   yscv-video-mpp is standalone (no yscv deps) — can sit anywhere.
+#   yscv-pipeline depends on kernels + tensor + onnx + video so it
+#   goes after onnx.
 CRATES=(
     yscv-tensor
     yscv-autograd
@@ -19,7 +22,9 @@ CRATES=(
     yscv-imgproc
     yscv-eval
     yscv-video
+    yscv-video-mpp
     yscv-onnx
+    yscv-pipeline
     yscv-model
     yscv-detect
     yscv-recognize

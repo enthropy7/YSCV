@@ -200,7 +200,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "camera-face-tool"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "serde_json",
@@ -2707,7 +2707,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "yscv"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "yscv-autograd",
  "yscv-cli",
@@ -2726,7 +2726,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-autograd"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "thiserror",
@@ -2736,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-bench"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "mimalloc",
  "yscv-autograd",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-cli"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "serde_json",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-detect"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "proptest",
@@ -2778,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-eval"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "csv",
@@ -2792,7 +2792,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-examples"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "thiserror",
  "yscv-autograd",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-imgproc"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "image",
@@ -2823,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-kernels"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "block",
  "bytemuck",
@@ -2843,7 +2843,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-model"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "image",
@@ -2860,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-onnx"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "metal",
  "objc",
@@ -2875,7 +2875,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-optim"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "thiserror",
  "yscv-autograd",
@@ -2884,7 +2884,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-pipeline"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde",
  "thiserror",
@@ -2897,7 +2897,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-recognize"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "serde",
@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-tensor"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "proptest",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-track"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "thiserror",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-video"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -2943,7 +2943,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-video-mpp"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "libc",
  "thiserror",
