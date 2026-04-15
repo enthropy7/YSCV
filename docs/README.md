@@ -42,6 +42,18 @@ Pick your starting point.
 - **[onnx-inference.md](onnx-inference.md)** — ONNX runtime: CPU
   (128+ ops), Apple MPSGraph, wgpu (cross-platform GPU). Triple-
   buffered submit/wait API for sustained throughput.
+- **[mpsgraph-guide.md](mpsgraph-guide.md)** — standalone guide for
+  the Apple Silicon MPSGraph path: when to use, full API reference,
+  sync vs pipelined, multi-input models, fallback, troubleshooting.
+  One-stop shop if you want the fastest inference on macOS.
+- **[gpu-backend-guide.md](gpu-backend-guide.md)** — standalone guide
+  for the wgpu cross-platform GPU path (Vulkan / Metal / DX12 / GL):
+  platform selection, compiled f16 plans, multi-GPU,
+  WGPU_BACKEND env var, troubleshooting. The one to read on
+  Linux/Windows.
+- **[feature-flags.md](feature-flags.md)** — canonical reference for
+  every Cargo feature flag across the workspace: what it does, setup
+  per platform, combination recipes.
 - **[../crates/yscv-pipeline/README.md](../crates/yscv-pipeline/README.md)** —
   multi-accelerator dispatcher, recovery, hot-reload, watchdog.
 - **[../crates/yscv-onnx/README.md](../crates/yscv-onnx/README.md)** —

@@ -327,6 +327,11 @@ cargo run --release --features gpu
 
 MPSGraph compiles the entire ONNX model into a single GPU dispatch and runs it triple-buffered. For sustained inference, the pipelined API (`submit_mpsgraph_plan` + `wait_mpsgraph_plan`) lets CPU-side marshaling overlap GPU work — ~3–5× higher throughput than the sync path.
 
+> **Want the full story?** See [`mpsgraph-guide.md`](mpsgraph-guide.md)
+> — standalone guide with sync vs pipelined decision table, multi-input
+> models, full API reference, fallback strategy, and troubleshooting.
+> This cookbook section is the quick recipe; the guide is everything.
+
 ```toml
 # Cargo.toml
 yscv-onnx = { version = "0.1", features = ["metal-backend"] }

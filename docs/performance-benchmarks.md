@@ -278,6 +278,39 @@ The pipelined API (`submit_mpsgraph_plan` + `wait_mpsgraph_plan`) triple-buffers
 
 Depth 2 is the throughput sweet spot (4.3× vs ORT CoreML); depth 4 trades raw p50 for the tightest tail (p99=0.64 ms, max=0.78 ms). Pipeline depth is chosen via `YSCV_MPS_PIPELINE` env var (default 3, clamped 1..=8). The API itself is safe regardless: `submit_mpsgraph_plan` back-pressures if the caller has more outstanding handles than the pipeline depth.
 
+### Siamese Tracker — Full Backend Comparison (Apple Silicon, Apr 2026)
+
+Same two-tower Siamese tracker (219 ONNX nodes, inputs 1×3×128×128 +
+1×3×256×256, fp32 zero-fill). Compares every backend yscv ships
+against the corresponding ORT provider on the identical host (M-series
+macOS). 200 iterations after 40-iter warmup; p50 is the reported number.
+
+| Backend | yscv 0.1.8 | ORT 1.19.2 | yscv vs ORT |
+|---|---:|---:|---:|
+| **CPU** | **43.1 FPS** (23.2 ms) | 18.9 FPS (53.0 ms) | **2.3× faster** |
+| **GPU sync** | **728 FPS** (1.37 ms) | 532 FPS (1.88 ms, CoreML) | **1.4× faster** |
+| **GPU pipelined×3** | **1510 FPS** (0.66 ms) | — | **2.9×** over ORT CoreML |
+| **GPU peak burst** | 2801 FPS (0.36 ms min) | — | — |
+
+**Why yscv CPU beats ORT CPU on Apple Silicon**: `Accelerate.framework`
+dispatches BLAS through Apple's AMX (Advanced Matrix eXtensions) block
+— a dedicated matrix accelerator inside the CPU complex, separate from
+the Neural Engine. ORT's `CPUExecutionProvider` uses its own
+general-purpose SIMD kernels that don't hit AMX, so it leaves ~2.3×
+throughput on the table. On Intel the opposite holds: ORT's oneDNN is
+highly-tuned for AVX-512 where yscv (which dispatches through
+OpenBLAS) is typically 2-3× slower.
+
+**Why yscv Metal beats ORT CoreML on Apple Silicon**: ORT's
+`CoreMLExecutionProvider` compiles the graph to CoreML and routes
+compatible ops to the **Apple Neural Engine (ANE)** + Metal hybrid. On
+the Siamese tracker 216/219 ops run on CoreML; the remaining 3 fall
+back to CPU. Every fallback crosses a CPU↔accelerator boundary,
+costing synchronization + marshalling. yscv's MPSGraph path compiles
+100% of the graph to pure Metal and avoids the hybrid overhead
+entirely. Pipelining (3-buffered submit/wait) then overlaps CPU
+marshal with GPU compute for another 2× on sustained throughput.
+
 ### Pipelined Throughput (RKNN submit/wait, RK3588)
 
 `RknnPipelinedPool` applies the same pattern to Rockchip NPU cores: one slot per `NpuCoreMask`, pre-allocated + pre-bound `RknnMem` per input and output, back-pressured `submit`/`wait`. On RK3588 the pool can drive all 3 NPU cores concurrently; on RV1106 pass `&[Core0]` for a cleanly-typed single-slot async path.

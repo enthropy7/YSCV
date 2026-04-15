@@ -5,6 +5,32 @@ All notable changes to the yscv workspace will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Benchmark update — Siamese tracker vs ORT (Apple Silicon)
+
+Fresh measurements against `onnxruntime 1.19.2` on the same M-series
+host, 219-node Siamese tracker model (1×3×128×128 + 1×3×256×256
+inputs):
+
+| Backend | yscv 0.1.8 | ORT 1.19.2 | yscv vs ORT |
+|---|---:|---:|---:|
+| CPU | 43.1 FPS (23.2 ms) | 18.9 FPS (53.0 ms) | **2.3×** |
+| GPU sync | 728 FPS (1.37 ms) | 532 FPS (1.88 ms, CoreML) | **1.4×** |
+| GPU pipelined×3 | 1510 FPS (0.66 ms) | — | **2.9×** vs CoreML |
+
+Why yscv wins here on both fronts:
+- **CPU**: `Accelerate.framework` on Apple Silicon dispatches matmul
+  through the AMX block (matrix accelerator inside the CPU). ORT's
+  generic-SIMD CPU kernels don't hit AMX.
+- **GPU**: ORT's CoreML provider hybrid-executes across ANE + Metal +
+  CPU with a 3-op CPU fallback for this graph, paying synchronisation
+  overhead at each boundary. yscv MPSGraph compiles 100% of the graph
+  to pure Metal; pipelining then overlaps CPU marshal with GPU compute.
+
+Reproduction details in
+[`docs/performance-benchmarks.md § Siamese Tracker — Full Backend Comparison`](docs/performance-benchmarks.md).
+
 ## [0.1.8] — 2026-04-15
 
 The pipeline-framework release. Ships the TOML-driven multi-accelerator

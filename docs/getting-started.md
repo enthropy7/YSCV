@@ -157,7 +157,9 @@ let outputs = run_mpsgraph_plan(&plan, &[("images", nchw.data())])?;
 
 That's it. ~5× faster than the CPU runner on YOLO. For sustained
 throughput across many frames, use the triple-buffered submit/wait
-API:
+API (or read [`docs/mpsgraph-guide.md`](mpsgraph-guide.md) for the
+full MPSGraph walkthrough — when to use sync vs pipelined, multi-input
+models, fallback strategy, troubleshooting):
 
 ```rust
 use yscv_onnx::{submit_mpsgraph_plan, wait_mpsgraph_plan, InferenceHandle};
