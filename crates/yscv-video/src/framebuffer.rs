@@ -322,6 +322,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::identity_op)]
+    // The `0u16 >> N` / `<< N` shifts look like identity ops but are the whole
+    // point of the test: they document the RGB565 bit layout for each
+    // channel. Collapsing them would defeat the didactic value.
     fn rgb565_conversion_correctness() {
         // Verify RGB565 packing logic: R=255,G=255,B=255 -> 0xFFFF
         let r: u16 = 255;
