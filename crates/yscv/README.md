@@ -17,7 +17,7 @@ imwrite("gray.png", &gray)?;
 
 ## Included Crates
 
-The yscv workspace ships 14 library crates; this umbrella re-exports them all behind a single prelude:
+The yscv workspace ships 16 library crates; this umbrella re-exports them all behind a single prelude:
 
 | Crate | What it does |
 |-------|-------------|
@@ -33,5 +33,7 @@ The yscv workspace ships 14 library crates; this umbrella re-exports them all be
 | `yscv-recognize` | Cosine similarity, VP-Tree ANN, `Recognizer` enroll/match |
 | `yscv-eval` | Classification/detection/tracking/regression metrics, 8 dataset adapters |
 | `yscv-onnx` | 128+ op ONNX CPU runtime, INT4/INT8 quantization, LLM generation, graph optimizer, Metal/MPSGraph backend |
+| `yscv-pipeline` | TOML-driven multi-accelerator dispatch, RT scheduling, recovery |
+| `yscv-video-mpp` | Rockchip MPP hardware encoder (H.264, H.265) |
 | `yscv-cli` | CLI for inference, camera diagnostics, dataset evaluation |
 | `yscv` | This umbrella crate (`prelude` + re-exports) |

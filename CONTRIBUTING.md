@@ -10,7 +10,7 @@ The framework covers the full pipeline: tensors and autograd, neural network lay
 
 ## Project shape
 
-The workspace has 14 library crates, 2 application binaries (`apps/bench`, `apps/camera-face-tool`), and an examples crate (21 examples in `examples/src/`). There are 1,861 default tests (1,897 with `--features "rknn metal-backend gpu realtime rknn-validate"`) across the 14 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.1.7`.
+The workspace has 16 library crates, 2 application binaries (`apps/bench`, `apps/camera-face-tool`), and an examples crate (21 examples in `examples/src/`). There are 1,861 default tests (1,897 with `--features "rknn metal-backend gpu realtime rknn-validate"`) across the 16 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.1.7`.
 
 Key crates and what they do:
 

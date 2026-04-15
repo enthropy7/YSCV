@@ -4,7 +4,7 @@ Current state of the yscv framework.
 
 ## Architecture
 
-14 library crates, 2 apps, 1 examples crate.
+16 library crates, 2 apps, 1 examples crate.
 
 ```
 yscv (umbrella re-export)

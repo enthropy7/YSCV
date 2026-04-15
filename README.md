@@ -101,7 +101,7 @@ The detect → track → recognize pipeline runs in 67µs per frame end-to-end. 
 
 ## Performance
 
-We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1,861 default tests / 1,897 with all features, across 14 crates.
+We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1,861 default tests / 1,897 with all features, across 16 crates.
 
 Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on x86, with optional Intel MKL and ARM Performance Libraries for the last few percent.
 
@@ -133,7 +133,7 @@ Full benchmark results in [docs/performance-benchmarks.md](docs/performance-benc
 
 ## What's inside
 
-The framework is split into 14 crates, each doing one thing well:
+The framework is split into 16 crates, each doing one thing well:
 
 | Crate | Purpose |
 |-------|---------|
@@ -149,6 +149,8 @@ The framework is split into 14 crates, each doing one thing well:
 | `yscv-recognize` | Cosine matching, VP-Tree ANN indexing, Recognizer with enroll/match |
 | `yscv-eval` | Classification/detection/tracking/regression/image-quality metrics, 8 dataset adapters |
 | `yscv-onnx` | 128+ op ONNX CPU runtime, INT4/INT8 quantization, LLM generation (KV-cache, RoPE, GQA), graph optimizer, Metal/MPSGraph GPU |
+| `yscv-pipeline` | TOML-driven multi-accelerator dispatch (CPU / RKNN / MPSGraph / GPU), RT wiring, recovery, hot-reload |
+| `yscv-video-mpp` | Rockchip MPP hardware encoder integration (H.264, H.265) |
 | `yscv-cli` | Inference + evaluation CLI: camera diagnostics, dataset eval, pipeline runner |
 | `yscv` | Umbrella crate re-exporting the prelude and per-crate APIs |
 

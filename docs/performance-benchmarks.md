@@ -2,7 +2,7 @@
 
 Comprehensive benchmark results comparing yscv against NumPy, PyTorch, OpenCV, ffmpeg, onnxruntime, and CoreML.
 
-**Last updated**: April 2026 | **Tests**: 1,861 default / 1,897 all-features across 14 crates | **CI**: macOS + Linux + Windows + ARM64
+**Last updated**: April 2026 | **Tests**: 1,861 default / 1,897 all-features across 16 crates | **CI**: macOS + Linux + Windows + ARM64
 
 ## Hardware & Methodology
 

@@ -15,7 +15,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # ── Expected counts ──────────────────────────────────────────────────
-EXPECTED_CRATES=14
+EXPECTED_CRATES=16
 EXPECTED_VERSION="0.1.7"
 EXPECTED_ONNX_OPS=130
 EXPECTED_TENSOR_METHODS=156          # ops.rs (115) + tensor.rs (32) + linalg.rs (9)
