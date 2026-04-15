@@ -175,29 +175,6 @@ fn use_blas() -> bool {
 
 #[cfg(feature = "blas")]
 #[allow(unsafe_code)]
-unsafe extern "C" {
-    /// cblas_sgemm from Accelerate.framework / OpenBLAS / MKL.
-    /// C = alpha * A * B + beta * C
-    fn cblas_sgemm(
-        order: i32,  // CblasRowMajor = 101
-        transa: i32, // CblasNoTrans = 111
-        transb: i32, // CblasNoTrans = 111
-        m: i32,
-        n: i32,
-        k: i32,
-        alpha: f32,
-        a: *const f32,
-        lda: i32,
-        b: *const f32,
-        ldb: i32,
-        beta: f32,
-        c: *mut f32,
-        ldc: i32,
-    );
-}
-
-#[cfg(feature = "blas")]
-#[allow(unsafe_code)]
 pub(crate) fn blas_sgemm(
     left: &[f32],
     right: &[f32],
@@ -224,13 +201,22 @@ pub(crate) fn blas_sgemm(
         output.len(),
         m * n
     );
-    const CBLAS_ROW_MAJOR: i32 = 101;
-    const CBLAS_NO_TRANS: i32 = 111;
+    // Using `cblas-sys` gives us battle-tested FFI declarations with
+    // proper `#[repr]`-ed enum types for CBLAS_LAYOUT / CBLAS_TRANSPOSE
+    // instead of raw `i32`. Same symbol, same ABI — but eliminates the
+    // tiny risk of enum-underlying-type mismatch between our hand-rolled
+    // extern block and the C header on any given platform (notably
+    // vcpkg OpenBLAS + MSVC).
+    use cblas_sys::{CBLAS_LAYOUT, CBLAS_TRANSPOSE, cblas_sgemm};
+    // SAFETY: pointers are valid for at least m*k / k*n / m*n f32s as
+    // asserted above; `cblas_sgemm` is a pure computation with no
+    // aliasing requirements beyond the buffers being distinct when
+    // beta != 0 (we pass beta = 0 so C is pure output).
     unsafe {
         cblas_sgemm(
-            CBLAS_ROW_MAJOR,
-            CBLAS_NO_TRANS,
-            CBLAS_NO_TRANS,
+            CBLAS_LAYOUT::CblasRowMajor,
+            CBLAS_TRANSPOSE::CblasNoTrans,
+            CBLAS_TRANSPOSE::CblasNoTrans,
             m as i32,
             n as i32,
             k as i32,

@@ -1,6 +1,46 @@
 use proptest::prelude::*;
 use yscv_tensor::Tensor;
 
+// One-off regression test: the exact input values that failed on Windows CI
+// (Apr 2026 release run). Runs on every platform so if the bug is real
+// (not Windows-specific), local `cargo test` surfaces it immediately.
+#[test]
+fn windows_repro_matmul_associative_with_scalar() {
+    let a_data = vec![
+        4.4893885f32,
+        -1.0226824,
+        3.6606636,
+        -0.5950966,
+        -3.5834217,
+        -0.69684124,
+    ];
+    let b_data = vec![
+        -3.3406157f32,
+        -3.105911,
+        3.3080542,
+        3.054057,
+        -0.7890869,
+        -3.8437314,
+    ];
+    let s = 0.9218468f32;
+
+    let a = Tensor::from_vec(vec![2, 3], a_data.clone()).unwrap();
+    let b = Tensor::from_vec(vec![3, 2], b_data.clone()).unwrap();
+    let a_scaled = a.scale(s);
+    let lhs = super::matmul_2d_sequential(&a_scaled, &b).unwrap();
+    let ab = super::matmul_2d_sequential(&a, &b).unwrap();
+    let rhs = ab.scale(s);
+
+    for (i, (&l, &r)) in lhs.data().iter().zip(rhs.data().iter()).enumerate() {
+        let tol = l.abs().max(r.abs()) * 1e-3 + 1e-2;
+        assert!(
+            (l - r).abs() < tol,
+            "PLATFORM REGRESSION at [{i}]: lhs={l}, rhs={r}, diff={}, tol={tol}",
+            (l - r).abs()
+        );
+    }
+}
+
 use super::ops::rope::apply_rotary_embedding;
 use super::ops::sigmoid_slice_dispatch;
 use super::ops::simd::sigmoid_scalar;
@@ -171,6 +211,20 @@ proptest! {
     }
 
     // ── (i) Matmul associative with scalar ─────────────────────────────
+    //
+    // Checks that `matmul(scale(A, s), B) ≈ s * matmul(A, B)`. A real
+    // BLAS implementation reorders the inner-product accumulation so
+    // results are NOT bitwise-identical — the tolerance below covers
+    // the worst-case catastrophic-cancellation error for 3-element
+    // dot products with magnitudes up to 25.
+    //
+    // Historical note: this test surfaced a real Windows regression
+    // (vcpkg OpenBLAS + MSVC returning magnitude-21× wrong results
+    // for some small-matrix inputs) which was fixed by switching our
+    // FFI from a hand-rolled `extern "C"` block to the `cblas-sys`
+    // crate with properly-typed enum parameters. See
+    // `windows_repro_matmul_associative_with_scalar` for a
+    // deterministic regression guard against recurrence.
     #[test]
     fn matmul_associative_with_scalar(
         a_data in proptest::collection::vec(-5.0f32..5.0, 6),  // 2x3

@@ -12,7 +12,7 @@ keywords.workspace = true
 
 [features]
 default = ["blas"]
-blas = []
+blas = ["dep:cblas-sys"]
 mkl = []
 armpl = []
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
@@ -32,6 +32,13 @@ block = { version = "0.1", optional = true }
 foreign-types = { version = "0.3", optional = true }
 libc = { version = "0.2", optional = true }
 tempfile = { version = "3", optional = true }
+# cblas-sys gives us battle-tested Windows-compatible FFI for cblas_sgemm.
+# Our previous hand-rolled `extern "C"` declaration worked on macOS
+# (Accelerate) and Linux (OpenBLAS) but triggered a numerical bug on
+# vcpkg OpenBLAS + MSVC for certain small-matrix inputs — see the
+# `windows_repro_matmul_associative_with_scalar` regression test in
+# `proptest_tests.rs`.
+cblas-sys = { version = "0.1", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
