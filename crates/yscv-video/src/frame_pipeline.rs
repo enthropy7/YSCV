@@ -475,11 +475,24 @@ where
                     done += 1;
                     outputted_count.store(done, Ordering::Release);
                 } else if capture_done.load(Ordering::Acquire)
-                    && done >= processed_count.load(Ordering::Acquire)
-                    && processed_count.load(Ordering::Acquire)
-                        >= captured_count.load(Ordering::Acquire)
+                    && done >= captured_count.load(Ordering::Acquire)
                 {
-                    // All stages are done.
+                    // Capture finished and every captured frame has been
+                    // output. Can't use `processed_count` in the middle
+                    // of the comparison — two non-atomic loads create a
+                    // TOCTOU race: between the `done >= processed_count`
+                    // check and the `processed_count >= captured_count`
+                    // check, the process stage can bump `processed_count`
+                    // from (done) to (done + 1), making both sides of the
+                    // AND look true while the 5th slot is actually still
+                    // in READY state and would have been picked up on
+                    // the next loop iteration. Observed on Windows CI.
+                    //
+                    // `captured_count` is monotonic and terminal once
+                    // `capture_done` is set; the process stage only exits
+                    // once every captured slot has transitioned to
+                    // READY. So `done >= captured_count` under
+                    // `capture_done` is both sufficient and race-free.
                     return;
                 } else {
                     std::hint::spin_loop();

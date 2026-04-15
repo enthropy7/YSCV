@@ -418,15 +418,12 @@ fn main() {
                         }
                     }
 
-                    if let Some(ref mut mav) = mavlink_serial {
-                        if let Ok(messages) = mav.read_messages() {
-                            for msg in &messages {
-                                if let Some(update) = yscv_video::telemetry_from_mavlink(msg) {
-                                    yscv_video::apply_telemetry_update(
-                                        &mut mavlink_telemetry,
-                                        &update,
-                                    );
-                                }
+                    if let Some(ref mut mav) = mavlink_serial
+                        && let Ok(messages) = mav.read_messages()
+                    {
+                        for msg in &messages {
+                            if let Some(update) = yscv_video::telemetry_from_mavlink(msg) {
+                                yscv_video::apply_telemetry_update(&mut mavlink_telemetry, &update);
                             }
                         }
                     }

@@ -77,7 +77,7 @@ Rockchip devices where the runtime library is present.
 **Structs: 24/24** with `#[repr(C)]`. All sizes asserted at **compile
 time** against the C ABI — drift in SDK headers fails `cargo build`:
 
-```rust
+```rust,ignore
 const _: () = {
     assert!(std::mem::size_of::<RknnTensorAttr>() == 376);
     assert!(std::mem::size_of::<RknnMatmulInfo>() == 64);
@@ -88,7 +88,7 @@ const _: () = {
 
 ### Quick-start
 
-```rust
+```rust,ignore
 use yscv_kernels::{rknn_available, RknnBackend, ContextPool, NpuCoreMask};
 
 if rknn_available() {
@@ -124,7 +124,7 @@ Bind the result via `bind_input_by_name(&mem, "images")` and use
 
 Single-context async (overlap one NPU core with CPU work):
 
-```rust
+```rust,ignore
 let frame_id = 42;
 let handle = rknn.run_async_bound(frame_id, /*deadline_ms=*/ 5)?;
 // … CPU work overlapping with NPU execution …
@@ -137,7 +137,7 @@ and silently discards the outputs.
 Multi-core pipelined (overlap all NPU cores — on RK3588 this is a ~3×
 throughput win over sync `dispatch_roundrobin`):
 
-```rust
+```rust,ignore
 use std::collections::VecDeque;
 use yscv_kernels::{NpuCoreMask, RknnInferenceHandle, RknnPipelinedPool};
 
@@ -163,7 +163,7 @@ no allocations, no binding setup per frame.
 
 ### Custom ops with Rust callbacks
 
-```rust
+```rust,ignore
 use yscv_kernels::{CustomOp, CustomOpHandler, CustomOpContext, CustomOpTensor};
 use std::sync::Arc;
 
@@ -195,7 +195,7 @@ OpenCL kernels (no Rust callback) have no slot limit — drop the
 The on-device API supports only **fp16** (no calibration) and **int8**
 (with a calibration `.txt`):
 
-```rust
+```rust,ignore
 use yscv_kernels::{compile_onnx_to_rknn, RknnCompileConfig};
 
 // fp16 (no quantization)
