@@ -1,4 +1,4 @@
-use rayon::{ThreadPool, prelude::*};
+use rayon::ThreadPool;
 use yscv_tensor::{AlignedVec, Tensor};
 
 use super::super::error::KernelError;
@@ -50,6 +50,20 @@ pub fn relu(input: &Tensor) -> Tensor {
     Tensor::from_raw_parts(input.shape(), input.strides(), output)
 }
 
+/// In-place element-wise add: `lhs += rhs`. Same-shape only.
+#[inline]
+pub fn add_inplace(lhs: &mut Tensor, rhs: &Tensor) {
+    debug_assert_eq!(lhs.shape(), rhs.shape());
+    super::simd::add_inplace_dispatch(lhs.data_mut(), rhs.data());
+}
+
+/// Fused in-place add + ReLU: `lhs[i] = max(lhs[i] + rhs[i], 0)`. Single SIMD pass.
+#[inline]
+pub fn add_relu_inplace(lhs: &mut Tensor, rhs: &Tensor) {
+    debug_assert_eq!(lhs.shape(), rhs.shape());
+    super::simd::add_relu_inplace_dispatch(lhs.data_mut(), rhs.data());
+}
+
 /// In-place ReLU activation: clamps negative values to zero.
 #[inline]
 pub fn relu_inplace(tensor: &mut Tensor) {
@@ -91,21 +105,15 @@ pub fn relu_with_config_and_pool(
     let len = input_data.len();
     let mut output = AlignedVec::<f32>::uninitialized(len);
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(PARALLEL_SLICE_CHUNK_ELEMENTS)
-                .enumerate()
-                .for_each(|(chunk_idx, out_chunk)| {
-                    let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
-                    let end = start + out_chunk.len();
-                    relu_to_slice_dispatch(&input_data[start..end], out_chunk);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let end = start + out_chunk.len();
+                relu_to_slice_dispatch(&input_data[start..end], out_chunk);
+            },
+        );
     } else {
         relu_to_slice_dispatch(input_data, &mut output);
     }
@@ -154,21 +162,15 @@ pub fn exp_with_config_and_pool(
     let len = input_data.len();
     let mut output = AlignedVec::<f32>::uninitialized(len);
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(PARALLEL_SLICE_CHUNK_ELEMENTS)
-                .enumerate()
-                .for_each(|(chunk_idx, out_chunk)| {
-                    let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
-                    let end = start + out_chunk.len();
-                    exp_slice_dispatch(&input_data[start..end], out_chunk);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let end = start + out_chunk.len();
+                exp_slice_dispatch(&input_data[start..end], out_chunk);
+            },
+        );
     } else {
         exp_slice_dispatch(input_data, &mut output);
     }
@@ -217,13 +219,14 @@ pub fn gelu(input: &Tensor) -> Tensor {
     let len = src.len();
     let mut output = AlignedVec::<f32>::uninitialized(len);
     if len >= ACTIVATION_PARALLEL_THRESHOLD {
-        output
-            .par_chunks_mut(ACTIVATION_CHUNK_SIZE)
-            .enumerate()
-            .for_each(|(ci, out_chunk)| {
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            ACTIVATION_CHUNK_SIZE,
+            |ci, out_chunk| {
                 let start = ci * ACTIVATION_CHUNK_SIZE;
                 gelu_slice_out(&src[start..start + out_chunk.len()], out_chunk);
-            });
+            },
+        );
     } else {
         gelu_slice_out(src, &mut output);
     }
@@ -270,7 +273,7 @@ pub fn silu_inplace(tensor: &mut Tensor) {
     const PARALLEL_THRESHOLD: usize = 100_000;
     if len >= PARALLEL_THRESHOLD {
         // Parallel: split into chunks processed by different cores.
-        data.par_chunks_mut(32_768).for_each(|chunk| {
+        super::super::scope_ctx::par_chunks_mut_dispatch(data, 32_768, |_ci, chunk| {
             let ptr = chunk.as_mut_ptr();
             let clen = chunk.len();
             #[allow(unsafe_code)]
@@ -297,8 +300,11 @@ pub fn mish(input: &Tensor) -> Tensor {
     let mut output = input.clone();
     let data = output.data_mut();
     if data.len() >= ACTIVATION_PARALLEL_THRESHOLD {
-        data.par_chunks_mut(ACTIVATION_CHUNK_SIZE)
-            .for_each(mish_slice);
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            data,
+            ACTIVATION_CHUNK_SIZE,
+            |_ci, chunk| mish_slice(chunk),
+        );
     } else {
         mish_slice(data);
     }
@@ -394,27 +400,15 @@ fn binary_with_config_and_pool(
     let mut output = AlignedVec::<f32>::uninitialized(left.len());
 
     if should_parallelize_len(left.len(), config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(PARALLEL_SLICE_CHUNK_ELEMENTS)
-                .enumerate()
-                .for_each(|(chunk_idx, out_chunk)| {
-                    let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
-                    let end = start + out_chunk.len();
-                    binary_same_shape_dispatch(
-                        &left[start..end],
-                        &right[start..end],
-                        out_chunk,
-                        kind,
-                    );
-                });
-        };
-
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let end = start + out_chunk.len();
+                binary_same_shape_dispatch(&left[start..end], &right[start..end], out_chunk, kind);
+            },
+        );
     } else {
         binary_same_shape_dispatch(left, right, &mut output, kind);
     }

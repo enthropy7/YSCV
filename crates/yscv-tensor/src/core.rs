@@ -20,7 +20,7 @@ mod tensor;
 
 pub use aligned::AlignedVec;
 pub use error::{DType, TensorError};
-pub use tensor::{Device, Tensor};
+pub use tensor::{Device, Layout, Tensor};
 
 #[cfg(test)]
 #[path = "proptest_tests.rs"]

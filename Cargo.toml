@@ -17,6 +17,7 @@ members = [
     "crates/yscv-cli",
     "crates/yscv-onnx",
     "crates/yscv-pipeline",
+    "crates/yscv-threadpool",
     "crates/yscv-video-mpp",
     "crates/yscv",
     "examples",

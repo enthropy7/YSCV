@@ -672,7 +672,7 @@ pub fn hough_lines(
         }
     }
 
-    lines.sort_by(|a, b| b.votes.cmp(&a.votes));
+    lines.sort_by_key(|line| std::cmp::Reverse(line.votes));
     Ok(lines)
 }
 

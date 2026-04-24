@@ -15,12 +15,163 @@ CPU and GPU compute backends with SIMD dispatch and BLAS integration. Powers all
 ## Key Operations
 
 - **Elementwise**: add, mul, relu, sigmoid, silu, gelu, mish, tanh, exp
-- **MatMul**: tiled parallel, BLAS dispatch, f16 support
-- **Conv2d**: im2col + GEMM, depthwise, separable, transpose
+- **MatMul**: blocked GEMM + row GEMM, BLAS dispatch, f16 support (see below)
+- **Conv2d**: im2col + GEMM, depthwise SIMD, separable, transpose (see below)
 - **Pooling**: max, average, global average
 - **Normalization**: batch norm, layer norm, group norm, RMS norm
 - **Attention**: multi-head scaled dot-product
 - **Softmax**: fused max+exp+sum+div in one pass
+
+### Blocked GEMM (custom, no-BLAS path)
+
+Two-level tiling with MC=128, NC=256, KC=256. Falls back to row GEMM when
+any dimension < 32 (`BLOCKED_THRESHOLD`).
+
+**Microkernels** (MR×NR):
+- 4×8 — AVX+FMA, AVX, SSE, NEON, scalar
+- 4×16 paired — AVX+FMA only (two 4×8 panels fused), k-loop unrolled ×2
+
+**k-loop unrolling (4×16 microkernel)**: inner loop processes two
+k-iterations per step with interleaved accumulator writes. On Zen 4
+(FMA latency=4 cycles, 2 FMA ports) this spaces each accumulator's
+reuse to ≥4 cycles, eliminating pipeline stalls from read-after-write
+hazards.
+
+**Set/accumulate mode**: the first k-block (pc=0) stores results directly
+into C; subsequent blocks load-accumulate-store. Eliminates the O(M×N)
+`fill(0.0)` that traditional GEBP implementations require before the
+k-loop.
+
+**Pack panels**: B and A are packed into contiguous NR-wide / MR-wide
+strips using `copy_nonoverlapping` and `write_bytes` (unsafe pointer ops)
+to avoid bounds-checked indexing that prevents auto-vectorization of the
+packing loop.
+
+### Row GEMM (small matrices)
+
+Cascade dispatch: 48→32→16→8→4→scalar columns. k-loop unrolled by 2
+with doubled accumulator sets to break FMA latency dependency chains
+(FMA latency = 4 cycles, 2 FMA ports on Zen 4 — spacing accumulator
+reuse to 4+ cycles eliminates pipeline stalls).
+
+### Depthwise Conv SIMD
+
+Multi-accumulator cascades to saturate both FMA ports:
+- AVX+FMA: 32→16→8→scalar (4 independent accumulators)
+- AVX: 32→16→8→scalar
+- SSE: 4→scalar
+- NEON: 16→4→scalar
+
+**Fused activation**: ReLU is applied inside SIMD registers before store
+(`_mm256_max_ps` / `vmaxq_f32`), eliminating a separate full-tensor pass.
+SiLU falls back to a post-pass (exp is expensive in SIMD without a
+library).
+
+### GEMM Store Fusion (bias+activation in microkernel)
+
+`GemmEpilogue` struct carries bias pointer + `Activation` enum through
+the entire GEMM call chain. On the last k-block, the microkernel applies
+bias and activation directly on accumulator registers before the single
+store — eliminating a separate read+write pass over the output tensor.
+
+All 7 microkernel variants support the epilogue:
+- 4×16 AVX+FMA, 4×8 AVX+FMA, 4×8 AVX, 4×8 SSE, 4×8 NEON, scalar, scalar_partial
+
+SiLU uses `fast_exp_bittrick` (Schraudolph bit-trick) per-arch.
+Identity epilogue (no bias, no activation) compiles to zero overhead.
+
+Entry points: `matmul_2d_slices_fused()`, `blas_sgemm_fused()`.
+
+## Recent Performance Arc (April 2026)
+
+Closed against ONNX Runtime 1.24.4 on a Siamese tracker, Zen 4 6C/12T.
+Cumulative default-ON win **~−953 µs @ 6T p50** (4619 → 3665 µs), gap
+**2.38× → 2.10×**. See [docs/performance-benchmarks.md](../../docs/performance-benchmarks.md)
+for the full thread sweep.
+
+Latest public ARM rerun (Orange Pi Zero 3, 2026-04-21) is tracked in
+the same benchmarks doc and currently shows yscv ahead of ORT CPU on
+that tracker at 1..4 threads.
+
+### Graph-level fusions (landed at loader, dispatched via `NodeAction`)
+
+- `FusedDwPw` — depthwise 3×3 → pointwise 1×1 single-dispatch pair.
+- `FusedPwDw` — pointwise expand → depthwise 3×3, MobileNetV2 opening.
+- `FusedTransposeMatMul` — `Transpose(perm=[0,2,1])` absorbed into MatMul
+  via `matmul_2d_slices_trans_a` (BLAS `CblasTrans` when available, scratch
+  transpose + blocked GEMM otherwise). Mirrors ORT's `MatmulTransposeFusion`.
+- `ConvAdd` — residual `Add` fused into blocked-GEMM epilogue.
+
+### Streaming kernels (row-buffered, L1-hot intermediates)
+
+- `fused_pw_dw_3x3` — PW-expand + DW 3×3 with 3-row ZMM register-blocked
+  accumulators (AVX-512) / AVX2 / NEON / scalar. The PW intermediate
+  (~6 MB on inverted-bottleneck blocks) never touches DRAM — accumulators
+  flow straight into the DW window.
+
+### New microkernels
+
+- `yscv_sgemm_12x32_avx512` — MR=12×NR=32 AVX-512F hand-tuned `.S`
+  (opt-in `YSCV_AVX512_SGEMM=1`; reaches ~80% theoretical AVX-512 peak
+  single-thread on Zen 4).
+- `depthwise_conv2d_nhwc_row_avx512` — 128/64/32/16-wide ZMM tiles with
+  YMM and scalar tail handling.
+- `spec16_tile8_interior` — 8 adjacent output columns with 8 independent
+  ZMM accumulators, breaks the 27-tap FMA latency chain in first-layer
+  3×3 RGB.
+- `matmul_2d_slices_trans_a` — `transA=1` GEMM entry point, BLAS-first
+  with blocked-GEMM fallback.
+
+### Assembly coverage (documented)
+
+Hand-written assembly sources live in `src/asm/`:
+
+- `x86_64_sysv.S` / `x86_64_win64.S`
+- `aarch64.S`
+
+Hot SGEMM families covered there include:
+
+- x86_64: 4x8, 4x24 fused, 4x32 AVX-512, 12x32 AVX-512
+- aarch64: 4x24 NEON, 8x12 NEON
+
+Not every hot path is `.S`: for example, the fused PW->DW tracker path
+(`fused_pw_dw_3x3`) on aarch64 is currently NEON intrinsics (including
+the PW2X variant), not inline asm.
+
+### Runtime A/B knobs (kernel path selection)
+
+Most important ONNX CPU kernel toggles:
+
+- `YSCV_FUSED_PW_DW_STREAM_OFF=1`
+- `YSCV_FUSED_PW_DW_PW2X_OFF=1`
+- `YSCV_FUSED_PW_DW_W_TILE=<N>`
+- `YSCV_FUSED_DW_PW_STREAM_OFF=1`
+- `YSCV_FUSED_DW_PW_STREAM_PADDED=1`
+- `YSCV_DIRECT_CONV_WORK_MAX=<N>`
+
+For full semantics/defaults and tracker reproduction commands, see
+[`docs/onnx-cpu-kernels.md`](../../docs/onnx-cpu-kernels.md).
+
+### Multi-architecture coverage
+
+Every hot-path kernel ships AVX2 + AVX-512 (x86_64) + NEON (aarch64) +
+scalar fallback, selected via `is_x86_feature_detected!` /
+`std::arch::is_aarch64_feature_detected!` at runtime. Cross-compile for
+`aarch64-unknown-linux-gnu` is in CI; real aarch64 hardware validation
+is pending (AVX-512 DW, fused PW+DW streaming, and 8×8 NCHW↔NHWC
+permute do not yet have NEON-perf-tuned counterparts — they fall back
+to scalar-LLVM-autovec or slower NEON paths). See
+[docs/gap-report-2026-04-20.md](../../docs/gap-report-2026-04-20.md)
+for the full multi-arch status matrix.
+
+### Bias+Activation Dispatch (NHWC post-conv fallback)
+
+`bias_relu_nhwc_dispatch` / `bias_add_nhwc_dispatch` / `bias_silu_nhwc_dispatch`
+fuse bias addition and activation into a single SIMD pass over the GEMM
+output tensor. Used as fallback for row-GEMM and BLAS paths where the
+microkernel epilogue isn't available. For common channel counts (N=16, N=24),
+bias vectors are preloaded into registers before the row loop.
+Multiplatform: AVX (8-wide), NEON (4-wide), scalar.
 
 ## Features
 

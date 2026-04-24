@@ -318,12 +318,9 @@ mod alloc_cache {
 
     use std::cell::RefCell;
 
-    // WHY 8: 8 cached allocations per thread balances memory reuse with bounded memory growth.
-    const MAX_CACHED: usize = 8;
+    const MAX_CACHED: usize = 16;
     const ALIGN: usize = super::ALIGN;
 
-    /// RAII wrapper that properly frees all cached aligned allocations when dropped.
-    /// This prevents SIGSEGV/SIGABRT during process exit from leaked cached pointers.
     struct AllocCache {
         entries: Vec<(*mut u8, usize)>,
     }
@@ -357,11 +354,18 @@ mod alloc_cache {
     pub(super) fn try_alloc(size: usize) -> Option<*mut u8> {
         if cfg!(miri) {
             return None;
-        } // Disable cache under Miri to avoid false leak reports
-        // Use try_with to gracefully handle TLS already destroyed during thread/process exit
+        }
         CACHE
             .try_with(|c| {
                 let mut cache = c.borrow_mut();
+                // Check last entry first (MRU — temporal locality for inference loops)
+                if let Some(&(_, s)) = cache.entries.last()
+                    && s == size
+                {
+                    let (ptr, _) = cache.entries.pop().unwrap();
+                    return Some(ptr);
+                }
+                // Fallback: linear scan
                 if let Some(pos) = cache.entries.iter().position(|&(_, s)| s == size) {
                     let (ptr, _) = cache.entries.swap_remove(pos);
                     Some(ptr)
@@ -376,8 +380,7 @@ mod alloc_cache {
     pub(super) fn try_dealloc(ptr: *mut u8, size: usize) -> bool {
         if cfg!(miri) {
             return false;
-        } // Always free under Miri to avoid false leak reports
-        // Use try_with: if TLS is destroyed (thread exiting), fall through to real dealloc
+        }
         CACHE
             .try_with(|c| {
                 let mut cache = c.borrow_mut();

@@ -96,8 +96,14 @@ pub(super) fn exec_softmax(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
 }
 
 pub(super) fn exec_dropout(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
-    // Zero-copy: alias output to input (inference-time no-op)
-    env.alias(&node.outputs[0], &node.inputs[0]);
+    // Inference-time no-op: pass input through to output.
+    // Clone when alias can't resolve (runtime inputs not yet in slots).
+    if let Some(input) = env.get(&node.inputs[0]) {
+        let t = input.clone();
+        env.insert(node.outputs[0].clone(), t);
+    } else {
+        env.alias(&node.outputs[0], &node.inputs[0]);
+    }
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-use rayon::{ThreadPool, prelude::*};
+use rayon::ThreadPool;
 use yscv_tensor::{AlignedVec, Tensor, TensorError};
 
 use super::super::error::KernelError;
@@ -50,19 +50,13 @@ pub fn batch_norm2d_nhwc_with_config_and_pool(
 
     let input_data = input.data();
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(row_len)
-                .enumerate()
-                .for_each(|(row_idx, out_row)| {
-                    batch_norm2d_nhwc_row(input_data, plan, row_idx, out_row, &scale, &shift);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            row_len,
+            |row_idx, out_row| {
+                batch_norm2d_nhwc_row(input_data, plan, row_idx, out_row, &scale, &shift);
+            },
+        );
     } else {
         for (row_idx, out_row) in output.chunks_mut(row_len).enumerate() {
             batch_norm2d_nhwc_row(input_data, plan, row_idx, out_row, &scale, &shift);
@@ -96,19 +90,13 @@ pub fn softmax_last_dim_with_config_and_pool(
 
     let input_data = input.data();
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(plan.row_len)
-                .enumerate()
-                .for_each(|(row_idx, out_row)| {
-                    softmax_last_dim_row(input_data, row_idx, out_row);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            plan.row_len,
+            |row_idx, out_row| {
+                softmax_last_dim_row(input_data, row_idx, out_row);
+            },
+        );
     } else {
         for (row_idx, out_row) in output.chunks_mut(plan.row_len).enumerate() {
             softmax_last_dim_row(input_data, row_idx, out_row);
@@ -138,19 +126,13 @@ pub fn log_softmax_last_dim_with_config_and_pool(
 
     let input_data = input.data();
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(plan.row_len)
-                .enumerate()
-                .for_each(|(row_idx, out_row)| {
-                    log_softmax_last_dim_row(input_data, row_idx, out_row);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            plan.row_len,
+            |row_idx, out_row| {
+                log_softmax_last_dim_row(input_data, row_idx, out_row);
+            },
+        );
     } else {
         for (row_idx, out_row) in output.chunks_mut(plan.row_len).enumerate() {
             log_softmax_last_dim_row(input_data, row_idx, out_row);
@@ -177,19 +159,16 @@ pub fn logsumexp_last_dim_with_config_and_pool(
 
     let input_data = input.data();
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(row_idx, out)| {
-                    *out = logsumexp_last_dim_row(input_data, row_idx, plan.row_len);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        // par_iter_mut over `&mut [f32]` → `par_chunks_mut_dispatch` with
+        // chunk size 1: each chunk is `&mut [f32; 1]`, giving the same
+        // one-element-per-worker semantics.
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            1,
+            |row_idx, out| {
+                out[0] = logsumexp_last_dim_row(input_data, row_idx, plan.row_len);
+            },
+        );
     } else {
         for (row_idx, out) in output.iter_mut().enumerate() {
             *out = logsumexp_last_dim_row(input_data, row_idx, plan.row_len);
@@ -227,26 +206,20 @@ pub fn layer_norm_last_dim_with_config_and_pool(
         && should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool);
 
     if use_parallel {
-        let mut work = || {
-            output
-                .par_chunks_mut(plan.row_len)
-                .enumerate()
-                .for_each(|(row_idx, out_row)| {
-                    layer_norm_last_dim_row(
-                        input_data,
-                        row_idx,
-                        out_row,
-                        gamma_data,
-                        beta_data,
-                        params.epsilon,
-                    );
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            plan.row_len,
+            |row_idx, out_row| {
+                layer_norm_last_dim_row(
+                    input_data,
+                    row_idx,
+                    out_row,
+                    gamma_data,
+                    beta_data,
+                    params.epsilon,
+                );
+            },
+        );
     } else {
         for (row_idx, out_row) in output.chunks_mut(plan.row_len).enumerate() {
             layer_norm_last_dim_row(
@@ -855,59 +828,47 @@ pub fn group_norm_nhwc_with_config_and_pool(
     };
 
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            // We write into disjoint regions, but the regions are interleaved per group.
-            // Use a simpler approach: process all pairs sequentially or use par_iter on pairs
-            // with interior mutability. For simplicity, process in parallel by sample.
-            let sample_len = spatial * plan.channels;
-            output
-                .par_chunks_mut(sample_len)
-                .enumerate()
-                .for_each(|(sample, out_sample)| {
-                    for group in 0..plan.num_groups {
-                        let group_channel_start = group * cpg;
-                        let count = (spatial * cpg) as f32;
-                        let mut mean = 0.0f32;
-                        for pos in 0..spatial {
-                            let base =
-                                (sample * spatial + pos) * plan.channels + group_channel_start;
-                            for gc in 0..cpg {
-                                mean += input_data[base + gc];
-                            }
-                        }
-                        mean /= count;
-
-                        let mut variance = 0.0f32;
-                        for pos in 0..spatial {
-                            let base =
-                                (sample * spatial + pos) * plan.channels + group_channel_start;
-                            for gc in 0..cpg {
-                                let diff = input_data[base + gc] - mean;
-                                variance += diff * diff;
-                            }
-                        }
-                        variance /= count;
-                        let inv_std = (variance + params.epsilon).sqrt().recip();
-
-                        for pos in 0..spatial {
-                            let in_base =
-                                (sample * spatial + pos) * plan.channels + group_channel_start;
-                            let out_off = pos * plan.channels + group_channel_start;
-                            for gc in 0..cpg {
-                                let c = group_channel_start + gc;
-                                let normalized = (input_data[in_base + gc] - mean) * inv_std;
-                                out_sample[out_off + gc] =
-                                    normalized * gamma_data[c] + beta_data[c];
-                            }
+        let sample_len = spatial * plan.channels;
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            sample_len,
+            |sample, out_sample| {
+                for group in 0..plan.num_groups {
+                    let group_channel_start = group * cpg;
+                    let count = (spatial * cpg) as f32;
+                    let mut mean = 0.0f32;
+                    for pos in 0..spatial {
+                        let base = (sample * spatial + pos) * plan.channels + group_channel_start;
+                        for gc in 0..cpg {
+                            mean += input_data[base + gc];
                         }
                     }
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+                    mean /= count;
+
+                    let mut variance = 0.0f32;
+                    for pos in 0..spatial {
+                        let base = (sample * spatial + pos) * plan.channels + group_channel_start;
+                        for gc in 0..cpg {
+                            let diff = input_data[base + gc] - mean;
+                            variance += diff * diff;
+                        }
+                    }
+                    variance /= count;
+                    let inv_std = (variance + params.epsilon).sqrt().recip();
+
+                    for pos in 0..spatial {
+                        let in_base =
+                            (sample * spatial + pos) * plan.channels + group_channel_start;
+                        let out_off = pos * plan.channels + group_channel_start;
+                        for gc in 0..cpg {
+                            let c = group_channel_start + gc;
+                            let normalized = (input_data[in_base + gc] - mean) * inv_std;
+                            out_sample[out_off + gc] = normalized * gamma_data[c] + beta_data[c];
+                        }
+                    }
+                }
+            },
+        );
     } else {
         for pair_idx in 0..total_pairs {
             compute_pair(pair_idx, &mut output);
@@ -1008,19 +969,13 @@ pub fn rms_norm_last_dim_with_config_and_pool(
     let input_data = input.data();
     let gamma_data = params.gamma.data();
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(plan.row_len)
-                .enumerate()
-                .for_each(|(row_idx, out_row)| {
-                    rms_norm_last_dim_row(input_data, row_idx, out_row, gamma_data, params.epsilon);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            plan.row_len,
+            |row_idx, out_row| {
+                rms_norm_last_dim_row(input_data, row_idx, out_row, gamma_data, params.epsilon);
+            },
+        );
     } else {
         for (row_idx, out_row) in output.chunks_mut(plan.row_len).enumerate() {
             rms_norm_last_dim_row(input_data, row_idx, out_row, gamma_data, params.epsilon);

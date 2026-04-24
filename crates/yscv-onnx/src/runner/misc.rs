@@ -26,8 +26,15 @@ pub(super) fn exec_constant(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), 
 }
 
 pub(super) fn exec_identity(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
-    // Zero-copy: alias the output to the input (ONNX outputs are write-once)
-    env.alias(&node.outputs[0], &node.inputs[0]);
+    // Zero-copy: alias the output to the input (ONNX outputs are write-once).
+    // Fallback to clone when alias can't resolve the input (e.g., runtime inputs
+    // not yet materialized into slots).
+    if let Some(input) = env.get(&node.inputs[0]) {
+        let t = input.clone();
+        env.insert(node.outputs[0].clone(), t);
+    } else {
+        env.alias(&node.outputs[0], &node.inputs[0]);
+    }
     Ok(())
 }
 

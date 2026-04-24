@@ -9,14 +9,14 @@ use std::arch::aarch64::{
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps, _mm_storeu_ps,
-    _mm_sub_ps, _mm256_add_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps, _mm256_set1_ps,
-    _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps,
+    _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps, _mm_storeu_ps,
-    _mm_sub_ps, _mm256_add_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps, _mm256_set1_ps,
-    _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps,
+    _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -261,13 +261,202 @@ pub fn silu_inplace(data: &mut [f32]) {
     }
 }
 
+/// Fused bias + ReLU for NHWC output: `output[row*n + c] = max(0, output[row*n + c] + bias[c])`.
+#[allow(unsafe_code)]
+pub fn bias_relu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
+    debug_assert!(output.len() >= m * n);
+    debug_assert!(bias.len() >= n);
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::is_x86_feature_detected!("avx") {
+            unsafe { bias_relu_nhwc_avx(output, bias, m, n) };
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe { bias_relu_nhwc_neon(output, bias, m, n) };
+            return;
+        }
+    }
+
+    for row in output.chunks_exact_mut(n).take(m) {
+        for (dst, b) in row.iter_mut().zip(bias.iter()) {
+            *dst = (*dst + *b).max(0.0);
+        }
+    }
+}
+
+/// Fused bias add for NHWC output: `output[row*n + c] += bias[c]`.
+#[allow(unsafe_code)]
+pub fn bias_add_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
+    debug_assert!(output.len() >= m * n);
+    debug_assert!(bias.len() >= n);
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::is_x86_feature_detected!("avx") {
+            unsafe { bias_add_nhwc_avx(output, bias, m, n) };
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe { bias_add_nhwc_neon(output, bias, m, n) };
+            return;
+        }
+    }
+
+    for row in output.chunks_exact_mut(n).take(m) {
+        for (dst, b) in row.iter_mut().zip(bias.iter()) {
+            *dst += *b;
+        }
+    }
+}
+
+/// Step S.4: fused per-row epilogue — residual + bias + activation in
+/// a single SIMD pass over `out_row`. Replaces the 2-3 separate passes
+/// that `row_gemm_set_parallel_fused` used to do (matmul store →
+/// scalar residual add → `bias_relu_nhwc_dispatch`). Cuts post-matmul
+/// memory traffic from 3× to 1× over the row.
+///
+/// `activation_id`: 0 = None, 1 = Relu, 2 = SiLU (matches conv::Activation
+/// numeric ordering — caller converts once).
+///
+/// Runtime feature dispatch: AVX+FMA → fast SIMD path; otherwise scalar.
+#[allow(unsafe_code)]
+pub fn fused_row_epilogue_dispatch(
+    out_row: &mut [f32],
+    residual: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    activation_id: u8,
+    n: usize,
+) {
+    debug_assert!(out_row.len() >= n);
+    if let Some(r) = residual {
+        debug_assert!(r.len() >= n);
+    }
+    if let Some(b) = bias {
+        debug_assert!(b.len() >= n);
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+            // SAFETY: AVX+FMA feature-gated above. Slice lengths
+            // checked against n by debug_asserts.
+            unsafe {
+                fused_row_epilogue_avx_fma(out_row, residual, bias, activation_id, n);
+            }
+            return;
+        }
+    }
+    fused_row_epilogue_scalar(out_row, residual, bias, activation_id, n);
+}
+
+fn fused_row_epilogue_scalar(
+    out_row: &mut [f32],
+    residual: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    activation_id: u8,
+    n: usize,
+) {
+    for j in 0..n {
+        let mut x = out_row[j];
+        if let Some(r) = residual {
+            x += r[j];
+        }
+        if let Some(b) = bias {
+            x += b[j];
+        }
+        x = match activation_id {
+            1 => x.max(0.0),
+            2 => x / (1.0 + (-x).exp()),
+            _ => x,
+        };
+        out_row[j] = x;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx,fma")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn fused_row_epilogue_avx_fma(
+    out_row: &mut [f32],
+    residual: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    activation_id: u8,
+    n: usize,
+) {
+    let out_ptr = out_row.as_mut_ptr();
+    let res_ptr = residual.map(|r| r.as_ptr());
+    let bias_ptr = bias.map(|b| b.as_ptr());
+    let zero = _mm256_setzero_ps();
+    let mut j = 0usize;
+
+    // SIMD body: process 8 lanes per iteration. Has-residual / has-bias
+    // conditions evaluate to the same branch for every iteration in this
+    // call, so the branch predictor trivially handles them.
+    while j + 8 <= n {
+        let mut v = _mm256_loadu_ps(out_ptr.add(j));
+        if let Some(rp) = res_ptr {
+            v = _mm256_add_ps(v, _mm256_loadu_ps(rp.add(j)));
+        }
+        if let Some(bp) = bias_ptr {
+            v = _mm256_add_ps(v, _mm256_loadu_ps(bp.add(j)));
+        }
+        match activation_id {
+            1 => v = _mm256_max_ps(v, zero),
+            2 => {
+                // SiLU via fast bit-trick exp.
+                let one = _mm256_set1_ps(1.0);
+                let neg_x = _mm256_sub_ps(zero, v);
+                let exp_neg = fast_exp_bittrick_avx(neg_x);
+                let denom = _mm256_add_ps(one, exp_neg);
+                v = _mm256_div_ps(v, denom);
+            }
+            _ => {}
+        }
+        _mm256_storeu_ps(out_ptr.add(j), v);
+        j += 8;
+    }
+    // Scalar tail.
+    while j < n {
+        let mut x = *out_ptr.add(j);
+        if let Some(rp) = res_ptr {
+            x += *rp.add(j);
+        }
+        if let Some(bp) = bias_ptr {
+            x += *bp.add(j);
+        }
+        x = match activation_id {
+            1 => x.max(0.0),
+            2 => x / (1.0 + (-x).exp()),
+            _ => x,
+        };
+        *out_ptr.add(j) = x;
+        j += 1;
+    }
+}
+
 /// Fused bias + SiLU for NHWC output: `output[row*n + c] = silu(output[row*n + c] + bias[c])`.
-/// Single pass over the data: avoids the 2x bandwidth of separate add_bias + silu.
-/// Bias repeats every `n` elements; `n` should be a multiple of 4 for best SIMD perf.
 #[allow(unsafe_code)]
 pub fn bias_silu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
     debug_assert!(output.len() >= m * n);
     debug_assert!(bias.len() >= n);
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::is_x86_feature_detected!("avx") {
+            unsafe { bias_silu_nhwc_avx(output, bias, m, n) };
+            return;
+        }
+    }
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -277,7 +466,6 @@ pub fn bias_silu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: us
         }
     }
 
-    // Scalar fallback
     unsafe {
         let out_ptr = output.as_mut_ptr();
         let bias_ptr = bias.as_ptr();
@@ -288,6 +476,248 @@ pub fn bias_silu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: us
                 let s = 1.0 / (1.0 + (-v).exp());
                 *base.add(c) = v * s;
             }
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn bias_relu_nhwc_avx(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
+    let zero = _mm256_setzero_ps();
+    let out_ptr = output.as_mut_ptr();
+    let bias_ptr = bias.as_ptr();
+    // Fast path: preload bias for small N to eliminate per-row bias loads.
+    if n == 16 {
+        let b0 = _mm256_loadu_ps(bias_ptr);
+        let b1 = _mm256_loadu_ps(bias_ptr.add(8));
+        for row in 0..m {
+            let base = out_ptr.add(row * 16);
+            _mm256_storeu_ps(
+                base,
+                _mm256_max_ps(_mm256_add_ps(_mm256_loadu_ps(base), b0), zero),
+            );
+            _mm256_storeu_ps(
+                base.add(8),
+                _mm256_max_ps(_mm256_add_ps(_mm256_loadu_ps(base.add(8)), b1), zero),
+            );
+        }
+        return;
+    }
+    if n == 24 {
+        let b0 = _mm256_loadu_ps(bias_ptr);
+        let b1 = _mm256_loadu_ps(bias_ptr.add(8));
+        let b2 = _mm256_loadu_ps(bias_ptr.add(16));
+        for row in 0..m {
+            let base = out_ptr.add(row * 24);
+            _mm256_storeu_ps(
+                base,
+                _mm256_max_ps(_mm256_add_ps(_mm256_loadu_ps(base), b0), zero),
+            );
+            _mm256_storeu_ps(
+                base.add(8),
+                _mm256_max_ps(_mm256_add_ps(_mm256_loadu_ps(base.add(8)), b1), zero),
+            );
+            _mm256_storeu_ps(
+                base.add(16),
+                _mm256_max_ps(_mm256_add_ps(_mm256_loadu_ps(base.add(16)), b2), zero),
+            );
+        }
+        return;
+    }
+    for row in 0..m {
+        let base = out_ptr.add(row * n);
+        let mut c = 0usize;
+        while c + 8 <= n {
+            let v = _mm256_add_ps(
+                _mm256_loadu_ps(base.add(c)),
+                _mm256_loadu_ps(bias_ptr.add(c)),
+            );
+            _mm256_storeu_ps(base.add(c), _mm256_max_ps(v, zero));
+            c += 8;
+        }
+        while c < n {
+            *base.add(c) = (*base.add(c) + *bias_ptr.add(c)).max(0.0);
+            c += 1;
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn bias_add_nhwc_avx(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
+    let out_ptr = output.as_mut_ptr();
+    let bias_ptr = bias.as_ptr();
+    if n == 16 {
+        let b0 = _mm256_loadu_ps(bias_ptr);
+        let b1 = _mm256_loadu_ps(bias_ptr.add(8));
+        for row in 0..m {
+            let base = out_ptr.add(row * 16);
+            _mm256_storeu_ps(base, _mm256_add_ps(_mm256_loadu_ps(base), b0));
+            _mm256_storeu_ps(base.add(8), _mm256_add_ps(_mm256_loadu_ps(base.add(8)), b1));
+        }
+        return;
+    }
+    if n == 24 {
+        let b0 = _mm256_loadu_ps(bias_ptr);
+        let b1 = _mm256_loadu_ps(bias_ptr.add(8));
+        let b2 = _mm256_loadu_ps(bias_ptr.add(16));
+        for row in 0..m {
+            let base = out_ptr.add(row * 24);
+            _mm256_storeu_ps(base, _mm256_add_ps(_mm256_loadu_ps(base), b0));
+            _mm256_storeu_ps(base.add(8), _mm256_add_ps(_mm256_loadu_ps(base.add(8)), b1));
+            _mm256_storeu_ps(
+                base.add(16),
+                _mm256_add_ps(_mm256_loadu_ps(base.add(16)), b2),
+            );
+        }
+        return;
+    }
+    for row in 0..m {
+        let base = out_ptr.add(row * n);
+        let mut c = 0usize;
+        while c + 8 <= n {
+            let v = _mm256_add_ps(
+                _mm256_loadu_ps(base.add(c)),
+                _mm256_loadu_ps(bias_ptr.add(c)),
+            );
+            _mm256_storeu_ps(base.add(c), v);
+            c += 8;
+        }
+        while c < n {
+            *base.add(c) += *bias_ptr.add(c);
+            c += 1;
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn bias_silu_nhwc_avx(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
+    let one = _mm256_set1_ps(1.0);
+    let out_ptr = output.as_mut_ptr();
+    let bias_ptr = bias.as_ptr();
+    for row in 0..m {
+        let base = out_ptr.add(row * n);
+        let mut c = 0usize;
+        while c + 8 <= n {
+            let v = _mm256_add_ps(
+                _mm256_loadu_ps(base.add(c)),
+                _mm256_loadu_ps(bias_ptr.add(c)),
+            );
+            let neg_v = _mm256_sub_ps(_mm256_setzero_ps(), v);
+            let exp_neg = fast_exp_avx(neg_v);
+            let sig = _mm256_div_ps(one, _mm256_add_ps(one, exp_neg));
+            _mm256_storeu_ps(base.add(c), _mm256_mul_ps(v, sig));
+            c += 8;
+        }
+        while c < n {
+            let v = *base.add(c) + *bias_ptr.add(c);
+            let s = 1.0 / (1.0 + (-v).exp());
+            *base.add(c) = v * s;
+            c += 1;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn bias_relu_nhwc_neon(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
+    let zero = vdupq_n_f32(0.0);
+    let out_ptr = output.as_mut_ptr();
+    let bias_ptr = bias.as_ptr();
+    // Preloaded fast paths for common channel counts.
+    if n == 16 {
+        let b0 = vld1q_f32(bias_ptr);
+        let b1 = vld1q_f32(bias_ptr.add(4));
+        let b2 = vld1q_f32(bias_ptr.add(8));
+        let b3 = vld1q_f32(bias_ptr.add(12));
+        for row in 0..m {
+            let base = out_ptr.add(row * 16);
+            vst1q_f32(base, vmaxq_f32(vaddq_f32(vld1q_f32(base), b0), zero));
+            vst1q_f32(
+                base.add(4),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(4)), b1), zero),
+            );
+            vst1q_f32(
+                base.add(8),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(8)), b2), zero),
+            );
+            vst1q_f32(
+                base.add(12),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(12)), b3), zero),
+            );
+        }
+        return;
+    }
+    if n == 24 {
+        let b0 = vld1q_f32(bias_ptr);
+        let b1 = vld1q_f32(bias_ptr.add(4));
+        let b2 = vld1q_f32(bias_ptr.add(8));
+        let b3 = vld1q_f32(bias_ptr.add(12));
+        let b4 = vld1q_f32(bias_ptr.add(16));
+        let b5 = vld1q_f32(bias_ptr.add(20));
+        for row in 0..m {
+            let base = out_ptr.add(row * 24);
+            vst1q_f32(base, vmaxq_f32(vaddq_f32(vld1q_f32(base), b0), zero));
+            vst1q_f32(
+                base.add(4),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(4)), b1), zero),
+            );
+            vst1q_f32(
+                base.add(8),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(8)), b2), zero),
+            );
+            vst1q_f32(
+                base.add(12),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(12)), b3), zero),
+            );
+            vst1q_f32(
+                base.add(16),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(16)), b4), zero),
+            );
+            vst1q_f32(
+                base.add(20),
+                vmaxq_f32(vaddq_f32(vld1q_f32(base.add(20)), b5), zero),
+            );
+        }
+        return;
+    }
+    for row in 0..m {
+        let base = out_ptr.add(row * n);
+        let mut c = 0usize;
+        while c + 4 <= n {
+            let v = vaddq_f32(vld1q_f32(base.add(c)), vld1q_f32(bias_ptr.add(c)));
+            vst1q_f32(base.add(c), vmaxq_f32(v, zero));
+            c += 4;
+        }
+        while c < n {
+            *base.add(c) = (*base.add(c) + *bias_ptr.add(c)).max(0.0);
+            c += 1;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn bias_add_nhwc_neon(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
+    let out_ptr = output.as_mut_ptr();
+    let bias_ptr = bias.as_ptr();
+    for row in 0..m {
+        let base = out_ptr.add(row * n);
+        let mut c = 0usize;
+        while c + 4 <= n {
+            let v = vaddq_f32(vld1q_f32(base.add(c)), vld1q_f32(bias_ptr.add(c)));
+            vst1q_f32(base.add(c), v);
+            c += 4;
+        }
+        while c < n {
+            *base.add(c) += *bias_ptr.add(c);
+            c += 1;
         }
     }
 }

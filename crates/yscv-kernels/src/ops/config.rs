@@ -13,6 +13,21 @@ pub const DEFAULT_TRANSCENDENTAL_MIN_PARALLEL_ELEMENTS: usize = 1_048_576;
 // WHY 16384: 64KB per chunk (16K x 4B) fits in L1 cache; enough work per thread to amortize dispatch.
 pub(crate) const PARALLEL_SLICE_CHUNK_ELEMENTS: usize = 16_384;
 
+// Step 1 (fp32 arc): per-op-family parallel-dispatch thresholds. The
+// rayon fork-join path costs ~5-8 µs/call; below this threshold the
+// dispatch overhead exceeds the compute savings. Thresholds are tuned
+// against the Siamese tracker profile (2026-04-19 fixed thread-local
+// profiler). Env overrides `YSCV_MIN_PAR_POINTWISE_CONV_ELEMS`,
+// `YSCV_MIN_PAR_POINTWISE_CONV_FLOPS` etc. allow post-landing tuning.
+
+/// Minimum output elements AND FLOPs for pointwise (1×1) Conv to take
+/// the row-parallel path. 16 384 elems = 64 KB output (~2 L1 cache
+/// lines per thread × 6 threads). 1.5 MFlops ≈ 200 µs compute @ 8 GFLOPS
+/// sustained single-core AVX2; 6-way parallel saves ~170 µs, amortizes
+/// 6 µs × 6 wakeup overhead.
+pub const DEFAULT_POINTWISE_CONV_MIN_PARALLEL_ELEMENTS: usize = 16_384;
+pub const DEFAULT_POINTWISE_CONV_MIN_PARALLEL_FLOPS: usize = 1_500_000;
+
 /// Parallel heuristics for CPU elementwise operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParallelElementwiseConfig {

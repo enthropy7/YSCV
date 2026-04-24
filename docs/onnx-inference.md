@@ -26,6 +26,9 @@ CPU inference is fully optimized by default:
 
 No special configuration required. Just build with `--release`.
 
+For kernel-level details (fused Conv paths, asm vs intrinsics, and CPU
+A/B env toggles), see [`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
+
 ## Metal GPU (macOS)
 
 Build with the `metal-backend` feature:

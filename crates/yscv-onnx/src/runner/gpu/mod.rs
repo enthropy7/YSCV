@@ -325,12 +325,12 @@ pub fn plan_gpu_execution(model: &OnnxModel) -> GpuExecPlan {
         }
         eprintln!("  ── GPU Plan ──");
         let mut ops: Vec<_> = op_counts.into_iter().collect();
-        ops.sort_by(|a, b| b.1.cmp(&a.1));
+        ops.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         for (op, n) in &ops {
             eprintln!("    {:>4}x  {}", n, op);
         }
         let mut fus: Vec<_> = fusion_counts.into_iter().collect();
-        fus.sort_by(|a, b| b.1.cmp(&a.1));
+        fus.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         for (f, n) in &fus {
             eprintln!("    {:>4}x  {} (fused)", n, f);
         }
@@ -1440,7 +1440,7 @@ fn dispatch_inner(
         // ── CPU fallback ─────────────────────────────────────────
         _ => {
             inputs_to_cpu(gpu, node, env, gc)?;
-            execute_node_inner(node, env)
+            super::execute_node_cpu_fallback(node, env)
         }
     }
 }
@@ -1461,7 +1461,7 @@ fn unary(
         && let Some(t) = env.get(name)
         && t.data().len() < 64
     {
-        return execute_node_inner(node, env);
+        return super::execute_node_cpu_fallback(node, env);
     }
 
     to_gpu(gpu, name, env, gc);
@@ -1507,7 +1507,7 @@ fn binary(
         !gc.contains_key(b_name) && env.get(b_name).is_some_and(|t| t.data().len() < 4);
     if (a_cpu_small && b_cpu_small) || a_too_small || b_too_small {
         inputs_to_cpu(gpu, node, env, gc)?;
-        return execute_node_inner(node, env);
+        return super::execute_node_cpu_fallback(node, env);
     }
 
     to_gpu(gpu, a_name, env, gc);
@@ -1570,7 +1570,7 @@ fn binary(
             Ok(())
         } else {
             inputs_to_cpu(gpu, node, env, gc)?;
-            execute_node_inner(node, env)
+            super::execute_node_cpu_fallback(node, env)
         }
     }
 }
@@ -2119,7 +2119,7 @@ fn exec_matmul(
         }
         // Fallback to CPU if inputs missing
         inputs_to_cpu(gpu, node, env, gc)?;
-        return execute_node_inner(node, env);
+        return super::execute_node_cpu_fallback(node, env);
     }
 
     to_gpu(gpu, a_name, env, gc);
@@ -2632,7 +2632,7 @@ fn get_reshape_shape(
             .filter(|&(i, _)| i != idx)
             .map(|(_, &d)| d)
             .product();
-        new_s[idx] = if known > 0 { total / known } else { total };
+        new_s[idx] = total.checked_div(known).unwrap_or(total);
     }
     Ok(new_s)
 }

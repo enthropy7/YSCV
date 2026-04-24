@@ -131,7 +131,10 @@ pub(crate) fn adaptive_avg_pool2d_nhwc_backward(
     ];
     for b in 0..n {
         for oh_idx in 0..out_h {
-            let h_start = if out_h == 0 { 0 } else { oh_idx * h / out_h };
+            let h_start = oh_idx
+                .checked_mul(h)
+                .and_then(|v| v.checked_div(out_h))
+                .unwrap_or(0);
             let h_end = ((oh_idx + 1) * h / out_h).max(h_start + 1);
             for ow_idx in 0..out_w {
                 let w_start = ow_idx * w / out_w;

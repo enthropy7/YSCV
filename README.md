@@ -128,6 +128,8 @@ Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on
 | VballNet MPSGraph | **7.8ms** | CoreML 8.6ms | **1.1× faster** (CoreML uses AMX hw) |
 | YOLO11n CPU | 36.4ms | all competitors FAIL | **WIN** |
 | YOLO11n MPSGraph | **5.9ms** | all competitors FAIL | **WIN** |
+| Siamese tracker 1T (Orange Pi Zero 3, 2026-04-21) | **461.6ms** | onnxruntime 499.3ms | **1.08× faster** |
+| Siamese tracker 4T (Orange Pi Zero 3, 2026-04-21) | **150.2ms** | onnxruntime 164.6ms | **1.10× faster** |
 
 Full benchmark results in [docs/performance-benchmarks.md](docs/performance-benchmarks.md).
 

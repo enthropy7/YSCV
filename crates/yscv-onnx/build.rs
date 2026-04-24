@@ -74,11 +74,11 @@ pub struct TensorProto {
     pub data_type: ::core::option::Option<i32>,
     #[prost(string, optional, tag = "8")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(bytes = "vec", optional, tag = "4")]
+    #[prost(bytes = "vec", optional, tag = "9")]
     pub raw_data: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(float, repeated, tag = "5")]
+    #[prost(float, repeated, tag = "4")]
     pub float_data: ::prost::alloc::vec::Vec<f32>,
-    #[prost(int32, repeated, tag = "6")]
+    #[prost(int32, repeated, tag = "5")]
     pub int32_data: ::prost::alloc::vec::Vec<i32>,
     #[prost(int64, repeated, tag = "7")]
     pub int64_data: ::prost::alloc::vec::Vec<i64>,
@@ -92,13 +92,13 @@ pub struct AttributeProto {
     pub name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(int32, optional, tag = "20")]
     pub r#type: ::core::option::Option<i32>,
-    #[prost(float, optional, tag = "4")]
+    #[prost(float, optional, tag = "2")]
     pub f: ::core::option::Option<f32>,
     #[prost(int64, optional, tag = "3")]
     pub i: ::core::option::Option<i64>,
-    #[prost(bytes = "vec", optional, tag = "5")]
+    #[prost(bytes = "vec", optional, tag = "4")]
     pub s: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(message, optional, tag = "6")]
+    #[prost(message, optional, tag = "5")]
     pub t: ::core::option::Option<TensorProto>,
     #[prost(float, repeated, tag = "7")]
     pub floats: ::prost::alloc::vec::Vec<f32>,

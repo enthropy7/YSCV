@@ -1411,7 +1411,7 @@ unsafe fn median_row_sse(
     }
 
     let mut x = 1usize;
-    while x + 16 <= w - 1 {
+    while x + 16 < w {
         let mut v0 = _mm_loadu_si128(row0.add(x - 1) as *const __m128i);
         let mut v1 = _mm_loadu_si128(row0.add(x) as *const __m128i);
         let mut v2 = _mm_loadu_si128(row0.add(x + 1) as *const __m128i);
@@ -1466,7 +1466,7 @@ unsafe fn sobel_row_sse(
     let zero = _mm_setzero_si128();
     let mut x = 1usize;
 
-    while x + 16 <= w - 1 {
+    while x + 16 < w {
         // Load neighbors
         let t_l = _mm_loadu_si128(row0.add(x - 1) as *const __m128i);
         let t_c = _mm_loadu_si128(row0.add(x) as *const __m128i);

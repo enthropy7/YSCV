@@ -57,6 +57,95 @@ pub(super) fn exec_gemm(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
     Ok(())
 }
 
+/// Fused `Transpose(perm=[0,2,1]) → MatMul` dispatch. Reads the
+/// pre-transpose source directly via a `transA=1` MatMul kernel —
+/// avoids materialising the transposed intermediate tensor (which in
+/// tracker is 64 KB per branch, shared across cls/reg branches). The
+/// Transpose node itself was elided from the execution plan by the
+/// loader when it detected this pattern.
+///
+/// Layout: `Transpose` input is `[batch, K, M]` (rank-3); after perm
+/// `[0, 2, 1]` it would become `[batch, M, K]`, which MatMul would
+/// treat as the left operand — so the actual matmul is
+/// `[batch, M, K] @ [batch, K, N] → [batch, M, N]`. We skip the
+/// physical transpose and compute directly with `transA=1`.
+pub(super) fn exec_fused_transpose_matmul(
+    transpose_node: &OnnxNode,
+    matmul_node: &OnnxNode,
+    env: &mut TensorEnv,
+) -> Result<(), OnnxError> {
+    let a_pre = get_tensor(env, &transpose_node.name, &transpose_node.inputs[0])?;
+    let b = get_tensor(env, &matmul_node.name, &matmul_node.inputs[1])?;
+
+    let a_shape = a_pre.shape();
+    let b_shape = b.shape();
+    let a_rank = a_shape.len();
+    let b_rank = b_shape.len();
+
+    // Pre-transpose layout is `[..., K, M]`. Post-transpose (what the
+    // MatMul sees as A) would be `[..., M, K]` with `M = a[-1]` and
+    // `K = a[-2]`. `B` is `[..., K, N]` with `N = b[-1]`.
+    let m = a_shape[a_rank - 1];
+    let k = a_shape[a_rank - 2];
+    let n = b_shape[b_rank - 1];
+
+    // Broadcast batch dimensions (same logic as `exec_matmul`). For
+    // tracker both branches land at batch_size=1; the general code
+    // handles ≥ 1 correctly.
+    let a_batch = &a_shape[..a_rank - 2];
+    let b_batch = &b_shape[..b_rank - 2];
+    let max_batch_rank = a_batch.len().max(b_batch.len());
+    let mut out_batch = Vec::with_capacity(max_batch_rank);
+    for i in 0..max_batch_rank {
+        let ad = if i < max_batch_rank - a_batch.len() {
+            1
+        } else {
+            a_batch[i - (max_batch_rank - a_batch.len())]
+        };
+        let bd = if i < max_batch_rank - b_batch.len() {
+            1
+        } else {
+            b_batch[i - (max_batch_rank - b_batch.len())]
+        };
+        out_batch.push(ad.max(bd));
+    }
+    let batch_size: usize = out_batch.iter().product::<usize>().max(1);
+    let a_mat_stride = k * m;
+    let b_mat_stride = k * n;
+    let out_mat_stride = m * n;
+    let a_data = a_pre.data();
+    let b_data = b.data();
+    let a_batch_total: usize = a_batch.iter().product::<usize>().max(1);
+    let b_batch_total: usize = b_batch.iter().product::<usize>().max(1);
+
+    let mut out_data = vec![0.0f32; batch_size * out_mat_stride];
+    for batch_idx in 0..batch_size {
+        let a_idx = if a_batch_total == 1 {
+            0
+        } else {
+            batch_idx % a_batch_total
+        };
+        let b_idx = if b_batch_total == 1 {
+            0
+        } else {
+            batch_idx % b_batch_total
+        };
+        let a_slice = &a_data[a_idx * a_mat_stride..(a_idx + 1) * a_mat_stride];
+        let b_slice = &b_data[b_idx * b_mat_stride..(b_idx + 1) * b_mat_stride];
+        let dst = &mut out_data[batch_idx * out_mat_stride..(batch_idx + 1) * out_mat_stride];
+        yscv_kernels::matmul_2d_slices_trans_a(a_slice, m, k, b_slice, n, dst);
+    }
+
+    let mut out_shape = out_batch;
+    out_shape.push(m);
+    out_shape.push(n);
+    let out = Tensor::from_vec(out_shape, out_data).map_err(|e| OnnxError::DecodeFailed {
+        message: e.to_string(),
+    })?;
+    env.insert(matmul_node.outputs[0].clone(), out);
+    Ok(())
+}
+
 pub(super) fn exec_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let a = get_tensor(env, &node.name, &node.inputs[0])?;
     let b = get_tensor(env, &node.name, &node.inputs[1])?;

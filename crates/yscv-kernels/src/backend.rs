@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::sync::OnceLock;
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use yscv_tensor::Tensor;
@@ -11,6 +12,52 @@ use super::{
         RmsNormLastDimTensors, SeparableConv2dKernels, SeparableConv2dSpec,
     },
 };
+
+const DEFAULT_CONV_MIN_PARALLEL_ELEMENTS: usize = 4_096;
+const DEFAULT_DEPTHWISE_MIN_PARALLEL_ELEMENTS: usize = 4_096;
+const DEFAULT_SEPARABLE_MIN_PARALLEL_ELEMENTS: usize = 4_096;
+
+#[inline]
+fn tuned_parallel_config(env_name: &str, default_value: usize) -> ParallelElementwiseConfig {
+    let min_parallel_elements = std::env::var(env_name)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default_value);
+    ParallelElementwiseConfig {
+        min_parallel_elements,
+    }
+}
+
+#[inline]
+fn conv_parallel_config() -> ParallelElementwiseConfig {
+    static CONFIG: OnceLock<ParallelElementwiseConfig> = OnceLock::new();
+    *CONFIG.get_or_init(|| {
+        tuned_parallel_config("YSCV_CONV_MIN_PARALLEL", DEFAULT_CONV_MIN_PARALLEL_ELEMENTS)
+    })
+}
+
+#[inline]
+fn depthwise_parallel_config() -> ParallelElementwiseConfig {
+    static CONFIG: OnceLock<ParallelElementwiseConfig> = OnceLock::new();
+    *CONFIG.get_or_init(|| {
+        tuned_parallel_config(
+            "YSCV_DEPTHWISE_MIN_PARALLEL",
+            DEFAULT_DEPTHWISE_MIN_PARALLEL_ELEMENTS,
+        )
+    })
+}
+
+#[inline]
+fn separable_parallel_config() -> ParallelElementwiseConfig {
+    static CONFIG: OnceLock<ParallelElementwiseConfig> = OnceLock::new();
+    *CONFIG.get_or_init(|| {
+        tuned_parallel_config(
+            "YSCV_SEPARABLE_MIN_PARALLEL",
+            DEFAULT_SEPARABLE_MIN_PARALLEL_ELEMENTS,
+        )
+    })
+}
 
 /// Tensor parameter bundle for NHWC separable convolution:
 /// depthwise (`[KH, KW, C, depth_multiplier]`) then pointwise (`[1, 1, C*depth_multiplier, C_out]`).
@@ -1690,6 +1737,16 @@ pub fn relu_inplace(tensor: &mut Tensor) {
     ops::relu_inplace(tensor);
 }
 
+/// In-place element-wise add: `lhs += rhs`. Same-shape fast path.
+pub fn add_inplace(lhs: &mut Tensor, rhs: &Tensor) {
+    ops::add_inplace(lhs, rhs);
+}
+
+/// Fused in-place add + ReLU: `lhs[i] = max(lhs[i] + rhs[i], 0)`. Single SIMD pass.
+pub fn add_relu_inplace(lhs: &mut Tensor, rhs: &Tensor) {
+    ops::add_relu_inplace(lhs, rhs);
+}
+
 /// Elementwise ReLU with explicit elementwise parallelization heuristics.
 pub fn relu_with_config(input: &Tensor, config: ParallelElementwiseConfig) -> Tensor {
     ops::relu_with_config(input, config)
@@ -1919,19 +1976,65 @@ pub fn conv2d_nhwc(
     stride_h: usize,
     stride_w: usize,
 ) -> Result<Tensor, KernelError> {
-    ops::conv2d_nhwc_with_config_and_pool(
+    conv2d_nhwc_with_activation(
+        input,
+        kernel,
+        bias,
+        stride_h,
+        stride_w,
+        ops::Activation::None,
+    )
+}
+
+/// NHWC convolution without padding with optional fused activation (parallel by default).
+pub fn conv2d_nhwc_with_activation(
+    input: &Tensor,
+    kernel: &Tensor,
+    bias: Option<&Tensor>,
+    stride_h: usize,
+    stride_w: usize,
+    activation: ops::Activation,
+) -> Result<Tensor, KernelError> {
+    ops::conv2d_nhwc_with_activation_with_config_and_pool(
         input,
         kernel,
         bias,
         Conv2dSpec { stride_h, stride_w },
-        ParallelElementwiseConfig::default(),
+        activation,
+        conv_parallel_config(),
         None,
     )
 }
 
+/// NHWC convolution without padding with optional fused activation and an
+/// optional pre-packed kernel B (built at model load via
+/// `pack_b_for_session`). When `prepacked_b` is `Some` and this is a 1×1
+/// pointwise conv, the GEMM layer skips both the fingerprint-cache lookup
+/// and the weight-pack itself — saving ~5–15% on tracker-like models where
+/// most Convs are static-weight pointwise.
+#[allow(clippy::too_many_arguments)]
+pub fn conv2d_nhwc_with_activation_prepacked_default(
+    input: &Tensor,
+    kernel: &Tensor,
+    bias: Option<&Tensor>,
+    stride_h: usize,
+    stride_w: usize,
+    activation: ops::Activation,
+    prepacked_b: Option<&ops::PackedB>,
+) -> Result<Tensor, KernelError> {
+    ops::conv2d_nhwc_with_activation_prepacked(
+        input,
+        kernel,
+        bias,
+        Conv2dSpec { stride_h, stride_w },
+        activation,
+        conv_parallel_config(),
+        None,
+        prepacked_b,
+    )
+}
+
 /// NHWC convolution with implicit zero-padding (avoids separate padded tensor allocation).
-/// Only available when the `blas` feature is enabled.
-#[cfg(feature = "blas")]
 pub fn conv2d_nhwc_padded(
     input: &Tensor,
     kernel: &Tensor,
@@ -1992,12 +2095,88 @@ pub fn depthwise_conv2d_nhwc(
     stride_h: usize,
     stride_w: usize,
 ) -> Result<Tensor, KernelError> {
-    ops::depthwise_conv2d_nhwc_with_config_and_pool(
+    depthwise_conv2d_nhwc_with_activation(
+        input,
+        kernel,
+        bias,
+        stride_h,
+        stride_w,
+        ops::Activation::None,
+    )
+}
+
+/// NHWC depthwise convolution without padding with optional fused activation.
+pub fn depthwise_conv2d_nhwc_with_activation(
+    input: &Tensor,
+    kernel: &Tensor,
+    bias: Option<&Tensor>,
+    stride_h: usize,
+    stride_w: usize,
+    activation: ops::Activation,
+) -> Result<Tensor, KernelError> {
+    ops::depthwise_conv2d_nhwc_with_activation_with_config_and_pool(
         input,
         kernel,
         bias,
         DepthwiseConv2dSpec { stride_h, stride_w },
-        ParallelElementwiseConfig::default(),
+        activation,
+        depthwise_parallel_config(),
+        None,
+    )
+}
+
+/// NHWC depthwise convolution with implicit zero-padding.
+///
+/// This applies padding virtually (no separate padded input allocation).
+pub fn depthwise_conv2d_nhwc_padded(
+    input: &Tensor,
+    kernel: &Tensor,
+    bias: Option<&Tensor>,
+    stride_h: usize,
+    stride_w: usize,
+    pad_top: usize,
+    pad_left: usize,
+    pad_bottom: usize,
+    pad_right: usize,
+) -> Result<Tensor, KernelError> {
+    depthwise_conv2d_nhwc_padded_with_activation(
+        input,
+        kernel,
+        bias,
+        stride_h,
+        stride_w,
+        pad_top,
+        pad_left,
+        pad_bottom,
+        pad_right,
+        ops::Activation::None,
+    )
+}
+
+/// NHWC depthwise convolution with implicit zero-padding and optional fused activation.
+pub fn depthwise_conv2d_nhwc_padded_with_activation(
+    input: &Tensor,
+    kernel: &Tensor,
+    bias: Option<&Tensor>,
+    stride_h: usize,
+    stride_w: usize,
+    pad_top: usize,
+    pad_left: usize,
+    pad_bottom: usize,
+    pad_right: usize,
+    activation: ops::Activation,
+) -> Result<Tensor, KernelError> {
+    ops::depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
+        input,
+        kernel,
+        bias,
+        DepthwiseConv2dSpec { stride_h, stride_w },
+        pad_top,
+        pad_left,
+        pad_bottom,
+        pad_right,
+        activation,
+        depthwise_parallel_config(),
         None,
     )
 }
@@ -2021,6 +2200,34 @@ pub fn depthwise_conv2d_nhwc_with_config(
     )
 }
 
+/// NHWC depthwise convolution with implicit zero-padding and explicit
+/// parallelization heuristics.
+pub fn depthwise_conv2d_nhwc_padded_with_config(
+    input: &Tensor,
+    kernel: &Tensor,
+    bias: Option<&Tensor>,
+    stride_h: usize,
+    stride_w: usize,
+    pad_top: usize,
+    pad_left: usize,
+    pad_bottom: usize,
+    pad_right: usize,
+    config: ParallelElementwiseConfig,
+) -> Result<Tensor, KernelError> {
+    ops::depthwise_conv2d_nhwc_padded_with_config_and_pool(
+        input,
+        kernel,
+        bias,
+        DepthwiseConv2dSpec { stride_h, stride_w },
+        pad_top,
+        pad_left,
+        pad_bottom,
+        pad_right,
+        config,
+        None,
+    )
+}
+
 /// NHWC separable convolution without padding (parallel by default):
 /// depthwise (`[KH, KW, C, depth_multiplier]`) then pointwise (`[1, 1, C*depth_multiplier, C_out]`).
 pub fn separable_conv2d_nhwc(
@@ -2038,7 +2245,7 @@ pub fn separable_conv2d_nhwc(
             pointwise_bias: params.pointwise_bias,
         },
         SeparableConv2dSpec { stride_h, stride_w },
-        ParallelElementwiseConfig::default(),
+        separable_parallel_config(),
         None,
     )
 }
@@ -2184,6 +2391,22 @@ pub fn matmul_2d(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor, KernelError> {
 /// Writes directly into `out` without any intermediate allocation.
 pub fn matmul_2d_slices(a: &[f32], m: usize, k: usize, b: &[f32], n: usize, out: &mut [f32]) {
     ops::matmul_2d_slices(a, m, k, b, n, out);
+}
+
+/// Slice matmul with transposed left operand: `a_kt` is physically
+/// `[K, M]` (pre-transpose); computes `out[m, n] = Σ_k a_kt[k, m] · b[k, n]`.
+/// Drives the Transpose→MatMul graph fusion without materialising the
+/// transpose. Uses BLAS `CblasTrans` under `--features blas`, else
+/// falls back to a scratch-buffer transpose (see `ops::`).
+pub fn matmul_2d_slices_trans_a(
+    a_kt: &[f32],
+    m: usize,
+    k: usize,
+    b: &[f32],
+    n: usize,
+    out: &mut [f32],
+) {
+    ops::matmul_2d_slices_trans_a(a_kt, m, k, b, n, out);
 }
 
 /// Single-thread deterministic rank-2 matrix multiplication.

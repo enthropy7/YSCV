@@ -508,8 +508,12 @@ MPSGraph (3.5ms)  →  Metal per-op (12.1ms)  →  CPU (31.7ms)
 |---------|-------------|
 | **MPSGraph** | Default choice on macOS. Compiles entire model into one GPU dispatch. Fastest by far (3.5ms YOLOv8n). Requires `--features metal-backend`. |
 | **Metal per-op** | Fallback when MPSGraph compilation fails (e.g. dynamic reshape chains, unsupported ops). Still 2.6x faster than CPU. Same feature flag. |
-| **CPU** | No feature flags needed. Works everywhere. 3.2x faster than ORT. Best for Linux/Windows servers, CI, or when GPU isn't available. |
+| **CPU** | No feature flags needed. Works everywhere. Relative speed vs ORT is model+hardware dependent (see `performance-benchmarks.md` for current measured matrices). Best for Linux/Windows servers, CI, or when GPU isn't available. |
 | **wgpu** | Cross-platform GPU via Vulkan/Metal/DX12. Use `--features gpu`. Slower than Metal-native on macOS but works on all platforms with GPU. |
+
+For ONNX CPU kernel routing details (fused Conv paths, asm vs intrinsics,
+and runtime A/B env toggles), see
+[`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
 
 **Recommended pattern:**
 
@@ -1016,6 +1020,17 @@ python benchmarks/python/bench_opencv.py    # vs OpenCV
 | sigmoid 921K | 0.217ms | PyTorch 1.296ms | **6.0x** |
 | resize nearest u8 | 0.048ms | OpenCV 0.157ms | **3.3x** |
 | detect+track pipeline | 0.067ms | — | 15,000 FPS |
+
+### Current numbers (Orange Pi Zero 3, Siamese tracker, April 21, 2026)
+
+Same ONNX model, same input shapes, `--iters 200` for both yscv and ORT:
+
+| Threads | yscv p50 | ORT p50 | yscv vs ORT |
+|---:|---:|---:|---:|
+| 1 | **461.63 ms** | 499.25 ms | **1.08x faster** |
+| 2 | **252.08 ms** | 273.18 ms | **1.08x faster** |
+| 3 | **192.91 ms** | 199.41 ms | **1.03x faster** |
+| 4 | **150.17 ms** | 164.56 ms | **1.10x faster** |
 
 Full results: [docs/performance-benchmarks.md](performance-benchmarks.md)
 

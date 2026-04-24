@@ -2837,6 +2837,7 @@ dependencies = [
  "block",
  "bytemuck",
  "cblas-sys",
+ "cc",
  "criterion",
  "foreign-types",
  "libc",
@@ -2849,6 +2850,7 @@ dependencies = [
  "thiserror",
  "wgpu",
  "yscv-tensor",
+ "yscv-threadpool",
 ]
 
 [[package]]
@@ -2877,10 +2879,12 @@ dependencies = [
  "proptest",
  "prost",
  "prost-build",
+ "rayon",
  "tempfile",
  "thiserror",
  "yscv-kernels",
  "yscv-tensor",
+ "yscv-threadpool",
 ]
 
 [[package]]
@@ -2924,6 +2928,15 @@ dependencies = [
  "proptest",
  "rayon",
  "thiserror",
+]
+
+[[package]]
+name = "yscv-threadpool"
+version = "0.1.8"
+dependencies = [
+ "crossbeam-deque",
+ "libc",
+ "rayon",
 ]
 
 [[package]]

@@ -24,6 +24,7 @@ bytemuck = { version = "1", optional = true, features = ["derive"] }
 pollster = { version = "0.4", optional = true }
 rayon = "1.11"
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
+yscv-threadpool = { version = "0.1", path = "../yscv-threadpool" }
 thiserror.workspace = true
 wgpu = { version = "29", optional = true }
 metal = { version = "0.18", optional = true }
@@ -39,6 +40,12 @@ tempfile = { version = "3", optional = true }
 # `windows_repro_matmul_associative_with_scalar` regression test in
 # `proptest_tests.rs`.
 cblas-sys = { version = "0.1", optional = true }
+
+[build-dependencies]
+# Used by build.rs to compile hand-tuned SGEMM microkernels from `src/asm/*.s`
+# into a static library that links into the crate. `cc` handles platform-specific
+# object-file and symbol-decoration differences (ELF vs Mach-O vs COFF).
+cc = "1.0"
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

@@ -101,6 +101,70 @@ fn exec_synthetic_cnn_conv_relu_pool_flatten_gemm() {
 }
 
 #[test]
+fn conv_identity_relu_bridge_fuses_and_matches_relu_output() {
+    // Conv -> Identity -> Relu
+    let conv_w = onnx::TensorProto {
+        name: Some("conv_w".into()),
+        dims: vec![1, 1, 1, 1],
+        data_type: Some(1),
+        float_data: vec![1.0],
+        ..Default::default()
+    };
+    let conv_b = onnx::TensorProto {
+        name: Some("conv_b".into()),
+        dims: vec![1],
+        data_type: Some(1),
+        float_data: vec![-0.5],
+        ..Default::default()
+    };
+
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv0".into()),
+            input: vec!["input".into(), "conv_w".into(), "conv_b".into()],
+            output: vec!["conv_out".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![1, 1]),
+                make_ints_attr("strides", vec![1, 1]),
+            ],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Identity".into()),
+            name: Some("id0".into()),
+            input: vec!["conv_out".into()],
+            output: vec!["id_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu0".into()),
+            input: vec!["id_out".into()],
+            output: vec!["output".into()],
+            ..Default::default()
+        },
+    ];
+
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![conv_w, conv_b],
+        vec!["input", "conv_w", "conv_b"],
+        vec!["output"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+
+    let input = Tensor::from_vec(vec![1, 1, 2, 2], vec![0.0, 0.4, 1.0, -2.0]).unwrap();
+    let mut feed = HashMap::new();
+    feed.insert("input".to_string(), input);
+
+    let result = run_onnx_model(&model, feed).unwrap();
+    let output = &result["output"];
+    assert_eq!(output.shape(), &[1, 1, 2, 2]);
+    assert_eq!(output.data(), &[0.0, 0.0, 0.5, 0.0]);
+}
+
+#[test]
 fn exec_nms_basic() {
     // 1 batch, 1 class, 3 boxes
     // Box 0 and 1 overlap heavily, box 2 is separate

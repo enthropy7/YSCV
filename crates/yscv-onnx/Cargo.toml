@@ -20,8 +20,10 @@ profile = []
 
 [dependencies]
 prost = "0.13"
-yscv-kernels = { version = "0.1", path = "../yscv-kernels" }
+rayon = "1.11"
+yscv-kernels = { version = "0.1", path = "../yscv-kernels", default-features = false }
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
+yscv-threadpool = { version = "0.1", path = "../yscv-threadpool" }
 thiserror.workspace = true
 metal = { version = "0.18", optional = true }
 objc = { version = "0.2", optional = true }

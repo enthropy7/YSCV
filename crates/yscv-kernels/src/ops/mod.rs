@@ -6,7 +6,12 @@ mod conv;
 mod deformable_conv;
 mod elementwise;
 mod embedding;
+mod first_layer_3x3;
+mod fused_pw_dw_3x3;
+mod layout;
 mod matmul;
+mod nchwc_dw3x3;
+mod nchwc_ops;
 mod norm;
 mod pool;
 pub mod quantize;
@@ -20,11 +25,17 @@ pub use config::{
     ParallelElementwiseConfig, ParallelMatmulConfig,
 };
 pub use elementwise::{
-    add_with_config, exp, exp_with_config, gelu, mish, mul_with_config, relu, relu_inplace,
-    relu_out, relu_with_config, sigmoid, sigmoid_with_config, silu, silu_inplace, sub_with_config,
-    tanh_act, tanh_act_with_config,
+    add_inplace, add_relu_inplace, add_with_config, exp, exp_with_config, gelu, mish,
+    mul_with_config, relu, relu_inplace, relu_out, relu_with_config, sigmoid, sigmoid_with_config,
+    silu, silu_inplace, sub_with_config, tanh_act, tanh_act_with_config,
 };
-pub use matmul::{matmul_2d, matmul_2d_sequential, matmul_2d_slices, matmul_2d_with_config};
+#[cfg(target_arch = "aarch64")]
+pub use matmul::hgemm_6x16_neon;
+pub use matmul::{
+    GemmEpilogue, PackedB, matmul_2d, matmul_2d_sequential, matmul_2d_slices,
+    matmul_2d_slices_fused_maybe_packed, matmul_2d_slices_trans_a, matmul_2d_with_config,
+    pack_b_for_session,
+};
 pub use simd::{
     add_reduce_dispatch, binary_same_shape_dispatch, exp_slice_dispatch, fma_slice_dispatch,
     matmul_row_dispatch, max_reduce_dispatch, relu_slice_dispatch, relu_to_slice_dispatch,
@@ -37,11 +48,17 @@ pub use config::{
     SeparableConv2dSpec,
 };
 pub use conv::Activation;
-#[cfg(feature = "blas")]
+pub use conv::conv2d_nhwc_indirect_padded;
 pub use conv::conv2d_nhwc_padded;
 pub use conv::conv3d;
 pub use conv::{
-    conv2d_nhwc_with_config_and_pool, depthwise_conv2d_nhwc_with_config_and_pool,
+    conv2d_nchwc_pointwise_with_activation_prepacked, conv2d_nchwc_with_activation_prepacked,
+    conv2d_nhwc_pointwise_with_residual_relu, conv2d_nhwc_with_activation_prepacked,
+    conv2d_nhwc_with_activation_with_config_and_pool, conv2d_nhwc_with_config_and_pool,
+    depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool,
+    depthwise_conv2d_nhwc_padded_with_config_and_pool,
+    depthwise_conv2d_nhwc_with_activation_with_config_and_pool,
+    depthwise_conv2d_nhwc_with_config_and_pool, fused_dw_pw_nhwc_streaming,
     separable_conv2d_nhwc_with_config_and_pool,
 };
 pub use deformable_conv::deformable_conv2d_nhwc;
@@ -51,7 +68,14 @@ pub use elementwise::{
     tanh_act_with_config_and_pool,
 };
 pub use embedding::{dropout, embedding_lookup};
+pub use fused_pw_dw_3x3::fused_pw_expand_dw_3x3;
+pub use layout::{nchw_to_nchwc, nchw_to_nhwc_fast, nchwc_to_nchw, nchwc_to_nhwc, nhwc_to_nchwc};
 pub use matmul::matmul_2d_with_config_and_pool;
+pub use nchwc_dw3x3::conv2d_nchwc_dw3x3_s1_same_pad;
+pub use nchwc_ops::{
+    add_nchwc, avg_pool2d_nchwc, batch_norm2d_nchwc, max_pool2d_nchwc, relu_nchwc, sigmoid_nchwc,
+    silu_nchwc,
+};
 pub use norm::{
     batch_norm2d_nhwc_with_config_and_pool, group_norm_nhwc_with_config_and_pool,
     layer_norm_last_dim_with_config_and_pool, log_softmax_last_dim_with_config_and_pool,

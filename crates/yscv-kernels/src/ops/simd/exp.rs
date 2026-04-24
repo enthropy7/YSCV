@@ -57,7 +57,7 @@ unsafe extern "C" {
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "sse")]
 #[inline]
-pub(super) unsafe fn fast_exp_bittrick_sse(x: __m128) -> __m128 {
+pub(crate) unsafe fn fast_exp_bittrick_sse(x: __m128) -> __m128 {
     // SSE2 intrinsics used below are always available on x86_64.
     #[cfg(target_arch = "x86")]
     use std::arch::x86::{_mm_add_epi32, _mm_cvtps_epi32, _mm_set1_epi32};
@@ -80,7 +80,7 @@ pub(super) unsafe fn fast_exp_bittrick_sse(x: __m128) -> __m128 {
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "sse")]
-pub(super) unsafe fn fast_exp_sse(x: __m128) -> __m128 {
+pub(crate) unsafe fn fast_exp_sse(x: __m128) -> __m128 {
     let ln2_inv = _mm_set1_ps(std::f32::consts::LOG2_E);
     let ln2_hi = _mm_set1_ps(0.693_359_4); // upper bits of ln(2)
     let ln2_lo = _mm_set1_ps(-2.121_944_4e-4); // lower bits of ln(2)
@@ -142,7 +142,7 @@ pub(super) unsafe fn fast_exp_sse(x: __m128) -> __m128 {
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "avx")]
 #[inline]
-pub(super) unsafe fn fast_exp_bittrick_avx(x: __m256) -> __m256 {
+pub(crate) unsafe fn fast_exp_bittrick_avx(x: __m256) -> __m256 {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::{_mm256_add_epi32, _mm256_cvtps_epi32, _mm256_set1_epi32};
     #[cfg(target_arch = "x86_64")]
@@ -163,7 +163,7 @@ pub(super) unsafe fn fast_exp_bittrick_avx(x: __m256) -> __m256 {
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "avx")]
-pub(super) unsafe fn fast_exp_avx(x: __m256) -> __m256 {
+pub(crate) unsafe fn fast_exp_avx(x: __m256) -> __m256 {
     let ln2_inv = _mm256_set1_ps(std::f32::consts::LOG2_E);
     let ln2_hi = _mm256_set1_ps(0.693_359_4);
     let ln2_lo = _mm256_set1_ps(-2.121_944_4e-4);
@@ -217,7 +217,7 @@ pub(super) unsafe fn fast_exp_avx(x: __m256) -> __m256 {
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
-pub(super) unsafe fn fast_exp_neon(x: float32x4_t) -> float32x4_t {
+pub(crate) unsafe fn fast_exp_neon(x: float32x4_t) -> float32x4_t {
     use std::arch::aarch64::{
         vaddq_s32, vcvtnq_s32_f32, vcvtq_f32_s32, vreinterpretq_f32_s32, vshlq_n_s32,
     };
@@ -262,7 +262,7 @@ pub(super) unsafe fn fast_exp_neon(x: float32x4_t) -> float32x4_t {
 #[inline]
 /// Fast exp for sigmoid: range reduction + 3-term Horner + IEEE bit trick.
 /// WHY 3 terms: 3rd-order polynomial suffices for sigmoid (1/(1+exp) dampens error); max error ~1e-4.
-pub(super) unsafe fn fast_exp_sigmoid_neon(x: float32x4_t) -> float32x4_t {
+pub(crate) unsafe fn fast_exp_sigmoid_neon(x: float32x4_t) -> float32x4_t {
     use std::arch::aarch64::{
         vaddq_s32, vcvtnq_s32_f32, vcvtq_f32_s32, vdupq_n_s32, vreinterpretq_f32_s32, vshlq_n_s32,
         vsubq_f32,

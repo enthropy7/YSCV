@@ -721,7 +721,7 @@ fn compute_dc_prediction_luma(plane: &[u8], stride: usize, bx: usize, by: usize)
         }
     }
 
-    if count > 0 { (sum / count) as u8 } else { 128 }
+    sum.checked_div(count).map_or(128, |avg| avg as u8)
 }
 
 /// Computes DC prediction for a 4x4 chroma block.

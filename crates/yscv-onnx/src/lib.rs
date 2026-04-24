@@ -2,6 +2,7 @@
 
 pub const CRATE_ID: &str = "yscv-onnx";
 
+pub mod cpu_topology;
 mod dtype;
 #[path = "error.rs"]
 mod error;
@@ -31,6 +32,8 @@ pub use optimizer::{
     optimize_onnx_graph,
 };
 pub use quantize::quantize_weights_int4;
+pub use runner::OnnxRunner;
+pub use runner::dump_runner_profile;
 #[cfg(feature = "gpu")]
 pub use runner::gpu::profile_onnx_model_gpu;
 #[cfg(feature = "gpu")]
@@ -51,6 +54,8 @@ pub use runner::gpu::{compile_gpu_plan_f16, run_compiled_gpu_f16_fused};
 pub use runner::kv_cache::KvCache;
 pub use runner::profile_onnx_model_cpu;
 pub use runner::run_onnx_model;
+pub use runner::run_onnx_model_borrowed;
+pub use runner::run_onnx_model_borrowed_slice;
 
 #[cfg(feature = "metal-backend")]
 pub use runner::metal_runner::{

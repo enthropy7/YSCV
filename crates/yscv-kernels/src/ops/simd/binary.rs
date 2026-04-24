@@ -8,12 +8,14 @@ use std::arch::aarch64::{vaddq_f32, vdupq_n_f32, vld1q_f32, vmulq_f32, vst1q_f32
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     _mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_storeu_ps, _mm_sub_ps, _mm256_add_ps,
-    _mm256_loadu_ps, _mm256_mul_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps, _mm256_setzero_ps, _mm256_storeu_ps,
+    _mm256_sub_ps,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     _mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_storeu_ps, _mm_sub_ps, _mm256_add_ps,
-    _mm256_loadu_ps, _mm256_mul_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps, _mm256_setzero_ps, _mm256_storeu_ps,
+    _mm256_sub_ps,
 };
 
 use super::super::config::BinaryKind;
@@ -456,6 +458,224 @@ unsafe fn binary_same_shape_neon(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind
 
     if index < len {
         binary_same_shape_scalar(&lhs[index..], &rhs[index..], &mut out[index..], kind);
+    }
+}
+
+// ===========================================================================
+// add_relu_inplace: data[i] = max(data[i] + rhs[i], 0) using SIMD
+// ===========================================================================
+
+#[allow(unsafe_code, unreachable_code)]
+#[inline]
+pub fn add_relu_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
+    debug_assert_eq!(data.len(), rhs.len());
+
+    if cfg!(miri) || data.is_empty() {
+        for (d, &r) in data.iter_mut().zip(rhs.iter()) {
+            let v = *d + r;
+            *d = if v > 0.0 { v } else { 0.0 };
+        }
+        return;
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::is_x86_feature_detected!("avx") {
+            unsafe { add_relu_inplace_avx(data, rhs) };
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe { add_relu_inplace_neon(data, rhs) };
+            return;
+        }
+    }
+
+    for (d, &r) in data.iter_mut().zip(rhs.iter()) {
+        let v = *d + r;
+        *d = if v > 0.0 { v } else { 0.0 };
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx")]
+unsafe fn add_relu_inplace_avx(data: &mut [f32], rhs: &[f32]) {
+    let len = data.len();
+    let dp = data.as_mut_ptr();
+    let rp = rhs.as_ptr();
+    let zero = _mm256_setzero_ps();
+    let mut i = 0usize;
+    while i + 32 <= len {
+        let s0 = _mm256_add_ps(_mm256_loadu_ps(dp.add(i)), _mm256_loadu_ps(rp.add(i)));
+        let s1 = _mm256_add_ps(
+            _mm256_loadu_ps(dp.add(i + 8)),
+            _mm256_loadu_ps(rp.add(i + 8)),
+        );
+        _mm256_storeu_ps(dp.add(i), _mm256_max_ps(s0, zero));
+        _mm256_storeu_ps(dp.add(i + 8), _mm256_max_ps(s1, zero));
+        let s2 = _mm256_add_ps(
+            _mm256_loadu_ps(dp.add(i + 16)),
+            _mm256_loadu_ps(rp.add(i + 16)),
+        );
+        let s3 = _mm256_add_ps(
+            _mm256_loadu_ps(dp.add(i + 24)),
+            _mm256_loadu_ps(rp.add(i + 24)),
+        );
+        _mm256_storeu_ps(dp.add(i + 16), _mm256_max_ps(s2, zero));
+        _mm256_storeu_ps(dp.add(i + 24), _mm256_max_ps(s3, zero));
+        i += 32;
+    }
+    while i + 8 <= len {
+        let s = _mm256_add_ps(_mm256_loadu_ps(dp.add(i)), _mm256_loadu_ps(rp.add(i)));
+        _mm256_storeu_ps(dp.add(i), _mm256_max_ps(s, zero));
+        i += 8;
+    }
+    while i < len {
+        let v = *dp.add(i) + *rp.add(i);
+        *dp.add(i) = if v > 0.0 { v } else { 0.0 };
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn add_relu_inplace_neon(data: &mut [f32], rhs: &[f32]) {
+    use std::arch::aarch64::vmaxq_f32;
+    let len = data.len();
+    let dp = data.as_mut_ptr();
+    let rp = rhs.as_ptr();
+    let zero = vdupq_n_f32(0.0);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let s = vaddq_f32(vld1q_f32(dp.add(i)), vld1q_f32(rp.add(i)));
+        vst1q_f32(dp.add(i), vmaxq_f32(s, zero));
+        i += 4;
+    }
+    while i < len {
+        let v = *dp.add(i) + *rp.add(i);
+        *dp.add(i) = if v > 0.0 { v } else { 0.0 };
+        i += 1;
+    }
+}
+
+// ===========================================================================
+// add_inplace: data[i] += rhs[i] using SIMD
+// ===========================================================================
+
+#[allow(unsafe_code, unreachable_code)]
+#[inline]
+pub fn add_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
+    debug_assert_eq!(data.len(), rhs.len());
+
+    if cfg!(miri) || data.is_empty() {
+        for (d, &r) in data.iter_mut().zip(rhs.iter()) {
+            *d += r;
+        }
+        return;
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::is_x86_feature_detected!("avx") {
+            unsafe { add_inplace_avx(data, rhs) };
+            return;
+        }
+        if std::is_x86_feature_detected!("sse") {
+            unsafe { add_inplace_sse(data, rhs) };
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe { add_inplace_neon(data, rhs) };
+            return;
+        }
+    }
+
+    for (d, &r) in data.iter_mut().zip(rhs.iter()) {
+        *d += r;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx")]
+unsafe fn add_inplace_avx(data: &mut [f32], rhs: &[f32]) {
+    let len = data.len();
+    let dp = data.as_mut_ptr();
+    let rp = rhs.as_ptr();
+    let mut i = 0usize;
+    while i + 32 <= len {
+        let a0 = _mm256_loadu_ps(dp.add(i));
+        let b0 = _mm256_loadu_ps(rp.add(i));
+        let a1 = _mm256_loadu_ps(dp.add(i + 8));
+        let b1 = _mm256_loadu_ps(rp.add(i + 8));
+        _mm256_storeu_ps(dp.add(i), _mm256_add_ps(a0, b0));
+        _mm256_storeu_ps(dp.add(i + 8), _mm256_add_ps(a1, b1));
+        let a2 = _mm256_loadu_ps(dp.add(i + 16));
+        let b2 = _mm256_loadu_ps(rp.add(i + 16));
+        let a3 = _mm256_loadu_ps(dp.add(i + 24));
+        let b3 = _mm256_loadu_ps(rp.add(i + 24));
+        _mm256_storeu_ps(dp.add(i + 16), _mm256_add_ps(a2, b2));
+        _mm256_storeu_ps(dp.add(i + 24), _mm256_add_ps(a3, b3));
+        i += 32;
+    }
+    while i + 8 <= len {
+        let a = _mm256_loadu_ps(dp.add(i));
+        let b = _mm256_loadu_ps(rp.add(i));
+        _mm256_storeu_ps(dp.add(i), _mm256_add_ps(a, b));
+        i += 8;
+    }
+    while i < len {
+        *dp.add(i) += *rp.add(i);
+        i += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+unsafe fn add_inplace_sse(data: &mut [f32], rhs: &[f32]) {
+    let len = data.len();
+    let dp = data.as_mut_ptr();
+    let rp = rhs.as_ptr();
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let a = _mm_loadu_ps(dp.add(i));
+        let b = _mm_loadu_ps(rp.add(i));
+        _mm_storeu_ps(dp.add(i), _mm_add_ps(a, b));
+        i += 4;
+    }
+    while i < len {
+        *dp.add(i) += *rp.add(i);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn add_inplace_neon(data: &mut [f32], rhs: &[f32]) {
+    let len = data.len();
+    let dp = data.as_mut_ptr();
+    let rp = rhs.as_ptr();
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let a = vld1q_f32(dp.add(i));
+        let b = vld1q_f32(rp.add(i));
+        vst1q_f32(dp.add(i), vaddq_f32(a, b));
+        i += 4;
+    }
+    while i < len {
+        *dp.add(i) += *rp.add(i);
+        i += 1;
     }
 }
 

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::aligned::AlignedVec;
 use super::error::{DType, TensorError};
 use super::shape::{compute_strides, shape_element_count};
@@ -104,6 +106,35 @@ pub enum Device {
     Gpu(usize),
 }
 
+/// Memory-layout tag describing how Conv-shaped tensors are laid out.
+///
+/// NCHW is ONNX's native layout and the default. NHWC is what yscv's CPU
+/// runner currently uses internally for Conv hot paths. NCHWc packs
+/// channels into SIMD-sized blocks (8 for AVX2/NEON, 16 for AVX-512),
+/// which lets 3×3 non-depthwise Conv use direct SIMD loads over the
+/// C-block stride rather than paying tail-handling cost.
+///
+/// The tag is **metadata** — it does not change how `data()` / `shape()`
+/// are interpreted by Tensor itself. Consumers (conv kernels, layout
+/// transformers) read the tag to pick the right kernel dispatch.
+/// Shape ordering matches the layout: NCHW tensors have shape
+/// `[N, C, H, W]`, NHWC `[N, H, W, C]`, NCHWc `[N, C/block, H, W, block]`
+/// (5-D). Data is always contiguous in its declared ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Layout {
+    /// ONNX default: `[N, C, H, W]`.
+    #[default]
+    NCHW,
+    /// Channels-last: `[N, H, W, C]`. Used by yscv's CPU conv paths.
+    NHWC,
+    /// Blocked channels-first: `[N, C/block, H, W, block]`. `block` is a
+    /// SIMD-lane-aligned chunk size (8 on AVX2/NEON, 16 on AVX-512).
+    NCHWc {
+        /// Channels-per-block. Must be a power of two.
+        block: u8,
+    },
+}
+
 /// Internal typed storage for tensor data.
 #[derive(Debug, Clone)]
 pub(crate) enum Storage {
@@ -149,8 +180,15 @@ impl Storage {
 pub struct Tensor {
     shape: DimsVec,
     strides: DimsVec,
-    storage: Storage,
+    // Arc-shared storage so `Tensor::clone()` / `reshape()` are O(1) refcount
+    // bumps. Writes go through `Arc::make_mut` (copy-on-write): free when
+    // refcount == 1, clone-once semantics otherwise. This lets the runtime
+    // pass `Arc<PackedWeight>` around at zero cost and makes Reshape a
+    // pointer-swap. Storage itself is still typed (F32/F16/BF16) — the Arc
+    // only guards the data buffer, not the dtype tag.
+    storage: Arc<Storage>,
     device: Device,
+    layout: Layout,
 }
 
 impl Tensor {
@@ -159,8 +197,9 @@ impl Tensor {
         Self {
             shape: DimsVec::new(),
             strides: DimsVec::new(),
-            storage: Storage::F32(AlignedVec::filled(1, value)),
+            storage: Arc::new(Storage::F32(AlignedVec::filled(1, value))),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         }
     }
 
@@ -176,8 +215,9 @@ impl Tensor {
         Self {
             shape: DimsVec::from(shape),
             strides: DimsVec::from(strides),
-            storage: Storage::F32(data),
+            storage: Arc::new(Storage::F32(data)),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         }
     }
 
@@ -205,8 +245,9 @@ impl Tensor {
         Ok(Self {
             shape: DimsVec::from(shape),
             strides: DimsVec::from(strides),
-            storage: Storage::F32(data),
+            storage: Arc::new(Storage::F32(data)),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         })
     }
 
@@ -229,8 +270,9 @@ impl Tensor {
         Ok(Self {
             shape: DimsVec::from(shape),
             strides: DimsVec::from(strides),
-            storage: Storage::F32(AlignedVec::from_vec(data)),
+            storage: Arc::new(Storage::F32(AlignedVec::from_vec(data))),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         })
     }
 
@@ -251,8 +293,9 @@ impl Tensor {
         Ok(Self {
             shape: DimsVec::from(shape),
             strides: DimsVec::from(strides),
-            storage: Storage::F16(data),
+            storage: Arc::new(Storage::F16(data)),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         })
     }
 
@@ -273,8 +316,9 @@ impl Tensor {
         Ok(Self {
             shape: DimsVec::from(shape),
             strides: DimsVec::from(strides),
-            storage: Storage::BF16(data),
+            storage: Arc::new(Storage::BF16(data)),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         })
     }
 
@@ -284,8 +328,9 @@ impl Tensor {
         Self {
             shape: DimsVec::from(vec![n]),
             strides: DimsVec::from(vec![1usize]),
-            storage: Storage::F32(AlignedVec::from_vec(data.to_vec())),
+            storage: Arc::new(Storage::F32(AlignedVec::from_vec(data.to_vec()))),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         }
     }
 
@@ -303,8 +348,9 @@ impl Tensor {
         Ok(Self {
             shape: DimsVec::from(shape),
             strides: DimsVec::from(strides),
-            storage: Storage::F32(AlignedVec::filled(count, value)),
+            storage: Arc::new(Storage::F32(AlignedVec::filled(count, value))),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         })
     }
 
@@ -323,8 +369,9 @@ impl Tensor {
         Ok(Self {
             shape: DimsVec::from(shape),
             strides: DimsVec::from(strides),
-            storage: Storage::F32(AlignedVec::calloc(count)),
+            storage: Arc::new(Storage::F32(AlignedVec::calloc(count))),
             device: Device::Cpu,
+            layout: Layout::NCHW,
         })
     }
 
@@ -383,17 +430,32 @@ impl Tensor {
             strides: self.strides.clone(),
             storage: self.storage.clone(),
             device,
+            layout: self.layout,
         }
+    }
+
+    /// Returns the memory-layout tag. Defaults to `Layout::NCHW`.
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    /// Returns a clone of this tensor retagged with `layout`. This is a
+    /// **metadata** change only — the caller is responsible for having
+    /// already laid out the data correctly for the new layout (use
+    /// `yscv_kernels::ops::layout` kernels for actual reordering).
+    pub fn with_layout(mut self, layout: Layout) -> Self {
+        self.layout = layout;
+        self
     }
 
     /// Returns `true` if the tensor stores f32 data.
     pub fn is_f32(&self) -> bool {
-        matches!(self.storage, Storage::F32(_))
+        matches!(&*self.storage, Storage::F32(_))
     }
 
     /// Fallible version of `data()` — returns an error for non-F32 tensors.
     pub fn try_data(&self) -> Result<&[f32], TensorError> {
-        match &self.storage {
+        match &*self.storage {
             Storage::F32(v) => Ok(v),
             _ => Err(TensorError::DTypeMismatch {
                 expected: DType::F32,
@@ -403,9 +465,13 @@ impl Tensor {
     }
 
     /// Fallible version of `data_mut()` — returns an error for non-F32 tensors.
+    ///
+    /// Triggers a copy-on-write clone of the underlying storage if it is shared
+    /// (`Arc::strong_count > 1`). When this tensor uniquely owns its storage —
+    /// the common case — the call is a no-op and returns a direct `&mut [f32]`.
     pub fn try_data_mut(&mut self) -> Result<&mut [f32], TensorError> {
         let dt = self.storage.dtype();
-        match &mut self.storage {
+        match Arc::make_mut(&mut self.storage) {
             Storage::F32(v) => Ok(v),
             _ => Err(TensorError::DTypeMismatch {
                 expected: DType::F32,
@@ -437,7 +503,7 @@ impl Tensor {
 
     /// Returns raw FP16 bit-pattern data if dtype is F16.
     pub fn data_f16(&self) -> Result<&[u16], TensorError> {
-        match &self.storage {
+        match &*self.storage {
             Storage::F16(v) => Ok(v),
             _ => Err(TensorError::DTypeMismatch {
                 expected: DType::F16,
@@ -448,7 +514,7 @@ impl Tensor {
 
     /// Returns raw BF16 bit-pattern data if dtype is BF16.
     pub fn data_bf16(&self) -> Result<&[u16], TensorError> {
-        match &self.storage {
+        match &*self.storage {
             Storage::BF16(v) => Ok(v),
             _ => Err(TensorError::DTypeMismatch {
                 expected: DType::BF16,
@@ -472,14 +538,15 @@ impl Tensor {
         Self {
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            storage,
+            storage: Arc::new(storage),
             device: self.device,
+            layout: self.layout,
         }
     }
 
     /// Returns f32 data regardless of internal dtype (converts if necessary).
     pub(crate) fn to_f32_vec(&self) -> Vec<f32> {
-        match &self.storage {
+        match &*self.storage {
             Storage::F32(v) => v.as_slice().to_vec(),
             Storage::F16(v) => v.iter().map(|&bits| fp16_bits_to_f32(bits)).collect(),
             Storage::BF16(v) => v.iter().map(|&bits| bf16_bits_to_f32(bits)).collect(),
@@ -489,7 +556,7 @@ impl Tensor {
     /// Reads one element by multi-dimensional index (always returns f32).
     pub fn get(&self, indices: &[usize]) -> Result<f32, TensorError> {
         let offset = self.offset_from_indices(indices)?;
-        Ok(match &self.storage {
+        Ok(match &*self.storage {
             Storage::F32(v) => v[offset],
             Storage::F16(v) => fp16_bits_to_f32(v[offset]),
             Storage::BF16(v) => bf16_bits_to_f32(v[offset]),
@@ -497,9 +564,13 @@ impl Tensor {
     }
 
     /// Writes one element by multi-dimensional index (stores as native dtype).
+    ///
+    /// Triggers a copy-on-write clone of the underlying storage if it is shared
+    /// with another `Tensor` (`Arc::strong_count > 1`). Single-owner writes are
+    /// in-place.
     pub fn set(&mut self, indices: &[usize], value: f32) -> Result<(), TensorError> {
         let offset = self.offset_from_indices(indices)?;
-        match &mut self.storage {
+        match Arc::make_mut(&mut self.storage) {
             Storage::F32(v) => v[offset] = value,
             Storage::F16(v) => v[offset] = f32_to_fp16_bits(value),
             Storage::BF16(v) => v[offset] = f32_to_bf16_bits(value),
@@ -507,7 +578,10 @@ impl Tensor {
         Ok(())
     }
 
-    /// Returns a reshaped tensor view with copied metadata and data.
+    /// Returns a reshaped tensor that shares the underlying data buffer
+    /// with the original via `Arc`. This is an O(1) refcount bump — no
+    /// allocation, no copy. If either tensor is subsequently written via
+    /// `data_mut` or `set`, the storage is cloned lazily (copy-on-write).
     pub fn reshape(&self, new_shape: Vec<usize>) -> Result<Self, TensorError> {
         let new_count =
             shape_element_count(&new_shape).ok_or_else(|| TensorError::SizeOverflow {
@@ -529,6 +603,7 @@ impl Tensor {
             strides: DimsVec::from(new_strides),
             storage: self.storage.clone(),
             device: self.device,
+            layout: self.layout,
         })
     }
 
@@ -554,6 +629,7 @@ impl Tensor {
             strides: DimsVec::from(new_strides),
             storage: self.storage,
             device: self.device,
+            layout: self.layout,
         })
     }
 

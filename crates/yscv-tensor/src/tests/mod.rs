@@ -2,6 +2,7 @@ mod advanced;
 mod core;
 mod device;
 mod fp16;
+mod layout;
 mod linalg;
 mod ops;
 mod reduce;

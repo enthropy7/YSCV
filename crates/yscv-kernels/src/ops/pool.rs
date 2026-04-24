@@ -1,4 +1,4 @@
-use rayon::{ThreadPool, prelude::*};
+use rayon::ThreadPool;
 use yscv_tensor::{AlignedVec, Tensor, TensorError};
 
 use super::super::error::KernelError;
@@ -45,19 +45,16 @@ fn pool2d_nhwc_with_config_and_pool(
     let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
 
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
-        let mut work = || {
-            output
-                .par_chunks_mut(out_row_len)
-                .enumerate()
-                .for_each(|(row_idx, out_row)| {
-                    pool2d_nhwc_row(data, plan, row_idx, out_row, kind);
-                });
-        };
-        if let Some(pool) = thread_pool {
-            pool.install(work);
-        } else {
-            work();
-        }
+        // Route through `scope_ctx::par_chunks_mut_dispatch` — if the
+        // ONNX runner installed a ParallelScope via `install_scope`,
+        // all chunks go through it; otherwise falls back to rayon.
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            out_row_len,
+            |row_idx, out_row| {
+                pool2d_nhwc_row(data, plan, row_idx, out_row, kind);
+            },
+        );
     } else {
         for (row_idx, out_row) in output.chunks_mut(out_row_len).enumerate() {
             pool2d_nhwc_row(data, plan, row_idx, out_row, kind);
@@ -723,10 +720,11 @@ fn pool2d_nchw(
     };
 
     if total_out >= 262_144 {
-        output
-            .par_chunks_mut(plane_out)
-            .enumerate()
-            .for_each(|(idx, chunk)| work(chunk, idx));
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            plane_out,
+            |idx, chunk| work(chunk, idx),
+        );
     } else {
         for (idx, chunk) in output.chunks_mut(plane_out).enumerate() {
             work(chunk, idx);

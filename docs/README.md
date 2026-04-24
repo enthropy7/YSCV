@@ -42,6 +42,9 @@ Pick your starting point.
 - **[onnx-inference.md](onnx-inference.md)** — ONNX runtime: CPU
   (128+ ops), Apple MPSGraph, wgpu (cross-platform GPU). Triple-
   buffered submit/wait API for sustained throughput.
+- **[onnx-cpu-kernels.md](onnx-cpu-kernels.md)** — CPU hot-path map
+  for ONNX Conv/MatMul: fused kernels, asm vs intrinsics coverage,
+  Orange Pi tracker numbers, and A/B env toggles.
 - **[mpsgraph-guide.md](mpsgraph-guide.md)** — standalone guide for
   the Apple Silicon MPSGraph path: when to use, full API reference,
   sync vs pipelined, multi-input models, fallback, troubleshooting.

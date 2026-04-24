@@ -507,7 +507,7 @@ pub fn clahe_u8(
                 *h += avg_inc;
             }
             // Distribute remainder evenly
-            let step = if remainder > 0 { 256 / remainder } else { 256 };
+            let step = 256usize.checked_div(remainder).unwrap_or(256);
             let mut idx = 0;
             for _ in 0..remainder {
                 hist[idx] += 1;

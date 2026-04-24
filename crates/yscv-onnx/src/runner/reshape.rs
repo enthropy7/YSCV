@@ -27,7 +27,7 @@ pub(super) fn exec_reshape(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
 pub(super) fn exec_reshape_zerocopy(
     node: &OnnxNode,
     env: &mut TensorEnv,
-    use_counts: &HashMap<&str, usize>,
+    use_counts: &HashMap<String, usize>,
 ) -> Result<(), OnnxError> {
     exec_reshape_inner(node, env, Some(use_counts))
 }
@@ -35,57 +35,54 @@ pub(super) fn exec_reshape_zerocopy(
 fn exec_reshape_inner(
     node: &OnnxNode,
     env: &mut TensorEnv,
-    use_counts: Option<&HashMap<&str, usize>>,
+    use_counts: Option<&HashMap<String, usize>>,
 ) -> Result<(), OnnxError> {
-    // Read metadata before taking ownership to compute new_shape.
-    let (total, in_shape, raw_dims) = {
+    // Compute new_shape without cloning the shape tensor data. We iterate the
+    // shape-tensor slice directly inside the borrow scope, then drop the
+    // borrow before touching env mutably.
+    let (total, new_shape) = {
         let input = get_tensor(env, &node.name, &node.inputs[0])?;
         let shape_tensor = get_tensor(env, &node.name, &node.inputs[1])?;
-        (
-            input.len(),
-            input.shape().to_vec(),
-            shape_tensor.data().to_vec(),
-        )
-    };
+        let total = input.len();
+        let in_shape = input.shape();
+        let dims = shape_tensor.data();
 
-    let mut neg_idx = None;
-    let mut new_shape = Vec::with_capacity(raw_dims.len());
-    for (i, &dim_f) in raw_dims.iter().enumerate() {
-        let d = dim_f as i64;
-        if d == -1 {
-            neg_idx = Some(i);
-            new_shape.push(1); // placeholder
-        } else if d == 0 {
-            new_shape.push(if i < in_shape.len() { in_shape[i] } else { 1 });
-        } else {
-            new_shape.push(d as usize);
+        let mut neg_idx: Option<usize> = None;
+        let mut new_shape: Vec<usize> = Vec::with_capacity(dims.len());
+        for (i, &dim_f) in dims.iter().enumerate() {
+            let d = dim_f as i64;
+            if d == -1 {
+                neg_idx = Some(i);
+                new_shape.push(1);
+            } else if d == 0 {
+                new_shape.push(if i < in_shape.len() { in_shape[i] } else { 1 });
+            } else {
+                new_shape.push(d as usize);
+            }
         }
-    }
+        if let Some(idx) = neg_idx {
+            let known: usize = new_shape
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != idx)
+                .map(|(_, &d)| d)
+                .product();
+            new_shape[idx] = total.checked_div(known).unwrap_or(total);
+        }
+        (total, new_shape)
+    };
+    let _ = total;
 
-    if let Some(idx) = neg_idx {
-        let known: usize = new_shape
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| i != idx)
-            .map(|(_, &d)| d)
-            .product();
-        new_shape[idx] = if known > 0 { total / known } else { total };
-    }
-
-    // Zero-copy path: remove the tensor from env (avoiding a data clone)
-    // only when this node is the sole remaining consumer.
+    // With Tensor::reshape now O(1) (Arc-shared storage with copy-on-write on
+    // subsequent writes), both paths are cheap. We still prefer the explicit
+    // `remove` + `into_reshape` when the node is the sole remaining consumer,
+    // because that drops the env slot early so downstream writes never even
+    // consider a CoW clone.
     let sole_consumer = use_counts
         .map(|uc| uc.get(node.inputs[0].as_str()).copied().unwrap_or(0) <= 1)
         .unwrap_or(false);
 
-    if sole_consumer {
-        let input = env
-            .remove(&node.inputs[0])
-            .or_else(|| env.get(&node.inputs[0]).cloned())
-            .ok_or_else(|| OnnxError::MissingInput {
-                node: node.name.clone(),
-                input: node.inputs[0].clone(),
-            })?;
+    if sole_consumer && let Some(input) = env.remove(&node.inputs[0]) {
         let out = input
             .into_reshape(new_shape)
             .map_err(|e| OnnxError::DecodeFailed {
@@ -467,7 +464,7 @@ pub(super) fn exec_slice(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onn
     let mut out_shape = Vec::with_capacity(rank);
     for d in 0..rank {
         let s = ((ends[d] - starts[d]) as f64 / steps[d] as f64).ceil() as usize;
-        out_shape.push(s.max(0));
+        out_shape.push(s);
     }
 
     let out_size: usize = out_shape.iter().product();

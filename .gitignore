@@ -48,6 +48,10 @@ onnx2convert/
 # Profiler output
 onnxruntime_profile__*.json
 
+# Perf-arc working dumps (dated snapshots, authoritative reports live in docs/)
+scripts/gap_reports/
+scripts/sgemm_baseline_*.csv
+
 # Misc
 *.log
 *.tmp

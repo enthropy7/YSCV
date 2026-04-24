@@ -418,6 +418,27 @@ counters persist across runs.
 
 ---
 
+## Runtime perf env toggles (ONNX CPU kernels)
+
+Cargo features select backend code at build time. For ONNX CPU
+micro-tuning and A/B you also have runtime env toggles.
+
+Most used knobs:
+
+- `YSCV_FUSED_PW_DW_STREAM_OFF=1` — disable PW->DW streaming fused path.
+- `YSCV_FUSED_PW_DW_PW2X_OFF=1` — disable NEON PW2X inner-loop variant.
+- `YSCV_FUSED_PW_DW_W_TILE=<N>` — override fused PW->DW strip-mining tile.
+- `YSCV_FUSED_DW_PW_STREAM_OFF=1` — disable DW->PW streaming fused path.
+- `YSCV_FUSED_DW_PW_STREAM_PADDED=1` — enable padded streaming variant.
+- `YSCV_DIRECT_CONV_WORK_MAX=<N>` — direct-3x3 routing threshold.
+- `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` and
+  `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` — low-k blocked matmul route.
+
+Canonical reference (with defaults, scope, and reproduction commands):
+[`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
+
+---
+
 ## Combination recipes
 
 ```toml

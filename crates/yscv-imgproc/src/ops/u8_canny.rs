@@ -305,7 +305,7 @@ fn collect_strong_positions(nms_row: &[u8], nms_y: usize, w: usize, out: &mut Ve
         use std::arch::aarch64::*;
         let target = unsafe { vdupq_n_u8(255) };
         let p = nms_row.as_ptr();
-        while x + 16 <= w - 1 {
+        while x + 16 < w {
             let v = unsafe { vld1q_u8(p.add(x)) };
             let mask = unsafe { vceqq_u8(v, target) };
             if unsafe { vmaxvq_u8(mask) } != 0 {
@@ -401,7 +401,7 @@ unsafe fn canny_sobel3x3_row_neon(
     let dp = dir_row.as_mut_ptr();
     let mut x = 1usize;
 
-    while x + 16 <= w - 1 {
+    while x + 16 < w {
         let al_v = vld1q_u8(ap.add(x - 1));
         let ac_v = vld1q_u8(ap.add(x));
         let ar_v = vld1q_u8(ap.add(x + 1));
@@ -514,7 +514,7 @@ unsafe fn canny_sobel3x3_row_neon(
         );
         x += 16;
     }
-    while x + 8 <= w - 1 {
+    while x + 8 < w {
         let (al, ac, ar) = (
             vmovl_u8(vld1_u8(ap.add(x - 1))),
             vmovl_u8(vld1_u8(ap.add(x))),
@@ -596,7 +596,7 @@ unsafe fn canny_sobel3x3_row_sse(
     let zero = _mm_setzero_si128();
     let mut x = 1usize;
 
-    while x + 8 <= w - 1 {
+    while x + 8 < w {
         let al = _mm_loadl_epi64(ap.add(x - 1) as *const __m128i);
         let ac = _mm_loadl_epi64(ap.add(x) as *const __m128i);
         let ar = _mm_loadl_epi64(ap.add(x + 1) as *const __m128i);
@@ -772,7 +772,7 @@ unsafe fn canny_nms_dir_row_sse(
     let mut x = 1usize;
     let mut strong_count = 0usize;
 
-    while x + 8 <= w - 1 {
+    while x + 8 < w {
         let m = _mm_loadu_si128(mc.add(x) as *const __m128i);
 
         let cur_left = _mm_loadu_si128(mc.add(x - 1) as *const __m128i);
@@ -890,7 +890,7 @@ unsafe fn canny_nms_dir_row_neon(
     let mut x = 1usize;
     let mut strong_count = 0usize;
 
-    while x + 8 <= w - 1 {
+    while x + 8 < w {
         // Load magnitude center
         let m = vld1q_u16(mc.add(x));
 

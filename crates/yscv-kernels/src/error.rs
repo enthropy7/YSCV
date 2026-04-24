@@ -217,4 +217,6 @@ pub enum KernelError {
     Rknn { message: String },
     #[error("unsupported operation: {0}")]
     UnsupportedOperation(String),
+    #[error("layout conversion: {0}")]
+    LayoutConversion(String),
 }

@@ -2,7 +2,7 @@
 
 Comprehensive benchmark results comparing yscv against NumPy, PyTorch, OpenCV, ffmpeg, onnxruntime, and CoreML.
 
-**Last updated**: April 2026 | **Tests**: 1,861 default / 1,897 all-features across 16 crates | **CI**: macOS + Linux + Windows + ARM64
+**Last updated**: 2026-04-21 | **Tests**: 1,861 default / 1,897 all-features across 16 crates | **CI**: macOS + Linux + Windows + ARM64
 
 ## Hardware & Methodology
 
@@ -381,6 +381,85 @@ Input `[1, 9, 432, 768]`, output `[1, 27, 27, 48]`, 42 ONNX nodes.
 ### Key Takeaway
 
 yscv CPU (124.1ms) is **1.6× faster than onnxruntime CPU** (196.7ms) on depthwise-separable models — no special flags needed. MPSGraph (7.8ms) **beats CoreML CPU_ONLY** (8.6ms) which uses Apple's dedicated AMX coprocessor via BNNS — a **1.1× speedup**. MPSGraph provides **16× over CPU**, reaching 128 FPS on Apple Silicon.
+
+## ONNX Siamese Tracker (Zen 4 historical arc, AMD Ryzen 5 7500F, 6C/12T, fp32 CPU)
+
+Model: Siamese tracker, 156 ops after graph optimization, two input branches
+(`input.1` 1×3×128×128 template, `input.249` 1×3×256×256 search)
+joined in `connect_model`. Primary fp32 CPU benchmark target of the
+S.*/A.*/R.* perf arc (Apr 2026, 19 sessions).
+
+Methodology: `RAYON_NUM_THREADS=N ./onnx-fps --iters 500`, median of
+3 runs per thread-count, bitwise-identical outputs across all Ns.
+ORT 1.24.4 CPUExecutionProvider as the reference.
+
+| Threads | yscv p50 | ORT p50 | gap | yscv scaling | ORT scaling |
+|---:|---:|---:|---:|---:|---:|
+|  1 | 11.43 ms | 8.05 ms | 1.42× | 1.00× | 1.00× |
+|  2 |  6.55 ms | 4.42 ms | 1.48× | 1.74× | 1.82× |
+|  4 |  4.15 ms | 2.36 ms | 1.76× | 2.75× | 3.41× |
+|  **6** |  **3.66 ms** | **1.74 ms** | **2.10×** | 3.12× | 4.62× |
+|  8 |  3.87 ms | 2.28 ms | 1.70× | 2.95× | 3.53× |
+| 12 |  4.02 ms | 1.93 ms | 2.08× | 2.84× | 4.16× |
+
+6T is the sweet spot (physical-core count). Beyond 6T, SMT contention
+hurts both engines; 12T is strictly worse than 6T.
+
+### Where the remaining gap lives (6T profile, sequential sums)
+
+| op | yscv | ORT | gap | ratio |
+|---|---:|---:|---:|---:|
+| Conv | 6.31 ms (78 ops) | 2.22 ms (114 ops) | +4.09 ms | **2.84×** |
+| MatMul | 0.19 ms (2) | 0.04 ms (2) | +0.14 ms | 4.17× |
+| Reshape | 0.11 ms (5) | 0.01 ms (5) | +0.10 ms | 8.01× |
+| Reorder (NCHWc) | — | 0.05 ms (7) | — | ORT-only |
+
+**Conv dominates 94% of the gap** — the bulk live in mid-sized pointwise
+and inverted-bottleneck layers; ORT uses NCHWc layout throughout while
+yscv runs NHWC.
+
+### Landed perf arc (cumulative ~−953 µs @ 6T p50, default-ON)
+
+| step | kernel / change | win @ 6T |
+|---|---|---:|
+| S.3 | AVX 8×8 NCHW↔NHWC block transpose | −99 µs |
+| A2  | AVX-512 depthwise row kernel | −117 µs |
+| A3  | First-layer AVX-512 default-on | −64 µs |
+| R1  | KHWC-weight fast-path fix for Conv+Add fusion | −91 µs |
+| R4  | First-layer 3×3 row-level parallelism | −255 µs |
+| R7  | Streaming FusedPwDw AVX-512 register-blocked | −146 µs |
+| R9  | FusedTransposeMatMul (mirrors ORT `MatmulTransposeFusion`) | −291 µs |
+
+All landings bitwise-identical or 1-ULP-close to reference. aarch64
+cross-compile clean, no-default-features (non-BLAS) build OK, 610+
+tests green.
+
+Detailed per-op gap report:
+[gap-report-2026-04-20.md](gap-report-2026-04-20.md).
+
+## ONNX Siamese Tracker (Orange Pi Zero 3, Cortex-A55, fp32 CPU)
+
+Latest public rerun on Orange Pi Zero 3 (2026-04-21), same model and inputs
+for both engines:
+
+- `model sha256`: `6336fbde82e3996128cd18e2141682c7a6b9a7575018ca9ffee974df546f22ab`
+- Command (yscv): `./target/release/onnx-fps --model ../model.onnx --input input.1:1x3x128x128 --input input.249:1x3x256x256 --iters 200 --threads N --text`
+- Command (ORT): `python3 ./bench_ort_onnx_fps.py --model ../model.onnx --input input.1:1x3x128x128 --input input.249:1x3x256x256 --iters 200 --threads N --text`
+
+| Threads | yscv p50 | ORT p50 | yscv vs ORT |
+|---:|---:|---:|---:|
+| 1 | **461.63 ms** | 499.25 ms | **1.08× faster** |
+| 2 | **252.08 ms** | 273.18 ms | **1.08× faster** |
+| 3 | **192.91 ms** | 199.41 ms | **1.03× faster** |
+| 4 | **150.17 ms** | 164.56 ms | **1.10× faster** |
+
+Takeaway: on this ARM target, current default `yscv-onnx` is now ahead of
+ORT CPU across all tested thread counts (1..4), with the largest advantage
+at 4 threads.
+
+Kernel-path notes for this run (streaming fused Conv paths, asm vs
+intrinsics, and runtime A/B toggles):
+[`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
 
 ## Cross-Platform SIMD Coverage
 

@@ -158,6 +158,7 @@ pub fn quantize_weights_int4(model: &mut OnnxModel) -> Result<(), OnnxError> {
     let mut dequant_node_list: Vec<OnnxNode> = dequant_nodes.into_iter().map(|(_, n)| n).collect();
     dequant_node_list.append(&mut model.nodes);
     model.nodes = dequant_node_list;
+    model.rebuild_runtime_index();
 
     Ok(())
 }
@@ -193,6 +194,8 @@ mod tests {
             }],
             khwc_weights: Default::default(),
             dw_khwc_weights: Default::default(),
+            group_khwc_weights: Default::default(),
+            runtime_index: Default::default(),
         };
 
         let result = quantize_weights_int4(&mut model);
@@ -248,6 +251,8 @@ mod tests {
             nodes: vec![],
             khwc_weights: Default::default(),
             dw_khwc_weights: Default::default(),
+            group_khwc_weights: Default::default(),
+            runtime_index: Default::default(),
         };
 
         quantize_weights_int4(&mut model).expect("should succeed");

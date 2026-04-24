@@ -2,8 +2,10 @@ use yscv_tensor::Tensor;
 
 use crate::{
     KernelError, ParallelElementwiseConfig, SeparableConv2dParams, conv2d_nhwc,
-    conv2d_nhwc_with_config, depthwise_conv2d_nhwc, depthwise_conv2d_nhwc_with_config,
-    separable_conv2d_nhwc, separable_conv2d_nhwc_with_config,
+    conv2d_nhwc_with_activation, conv2d_nhwc_with_config, depthwise_conv2d_nhwc,
+    depthwise_conv2d_nhwc_padded, depthwise_conv2d_nhwc_padded_with_activation,
+    depthwise_conv2d_nhwc_with_config, fused_dw_pw_nhwc_streaming, separable_conv2d_nhwc,
+    separable_conv2d_nhwc_with_config,
 };
 
 use super::build_tensor;
@@ -260,6 +262,75 @@ fn depthwise_conv2d_with_config_disabled_matches_default() {
     assert_eq!(baseline, disabled);
 }
 
+#[test]
+fn depthwise_conv2d_nhwc_padded_matches_explicit_padding_dm1() {
+    let input = Tensor::from_vec(
+        vec![1, 3, 3, 1],
+        vec![
+            1.0, 2.0, 3.0, //
+            4.0, 5.0, 6.0, //
+            7.0, 8.0, 9.0,
+        ],
+    )
+    .unwrap();
+    let kernel = Tensor::from_vec(
+        vec![3, 3, 1, 1],
+        vec![
+            1.0, 0.0, -1.0, //
+            1.0, 0.0, -1.0, //
+            1.0, 0.0, -1.0,
+        ],
+    )
+    .unwrap();
+
+    let out_virtual =
+        depthwise_conv2d_nhwc_padded(&input, &kernel, None, 1, 1, 1, 1, 1, 1).unwrap();
+
+    let padded = Tensor::from_vec(
+        vec![1, 5, 5, 1],
+        vec![
+            0.0, 0.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 2.0, 3.0, 0.0, //
+            0.0, 4.0, 5.0, 6.0, 0.0, //
+            0.0, 7.0, 8.0, 9.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    )
+    .unwrap();
+    let out_explicit = depthwise_conv2d_nhwc(&padded, &kernel, None, 1, 1).unwrap();
+
+    assert_eq!(out_virtual.shape(), &[1, 3, 3, 1]);
+    assert_eq!(out_virtual, out_explicit);
+}
+
+#[test]
+fn depthwise_conv2d_nhwc_padded_matches_explicit_padding_dm2_with_bias() {
+    let input = Tensor::from_vec(vec![1, 2, 2, 1], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+    let kernel = Tensor::from_vec(
+        vec![2, 2, 1, 2],
+        vec![1.0, -1.0, 0.5, -0.5, 0.25, -0.25, 0.0, 1.0],
+    )
+    .unwrap();
+    let bias = Tensor::from_vec(vec![2], vec![0.1, -0.2]).unwrap();
+
+    let out_virtual =
+        depthwise_conv2d_nhwc_padded(&input, &kernel, Some(&bias), 1, 1, 1, 1, 0, 0).unwrap();
+
+    let padded = Tensor::from_vec(
+        vec![1, 3, 3, 1],
+        vec![
+            0.0, 0.0, 0.0, //
+            0.0, 1.0, 2.0, //
+            0.0, 3.0, 4.0,
+        ],
+    )
+    .unwrap();
+    let out_explicit = depthwise_conv2d_nhwc(&padded, &kernel, Some(&bias), 1, 1).unwrap();
+
+    assert_eq!(out_virtual.shape(), &[1, 2, 2, 2]);
+    assert_eq!(out_virtual, out_explicit);
+}
+
 // --- separable conv2d ---
 
 #[test]
@@ -356,6 +427,69 @@ fn separable_conv2d_with_config_disabled_matches_default() {
     )
     .unwrap();
     assert_eq!(baseline, disabled);
+}
+
+#[test]
+fn fused_dw_pw_streaming_padded_matches_reference_chain() {
+    let input = build_tensor(&[1, 8, 8, 8], 0.19);
+    let depthwise_kernel = build_tensor(&[3, 3, 8, 1], 0.37);
+    let depthwise_bias = build_tensor(&[8], 0.11);
+    let pointwise_kernel = build_tensor(&[1, 1, 8, 12], 0.47);
+    let pointwise_bias = build_tensor(&[12], 0.23);
+
+    let reference_dw = depthwise_conv2d_nhwc_padded_with_activation(
+        &input,
+        &depthwise_kernel,
+        Some(&depthwise_bias),
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::Relu,
+    )
+    .unwrap();
+    let reference = conv2d_nhwc_with_activation(
+        &reference_dw,
+        &pointwise_kernel,
+        Some(&pointwise_bias),
+        1,
+        1,
+        crate::Activation::Silu,
+    )
+    .unwrap();
+
+    let streamed = fused_dw_pw_nhwc_streaming(
+        &input,
+        &depthwise_kernel,
+        Some(&depthwise_bias),
+        &pointwise_kernel,
+        Some(&pointwise_bias),
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::Relu,
+        crate::Activation::Silu,
+    )
+    .unwrap();
+
+    assert_eq!(streamed.shape(), reference.shape());
+    for (idx, (a, b)) in streamed
+        .data()
+        .iter()
+        .zip(reference.data().iter())
+        .enumerate()
+    {
+        let diff = (a - b).abs();
+        assert!(
+            diff <= 1e-4,
+            "mismatch at idx={idx}: streamed={a} reference={b} diff={diff}"
+        );
+    }
 }
 
 // --- transpose conv2d ---

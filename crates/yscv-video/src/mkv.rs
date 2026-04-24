@@ -294,11 +294,10 @@ impl MkvDemuxer {
                 TIMECODE => {
                     cluster_timestamp = read_ebml_uint(&self.data[pos..el_end]);
                 }
-                SIMPLE_BLOCK => {
-                    if pos < el_end {
-                        self.parse_simple_block(pos, el_size as usize, cluster_timestamp);
-                    }
+                SIMPLE_BLOCK if pos < el_end => {
+                    self.parse_simple_block(pos, el_size as usize, cluster_timestamp);
                 }
+                SIMPLE_BLOCK => {}
                 BLOCK_GROUP => {
                     // Parse Block inside BlockGroup
                     self.parse_block_group(pos, el_size as usize, cluster_timestamp);

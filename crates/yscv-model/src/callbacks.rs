@@ -278,9 +278,10 @@ where
 {
     for epoch in 0..epochs {
         let metrics = train_fn(epoch);
-        let should_stop = callbacks
-            .iter_mut()
-            .fold(false, |stop, cb| cb.on_epoch_end(epoch, &metrics) || stop);
+        let mut should_stop = false;
+        for cb in callbacks.iter_mut() {
+            should_stop = cb.on_epoch_end(epoch, &metrics) || should_stop;
+        }
         if should_stop {
             return epoch + 1;
         }

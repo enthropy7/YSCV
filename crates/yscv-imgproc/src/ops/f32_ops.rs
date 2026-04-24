@@ -1194,7 +1194,7 @@ unsafe fn sobel_f32_neon_row(
     let dp = dst.as_mut_ptr();
 
     let mut x = 1usize;
-    while x + 4 <= w - 1 {
+    while x + 4 < w {
         let t_l = vld1q_f32(p0.add(x - 1));
         let t_c = vld1q_f32(p0.add(x));
         let t_r = vld1q_f32(p0.add(x + 1));
@@ -1240,7 +1240,7 @@ unsafe fn sobel_f32_sse_row(
     let dp = dst.as_mut_ptr();
 
     let mut x = 1usize;
-    while x + 4 <= w - 1 {
+    while x + 4 < w {
         let t_l = _mm_loadu_ps(p0.add(x - 1));
         let t_c = _mm_loadu_ps(p0.add(x));
         let t_r = _mm_loadu_ps(p0.add(x + 1));

@@ -1,17 +1,37 @@
-# Per-target optimization flags for production builds.
-# These enable CPU-specific instruction selection beyond the baseline.
+# Per-target optimization baseline for production builds.
+#
+# We keep the baseline at the **widest** instruction set reasonably assumed
+# for each triple. Bumping target-cpu too aggressively here breaks users
+# on real CPUs that share the triple:
+#   aarch64-unknown-linux-gnu: Neoverse-N1 needs armv8.2-a+, but this
+#     triple also covers Cortex-A53/A55/A57/A72/A73/A76 (SBCs, RPi,
+#     Jetson, Allwinner) — most of which are pre-armv8.2. Hard-coding
+#     `target-cpu=neoverse-n1` causes SIGILL at proc-macro load on those
+#     boards. Stay generic here; runtime `is_aarch64_feature_detected!`
+#     in yscv-kernels picks up fp16/dotprod/sve/i8mm when present.
+#   x86_64-unknown-linux-gnu / windows: x86-64-v3 needs AVX2. Fine for
+#     everything Haswell (2013+), breaks on Westmere/Sandy Bridge.
+#     Runtime dispatch in yscv-kernels handles this per-feature; the
+#     baseline only needs to be safe for cross-compile and CI.
+#
+# If you *are* deploying to a known-homogeneous fleet (Graviton, Ampere,
+# Apple Silicon, a specific Intel SKU), override at build time — the
+# library is designed to benefit from higher target-cpu selection:
+#
+#   RUSTFLAGS="-C target-cpu=neoverse-n1"  cargo build --release  # AWS Graviton2/3
+#   RUSTFLAGS="-C target-cpu=neoverse-v1"  cargo build --release  # Graviton3 + SVE
+#   RUSTFLAGS="-C target-cpu=apple-m1"     cargo build --release  # Apple Silicon
+#   RUSTFLAGS="-C target-cpu=cortex-a76"   cargo build --release  # Orange Pi 5 / RK3588
+#   RUSTFLAGS="-C target-cpu=cortex-a53"   cargo build --release  # Allwinner H6/H616/H618
+#   RUSTFLAGS="-C target-cpu=native"       cargo build --release  # building on deploy host
+#   RUSTFLAGS="-C target-cpu=x86-64-v3"    cargo build --release  # AVX2 baseline
+#   RUSTFLAGS="-C target-cpu=x86-64-v4"    cargo build --release  # AVX-512 baseline
+#
+# For macOS we keep the M1 / Haswell selection — those triples don't
+# share across wildly different CPUs the way the Linux ones do.
 
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "target-cpu=apple-m1"]
 
-[target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=neoverse-n1"]  # AWS Graviton2+
-
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=x86-64-v3"]  # AVX2 baseline (Haswell+)
-
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "target-cpu=haswell"]  # AVX2 + FMA for Intel Macs
-
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-cpu=x86-64-v3"]  # AVX2 baseline for Windows

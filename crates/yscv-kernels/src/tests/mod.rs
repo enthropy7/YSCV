@@ -6,6 +6,7 @@ mod elementwise;
 mod embedding;
 mod gpu_ops;
 mod matmul;
+mod nchwc;
 mod normalization;
 mod pooling;
 mod softmax;
