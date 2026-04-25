@@ -2,7 +2,7 @@
 
 Comprehensive benchmark results comparing yscv against NumPy, PyTorch, OpenCV, ffmpeg, onnxruntime, and CoreML.
 
-**Last updated**: 2026-04-21 | **Tests**: 1,861 default / 1,897 all-features across 16 crates | **CI**: macOS + Linux + Windows + ARM64
+**Last updated**: 2026-04-21 | **Tests**: 1,861 default / 1,897 all-features across 17 crates | **CI**: macOS + Linux + Windows + ARM64
 
 ## Hardware & Methodology
 
@@ -436,6 +436,68 @@ tests green.
 
 Detailed per-op gap report:
 [gap-report-2026-04-20.md](gap-report-2026-04-20.md).
+
+### GPU rerun on the same host (2026-04-25)
+
+Same model and inputs, RTX 4060 added through `--features gpu` (wgpu
+backend over Vulkan) and `onnxruntime-gpu` 1.25 with CUDAExecutionProvider:
+
+| backend | p50 | min | output `882` max | drift vs CPU ref |
+|---|---:|---:|---:|---:|
+| **ORT CUDA EP fp32** (cuDNN, Tensor Cores) | **1.42 ms** | 1.40 ms | 48.9193 | −0.17 (TF32) |
+| yscv `gpu` fp16 (wgpu Vulkan) | 5.25 ms | 5.18 ms | 48.1491 | −0.94 |
+| yscv `gpu` fp32 (`YSCV_GPU_FP32=1`) | 5.82 ms | 5.72 ms | **49.0915** | **−1 ULP** |
+| yscv CPU 6T no-BLAS | 3.05 ms | 2.84 ms | 49.0920 | +1 ULP |
+| ORT CPU 1T | 8.07 ms | 8.03 ms | 49.0916 | reference |
+
+Two takeaways:
+
+- **yscv fp32 GPU output is 1-ULP from the CPU reference**, while
+  ORT CUDA EP drifts −0.17 because cuDNN auto-uses Tensor Cores in
+  TF32 / mixed precision on Ampere+ and downcasts implicitly. That
+  is, our fp32 GPU path is the *more numerically faithful* one
+  against the CPU reference.
+- ORT CUDA EP is **4× faster** than yscv wgpu — structural (cuDNN
+  ships shape-specific kernels and uses Tensor Cores via
+  `cooperative_matrix`, wgpu compute shaders are vendor-portable
+  WGSL with no MMA path). Closing this requires either a vendor
+  Vulkan extension wgpu doesn't expose or a separate `cuda-backend`.
+
+For Conv-heavy small-batch graphs like this tracker, the CPU runner
+(3.05 ms) beats wgpu (5.25 ms) on the same host — GPU launch latency
+dominates the actual compute. wgpu starts to win above batch ≥ 4 or
+inference ≥ 30 ms on CPU. See
+[`gpu-backend-guide.md`](gpu-backend-guide.md#performance-vs-ort-cuda-ep)
+for the full positioning matrix and `YSCV_GPU_FP32` env-flag docs.
+
+### Latest rerun (2026-04-25, post-R10 correctness fix)
+
+R10 fixed a silent-drop `residual_tile` in `microkernel_4x8_dispatch`
+on the x86 1×NR-tile path — SIMD/ASM 4×8 variants never received the
+residual pointer and dropped the add for Conv+Add shapes whose `n`
+left an 8-wide scalar tail. Output `882` max went 84.78 → **49.0920**
+(ORT: 49.0916, 1-ULP FP-ordering drift). Perf also improved
+because non-BLAS path is now fully correct on tracker shapes.
+
+| build | 1T p50 | 6T p50 | 12T p50 | output 882 max |
+|---|---:|---:|---:|---:|
+| yscv **no-BLAS** (default for onnx-fps) | **11.22 ms** | **3.17 ms** | 3.34 ms | 49.0920 ✓ |
+| yscv **with BLAS** (OpenBLAS 0.3.31)    | 13.00 ms | 8.75 ms | 9.01 ms | 49.0922 ✓ |
+| ORT 1.24.4 CPU                          | 8.07 ms  | 1.74 ms | 1.91 ms | 49.0916 ✓ |
+
+yscv no-BLAS vs ORT: 1T **1.39×**, 6T **1.82×**, 12T 1.75× behind.
+
+On this graph BLAS is a **net regression** — 2.76× slower at 6T than
+the non-BLAS path. Root causes: `matmul_2d_slices_fused` with BLAS
+splits into `blas_sgemm` + `apply_epilogue_fallback` (two passes over
+out, ~5.5 ms of extra L2/L3 traffic at 6T), and the whole arc
+(R4/R7/R9/A2) only fires on the non-BLAS branch. `OPENBLAS_NUM_THREADS=1`
+does not close the gap, so it's not pure thread oversubscription —
+rayon workers block serially on sgemm instead of running their own
+A/B tiles in parallel.
+
+See [`feature-flags.md`](feature-flags.md#blas--blas-accelerated-matmul)
+for the full when-to-enable / when-to-disable BLAS checklist.
 
 ## ONNX Siamese Tracker (Orange Pi Zero 3, Cortex-A55, fp32 CPU)
 

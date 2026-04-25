@@ -64,9 +64,11 @@ These change which execution path `run_onnx_model` / `dispatch_frame` /
 `RknnPipelinedPool` route to. Multiple can be combined — the dispatcher
 picks at runtime based on your TOML/API choice.
 
-### `blas` — default, BLAS-accelerated matmul
+### `blas` — BLAS-accelerated matmul
 
-Default ON. Links a CBLAS implementation for SGEMM dispatch:
+Default ON in the `yscv-kernels` / `yscv-onnx` crates; default OFF in
+the `private/onnx-fps` bench harness. Links a CBLAS implementation for
+SGEMM dispatch:
 
 - **macOS** — `Accelerate.framework` (built into OS, zero setup). Uses
   Apple's AMX matrix accelerator; ~2× faster than OpenBLAS here.
@@ -76,14 +78,59 @@ Default ON. Links a CBLAS implementation for SGEMM dispatch:
 - **Windows** — OpenBLAS via vcpkg. `vcpkg install openblas:x64-windows`
   and set `OPENBLAS_PATH` or `VCPKG_ROOT` env.
 
-Turn off only if you're building for a target without a BLAS at all
-(rare):
+**Turn ON when**:
+
+- Transformer attention (`QKᵀ`, `AV` — big square-ish GEMM).
+- ResNet / ViT classification (FC 2048×1000 output).
+- LLM K/V projection, output head, any decoder step.
+- Graphs where one MatMul is tens of millions of FLOPs and there's no
+  adjacent fusion opportunity.
+- macOS anywhere — `Accelerate` + AMX is hard to beat and cheap to link.
+
+**Turn OFF when**:
+
+- Conv-heavy graphs (object detectors, Siamese trackers, U-Nets,
+  segmentation). Our blocked GEMM fuses Conv+Bias+Residual+Activation
+  in registers; BLAS can't — it writes GEMM output first, then a
+  separate pass adds bias/residual and applies activation.
+- You're on Linux / Windows with OpenBLAS 0.3.x and hit the
+  oversubscription wall — our non-BLAS path hands all work to rayon
+  and scales cleanly; OpenBLAS's internal threadpool fights rayon
+  even with `OPENBLAS_NUM_THREADS=1`.
+- You care about single-binary deployment and don't want to carry
+  `libopenblas` into a container image.
+
+Measured on the public Siamese tracker (Conv 85 %, DW 9 %, MatMul 5 %),
+Zen 4 6C/12T, 2026-04 arc state:
+
+| path | 1T p50 | 6T p50 |
+|---|---:|---:|
+| yscv **no-BLAS**  | 11.22 ms | **3.17 ms** |
+| yscv **with BLAS** | 13.00 ms | 8.75 ms |
+| ONNX Runtime 1.24 | 8.07 ms  | 1.74 ms |
+
+BLAS makes this workload **2.76× slower at 6T** because it breaks
+the fused-epilogue path (`row_gemm_set_parallel_fused`,
+`blocked_gemm` MR=4×24 / MR=12×32 with in-register residual+bias+
+activation) — all the R4 / R7 / R9 / A2 landings in the April arc
+only fire on the non-BLAS branch.
+
+On Transformer workloads the tradeoff inverts: one big sgemm per
+attention head dominates and `Accelerate` / `MKL` walk all over any
+hand-tuned blocked GEMM.
 
 ```toml
+# Library default — keeps BLAS on, good for Transformer / classifier
+yscv = "0.1"
+
+# Conv-heavy deployment — no-BLAS is faster, no external lib
 yscv = { version = "0.1", default-features = false }
 ```
 
-You'll fall back to our hand-tuned blocked GEMM — slower but works.
+See [`performance-benchmarks.md`](performance-benchmarks.md#onnx-siamese-tracker-zen-4-7500f-fp32-cpu)
+for the tracker-specific numbers and
+[`perf-arc-2026-04.md`](perf-arc-2026-04.md) for why the non-BLAS
+path wins on this class of model.
 
 ### `metal-backend` — Apple MPSGraph (macOS, fastest on Apple Silicon)
 
@@ -106,13 +153,24 @@ Vulkan / Metal / DX12 / OpenGL via `wgpu`. Works on AMD, NVIDIA, Intel,
 Apple, Adreno, Mali — single Rust binary.
 
 **Full guide**: [`gpu-backend-guide.md`](gpu-backend-guide.md) — platform
-selection, compiled plans, multi-GPU, troubleshooting.
+selection, compiled plans, multi-GPU, NixOS LD setup, fp16/fp32
+toggle, troubleshooting.
 
 Quick example:
 ```rust
 use yscv_onnx::run_onnx_model_gpu;
 let outputs = run_onnx_model_gpu(&model, inputs)?;
 ```
+
+Runtime flags:
+- `YSCV_GPU_FP32=1` — disable opportunistic fp16 (`SHADER_F16`),
+  force every kernel + buffer through fp32. Output becomes 1-ULP
+  identical to the CPU runner; latency rises ~12-15 % on memory-bound
+  graphs. Use for accuracy A/B; ship default fp16.
+- `WGPU_BACKEND={vulkan|dx12|metal|gl}` — pin the backend (wgpu env;
+  default is "best-of"). Useful for forcing software fallback in CI.
+- `WGPU_ADAPTER_NAME=...` — pick a specific GPU when multiple are
+  visible.
 
 ### `rknn` — Rockchip NPU (edge deployment)
 

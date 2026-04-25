@@ -113,7 +113,14 @@ impl GpuBackend {
 
         let adapter_name = adapter.get_info().name;
         let adapter_features = adapter.features();
-        let use_f16 = adapter_features.contains(wgpu::Features::SHADER_F16);
+        // fp16 ON when the adapter advertises `SHADER_F16` *and* the user
+        // hasn't explicitly opted out via `YSCV_GPU_FP32=1`. The opt-out
+        // is for accuracy A/B against CPU / ORT — fp16 carries a typical
+        // 1-2 % drift on Conv-heavy graphs (max diff ~1.0 in raw scores
+        // on the public Siamese tracker), which is invisible after
+        // detection NMS but matters for bit-level correctness checks.
+        let force_f32 = std::env::var_os("YSCV_GPU_FP32").is_some();
+        let use_f16 = !force_f32 && adapter_features.contains(wgpu::Features::SHADER_F16);
         let mut required_features = wgpu::Features::empty();
         if use_f16 {
             required_features |= wgpu::Features::SHADER_F16;

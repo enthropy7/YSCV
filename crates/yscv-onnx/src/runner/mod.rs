@@ -667,13 +667,16 @@ fn node_kind(node_kinds: &[NodeKind], nodes: &[OnnxNode], idx: usize) -> NodeKin
     }
 }
 
-/// CPU-side fallback entry point for the GPU runner.
+/// CPU-side fallback entry point for the wgpu GPU runner.
 ///
-/// Why: when the GPU backend hits an unsupported op or a degenerate tensor
-/// (size < 4 for vec4 shaders, scalar shape metadata), it rematerialises
-/// inputs on the CPU and delegates execution back here. This wrapper hides
-/// `NodeKind` classification from the GPU module so it doesn't need to know
-/// the dispatch taxonomy.
+/// Why: when the wgpu backend hits an unsupported op or a degenerate
+/// tensor (size < 4 for vec4 shaders, scalar shape metadata), it
+/// rematerialises inputs on the CPU and delegates execution back here.
+/// This wrapper hides `NodeKind` classification from the GPU module so
+/// it doesn't need to know the dispatch taxonomy. Goes through
+/// `execute_node_kind` (no layout management) — the wgpu path stages
+/// its own NHWC/NCHW conversions in `inputs_to_cpu`, adding the layout
+/// pass here would double-flip them.
 #[cfg(feature = "gpu")]
 #[inline]
 pub(super) fn execute_node_cpu_fallback(
@@ -682,6 +685,27 @@ pub(super) fn execute_node_cpu_fallback(
 ) -> Result<(), OnnxError> {
     let kind = NodeKind::from_op_type(&node.op_type);
     execute_node_kind(node, env, kind)
+}
+
+/// CPU pre-pass entry point for the Metal `compile_metal_plan` walker.
+///
+/// Different from the wgpu fallback above: the Metal compile pass walks
+/// every node on CPU to gather tensor shapes + intermediate data
+/// before recording Metal commands. It is a full ONNX run, so it needs
+/// the same automatic NHWC layout management that the regular CPU
+/// runner does, not the bare `execute_node_kind`. Kept under its own
+/// name (and not the `cpu_fallback` one used by wgpu) so that builds
+/// with `--features "gpu metal-backend"` get both entry points without
+/// symbol collision and without the wgpu fallback inheriting the
+/// layout pass.
+#[cfg(feature = "metal-backend")]
+#[inline]
+pub(super) fn execute_node_cpu_for_metal_compile(
+    node: &OnnxNode,
+    env: &mut TensorEnv,
+) -> Result<(), OnnxError> {
+    let kind = NodeKind::from_op_type(&node.op_type);
+    execute_node_with_layout_kind(node, env, kind)
 }
 
 #[inline]

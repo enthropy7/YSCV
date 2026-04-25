@@ -180,6 +180,126 @@ full env-var list.
 
 ---
 
+## Numerical precision (`YSCV_GPU_FP32`)
+
+`GpuBackend::new` opportunistically enables `wgpu::Features::SHADER_F16`
+when the adapter advertises it. Gain: ~1.5× throughput on memory-bound
+Conv graphs, half the GPU buffer footprint, lower bandwidth to fill.
+Cost: outputs drift roughly 1-2 % vs an fp32 reference — typically
+invisible after detection NMS / softmax-argmax, but enough to fail
+bit-level correctness checks (max-element drift on the public Siamese
+tracker: 49.0915 fp32 vs 48.1491 fp16, ~1.0 unit). For accuracy A/B
+runs against CPU or ORT reference, force fp32:
+
+```bash
+YSCV_GPU_FP32=1 ./my-app
+```
+
+| mode | tracker `882` max | drift vs ORT CPU 49.0916 |
+|---|---:|---:|
+| `gpu` (fp16, default when adapter has SHADER_F16) | 48.1491 | −0.94 |
+| `gpu` + `YSCV_GPU_FP32=1` | **49.0915** | **−1 ULP** |
+| ORT CUDA EP fp32 | 48.9193 | −0.17 (Tensor-Core implicit downcast) |
+| CPU runner (default no-BLAS) | 49.0920 | +1 ULP |
+
+Rule of thumb: ship with default fp16 in production, switch to
+`YSCV_GPU_FP32=1` for golden-reference comparison and accuracy
+regression tests. The extra 12-15 % latency from fp32 is small and
+the outputs become 1-ULP-close to the CPU/ORT reference.
+
+---
+
+## NixOS / non-FHS Linux runtime
+
+Default `wgpu::Instance` uses `dlopen` to load `libvulkan.so` from
+the system loader path. Standard glibc distros work out of the box
+(libvulkan ends up in `/usr/lib`); on NixOS it doesn't, because
+loader libraries live in `/nix/store/.../lib` and the standard ld
+search path doesn't see them. Symptom: `GpuBackend::new()` returns
+`no GPU adapter found` even though `vulkaninfo` reports devices.
+
+Fix is `LD_LIBRARY_PATH` at process start:
+
+```bash
+LD_LIBRARY_PATH=$(nix-build '<nixpkgs>' -A vulkan-loader --no-out-link)/lib:/run/opengl-driver/lib \
+  ./my-app
+```
+
+Or (less surgical, easier to remember):
+
+```bash
+nix-shell -p vulkan-loader --run \
+  'LD_LIBRARY_PATH=$buildInputs/lib:/run/opengl-driver/lib ./my-app'
+```
+
+The `/run/opengl-driver/lib` part is essential too — that's where
+NixOS stages vendor-specific Vulkan ICDs (NVIDIA, Mesa, etc.). On
+Ubuntu/Fedora/Arch this whole song is unnecessary.
+
+Verify the adapter list with a tiny probe before chasing further:
+
+```rust
+use wgpu::{Instance, InstanceDescriptor, Backends};
+let inst = Instance::new(InstanceDescriptor {
+    backends: Backends::all(),
+    ..InstanceDescriptor::new_without_display_handle()
+});
+let adapters = pollster::block_on(inst.enumerate_adapters(Backends::all()));
+println!("found {} adapter(s)", adapters.len());
+```
+
+If `enumerate_adapters` returns 0 with `RUST_LOG=wgpu_hal=info` showing
+"vulkan drivers/libraries could not be loaded", it's the LD_LIBRARY_PATH
+issue.
+
+---
+
+## Performance vs ORT CUDA EP
+
+wgpu is **not** going to match cuDNN-on-Tensor-Cores. On the public
+Siamese tracker, RTX 4060, 1×3×128×128 + 1×3×256×256:
+
+| backend | p50 | min | output drift |
+|---|---:|---:|---:|
+| ORT CUDA EP (cuDNN + Tensor Cores) | 1.42 ms | 1.40 ms | TF32 / mixed |
+| yscv `gpu` fp16 (wgpu Vulkan) | 5.25 ms | 5.18 ms | ~2 % |
+| yscv `gpu` fp32 (wgpu Vulkan) | 5.82 ms | 5.72 ms | 1 ULP |
+| yscv CPU 6T (Zen 4) | 3.05 ms | 2.84 ms | 1 ULP |
+| ORT CPU 1T | 8.07 ms | 8.03 ms | reference |
+
+The 4× gap to CUDA EP is structural, not a bug:
+
+- **cuDNN ships shape-specific kernels.** For each Conv shape it picks
+  among ~30 algorithms (Winograd / ImplicitGEMM / Direct / FFT /
+  precomputed) tuned for the host SM architecture. wgpu compute
+  shaders are vendor-portable WGSL — one kernel, no per-shape variant.
+- **Tensor Cores.** RTX 4060 has fourth-gen Tensor Cores doing 4×4
+  fp16 MMA per cycle per SM (`wmma::fragment` in CUDA, `coopmat` in
+  Vulkan extension). cuDNN uses them. wgpu intentionally does not —
+  `Features::COOPERATIVE_MATRIX` is gated behind a non-portable
+  Vulkan extension wgpu doesn't surface.
+- **Tensor Cores need fp16/bf16 with specific layouts.** cuDNN
+  reshapes weights into Tensor-Core-friendly tiles at load time. Our
+  WGSL kernels do generic 8×8 / 16×16 tiles in fp32 (or stored fp16
+  with f32 accumulator), no MMA path.
+
+If you need closer-to-CUDA perf on NVIDIA, the right tool is ORT
+itself with `CUDAExecutionProvider`, or specifically NVIDIA's
+TensorRT EP. yscv's `gpu` is for "I want one binary that runs on
+Linux + Windows + macOS + Android with whatever GPU is present and
+no vendor toolchain". On Apple Silicon, `metal-backend` (MPSGraph)
+hits the AMX coprocessor and gets within 1.5× of CUDA EP for
+detection workloads — that's the sibling code path documented in
+[`mpsgraph-guide.md`](mpsgraph-guide.md).
+
+For the same model the CPU runner is **2× faster** than wgpu fp16
+(3.05 vs 5.25 ms) — that's a small Conv-heavy graph where CPU
+fork-join dispatch beats GPU launch latency. Crossover where wgpu
+starts winning is roughly: batch ≥ 4, total FLOPs ≥ 1 G, or
+inference time ≥ 30 ms on CPU. Run a quick A/B before committing.
+
+---
+
 ## Multi-GPU
 
 `MultiGpuBackend` splits work across several GPUs for big workloads:

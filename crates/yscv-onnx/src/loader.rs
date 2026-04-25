@@ -368,10 +368,16 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
     // Pre-pack depthwise dm=1 weights to [KH, KW, C, 1] on CPU-only builds.
     // This removes per-inference OIHW→depthwise repack work in the hot path.
     //
-    // Keep OIHW on Metal builds because the Metal depthwise path expects the
-    // original export layout.
+    // Skipped on Metal and wgpu GPU builds: those backends' CPU fallback +
+    // accelerator dispatch paths read weights in the original ONNX OIHW
+    // layout. Keeping the export layout there means the same loader can
+    // feed both CPU and accelerator runners; the accelerator handles its
+    // own pre-permute internally if any.
+    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
     let mut dw_khwc_weights = HashSet::new();
-    #[cfg(not(feature = "metal-backend"))]
+    #[cfg(any(feature = "metal-backend", feature = "gpu"))]
+    let dw_khwc_weights = HashSet::new();
+    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
     for node in &nodes {
         if node.op_type != "Conv" || node.inputs.len() < 2 {
             continue;
@@ -427,8 +433,11 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
     // Pre-pack grouped conv weights [O, I/G, KH, KW] -> [O, KH, KW, I/G] on
     // CPU-only builds. This removes per-inference OIHW reordering in grouped
     // fallback path.
+    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
     let mut group_khwc_weights = HashSet::new();
-    #[cfg(not(feature = "metal-backend"))]
+    #[cfg(any(feature = "metal-backend", feature = "gpu"))]
+    let group_khwc_weights = HashSet::new();
+    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
     for node in &nodes {
         if node.op_type != "Conv" || node.inputs.len() < 2 {
             continue;

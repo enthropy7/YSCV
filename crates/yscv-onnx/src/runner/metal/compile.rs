@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use super::record::{record_conv, record_node};
 use super::types::*;
 
-use crate::runner::{TensorEnv, execute_node_with_layout};
+use crate::runner::{TensorEnv, execute_node_cpu_for_metal_compile};
 
 use yscv_kernels::metal_backend::metal_conv::MetalInference;
 
@@ -37,7 +37,7 @@ pub fn compile_metal_plan(
     let mut cpu_shapes: HashMap<String, Vec<usize>> = HashMap::new();
     let mut cpu_data: HashMap<String, Vec<f32>> = HashMap::new();
     for (ni, node) in model.nodes.iter().enumerate() {
-        if let Err(e) = execute_node_with_layout(node, &mut env)
+        if let Err(e) = execute_node_cpu_for_metal_compile(node, &mut env)
             && debug_metal
         {
             eprintln!(

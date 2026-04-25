@@ -39,6 +39,40 @@ Hot paths use hand-written SIMD intrinsics with runtime feature detection. The d
 
 The `[profile.release]` uses `lto = "thin"` and `codegen-units = 1`. Target-specific CPU flags are set in `.cargo/config.toml` (apple-m1, neoverse-n1, x86-64-v3).
 
+## Project priorities (read this first)
+
+The project's centre of gravity is **CPU inference on edge devices** —
+Cortex-A SBCs, Rockchip / Allwinner boards, low-power x86, drone
+flight controllers. Every change is judged against that target first.
+Other backends (wgpu GPU, Apple MPSGraph, Rockchip RKNN, x86 BLAS)
+are valuable opt-in extensions but never trump CPU edge perf in a
+trade-off. If you're not sure which side a change falls on, run
+`onnx-fps` (or the closest representative microbench) on a Cortex-A
+class CPU before and after — that's the canonical comparison.
+
+Within that target, three things matter, in order:
+
+1. **Blazing fast.** Anything that lands on a hot path needs SIMD
+   coverage (NEON + AVX/SSE + scalar fallback), runtime feature
+   detection, and a measured win over the previous code on the
+   shape range it targets. "It compiles and the test passes" is
+   not enough for an inference loop.
+2. **Minimal code.** Smallest correct change. Iterators over hand
+   loops where the compiler vectorises them; no unwrap, no dead
+   code, no `#[allow(dead_code)]` shortcuts. New abstractions only
+   if they earn their keep — three similar lines beat a premature
+   trait family.
+3. **New functionality is welcome** — but only with the full kit:
+   correctness tests (unit + integration where shapes vary),
+   criterion microbench against a known baseline, and at least one
+   end-to-end use case (a public model, a CLI flag, an `examples/`
+   demo, or a `private/onnx-fps` recipe). Fancy code without a
+   workload that exercises it accumulates dead weight.
+
+PRs are welcome. The bar is high but the path is documented; if
+you're improving an SBC inference number or fixing an issue, that
+goes in fast.
+
 ## Rules for making changes
 
 Every change should follow this workflow:

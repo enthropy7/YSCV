@@ -2278,6 +2278,32 @@ fn exec_concat_gpu(
         return super::reshape::exec_concat(node, env);
     }
 
+    // Layout normalisation. The first input's NHWC flag was used as the
+    // sole signal of "are we doing channel-concat here", which silently
+    // misbehaves when sibling inputs are still in NCHW: axis=1 (NCHW C)
+    // gets remapped to axis=3 (NHWC C) for the whole call, but the
+    // NCHW siblings have W at axis 3, so `channel_concat_on_device`
+    // glues 256-NHWC channels with 16 NCHW W-positions and the output
+    // tensor reports 272 channels instead of the expected 256+64=320.
+    // Force every 4-D sibling into the NHWC layout the first input is
+    // in (or vice versa) so axis 3 means C for all of them.
+    let any_nhwc = input_names.iter().any(|n| {
+        gc.get(n.as_str())
+            .is_some_and(|g| g.nhwc && g.buf.shape().len() == 4)
+    });
+    if any_nhwc {
+        for &name in &input_names {
+            if gc
+                .get(name.as_str())
+                .is_some_and(|g| g.buf.shape().len() == 4 && !g.nhwc)
+            {
+                ensure_nhwc(gpu, name, gc).map_err(|e| OnnxError::DecodeFailed {
+                    message: e.to_string(),
+                })?;
+            }
+        }
+    }
+
     let first = gc.get(input_names[0].as_str()).unwrap();
     let rank = first.buf.shape().len();
     let is_nhwc = first.nhwc && rank == 4;

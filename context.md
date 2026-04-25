@@ -2,24 +2,33 @@
 
 Current state of the yscv framework.
 
+Project priority is CPU inference on edge devices (Cortex-A SBCs,
+low-power x86, drone boards). Other backends — wgpu, MPSGraph, RKNN,
+BLAS — are opt-in extensions and keep widening. See
+[`README.md`](README.md) and [`AGENTS.md`](AGENTS.md) for the rules
+and PR workflow.
+
 ## Architecture
 
-16 library crates, 2 apps, 1 examples crate.
+17 library crates, 2 apps, 1 examples crate.
 
 ```
 yscv (umbrella re-export)
 ├── yscv-tensor          ← N-dimensional tensor, f32/f16/bf16, SIMD ops
 ├── yscv-kernels         ← CPU + GPU compute backends, SIMD, RKNN NPU
+├── yscv-threadpool      ← Work-stealing pool + rayon scope abstraction, opt-in PersistentSection
 ├── yscv-autograd        ← Reverse-mode autodiff, BackwardOps routing
 ├── yscv-optim           ← 8 optimizers + Lookahead, 11 LR schedulers
 ├── yscv-model           ← 39 layers, 17 architectures, LoRA, trainer
 ├── yscv-imgproc         ← 160 image ops, u8/f32 SIMD
 ├── yscv-video           ← H.264/HEVC/AV1 decode, V4L2, MJPEG, H.264 encode, MAVLink, overlay, framebuffer
+├── yscv-video-mpp       ← Rockchip MPP hardware video encoder
 ├── yscv-detect          ← YOLOv8/v11, NMS, heatmap, RoI align
 ├── yscv-recognize       ← Cosine matching, VP-Tree ANN
 ├── yscv-track           ← DeepSORT, ByteTrack, Kalman
 ├── yscv-eval            ← Metrics, 8 dataset adapters
-├── yscv-onnx            ← 128+ op ONNX runtime, INT4/INT8 quantization, GPU, Metal, KV-cache, generation
+├── yscv-onnx            ← 121-op ONNX runtime, INT4/INT8 quantization, GPU, Metal, KV-cache, generation
+├── yscv-pipeline        ← Pipeline framework: ONNX/Metal/RKNN dispatch, TOML config
 └── yscv-cli             ← Inference CLI, camera diagnostics
 ```
 
@@ -28,7 +37,7 @@ yscv (umbrella re-export)
 | Metric | Value |
 |--------|-------|
 | Tests | **1,807** |
-| ONNX operators | **130** |
+| ONNX operators | **121** |
 | Imgproc ops | **160** |
 | Model architectures | **17** |
 | WGSL + Metal shaders | **61 + 4** |

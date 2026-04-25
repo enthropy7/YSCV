@@ -1,6 +1,6 @@
 # yscv-onnx
 
-Pure Rust ONNX runtime. 128 CPU operators, graph optimization, CPU and Metal GPU inference.
+Pure Rust ONNX runtime. 121 CPU operators, graph optimization, multi-thread CPU dispatch, optional wgpu cross-platform GPU (Vulkan / Metal / DX12) and Apple MPSGraph backends.
 
 ```rust,ignore
 use yscv_onnx::*;

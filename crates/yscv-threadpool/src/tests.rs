@@ -116,26 +116,54 @@ fn join_returns_both_results() {
 fn join_runs_in_parallel() {
     // Both closures sleep; total wall time should be ~max not ~sum.
     let pool = YscvPool::new(4).unwrap();
-    let start = Instant::now();
+
+    // Wall-clock comparison was flaky on CI: park/unpark latency on
+    // a cold runner is ~100 ms, comparable to a 50 ms sleep, so the
+    // parallel-vs-serial wall-time gap can collapse to noise.
+    // Instead of timing, observe concurrency directly — both closures
+    // bump a counter on entry, update a max-watermark, sleep, then
+    // decrement. If both bodies are ever in flight at the same time,
+    // the watermark hits 2.
+
+    // Warm-up: drive submit / wake / drain a few times so we're not
+    // measuring "first job after pool init" parking cost.
+    for _ in 0..8 {
+        let _ = pool.join(|| 0u32, || 0u32);
+    }
+
+    let in_progress = Arc::new(AtomicUsize::new(0));
+    let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+    // Sleep long enough that the partner closure has time to be
+    // dispatched and observed alongside us even on a cold runner.
+    let hold = Duration::from_millis(100);
+
+    let (in_a, max_a) = (Arc::clone(&in_progress), Arc::clone(&max_concurrent));
+    let (in_b, max_b) = (Arc::clone(&in_progress), Arc::clone(&max_concurrent));
+
     let (a, b) = pool.join(
-        || {
-            std::thread::sleep(Duration::from_millis(50));
+        move || {
+            let n = in_a.fetch_add(1, Ordering::AcqRel) + 1;
+            max_a.fetch_max(n, Ordering::AcqRel);
+            std::thread::sleep(hold);
+            in_a.fetch_sub(1, Ordering::AcqRel);
             1
         },
-        || {
-            std::thread::sleep(Duration::from_millis(50));
+        move || {
+            let n = in_b.fetch_add(1, Ordering::AcqRel) + 1;
+            max_b.fetch_max(n, Ordering::AcqRel);
+            std::thread::sleep(hold);
+            in_b.fetch_sub(1, Ordering::AcqRel);
             2
         },
     );
-    let elapsed = start.elapsed();
     assert_eq!(a, 1);
     assert_eq!(b, 2);
-    // If serialized, would take ~100ms. Parallel should be ~50ms; allow
-    // 90ms slack for scheduler jitter on busy CI.
-    assert!(
-        elapsed < Duration::from_millis(90),
-        "join took {:?} — looks serialized",
-        elapsed
+
+    let peak = max_concurrent.load(Ordering::Acquire);
+    assert_eq!(
+        peak, 2,
+        "both join bodies should be in flight simultaneously, peak={peak}"
     );
 }
 

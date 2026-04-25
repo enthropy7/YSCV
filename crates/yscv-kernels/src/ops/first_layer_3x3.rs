@@ -291,7 +291,8 @@ fn select_variant(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if !cfg!(miri) && c_out % 4 == 0 && std::arch::is_aarch64_feature_detected!("neon") {
+        if !cfg!(miri) && c_out.is_multiple_of(4) && std::arch::is_aarch64_feature_detected!("neon")
+        {
             return neon_run_rows_entry;
         }
     }

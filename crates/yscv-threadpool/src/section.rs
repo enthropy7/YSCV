@@ -35,7 +35,7 @@
 //! - `active` uses `Release`/`Acquire` so workers observe the `false`
 //!   transition without further synchronisation.
 
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 /// Descriptor for one `parallel_for` loop posted inside a
 /// [`PersistentSection`]. Lives on the main-thread stack during
@@ -100,6 +100,26 @@ pub struct PersistentSection {
     /// Contention window is microseconds (the duration of one loop),
     /// so spin-lock is cheaper than Mutex's futex-based park.
     dispatch_busy: AtomicBool,
+    /// Number of workers currently inside the `loop_ptr` critical
+    /// section (between the increment here and the matching decrement
+    /// on exit). Main thread spin-waits for this to reach 0 after
+    /// storing `current_loop = null` — otherwise a worker that read
+    /// `loop_ptr` right before the clear could dereference a
+    /// destroyed stack-allocated `Ctx<F>` when `parallel_for` returns.
+    inflight_derefs: AtomicUsize,
+    /// Monotonic loop generation. Main thread increments twice per
+    /// `parallel_for`: once at publish (`loop_gen % 2 == 1` while a
+    /// loop is live), once at clear (`loop_gen % 2 == 0` while idle).
+    /// Workers snapshot this on entry and re-check under the
+    /// `inflight_derefs` guard; a mismatch means stack-reuse ABA
+    /// happened (main returned + next loop at the same stack slot)
+    /// and the pointer comparison alone would silently read a
+    /// reinitialised `LoopWorkItem`. With the counter matching,
+    /// `current_loop` still pointing at the same address, and
+    /// `inflight_derefs > 0` blocking main's return, the frame is
+    /// guaranteed alive. Combined invariant retires the 1 % SIGSEGV
+    /// stress flake without falling back to a per-call heap alloc.
+    loop_gen: AtomicU64,
 }
 
 impl PersistentSection {
@@ -111,6 +131,8 @@ impl PersistentSection {
             workers_remaining: AtomicUsize::new(0),
             active: AtomicBool::new(true),
             dispatch_busy: AtomicBool::new(false),
+            inflight_derefs: AtomicUsize::new(0),
+            loop_gen: AtomicU64::new(0),
         }
     }
 
@@ -155,10 +177,25 @@ impl PersistentSection {
     /// inline between checks). Blocks until every chunk has completed.
     ///
     /// Design notes:
-    /// - Zero heap alloc — closure lives on caller's stack, accessed
-    ///   via pointer through the `LoopWorkItem` trampoline.
-    /// - Zero condvar/futex — workers are already spin-polling
-    ///   `current_loop`; main thread signals via a pointer store.
+    /// - Zero heap allocation — `Ctx<F>` and `LoopWorkItem` both live
+    ///   on the caller's stack frame. Workers observe them via raw
+    ///   pointers, guarded by two independent invariants:
+    ///   1. `inflight_derefs`: workers increment before any deref of
+    ///      `loop_ptr`; main spin-waits it back to zero after clearing
+    ///      `current_loop`, so main cannot return (and the stack frame
+    ///      cannot drop) while any worker is mid-deref.
+    ///   2. `loop_gen`: monotonic counter, bumped by main at publish
+    ///      and again at clear. Workers snapshot it before the
+    ///      `inflight_derefs` bump and re-check under the guard.
+    ///      Covers the stack-reuse ABA window where main returns,
+    ///      re-enters `parallel_for`, and allocates a new `LoopWorkItem`
+    ///      at the same stack address: the pointer match is
+    ///      not enough to distinguish "same loop" from "recycled frame
+    ///      with different `exec`/`ctx`/`total_chunks` values", but
+    ///      `loop_gen` changes across every publish, so the generation
+    ///      mismatch makes the worker skip the deref.
+    /// - Condvar/futex-free — workers spin-poll `current_loop`; main
+    ///   signals via a pointer store.
     /// - Main thread participates: claims chunks via `fetch_add` on
     ///   the same counter, amortising the launch latency.
     pub fn parallel_for<F>(&self, chunks: usize, f: F)
@@ -198,17 +235,17 @@ impl PersistentSection {
         }
         let _busy_guard = BusyGuard(&self.dispatch_busy);
 
-        // Stack-allocated trampoline context. The trampoline casts ctx
-        // back to this type, pulls out `f`, and calls it.
         struct Ctx<F: Fn(usize)> {
             f: F,
         }
         #[allow(unsafe_code)]
         unsafe fn trampoline<F: Fn(usize) + Send + Sync>(ctx: *const (), idx: usize) {
-            // SAFETY: `ctx` was constructed as `&Ctx<F> as *const _`
-            // in `parallel_for`. The caller blocks on `done_count`
-            // before returning, so `Ctx<F>` is alive for every worker
-            // dereference. `F: Fn + Sync` permits concurrent invocation.
+            // SAFETY: `ctx` was constructed as `&Ctx<F> as *const _` in
+            // `parallel_for`. The caller blocks on `done_count` and
+            // `inflight_derefs` before returning, and bumps `loop_gen`
+            // to invalidate any stale observer; together these keep
+            // `Ctx<F>` alive for every dereference. `F: Fn + Sync`
+            // permits concurrent invocation.
             #[allow(unsafe_code)]
             let c = unsafe { &*(ctx as *const Ctx<F>) };
             (c.f)(idx);
@@ -225,6 +262,13 @@ impl PersistentSection {
         // so workers never see a stale done_count.
         self.chunk_counter.store(0, Ordering::Release);
         self.done_count.store(0, Ordering::Release);
+        // Bump loop_gen BEFORE publishing the pointer. Workers snapshot
+        // this as part of their entry sequence; any worker that observed
+        // a previous generation's pointer will see the new gen on
+        // re-check and skip the deref. Release-ordered so subsequent
+        // `current_loop.store(work, Release)` happens-after this in
+        // other threads' view.
+        self.loop_gen.fetch_add(1, Ordering::Release);
         // Publish the loop. Workers spin-polling `current_loop` will
         // observe it on their next Acquire-load iteration.
         self.current_loop.store(
@@ -238,8 +282,8 @@ impl PersistentSection {
             if idx >= chunks {
                 break;
             }
-            // SAFETY: trampoline invariant — `ctx` is alive (stack frame
-            // held by this function), `exec` is a `fn` item.
+            // SAFETY: trampoline invariant — `ctx` and `work` are alive
+            // (stack frame held by this function), `exec` is a `fn` item.
             #[allow(unsafe_code)]
             unsafe {
                 (work.exec)(work.ctx, idx);
@@ -259,10 +303,27 @@ impl PersistentSection {
             }
         }
 
-        // Clear the loop pointer. Workers observing a null pointer
-        // fall to the back-off path and wait for the next loop.
+        // Clear the loop pointer, then bump loop_gen again so any
+        // worker that still holds the old pointer and is about to
+        // fetch_add `inflight_derefs` will observe a mismatched
+        // generation on its re-check and skip the deref.
         self.current_loop
             .store(std::ptr::null_mut(), Ordering::Release);
+        self.loop_gen.fetch_add(1, Ordering::Release);
+
+        // Drain any worker that already passed the gen+pointer
+        // re-check and is inside the `inflight_derefs` guard. Without
+        // this spin the stack-local `work` / `Ctx<F>` would drop under
+        // them when `parallel_for` returns.
+        let mut spin = 0u32;
+        while self.inflight_derefs.load(Ordering::Acquire) > 0 {
+            if spin < 128 {
+                std::hint::spin_loop();
+                spin = spin.saturating_add(1);
+            } else {
+                std::thread::yield_now();
+            }
+        }
     }
 }
 
@@ -291,25 +352,50 @@ pub(crate) unsafe fn section_worker_loop(section: &PersistentSection) {
     while section.active.load(Ordering::Acquire) {
         let loop_ptr = section.current_loop.load(Ordering::Acquire);
         if !loop_ptr.is_null() {
-            // SAFETY: main thread holds the `LoopWorkItem` alive on
-            // its stack until `done_count >= chunks`, then clears
-            // `current_loop` before returning from `parallel_for`. We
-            // observe the non-null pointer before taking a chunk, and
-            // only increment `done_count` after running — so main
-            // thread cannot clear the pointer while we're still using
-            // it.
-            let work = unsafe { &*loop_ptr };
-            let idx = section.chunk_counter.fetch_add(1, Ordering::AcqRel);
-            if idx < work.total_chunks {
-                // SAFETY: trampoline invariant (see LoopWorkItem docs).
-                unsafe {
-                    (work.exec)(work.ctx, idx);
+            // Snapshot `loop_gen` BEFORE the `inflight_derefs` bump
+            // so we lock in "the generation that was live when we
+            // observed `loop_ptr`". Any subsequent mismatch on
+            // re-check means main has moved on (cleared, re-published,
+            // possibly at the same stack address) and the pointer we
+            // hold is stale.
+            let observed_gen = section.loop_gen.load(Ordering::Acquire);
+
+            // Enter critical section: bump `inflight_derefs` BEFORE
+            // dereferencing `loop_ptr`. Main thread's `parallel_for`
+            // spins on this counter after clearing `current_loop`, so
+            // the ctx frame is kept alive until we decrement on exit.
+            section.inflight_derefs.fetch_add(1, Ordering::AcqRel);
+
+            // Re-check both the pointer and the generation. Pointer
+            // alone is insufficient because of stack reuse (main
+            // returns + next parallel_for at the same frame address);
+            // the gen counter catches that case. Gen alone is also
+            // insufficient — a null loop_ptr with a matching old gen
+            // is possible if main cleared without re-publishing yet.
+            let loop_ptr2 = section.current_loop.load(Ordering::Acquire);
+            let current_gen = section.loop_gen.load(Ordering::Acquire);
+            if !loop_ptr2.is_null() && loop_ptr2 == loop_ptr && current_gen == observed_gen {
+                // SAFETY: main thread holds the `LoopWorkItem` and
+                // associated `Ctx<F>` alive until `done_count >= chunks`
+                // AND `inflight_derefs == 0`. We incremented above and
+                // re-checked both pointer + generation — main cannot
+                // clear + return while our guard is live AND the gen
+                // is stable.
+                let work = unsafe { &*loop_ptr };
+                let idx = section.chunk_counter.fetch_add(1, Ordering::AcqRel);
+                if idx < work.total_chunks {
+                    // SAFETY: trampoline invariant (see LoopWorkItem docs).
+                    unsafe {
+                        (work.exec)(work.ctx, idx);
+                    }
+                    section.done_count.fetch_add(1, Ordering::Release);
+                    section.inflight_derefs.fetch_sub(1, Ordering::AcqRel);
+                    idle_spins = 0;
+                    continue;
                 }
-                section.done_count.fetch_add(1, Ordering::Release);
-                idle_spins = 0;
-                continue;
+                // All chunks claimed — exit guard and fall through.
             }
-            // All chunks claimed — fall through to regular task check.
+            section.inflight_derefs.fetch_sub(1, Ordering::AcqRel);
         }
 
         // Step 3 Session C: try regular tasks (join_dyn, submit).

@@ -397,7 +397,8 @@ fn select_variant(c_exp: usize) -> Variant {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if c_exp % 4 == 0 && !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        if c_exp.is_multiple_of(4) && !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon")
+        {
             return Variant {
                 compute_pw_row: neon::compute_pw_row_neon,
                 compute_dw_row: neon::compute_dw_row_neon,

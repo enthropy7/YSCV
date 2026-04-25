@@ -11,7 +11,11 @@
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
 [![docs.rs](https://img.shields.io/docsrs/yscv)](https://docs.rs/yscv)
 
-A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (128+ operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (121 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+
+> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, profiled and CI-gated against a baseline. On bare-metal ARM SBCs we currently beat ONNX Runtime CPU on a public Siamese tracker; the rest of the perf arc is documented in [`docs/perf-arc-2026-04.md`](docs/perf-arc-2026-04.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, Intel/AMD BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+>
+> Agent-friendly documentation. YSCV is structured so that an AI coding agent can wire it into a downstream project end-to-end without prior context: every crate has a focused `README.md` describing its surface, [`docs/cookbook.md`](docs/cookbook.md) has recipes per task, [`docs/feature-flags.md`](docs/feature-flags.md) is exhaustive on Cargo features and runtime env knobs, [`AGENTS.md`](AGENTS.md) has the workflow + style rules verbatim, and per-op profile labels (`YSCV_RUNNER_PROFILE=path` dumps fused-path JSON) make hot-path issues self-diagnosing. The benefit is downstream: agents can build working code on top of yscv quickly, not the other way around. Responsibility for any PR — including patches drafted by an agent — rests with the human author submitting it.
 
 > **First time here?** → **[QUICKSTART](QUICKSTART.md)** (5 minutes to a running program) · **[Tutorial](docs/getting-started.md)** (full walkthrough) · **[Cookbook](docs/cookbook.md)** (recipes by task) · **[Feature flags](docs/feature-flags.md)** (what to enable for your target) · **[Edge / Rockchip](docs/edge-deployment.md)** (NPU deployment) · **[Examples](examples/README.md)** (worked code) · **[Troubleshooting](docs/troubleshooting.md)** (when things break) · **[Docs hub](docs/README.md)** (everything else)
 
@@ -101,7 +105,7 @@ The detect → track → recognize pipeline runs in 67µs per frame end-to-end. 
 
 ## Performance
 
-We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1,861 default tests / 1,897 with all features, across 16 crates.
+We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1,861 default tests / 1,897 with all features, across 17 crates.
 
 Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on x86, with optional Intel MKL and ARM Performance Libraries for the last few percent.
 
@@ -130,12 +134,14 @@ Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on
 | YOLO11n MPSGraph | **5.9ms** | all competitors FAIL | **WIN** |
 | Siamese tracker 1T (Orange Pi Zero 3, 2026-04-21) | **461.6ms** | onnxruntime 499.3ms | **1.08× faster** |
 | Siamese tracker 4T (Orange Pi Zero 3, 2026-04-21) | **150.2ms** | onnxruntime 164.6ms | **1.10× faster** |
+| Siamese tracker 1T (Zen 4 7500F, 2026-04-25) | 11.22ms | onnxruntime 8.07ms | 1.39× slower |
+| Siamese tracker 6T (Zen 4 7500F, 2026-04-25) | 3.17ms | onnxruntime 1.74ms | 1.82× slower |
 
 Full benchmark results in [docs/performance-benchmarks.md](docs/performance-benchmarks.md).
 
 ## What's inside
 
-The framework is split into 16 crates, each doing one thing well:
+The framework is split into 17 crates, each doing one thing well:
 
 | Crate | Purpose |
 |-------|---------|

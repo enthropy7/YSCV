@@ -13,14 +13,15 @@ This document summarizes the arc — what landed, what failed, what's left.
 
 ## Baseline and endpoint
 
-| metric | Pre-S.3 (2026-04-20, start) | Post-R9 (2026-04-20, end) |
-|---|---:|---:|
-| 1T p50 | ~11,500 µs | 11,427 µs |
-| 6T p50 | ~4,180 µs | **3,665 µs** |
-| 6T gap vs ORT | 2.38× | **2.10×** |
-| cumulative win @ 6T (default-ON) | 0 | **~−953 µs** |
+| metric | Pre-S.3 (2026-04-20, start) | Post-R9 (2026-04-20) | Post-R10 (2026-04-25, current) |
+|---|---:|---:|---:|
+| 1T p50 | ~11,500 µs | 11,427 µs | 11,220 µs |
+| 6T p50 | ~4,180 µs | 3,665 µs | **3,170 µs** |
+| 6T gap vs ORT | 2.38× | 2.10× | **1.82×** |
+| cumulative win @ 6T (default-ON) | 0 | ~−953 µs | **~−1,450 µs** |
+| output bitwise | ref | ref | ref (1-ULP FP drift) |
 
-Hardware: AMD Ryzen 5 7500F (Zen 4, 6C/12T), NixOS, OpenBLAS.
+Hardware: AMD Ryzen 5 7500F (Zen 4, 6C/12T), NixOS, no-BLAS default build.
 
 ---
 
@@ -40,9 +41,30 @@ Hardware: AMD Ryzen 5 7500F (Zen 4, 6C/12T), NixOS, OpenBLAS.
 | R7  | Streaming FusedPwDw AVX-512 register-blocked + tiled | −146 µs | first real graph fusion win — ZMM accumulators held across entire inner loop, zero DRAM traffic for ~6 MB PW intermediate |
 | R8  | First-layer tile-8 AVX-512 variant | neutral (wall) | per-op 212 → 178 µs but too small to surface at 6T wall |
 | R9  | `FusedTransposeMatMul` mirroring ORT's `MatmulTransposeFusion` | −291 µs | graph-level fusion; one Transpose feeding N MatMuls requires `cleanup_transpose=true` on exactly one consumer |
+| R10 | `microkernel_4x8_dispatch` residual-tile correctness fix | correctness + latent perf | x86 ASM/SIMD 4×8 variants silently dropped `residual_tile` (Conv+Add shapes with 1×NR=8 tail landed in `microkernel_4x8_avx_fma` without residual → wrong output). Gate the fast paths on `residual_tile.is_none() \|\| !is_last_k` and fall through to `microkernel_4x8_scalar` — output goes 84.78 → 49.092 on the tracker |
 
-Cumulative default-ON: **−963 µs @ 6T p50**, bitwise-identical outputs
-across every step (or 1-ULP-close, documented per step).
+Cumulative default-ON: **~−1,450 µs @ 6T p50**, bitwise-identical outputs
+(or 1-ULP FP-ordering drift, documented per step).
+
+### R10 context
+
+The bug was latent from `be34c23` ("opti") onward — that commit pushed
+`residual_tile` through every scalar / NEON tail kernel but missed the
+three x86 SIMD variants (`microkernel_4x8_avx_fma`, `microkernel_4x8_avx`,
+`microkernel_4x8_sse`) and the `.S` fast path (`sgemm_4x8_set/acc`).
+`microkernel_4x8_dispatch` had `#[cfg(not(target_arch = "aarch64"))] let _ = residual_tile;`
+at the top, so LLVM happily discarded the residual pointer on x86.
+
+All four tail paths only fire when `jr + 2*NR > nc` in `gebp_kernel_raw` —
+i.e. the innermost loop has exactly one NR=8 panel left. Unit tests
+never exercised this with `residual=Some`, so the regression walked
+into the squashed commit unnoticed. Found via `private/onnx-fps` A/B:
+output `882` max was 84.7835 on non-BLAS vs 49.0916 on ORT (and 49.0922
+on BLAS, because the BLAS path goes through `blas_sgemm +
+apply_epilogue_fallback` — completely bypasses `gebp_kernel_raw`, so
+the drop never happened there). Bisect pinned it to `be34c23`, surgical
+fix in `microkernel_4x8_dispatch` without reverting any of the
+subsequent optimisations.
 
 ---
 

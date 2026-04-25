@@ -176,15 +176,13 @@ fn resolve_big(nthreads: usize) -> Option<Vec<usize>> {
         if let Ok(out) = std::process::Command::new("sysctl")
             .args(["-n", "hw.perflevel0.logicalcpu_max"])
             .output()
+            && out.status.success()
+            && let Ok(s) = String::from_utf8(out.stdout)
+            && let Ok(n) = s.trim().parse::<usize>()
+            && n > 0
         {
-            if out.status.success()
-                && let Ok(s) = String::from_utf8(out.stdout)
-                && let Ok(n) = s.trim().parse::<usize>()
-                && n > 0
-            {
-                let big: Vec<usize> = (0..n).collect();
-                return Some(take_first_n(big, nthreads));
-            }
+            let big: Vec<usize> = (0..n).collect();
+            return Some(take_first_n(big, nthreads));
         }
     }
     let _ = nthreads;

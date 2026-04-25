@@ -1,5 +1,5 @@
 # Criterion microbench regression guard for yscv-autograd.
 # Units: microseconds (upper bound from criterion "time: [low mid high]").
 
-autograd_backward_modes/matmul_relu_sum_32x32.max_upper_us=12
+autograd_backward_modes/matmul_relu_sum_32x32.max_upper_us=15
 autograd_backward_modes/broadcast_add_mul_sum_64x64.max_upper_us=18

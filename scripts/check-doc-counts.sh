@@ -15,10 +15,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # ── Expected counts ──────────────────────────────────────────────────
-EXPECTED_CRATES=16
+EXPECTED_CRATES=17                   # +yscv-threadpool from the April perf arc
 EXPECTED_VERSION="0.1.8"
-EXPECTED_ONNX_OPS=130
-EXPECTED_TENSOR_METHODS=156          # ops.rs (115) + tensor.rs (32) + linalg.rs (9)
+EXPECTED_ONNX_OPS=121                # several ops folded into fused kernels post-arc
+EXPECTED_TENSOR_METHODS=158          # ops.rs + tensor.rs + linalg.rs
 EXPECTED_IMGPROC_FNS=160             # standalone pub fn in crates/yscv-imgproc/src/ops/
 EXPECTED_AUTOGRAD_OPS=61             # variants of pub(crate) enum Op
 EXPECTED_MODEL_LAYERS=39             # variants of pub enum ModelLayer

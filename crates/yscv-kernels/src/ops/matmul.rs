@@ -49,12 +49,14 @@ use super::simd::matmul_row_set_dispatch;
 
 // The 4×8 hand-tuned kernel has two ABI variants, selected by build.rs:
 //   SysV AMD64 — Linux, macOS      (`src/asm/x86_64_sysv.S`)
-//   Win64      — Windows (GNU ABI) (`src/asm/x86_64_win64.S`)
+//   Win64      — Windows GNU ABI   (`src/asm/x86_64_win64.S`)
 // Both export the same two symbols, so the Rust call sites are identical.
 //
 // Windows-MSVC is excluded: `cl.exe` does not speak GAS, so build.rs skips
-// the assembly step there and the call sites below fall through to the
-// intrinsics path (`microkernel_4x24_avx_fma` + scalar tail).
+// the .S assembly step there. Without these `extern "C"` decls being cfg-gated
+// to match, `link.exe` fails with LNK2019 on `yscv_sgemm_4x8_*` /
+// `yscv_sgemm_4x24_avx2_*_fused`. The MSVC build falls through to the
+// intrinsics 4×24 / 4×8 paths below.
 #[cfg(all(
     target_arch = "x86_64",
     any(
@@ -408,16 +410,8 @@ pub fn matmul_2d_slices_trans_a(
     debug_assert!(b.len() >= k * n);
     debug_assert!(out.len() >= m * n);
 
-    // OpenBLAS dispatch overhead outweighs compute on tiny shapes, and
-    // several 0.3.x releases (at least OpenBLAS 0.3.31 on Zen) crash
-    // `sgemm_beta_ZEN` when m or n is smaller than the beta-kernel's
-    // unrolled lane width. Route tiny shapes through the scratch-transpose
-    // fallback — cheap, correct, and avoids the BLAS-version minefield.
     #[cfg(feature = "blas")]
-    let tiny_shape = m.min(n) < 16 || k < 8;
-
-    #[cfg(feature = "blas")]
-    if !tiny_shape && use_blas() {
+    if use_blas() {
         // SAFETY: bounds asserted above. `cblas_sgemm` is pure compute,
         // beta=0 so no aliasing concerns between output and inputs.
         use cblas_sys::{CBLAS_LAYOUT, CBLAS_TRANSPOSE, cblas_sgemm};
@@ -561,8 +555,7 @@ pub fn matmul_2d_slices_fused_maybe_packed(
     {
         if should_parallelize(plan, config, thread_pool) {
             let nthreads = super::config::available_threads(thread_pool);
-            let mc_parallel = mc_parallel_mr8(m, nthreads);
-            let blocked_blocks = m.div_ceil(mc_parallel);
+            let blocked_blocks = m.div_ceil(MC_PARALLEL_MR8);
             if blocked_blocks >= nthreads {
                 blocked_gemm_parallel_mr8(a, b, out, m, k, n, epilogue, thread_pool, packed_b);
                 return;
@@ -902,7 +895,7 @@ fn use_blocked(m: usize, k: usize, n: usize) -> bool {
 ///
 /// Kill switch: `YSCV_NO_AARCH64_LOW_K_BLOCKED=1`.
 /// Work threshold override:
-/// `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` (default 500_000 FMAs).
+/// `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` (default 1_048_576 FMAs).
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn use_blocked_aarch64_low_k(m: usize, k: usize, n: usize, has_prepacked_b: bool) -> bool {
@@ -916,14 +909,13 @@ fn use_blocked_aarch64_low_k(m: usize, k: usize, n: usize, has_prepacked_b: bool
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
-            .unwrap_or(500_000)
+            .unwrap_or(1_048_576)
     });
     enabled
         && !cfg!(miri)
         && has_prepacked_b
         && m >= BLOCKED_THRESHOLD
-        && k >= 16
-        && k < BLOCKED_THRESHOLD
+        && (16..BLOCKED_THRESHOLD).contains(&k)
         && n >= 2 * NR
         && m.saturating_mul(k).saturating_mul(n) >= min_work_fmas
 }
@@ -1786,68 +1778,6 @@ thread_local! {
 }
 
 #[cfg(target_arch = "aarch64")]
-thread_local! {
-    /// Fast companion cache for MR8 when caller already supplied a stable
-    /// session pre-pack (`PackedB`). Keyed by `PackedB` object address + dims,
-    /// so hot-path avoids runtime weight fingerprint reads on every call.
-    static PACKED_B_NR12_FROM_PREPACK_CACHE: std::cell::RefCell<
-        std::collections::HashMap<(usize, usize, usize), std::rc::Rc<PackedBNr12>>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn repack_b_block_nr8_to_nr12(src: &[f32], kc: usize, nc: usize, dst: &mut [f32]) {
-    const NR12: usize = 12;
-    for jr in (0..nc).step_by(NR12) {
-        let nr = NR12.min(nc - jr);
-        let dst_panel_off = (jr / NR12) * kc * NR12;
-        for p in 0..kc {
-            let src_row_off = p * NR;
-            let dst_row_off = dst_panel_off + p * NR12;
-            for j in 0..nr {
-                let col = jr + j;
-                let src_panel_off = (col / NR) * kc * NR;
-                let src_col = col % NR;
-                dst[dst_row_off + j] = src[src_panel_off + src_row_off + src_col];
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn full_pack_b_nr12_from_packed_b(prepacked_b: &PackedB) -> PackedBNr12 {
-    const NR12: usize = 12;
-    let k = prepacked_b.k;
-    let n = prepacked_b.n;
-    let num_pc = div_ceil(k, KC);
-    let num_jc = div_ceil(n, NC);
-    let block_slots = div_ceil(NC, NR12) * KC * NR12;
-    let total = num_pc * num_jc * block_slots;
-    let mut data: Vec<f32> = vec![0.0; total];
-
-    for pc_idx in 0..num_pc {
-        let pc = pc_idx * KC;
-        let kc = KC.min(k - pc);
-        for jc_idx in 0..num_jc {
-            let jc = jc_idx * NC;
-            let nc = NC.min(n - jc);
-            let src = prepacked_b.block(pc_idx, jc_idx);
-            let block_off = (pc_idx * num_jc + jc_idx) * block_slots;
-            repack_b_block_nr8_to_nr12(src, kc, nc, &mut data[block_off..block_off + block_slots]);
-        }
-    }
-
-    PackedBNr12 {
-        data,
-        block_slots,
-        num_jc,
-        k,
-        n,
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
 fn get_or_pack_b_nr12(b: &[f32], k: usize, n: usize) -> std::rc::Rc<PackedBNr12> {
     let ptr_key = b.as_ptr() as usize;
     // Fingerprint 3 evenly-spaced elements so same-address re-allocations
@@ -1859,29 +1789,13 @@ fn get_or_pack_b_nr12(b: &[f32], k: usize, n: usize) -> std::rc::Rc<PackedBNr12>
     let key = (ptr_key, k, n, fp0, fp1, fp2);
 
     PACKED_B_NR12_CACHE.with(|cache| {
-        if let Some(hit) = cache.borrow().get(&key) {
-            if hit.k == k && hit.n == n {
-                return std::rc::Rc::clone(hit);
-            }
-        }
-        let packed = std::rc::Rc::new(full_pack_b_nr12(b, k, n));
-        cache.borrow_mut().insert(key, std::rc::Rc::clone(&packed));
-        packed
-    })
-}
-
-#[cfg(target_arch = "aarch64")]
-fn get_or_pack_b_nr12_from_prepacked(prepacked_b: &PackedB) -> std::rc::Rc<PackedBNr12> {
-    let key = (
-        prepacked_b as *const PackedB as usize,
-        prepacked_b.k,
-        prepacked_b.n,
-    );
-    PACKED_B_NR12_FROM_PREPACK_CACHE.with(|cache| {
-        if let Some(hit) = cache.borrow().get(&key) {
+        if let Some(hit) = cache.borrow().get(&key)
+            && hit.k == k
+            && hit.n == n
+        {
             return std::rc::Rc::clone(hit);
         }
-        let packed = std::rc::Rc::new(full_pack_b_nr12_from_packed_b(prepacked_b));
+        let packed = std::rc::Rc::new(full_pack_b_nr12(b, k, n));
         cache.borrow_mut().insert(key, std::rc::Rc::clone(&packed));
         packed
     })
@@ -1904,14 +1818,6 @@ thread_local! {
         std::cell::RefCell::new(Vec::with_capacity(16 * 1024));
 }
 
-thread_local! {
-    /// Reusable IC-block index scratch for the legacy vec-dispatch path in
-    /// `par_for_each_ic_range`. Keeps the better 4T scheduling behavior while
-    /// removing per-call `Vec<usize>` allocations in hot Conv loops.
-    static IC_BLOCKS_SCRATCH: std::cell::RefCell<Vec<usize>> =
-        std::cell::RefCell::new(Vec::with_capacity(256));
-}
-
 /// Run `f` with a thread-local `pa_size`-sized packed-A scratch buffer.
 /// The buffer persists across calls — zero allocator traffic in the hot
 /// path once warm.
@@ -1931,16 +1837,6 @@ fn with_packed_a_tls<R>(pa_size: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
             buf.set_len(pa_size);
         }
         f(&mut buf[..pa_size])
-    })
-}
-
-#[inline]
-fn with_ic_blocks_tls<R>(m: usize, ic_step: usize, f: impl FnOnce(&[usize]) -> R) -> R {
-    IC_BLOCKS_SCRATCH.with(|cell| {
-        let mut blocks = cell.borrow_mut();
-        blocks.clear();
-        blocks.extend((0..m).step_by(ic_step));
-        f(&blocks)
     })
 }
 
@@ -2042,67 +1938,9 @@ fn blocked_gemm_sequential(
 #[cfg(target_arch = "aarch64")]
 const MC_MR8: usize = 128;
 
-/// aarch64 MR8 sequential chunk size.
-///
-/// Override via `YSCV_MC_MR8=<rows>` (rounded down to multiple of 8).
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn mc_mr8_seq() -> usize {
-    use std::sync::OnceLock;
-    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
-    if let Some(v) = *OVERRIDE.get_or_init(|| {
-        std::env::var("YSCV_MC_MR8")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .and_then(|raw| {
-                let q = (raw / 8) * 8;
-                if q >= 8 { Some(q) } else { None }
-            })
-    }) {
-        return v;
-    }
-    MC_MR8
-}
-
 /// MC for the aarch64 MR=8 parallel path. Multiple of 8 for clean tiling.
 #[cfg(target_arch = "aarch64")]
 const MC_PARALLEL_MR8: usize = 16;
-
-/// aarch64 MR8 parallel chunk size.
-///
-/// Small-core ARM (<=4 threads) benefits from slightly coarser chunks on
-/// large-M shapes because scheduler overhead drops while arithmetic intensity
-/// per task grows. Keep fallback to 16 so small-M still has enough tiles.
-///
-/// Override via `YSCV_MC_PARALLEL_MR8=<rows>` (rounded down to multiple of 8).
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn mc_parallel_mr8(m: usize, nthreads: usize) -> usize {
-    use std::sync::OnceLock;
-    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
-    if let Some(v) = *OVERRIDE.get_or_init(|| {
-        std::env::var("YSCV_MC_PARALLEL_MR8")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .and_then(|raw| {
-                let q = (raw / 8) * 8;
-                if q >= 8 { Some(q) } else { None }
-            })
-    }) {
-        return v;
-    }
-    // For 4-thread runs on small ARM boards, forcing 32-row chunks was
-    // consistently faster than fallback-to-16 in tracker A/B.
-    if nthreads >= 4 {
-        return 32;
-    }
-    let coarse = 32;
-    if m.div_ceil(coarse) >= nthreads {
-        coarse
-    } else {
-        MC_PARALLEL_MR8
-    }
-}
 
 /// Step C1: MC for the x86 MR=6 sequential path. Multiple of 6 for clean
 /// tiling. Matches MR=4's MC=192 in total work per block (32 MR=6 panels
@@ -2126,28 +1964,21 @@ fn blocked_gemm_sequential_mr8(
     k: usize,
     n: usize,
     epilogue: GemmEpilogue,
-    pre_packed_b: Option<&PackedB>,
+    _pre_packed_b: Option<&PackedB>, // NR=8 pre-pack is incompatible with MR=8
 ) {
     const MR8: usize = 8;
-    let mc_seq = mc_mr8_seq();
-    let a_size = div_ceil(mc_seq, MR8) * KC * MR8;
+    let a_size = div_ceil(MC_MR8, MR8) * KC * MR8;
     // Zero-filled A-pack scratch; `pack_a_panel_mr8` overwrites every slot
     // before the GEBP kernel reads. Same pattern as `blocked_gemm_sequential`.
     let mut packed_a: Vec<f32> = vec![0.0; a_size];
 
     // MR=8 path needs NR=12-aligned packed B (see `pack_b_panel_nr12`).
-    // When caller already supplied a stable session pre-pack (`PackedB`),
-    // derive/cache its NR=12 companion keyed by the PackedB address so the
-    // hot path avoids runtime fingerprint reads of the raw weight tensor.
-    let packed_b_full = if mr8_prepacked_bridge_enabled() {
-        if let Some(pb) = pre_packed_b.filter(|pb| pb.matches(k, n)) {
-            get_or_pack_b_nr12_from_prepacked(pb)
-        } else {
-            get_or_pack_b_nr12(right, k, n)
-        }
-    } else {
-        get_or_pack_b_nr12(right, k, n)
-    };
+    // The generic `PackedB` handed in by `pre_packed_b` is NR=8 — ignore
+    // it here and use the NR=12-specific cache. Callers that want to
+    // avoid the runtime pack cost should keep `YSCV_NO_MR8=1` set; a
+    // future pack_b_for_session variant can emit NR=12 for the MR=8
+    // path if that tradeoff becomes worthwhile.
+    let packed_b_full = get_or_pack_b_nr12(right, k, n);
 
     for jc in (0..n).step_by(NC) {
         let jc_idx = jc / NC;
@@ -2159,8 +1990,8 @@ fn blocked_gemm_sequential_mr8(
             let is_last_k = pc + kc >= k;
             let packed_b = packed_b_full.block(pc_idx, jc_idx);
 
-            for ic in (0..m).step_by(mc_seq) {
-                let mc = mc_seq.min(m - ic);
+            for ic in (0..m).step_by(MC_MR8) {
+                let mc = MC_MR8.min(m - ic);
                 pack_a_panel_mr8(left, k, ic, mc, pc, kc, &mut packed_a);
                 unsafe {
                     gebp_kernel_raw_mr8(
@@ -2194,26 +2025,18 @@ fn blocked_gemm_parallel_mr8(
     n: usize,
     epilogue: GemmEpilogue,
     thread_pool: Option<&ThreadPool>,
-    pre_packed_b: Option<&PackedB>,
+    _pre_packed_b: Option<&PackedB>, // NR=8 pre-pack incompatible, see _sequential
 ) {
     const MR8: usize = 8;
     let out_ptr = SendPtr(output.as_mut_ptr());
 
     // NR=12 packed B for the MR=8 kernel — see `blocked_gemm_sequential_mr8`.
-    let packed_b_full = if mr8_prepacked_bridge_enabled() {
-        if let Some(pb) = pre_packed_b.filter(|pb| pb.matches(k, n)) {
-            get_or_pack_b_nr12_from_prepacked(pb)
-        } else {
-            get_or_pack_b_nr12(right, k, n)
-        }
-    } else {
-        get_or_pack_b_nr12(right, k, n)
-    };
+    let packed_b_full = get_or_pack_b_nr12(right, k, n);
     let packed_b_ptr = packed_b_full.data.as_ptr() as usize;
     let block_slots = packed_b_full.block_slots;
     let num_jc = packed_b_full.num_jc;
-    let nthreads = super::config::available_threads(thread_pool);
-    let mc_parallel = mc_parallel_mr8(m, nthreads);
+
+    let ic_blocks: Vec<usize> = (0..m).step_by(MC_PARALLEL_MR8).collect();
 
     let work = || {
         for jc in (0..n).step_by(NC) {
@@ -2227,8 +2050,8 @@ fn blocked_gemm_parallel_mr8(
                 let block_off = (pc_idx * num_jc + jc_idx) * block_slots;
                 let out_p = &out_ptr;
 
-                par_for_each_ic_range(m, mc_parallel, thread_pool, |ic| {
-                    let mc = mc_parallel.min(m - ic);
+                par_for_each_ic(&ic_blocks, thread_pool, |ic| {
+                    let mc = MC_PARALLEL_MR8.min(m - ic);
                     let a_panels = div_ceil(mc, MR8);
                     let pa_size = a_panels * kc * MR8;
                     with_packed_a_tls(pa_size, |packed_a| {
@@ -2349,28 +2172,28 @@ unsafe fn gebp_kernel_raw_mr8(
                     }
                     // Residual for full 8x12 tiles: apply as a compact row pass
                     // after asm writes acc(+bias), then apply activation.
-                    if has_residual && is_last_k {
-                        if let Some(residual_base) = epilogue.residual {
-                            let activation_id_row: u8 = match epilogue.activation {
-                                Activation::None => 0,
-                                Activation::Relu => 1,
-                                Activation::Silu => 2,
-                            };
-                            for row in 0..MR8 {
-                                let out_row =
-                                    std::slice::from_raw_parts_mut(c_ptr.add(row * n), NR12);
-                                let residual_row = std::slice::from_raw_parts(
-                                    residual_base.add((ic + ir + row) * n + col_offset),
-                                    NR12,
-                                );
-                                super::simd::fused_row_epilogue_dispatch(
-                                    out_row,
-                                    Some(residual_row),
-                                    None,
-                                    activation_id_row,
-                                    NR12,
-                                );
-                            }
+                    if has_residual
+                        && is_last_k
+                        && let Some(residual_base) = epilogue.residual
+                    {
+                        let activation_id_row: u8 = match epilogue.activation {
+                            Activation::None => 0,
+                            Activation::Relu => 1,
+                            Activation::Silu => 2,
+                        };
+                        for row in 0..MR8 {
+                            let out_row = std::slice::from_raw_parts_mut(c_ptr.add(row * n), NR12);
+                            let residual_row = std::slice::from_raw_parts(
+                                residual_base.add((ic + ir + row) * n + col_offset),
+                                NR12,
+                            );
+                            super::simd::fused_row_epilogue_dispatch(
+                                out_row,
+                                Some(residual_row),
+                                None,
+                                activation_id_row,
+                                NR12,
+                            );
                         }
                     }
                 } else {
@@ -2730,6 +2553,8 @@ fn blocked_gemm_parallel_mr6(
     let block_slots = packed_b_full.block_slots;
     let num_jc = packed_b_full.num_jc;
 
+    let ic_blocks: Vec<usize> = (0..m).step_by(MC_PARALLEL_MR6).collect();
+
     let work = || {
         for jc in (0..n).step_by(NC) {
             let jc_idx = jc / NC;
@@ -2742,7 +2567,7 @@ fn blocked_gemm_parallel_mr6(
                 let block_off = (pc_idx * num_jc + jc_idx) * block_slots;
                 let out_p = &out_ptr;
 
-                par_for_each_ic_range(m, MC_PARALLEL_MR6, thread_pool, |ic| {
+                par_for_each_ic(&ic_blocks, thread_pool, |ic| {
                     let mc = MC_PARALLEL_MR6.min(m - ic);
                     let a_panels = div_ceil(mc, MR6);
                     let pa_size = a_panels * kc * MR6;
@@ -2816,6 +2641,8 @@ fn blocked_gemm_parallel(
     // saturate thread pools. Each worker still runs the same gebp_kernel_raw,
     // just with smaller mc per call — cache reuse of A trades for better
     // work distribution.
+    let ic_blocks: Vec<usize> = (0..m).step_by(MC_PARALLEL).collect();
+
     let work = || {
         for jc in (0..n).step_by(NC) {
             let jc_idx = jc / NC;
@@ -2829,7 +2656,7 @@ fn blocked_gemm_parallel(
                 let block_off = (pc_idx * num_jc + jc_idx) * block_slots;
                 let out_p = &out_ptr;
 
-                par_for_each_ic_range(m, MC_PARALLEL, thread_pool, |ic| {
+                par_for_each_ic(&ic_blocks, thread_pool, |ic| {
                     let mc = MC_PARALLEL.min(m - ic);
                     let a_panels = div_ceil(mc, MR);
                     let pa_size = a_panels * kc * MR;
@@ -2939,9 +2766,8 @@ fn yscv_pool_singleton() -> Option<&'static yscv_threadpool::YscvPool> {
         .as_ref()
 }
 
-/// Dispatch helper: run `f(ic)` for each `ic` in `0..m` stepping by
-/// `ic_step`, in parallel through the currently-installed `ParallelScope`
-/// (see `scope_ctx`), without allocating an intermediate `Vec<usize>`.
+/// Dispatch helper: run `f(ic)` for each entry of `ic_blocks` in parallel
+/// through the currently-installed `ParallelScope` (see `scope_ctx`).
 /// When no runner has installed a scope (benches, unit tests), falls back
 /// to rayon's `par_iter` — zero overhead on the default path.
 ///
@@ -2950,51 +2776,15 @@ fn yscv_pool_singleton() -> Option<&'static yscv_threadpool::YscvPool> {
 /// (e.g. when called from a non-ONNX consumer) can still pick up
 /// `YSCV_POOL=yscv` — otherwise defeats the purpose of the env flag.
 #[inline]
-fn par_for_each_ic_range<F>(m: usize, ic_step: usize, thread_pool: Option<&ThreadPool>, f: F)
+fn par_for_each_ic<F>(ic_blocks: &[usize], thread_pool: Option<&ThreadPool>, f: F)
 where
     F: Fn(usize) + Send + Sync,
 {
-    debug_assert!(ic_step > 0);
-    if ic_block_vec_compat_enabled(thread_pool) {
-        with_ic_blocks_tls(m, ic_step, |ic_blocks| {
-            if ic_blocks.is_empty() {
-                return;
-            }
-            let routed = super::super::scope_ctx::with_scope(|scope| {
-                if let Some(s) = scope {
-                    s.par_for_each_index(ic_blocks.len(), &|idx| f(ic_blocks[idx]));
-                    true
-                } else {
-                    false
-                }
-            });
-            if routed {
-                return;
-            }
-            if let Some(yscv) = yscv_pool_singleton() {
-                yscv.par_for_each_index(ic_blocks.len(), |idx| f(ic_blocks[idx]));
-                return;
-            }
-            let work = || {
-                ic_blocks.par_iter().for_each(|&ic| f(ic));
-            };
-            if let Some(pool) = thread_pool {
-                pool.install(work);
-            } else {
-                work();
-            }
-        });
-        return;
-    }
-    let blocks = m.div_ceil(ic_step);
-    if blocks == 0 {
-        return;
-    }
     // Preferred path: runner-installed scope (covers both rayon and yscv
     // backends depending on `YSCV_POOL`).
     let routed = super::super::scope_ctx::with_scope(|scope| {
         if let Some(s) = scope {
-            s.par_for_each_index(blocks, &|idx| f(idx * ic_step));
+            s.par_for_each_index(ic_blocks.len(), &|idx| f(ic_blocks[idx]));
             true
         } else {
             false
@@ -3006,52 +2796,18 @@ where
     // Fallback #1: process-global YscvPool singleton (for non-runner
     // consumers that still want the spin-idle pool).
     if let Some(yscv) = yscv_pool_singleton() {
-        yscv.par_for_each_index(blocks, |idx| f(idx * ic_step));
+        yscv.par_for_each_index(ic_blocks.len(), |idx| f(ic_blocks[idx]));
         return;
     }
     // Fallback #2: rayon — kernel unit tests and criterion benches.
     let work = || {
-        (0..blocks).into_par_iter().for_each(|idx| f(idx * ic_step));
+        ic_blocks.par_iter().for_each(|&ic| f(ic));
     };
     if let Some(pool) = thread_pool {
         pool.install(work);
     } else {
         work();
     }
-}
-
-/// A/B switch for IC-block dispatch shape:
-/// - `YSCV_IC_BLOCK_VEC=1`: force legacy `Vec<usize>` path.
-/// - `YSCV_IC_BLOCK_VEC=0`: force range (no-allocation) path.
-/// - unset: adaptive default.
-///
-/// Adaptive default on aarch64 keeps `Vec` when running with 4+ threads
-/// (observed better p50 on small ARM boards), otherwise uses range-dispatch.
-/// Disable this auto-policy via `YSCV_NO_IC_BLOCK_VEC_AUTO=1`.
-#[inline]
-fn ic_block_vec_compat_enabled(thread_pool: Option<&ThreadPool>) -> bool {
-    use std::sync::OnceLock;
-    static FORCED: OnceLock<Option<bool>> = OnceLock::new();
-    if let Some(force) =
-        *FORCED.get_or_init(|| match std::env::var_os("YSCV_IC_BLOCK_VEC").as_deref() {
-            Some(v) if v == "1" => Some(true),
-            Some(v) if v == "0" => Some(false),
-            _ => None,
-        })
-    {
-        return force;
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        static AUTO: OnceLock<bool> = OnceLock::new();
-        let auto = *AUTO.get_or_init(|| std::env::var_os("YSCV_NO_IC_BLOCK_VEC_AUTO").is_none());
-        if auto {
-            return super::config::available_threads(thread_pool) >= 4;
-        }
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    let _ = thread_pool;
-    false
 }
 
 /// Cached detector for the aarch64 NEON MR=8 / 8×12 fast path. NEON is
@@ -3094,16 +2850,6 @@ fn mr8_tail8_asm_enabled() -> bool {
     use std::sync::OnceLock;
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| std::env::var_os("YSCV_NO_MR8_TAIL8_ASM").is_none())
-}
-
-/// Bridge generic session prepack (`PackedB`, NR=8 layout) into the MR8
-/// NR=12 cache. Kill switch for A/B profiling: `YSCV_NO_MR8_PREPACK_BRIDGE=1`.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn mr8_prepacked_bridge_enabled() -> bool {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var_os("YSCV_NO_MR8_PREPACK_BRIDGE").is_none())
 }
 
 /// Step C1: Cached detector for the x86 AVX2 MR=6×16 fast path.
@@ -3333,10 +3079,9 @@ unsafe fn gebp_kernel_raw(
                 #[cfg_attr(not(target_arch = "x86_64"), allow(unused_variables))]
                 let residual_tile = epilogue.residual.map(|r| r.add((ic + ir) * n + col_offset));
                 if mr == MR {
-                    // Windows-MSVC skips the ASM path entirely — build.rs does
-                    // not assemble `.S` under MSVC (cl.exe does not speak GAS).
-                    // All other x86_64 targets go through the ASM/intrinsics
-                    // dispatch below.
+                    // Windows-MSVC has no `.S` kernel linked (cl.exe can't
+                    // speak GAS); take the intrinsics 4×24 path directly so
+                    // `link.exe` doesn't hunt for `yscv_sgemm_4x24_avx2_*`.
                     #[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
                     {
                         microkernel_4x24_avx_fma(
@@ -3647,14 +3392,20 @@ unsafe fn microkernel_4x8_dispatch(
     col_offset: usize,
     residual_tile: Option<*const f32>,
 ) {
-    #[cfg(not(target_arch = "aarch64"))]
-    let _ = residual_tile;
+    // Residual is fused by `microkernel_4x24_avx_fma` / `microkernel_4x16_avx_fma`
+    // and by the scalar/NEON 4×8 variants. The x86 SIMD/ASM 4×8 paths below
+    // (`sgemm_4x8_set/acc`, `microkernel_4x8_avx_fma`, `microkernel_4x8_avx`,
+    // `microkernel_4x8_sse`) do NOT read `residual_tile`, so when the caller
+    // hands in a residual we must skip them and fall through to the scalar
+    // kernel to avoid silent-dropping the add. Gated on `is_last_k` because
+    // residual is only applied on the final k-block.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let needs_scalar_for_residual = residual_tile.is_some() && is_last_k;
 
     // Fast path: hand-tuned `.S` microkernel for no-epilogue case (pure GEMM).
     // Separate SET/ACC entry points → no branch in hot path. Covers SysV
-    // (Linux, macOS) and Win64-GNU (MinGW Windows); the Win64 variant
-    // translates args internally so call sites are ABI-agnostic. Windows-MSVC
-    // skips this branch and uses the intrinsics fallback — see build.rs.
+    // (Linux, macOS) and Win64 (Windows); the Win64 variant translates args
+    // internally so call sites are ABI-agnostic.
     #[cfg(all(
         target_arch = "x86_64",
         any(
@@ -3663,7 +3414,8 @@ unsafe fn microkernel_4x8_dispatch(
             all(target_os = "windows", not(target_env = "msvc"))
         )
     ))]
-    if epilogue.bias.is_none()
+    if !needs_scalar_for_residual
+        && epilogue.bias.is_none()
         && matches!(epilogue.activation, Activation::None)
         && std::is_x86_feature_detected!("fma")
         && std::is_x86_feature_detected!("avx")
@@ -3677,7 +3429,7 @@ unsafe fn microkernel_4x8_dispatch(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
+    if !needs_scalar_for_residual {
         if std::is_x86_feature_detected!("fma") && std::is_x86_feature_detected!("avx") {
             microkernel_4x8_avx_fma(
                 a_panel, b_panel, c, ldc, kc, accumulate, epilogue, is_last_k, col_offset,
@@ -6417,6 +6169,8 @@ fn blocked_gemm_parallel_mr12(
     let b_size = (NC_MR12 / NR32) * KC * NR32;
     let mut packed_b = vec![0.0f32; b_size];
 
+    let ic_blocks: Vec<usize> = (0..m).step_by(MC_PARALLEL_MR12).collect();
+
     let mut work = || {
         for jc in (0..n).step_by(NC_MR12) {
             let nc = NC_MR12.min(n - jc);
@@ -6433,7 +6187,7 @@ fn blocked_gemm_parallel_mr12(
                 let pb_ptr = packed_b.as_ptr() as usize;
                 let out_p = &out_ptr;
 
-                par_for_each_ic_range(m, MC_PARALLEL_MR12, thread_pool, |ic| {
+                par_for_each_ic(&ic_blocks, thread_pool, |ic| {
                     let mc = MC_PARALLEL_MR12.min(m - ic);
                     let a_panels = div_ceil(mc, MR12);
                     let pa_size = a_panels * kc * MR12;
@@ -6865,7 +6619,6 @@ mod residual_tail_tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn blocked_gemm_residual_handles_m_and_n_tails() {
         // Tail shape: m is not divisible by MR=4, n is not divisible by NR=8.
         // Still passes blocked gate (m>=32, k>=32, n>=16).
