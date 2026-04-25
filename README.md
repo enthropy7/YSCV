@@ -1,6 +1,7 @@
 # Important: Current state of framework is not stable. It is in development. WIP, to be clear. If you found any issues, please report them. You can connect with me via Telegram on my GitHub page or open an issue on GitHub. Stable version will be released soon. Milestone is 0.2.0. 
 
 # yscv
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/enthropy7/YSCV)
 ![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?logo=rust)
 ![Rust](https://img.shields.io/badge/Rust-2024_edition-orange?logo=rust)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20ARM64-lightgrey)
@@ -9,7 +10,6 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-1861%20passing%20%7C%201897%20all--features-brightgreen.svg)]()
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
-[![docs.rs](https://img.shields.io/docsrs/yscv)](https://docs.rs/yscv)
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (121 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
