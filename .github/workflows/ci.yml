@@ -522,12 +522,18 @@ jobs:
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
 
-      - name: Miri — yscv-kernels (no GPU)
-        run: cargo +nightly miri test -p yscv-kernels --lib
-        env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
-
-      # yscv-autograd skipped: uses rayon (via yscv-kernels) which triggers
-      # a known crossbeam-epoch Stacked Borrows violation under Miri.
-      # See: https://github.com/crossbeam-rs/crossbeam/issues/545
+      # yscv-kernels and yscv-autograd skipped:
+      #   • yscv-kernels: 170+ heavy numerical tests at Miri's 100-1000×
+      #     interpreter slowdown blow past the 6-hour Actions ceiling.
+      #     The actual unsafe surface is SIMD intrinsics + inline asm,
+      #     which Miri can't run anyway (those tests are
+      #     `#[cfg_attr(miri, ignore)]`'d); what's left is safe-Rust
+      #     scalar fallbacks where Miri has no work to do.
+      #   • yscv-autograd: uses rayon (via yscv-kernels), which triggers
+      #     a known crossbeam-epoch Stacked Borrows false positive
+      #     (crossbeam-rs/crossbeam#545).
+      # Race-prone unsafe code (yscv-threadpool/src/section.rs) is
+      # validated separately via ThreadSanitizer (nightly
+      # -Zsanitizer=thread build-std) and Valgrind helgrind in the
+      # section-race-fix work — both more useful here than Miri.
 
