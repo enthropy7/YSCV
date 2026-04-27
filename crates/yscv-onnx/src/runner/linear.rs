@@ -161,18 +161,36 @@ pub(super) fn exec_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
             let n = packed.m_w;
             let a_data = a.data();
             let mut out_data = vec![0.0_f32; m * n];
-            for row in 0..m {
-                let act = &a_data[row * k..(row + 1) * k];
-                let dst = &mut out_data[row * n..(row + 1) * n];
-                yscv_kernels::packed_int4_gemv_dispatch(
+            // Threshold: GEMV per-row is fine for decode (M=1) and small
+            // batches, but unpacks each weight nibble M times. Beyond a
+            // handful of rows the GEMM kernel pays the per-tile unpack
+            // once and reuses across rows. 8 is empirical break-even.
+            const GEMM_THRESHOLD: usize = 8;
+            if m >= GEMM_THRESHOLD {
+                yscv_kernels::packed_int4_gemm_dispatch(
                     &packed.packed,
                     &packed.scales,
-                    act,
-                    dst,
+                    a_data,
+                    &mut out_data,
+                    m,
                     n,
                     k,
                     packed.group_size,
                 );
+            } else {
+                for row in 0..m {
+                    let act = &a_data[row * k..(row + 1) * k];
+                    let dst = &mut out_data[row * n..(row + 1) * n];
+                    yscv_kernels::packed_int4_gemv_dispatch(
+                        &packed.packed,
+                        &packed.scales,
+                        act,
+                        dst,
+                        n,
+                        k,
+                        packed.group_size,
+                    );
+                }
             }
             let mut out_shape: Vec<usize> = a_shape[..a_rank - 1].to_vec();
             out_shape.push(n);

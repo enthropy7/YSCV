@@ -286,6 +286,240 @@ pub fn packed_int4_gemv_dispatch(
     );
 }
 
+/// Scalar GEMM reference. `output[m, n] = Σ_k weight[n, k] * activation[m, k]`
+/// with weight packed-INT4 + per-group fp32 scales. Layout matches the
+/// GEMV path (n indexes the packed M_w rows). Scaling: weights for each
+/// (n, group) share one fp32 scale; output rows accumulate over all groups.
+///
+/// Cache reuse: each weight nibble is unpacked once per (n, group) and
+/// reused across all M activation rows — the win over M parallel GEMV
+/// calls is the absence of M× redundant nibble unpacks and weight reads.
+pub fn packed_int4_gemm_scalar(
+    weight_packed: &[u8],
+    scales: &[f32],
+    activation: &[f32],
+    output: &mut [f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    group_size: usize,
+) {
+    debug_assert!(group_size > 0 && group_size.is_multiple_of(2));
+    debug_assert!(k.is_multiple_of(group_size));
+    let groups = k / group_size;
+    debug_assert_eq!(weight_packed.len(), n * k / 2);
+    debug_assert_eq!(scales.len(), n * groups);
+    debug_assert_eq!(activation.len(), m * k);
+    debug_assert_eq!(output.len(), m * n);
+
+    output.fill(0.0);
+
+    // Local unpack buffer; sized for the largest expected group (256 covers
+    // GGUF Q4_K up through Llama-style 256-group). Larger groups fall back
+    // to scalar in the dispatch.
+    let mut unpacked = [0_i8; 256];
+    debug_assert!(group_size <= unpacked.len());
+
+    for nn in 0..n {
+        let row_bytes = &weight_packed[nn * k / 2..(nn + 1) * k / 2];
+        let row_scales = &scales[nn * groups..(nn + 1) * groups];
+        for g in 0..groups {
+            let scale = row_scales[g];
+            let byte_base = g * group_size / 2;
+            let act_base = g * group_size;
+            for i in 0..group_size / 2 {
+                let byte = row_bytes[byte_base + i];
+                unpacked[2 * i] = unpack_low(byte);
+                unpacked[2 * i + 1] = unpack_high(byte);
+            }
+            for mi in 0..m {
+                let mut sum: f32 = 0.0;
+                let row_act = &activation[mi * k + act_base..mi * k + act_base + group_size];
+                for j in 0..group_size {
+                    sum += (unpacked[j] as f32) * row_act[j];
+                }
+                output[mi * n + nn] += scale * sum;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn packed_int4_gemm_avx2(
+    weight_packed: &[u8],
+    scales: &[f32],
+    activation: &[f32],
+    output: &mut [f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    group_size: usize,
+) {
+    use std::arch::x86_64::*;
+    let groups = k / group_size;
+    output.fill(0.0);
+    let mut unpacked = [0.0_f32; 256];
+    debug_assert!(group_size <= unpacked.len());
+    debug_assert!(group_size.is_multiple_of(8));
+
+    for nn in 0..n {
+        let row_bytes = &weight_packed[nn * k / 2..(nn + 1) * k / 2];
+        let row_scales = &scales[nn * groups..(nn + 1) * groups];
+        for g in 0..groups {
+            let scale = row_scales[g];
+            let byte_base = g * group_size / 2;
+            let act_base = g * group_size;
+            for i in 0..group_size / 2 {
+                let byte = row_bytes[byte_base + i];
+                unpacked[2 * i] = unpack_low(byte) as f32;
+                unpacked[2 * i + 1] = unpack_high(byte) as f32;
+            }
+            for mi in 0..m {
+                let act_row = &activation[mi * k + act_base..mi * k + act_base + group_size];
+                let mut acc = _mm256_setzero_ps();
+                let mut j = 0;
+                while j + 8 <= group_size {
+                    let q = _mm256_loadu_ps(unpacked.as_ptr().add(j));
+                    let a = _mm256_loadu_ps(act_row.as_ptr().add(j));
+                    acc = _mm256_fmadd_ps(q, a, acc);
+                    j += 8;
+                }
+                let mut buf = [0.0_f32; 8];
+                _mm256_storeu_ps(buf.as_mut_ptr(), acc);
+                let mut sum = buf.iter().sum::<f32>();
+                while j < group_size {
+                    sum += unpacked[j] * act_row[j];
+                    j += 1;
+                }
+                output[mi * n + nn] += scale * sum;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn packed_int4_gemm_neon(
+    weight_packed: &[u8],
+    scales: &[f32],
+    activation: &[f32],
+    output: &mut [f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    group_size: usize,
+) {
+    use std::arch::aarch64::*;
+    let groups = k / group_size;
+    output.fill(0.0);
+    let mut unpacked = [0.0_f32; 256];
+    debug_assert!(group_size <= unpacked.len());
+    debug_assert!(group_size.is_multiple_of(4));
+
+    for nn in 0..n {
+        let row_bytes = &weight_packed[nn * k / 2..(nn + 1) * k / 2];
+        let row_scales = &scales[nn * groups..(nn + 1) * groups];
+        for g in 0..groups {
+            let scale = row_scales[g];
+            let byte_base = g * group_size / 2;
+            let act_base = g * group_size;
+            for i in 0..group_size / 2 {
+                let byte = row_bytes[byte_base + i];
+                unpacked[2 * i] = unpack_low(byte) as f32;
+                unpacked[2 * i + 1] = unpack_high(byte) as f32;
+            }
+            for mi in 0..m {
+                let act_row = &activation[mi * k + act_base..mi * k + act_base + group_size];
+                let mut acc = vdupq_n_f32(0.0);
+                let mut j = 0;
+                while j + 4 <= group_size {
+                    let q = vld1q_f32(unpacked.as_ptr().add(j));
+                    let a = vld1q_f32(act_row.as_ptr().add(j));
+                    acc = vfmaq_f32(acc, q, a);
+                    j += 4;
+                }
+                let mut sum = vaddvq_f32(acc);
+                while j < group_size {
+                    sum += unpacked[j] * act_row[j];
+                    j += 1;
+                }
+                output[mi * n + nn] += scale * sum;
+            }
+        }
+    }
+}
+
+/// Runtime-dispatched packed-INT4 GEMM. Handles `M >= 1` activation rows
+/// efficiently by unpacking each weight group once and reusing across
+/// all rows. For `M == 1` the single-row dispatch via
+/// `packed_int4_gemv_dispatch` still has a slight edge (less per-iter
+/// overhead); the runner's `exec_matmul` thresholds between the two.
+pub fn packed_int4_gemm_dispatch(
+    weight_packed: &[u8],
+    scales: &[f32],
+    activation: &[f32],
+    output: &mut [f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    group_size: usize,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2")
+            && std::is_x86_feature_detected!("fma")
+            && group_size.is_multiple_of(8)
+            && group_size <= 256
+        {
+            unsafe {
+                packed_int4_gemm_avx2(
+                    weight_packed,
+                    scales,
+                    activation,
+                    output,
+                    m,
+                    n,
+                    k,
+                    group_size,
+                )
+            };
+            return;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon")
+            && group_size.is_multiple_of(4)
+            && group_size <= 256
+        {
+            unsafe {
+                packed_int4_gemm_neon(
+                    weight_packed,
+                    scales,
+                    activation,
+                    output,
+                    m,
+                    n,
+                    k,
+                    group_size,
+                )
+            };
+            return;
+        }
+    }
+    packed_int4_gemm_scalar(
+        weight_packed,
+        scales,
+        activation,
+        output,
+        m,
+        n,
+        k,
+        group_size,
+    );
+}
+
 /// Helper: pack a row-major fp32 weight matrix into the symmetric INT4
 /// format the GEMV kernel consumes. Computes per-group abs-max scales
 /// (`scale = abs_max / 7`), quantises each element to `[-8, 7]`, packs
@@ -451,6 +685,88 @@ mod tests {
         packed_int4_gemv_dispatch(&packed, &scales, &activation, &mut out, m_w, k, group_size);
         for &v in &out {
             assert!(v.abs() <= 1e-5, "expected ≈0, got {v}");
+        }
+    }
+
+    #[test]
+    fn gemm_with_m1_matches_gemv() {
+        // M=1 GEMM should produce same result as GEMV for the same data.
+        let n = 4;
+        let k = 64;
+        let group_size = 32;
+        let weights = pseudo_random(0xAA, n * k);
+        let (packed, scales) = pack_int4_symmetric_per_group(&weights, n, k, group_size);
+        let activation = pseudo_random(0xBB, k);
+        let mut gemv_out = vec![0.0_f32; n];
+        packed_int4_gemv_scalar(
+            &packed,
+            &scales,
+            &activation,
+            &mut gemv_out,
+            n,
+            k,
+            group_size,
+        );
+        let mut gemm_out = vec![0.0_f32; n];
+        packed_int4_gemm_scalar(
+            &packed,
+            &scales,
+            &activation,
+            &mut gemm_out,
+            1,
+            n,
+            k,
+            group_size,
+        );
+        for i in 0..n {
+            assert!(
+                (gemv_out[i] - gemm_out[i]).abs() <= 1e-5,
+                "row {i}: gemv={} gemm={}",
+                gemv_out[i],
+                gemm_out[i]
+            );
+        }
+    }
+
+    #[test]
+    fn gemm_dispatch_matches_scalar_on_random_shapes() {
+        let n = 8;
+        let k = 64;
+        let group_size = 32;
+        let weights = pseudo_random(0x100, n * k);
+        let (packed, scales) = pack_int4_symmetric_per_group(&weights, n, k, group_size);
+        for &m in &[1, 4, 16, 32] {
+            let activation = pseudo_random(0x200 + m as u64, m * k);
+            let mut scalar_out = vec![0.0_f32; m * n];
+            packed_int4_gemm_scalar(
+                &packed,
+                &scales,
+                &activation,
+                &mut scalar_out,
+                m,
+                n,
+                k,
+                group_size,
+            );
+            let mut dispatch_out = vec![0.0_f32; m * n];
+            packed_int4_gemm_dispatch(
+                &packed,
+                &scales,
+                &activation,
+                &mut dispatch_out,
+                m,
+                n,
+                k,
+                group_size,
+            );
+            for i in 0..(m * n) {
+                assert!(
+                    (scalar_out[i] - dispatch_out[i]).abs() <= 1e-3,
+                    "M={m} idx={i}: scalar={} dispatch={}",
+                    scalar_out[i],
+                    dispatch_out[i]
+                );
+            }
         }
     }
 

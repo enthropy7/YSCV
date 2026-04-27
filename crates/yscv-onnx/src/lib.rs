@@ -29,7 +29,7 @@ pub use loader::{
 };
 pub use optimizer::{
     GraphStats, fold_constants, fold_conv_bn, fuse_bn_relu, fuse_conv_relu, graph_stats,
-    optimize_onnx_graph,
+    optimize_onnx_graph, strip_qdq_within_fusion_chains,
 };
 pub use quantize::quantize_weights_int4;
 pub use quantize::{CalibrationCollector, CalibrationScope, MinMax};
@@ -57,7 +57,7 @@ pub use runner::gpu::{GpuExecAction, GpuExecPlan, plan_gpu_execution};
 pub use runner::gpu::{GpuWeightCache, run_onnx_model_gpu_cached};
 #[cfg(feature = "gpu")]
 pub use runner::gpu::{compile_gpu_plan_f16, run_compiled_gpu_f16_fused};
-pub use runner::kv_cache::KvCache;
+pub use runner::kv_cache::{KvCache, KvDtype};
 pub use runner::profile_onnx_model_cpu;
 pub use runner::run_onnx_model;
 pub use runner::run_onnx_model_borrowed;

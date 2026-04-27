@@ -32,14 +32,14 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use yscv_onnx::{
     CalibrationCollector, OnnxRunner, load_onnx_model_from_file, rewrite_to_qdq,
-    save_onnx_model_to_file,
+    save_onnx_model_to_file, strip_qdq_within_fusion_chains,
 };
 use yscv_tensor::Tensor;
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error(
-        "usage: yscv-quantize <input.onnx> --output <output.onnx> [--calibration <samples.jsonl>] [--weights-only]"
+        "usage: yscv-quantize <input.onnx> --output <output.onnx> [--calibration <samples.jsonl>] [--weights-only] [--strip-inner-qdq]"
     )]
     Usage,
     #[error("missing required argument: {0}")]
@@ -64,6 +64,7 @@ struct Args {
     output: PathBuf,
     calibration: Option<PathBuf>,
     weights_only: bool,
+    strip_inner_qdq: bool,
 }
 
 fn parse_args() -> Result<Args, CliError> {
@@ -71,6 +72,7 @@ fn parse_args() -> Result<Args, CliError> {
     let mut output: Option<PathBuf> = None;
     let mut calibration: Option<PathBuf> = None;
     let mut weights_only = false;
+    let mut strip_inner_qdq = false;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -88,6 +90,7 @@ fn parse_args() -> Result<Args, CliError> {
                 ));
             }
             "--weights-only" => weights_only = true,
+            "--strip-inner-qdq" => strip_inner_qdq = true,
             other if other.starts_with('-') => {
                 return Err(CliError::InvalidArg(other.to_string()));
             }
@@ -107,6 +110,7 @@ fn parse_args() -> Result<Args, CliError> {
         output: output.ok_or(CliError::MissingArg("--output"))?,
         calibration,
         weights_only,
+        strip_inner_qdq,
     })
 }
 
@@ -205,6 +209,11 @@ fn run(args: Args) -> Result<(), CliError> {
     eprintln!("rewriting model to QDQ format…");
     let mut model = model;
     rewrite_to_qdq(&mut model, &stats)?;
+
+    if args.strip_inner_qdq {
+        let removed = strip_qdq_within_fusion_chains(&mut model);
+        eprintln!("strip-inner-qdq: removed {removed} Q+DQ pair(s) between Conv-like ops",);
+    }
 
     eprintln!("saving to {}…", args.output.display());
     save_onnx_model_to_file(&model, &args.output)?;

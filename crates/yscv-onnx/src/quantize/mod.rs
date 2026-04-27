@@ -13,11 +13,11 @@ pub mod derive;
 pub mod packed_int4;
 pub mod rewriter;
 
-pub use calibrate::{CalibrationCollector, CalibrationScope, MinMax};
+pub use calibrate::{CalibrationCollector, CalibrationScope, Histogram, MinMax};
 pub use derive::{
-    QuantParams, QuantTarget, derive_asymmetric, derive_per_channel_symmetric, derive_symmetric,
-    int4_symmetric_per_channel, int8_asymmetric_per_tensor, int8_symmetric_per_channel,
-    int8_symmetric_per_tensor,
+    QuantParams, QuantTarget, derive_asymmetric, derive_mse_optimal, derive_per_channel_symmetric,
+    derive_percentile, derive_symmetric, int4_symmetric_per_channel, int8_asymmetric_per_tensor,
+    int8_symmetric_per_channel, int8_symmetric_per_tensor,
 };
 pub use packed_int4::{PackedInt4Weight, quantize_matmul_weights_int4_packed};
 pub use rewriter::rewrite_to_qdq;

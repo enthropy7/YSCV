@@ -15,11 +15,12 @@
 //! special-case downstream — the resulting requantization is still a
 //! safe no-op for a constant tensor.
 //!
-//! Percentile-99.99 and MSE-optimal calibration require a histogram of
-//! observed activations (not just min/max), so they are deferred to a
-//! follow-on patch that extends `MinMax` with a histogram aggregate.
+//! Percentile and MSE-optimal calibration consume the
+//! reservoir-sampled [`Histogram`] (collected when
+//! `CalibrationCollector::enable_histograms(true)`) — see
+//! [`derive_percentile`] and [`derive_mse_optimal`].
 
-use super::calibrate::MinMax;
+use super::calibrate::{Histogram, MinMax};
 
 /// Quantization parameters derived for a single tensor (or a single
 /// channel slice). `scale` is fp32; `zero_point` is stored as i32 so
@@ -171,6 +172,102 @@ pub fn int4_symmetric_per_channel(stats: &[MinMax]) -> Vec<QuantParams> {
     derive_per_channel_symmetric(stats, QuantTarget::Int4)
 }
 
+/// Symmetric scale derivation that clips outliers at the `(lower,
+/// 1 - lower)` quantile of the reservoir-sampled histogram. Common
+/// choice: `lower = 0.001` (drops the bottom and top 0.1 % of values).
+/// Tighter clipping than min-max is the standard ORT/PyTorch
+/// "percentile" calibration method.
+///
+/// Empty / NaN-only histograms fall back to [`QuantParams::IDENTITY`].
+pub fn derive_percentile(hist: &Histogram, target: QuantTarget, lower: f32) -> QuantParams {
+    if hist.is_empty() || hist.samples.is_empty() {
+        return QuantParams::IDENTITY;
+    }
+    let lower = lower.clamp(0.0, 0.5);
+    let mut samples: Vec<f32> = hist
+        .samples
+        .iter()
+        .copied()
+        .filter(|v| !v.is_nan())
+        .collect();
+    if samples.is_empty() {
+        return QuantParams::IDENTITY;
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = samples.len();
+    let lo_idx = ((lower * n as f32) as usize).min(n - 1);
+    let hi_idx = (((1.0 - lower) * n as f32) as usize).clamp(lo_idx, n - 1);
+    let abs_max = samples[lo_idx].abs().max(samples[hi_idx].abs());
+    if !abs_max.is_finite() || abs_max <= f32::EPSILON {
+        return QuantParams::IDENTITY;
+    }
+    let scale = abs_max / target.sym_denom();
+    let zero_point = match target {
+        QuantTarget::Uint8 => 128,
+        QuantTarget::Int8 | QuantTarget::Int4 => 0,
+    };
+    QuantParams { scale, zero_point }
+}
+
+/// Symmetric MSE-optimal scale: sweeps a small grid of candidate
+/// abs-max thresholds and picks the one minimising mean-squared
+/// quantization error against the reservoir samples. Slower than
+/// percentile but more robust on heavy-tailed activation distributions.
+///
+/// `num_grid` grid points are placed linearly between `0.5 * abs_max`
+/// and `abs_max` of the observed histogram. 50 is a common default.
+pub fn derive_mse_optimal(hist: &Histogram, target: QuantTarget, num_grid: usize) -> QuantParams {
+    if hist.is_empty() || hist.samples.is_empty() {
+        return QuantParams::IDENTITY;
+    }
+    let abs_max = hist
+        .samples
+        .iter()
+        .copied()
+        .filter(|v| !v.is_nan())
+        .fold(0.0_f32, |m, v| m.max(v.abs()));
+    if !abs_max.is_finite() || abs_max <= f32::EPSILON {
+        return QuantParams::IDENTITY;
+    }
+    let denom = target.sym_denom();
+    let qmin = target.qmin() as f32;
+    let qmax = target.qmax() as f32;
+    let num_grid = num_grid.max(2);
+
+    let mut best_scale = abs_max / denom;
+    let mut best_mse = f32::INFINITY;
+    for i in 1..=num_grid {
+        let candidate_abs_max = abs_max * 0.5 + (abs_max * 0.5) * (i as f32 / num_grid as f32);
+        let scale = candidate_abs_max / denom;
+        if scale <= 0.0 {
+            continue;
+        }
+        let inv = 1.0 / scale;
+        let mut mse = 0.0_f32;
+        for &v in &hist.samples {
+            if v.is_nan() {
+                continue;
+            }
+            let q = (v * inv).round().clamp(qmin, qmax);
+            let dq = q * scale;
+            let err = v - dq;
+            mse += err * err;
+        }
+        if mse < best_mse {
+            best_mse = mse;
+            best_scale = scale;
+        }
+    }
+    let zero_point = match target {
+        QuantTarget::Uint8 => 128,
+        QuantTarget::Int8 | QuantTarget::Int4 => 0,
+    };
+    QuantParams {
+        scale: best_scale,
+        zero_point,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +391,62 @@ mod tests {
         );
         assert_eq!(
             derive_symmetric(nan_hi, QuantTarget::Int8),
+            QuantParams::IDENTITY
+        );
+    }
+
+    fn synthetic_hist(samples: Vec<f32>) -> Histogram {
+        // Build via the public update path so the private rng_state and
+        // counter fields stay encapsulated. Empty histograms get min/max
+        // sentinels from `Default`-style construction.
+        let mut h = super::super::calibrate::Histogram::for_test();
+        h.update(&samples);
+        h
+    }
+
+    #[test]
+    fn percentile_clips_outliers_tighter_than_minmax() {
+        // 100 normal-ish values plus one outlier. Min-max scale would
+        // expand to fit the outlier; percentile(0.01) drops it.
+        let mut samples: Vec<f32> = (0..100).map(|i| (i as f32 - 50.0) * 0.02).collect();
+        samples.push(100.0); // outlier
+        let h = synthetic_hist(samples);
+        let pct = derive_percentile(&h, QuantTarget::Int8, 0.01);
+        let mm_scale = h.max.abs().max(h.min.abs()) / 127.0;
+        assert!(
+            pct.scale < mm_scale,
+            "percentile scale {} should be tighter than min-max {}",
+            pct.scale,
+            mm_scale
+        );
+    }
+
+    #[test]
+    fn percentile_empty_returns_identity() {
+        let h = synthetic_hist(Vec::new());
+        assert_eq!(
+            derive_percentile(&h, QuantTarget::Int8, 0.001),
+            QuantParams::IDENTITY
+        );
+    }
+
+    #[test]
+    fn mse_optimal_picks_finite_scale_for_normal_distribution() {
+        // Synthetic Gaussian-like samples (centered on 0).
+        let samples: Vec<f32> = (0..1000)
+            .map(|i| ((i as f32 - 500.0) / 200.0).sin() * 2.5)
+            .collect();
+        let h = synthetic_hist(samples);
+        let mse = derive_mse_optimal(&h, QuantTarget::Int8, 50);
+        assert!(mse.scale > 0.0 && mse.scale.is_finite());
+        assert_eq!(mse.zero_point, 0);
+    }
+
+    #[test]
+    fn mse_optimal_zero_inputs_returns_identity() {
+        let h = synthetic_hist(vec![0.0; 32]);
+        assert_eq!(
+            derive_mse_optimal(&h, QuantTarget::Int8, 50),
             QuantParams::IDENTITY
         );
     }

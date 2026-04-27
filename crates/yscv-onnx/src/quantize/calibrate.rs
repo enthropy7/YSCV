@@ -87,8 +87,94 @@ impl MinMax {
     }
 }
 
+/// Reservoir-sampled distribution of one tensor's observed fp32 values.
+///
+/// Records `min` / `max` / `count` exactly and keeps up to
+/// [`Histogram::CAPACITY`] sampled values. Used by
+/// [`super::derive::derive_percentile`] and
+/// [`super::derive::derive_mse_optimal`] to fit a quantization scale
+/// that clips outliers more aggressively than min-max.
+///
+/// Sampling strategy is deterministic Vitter's R: the first `CAPACITY`
+/// values fill the reservoir, then each subsequent value index `i`
+/// replaces a uniformly-chosen reservoir slot with probability
+/// `CAPACITY / i`. For typical PTQ runs (10-1000 calibration samples,
+/// each with thousands of activation values) `CAPACITY = 16384`
+/// gives sub-percent-level percentile estimates.
+#[derive(Clone, Debug)]
+pub struct Histogram {
+    pub min: f32,
+    pub max: f32,
+    pub count: u64,
+    /// Bounded-size reservoir. Owned `Vec<f32>` so callers can sort,
+    /// fold, etc. without going through helper methods.
+    pub samples: Vec<f32>,
+    /// Per-tensor LCG state — keeps replacement positions reproducible
+    /// and lock-free (state lives inside the per-tensor entry guarded
+    /// by the same outer mutex as the rest of the entry).
+    rng_state: u64,
+}
+
+impl Histogram {
+    pub const CAPACITY: usize = 16384;
+
+    /// Test-only constructor exposing the internal default state. Not
+    /// part of the public API; production code receives histograms via
+    /// [`CalibrationCollector::histograms`].
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self::new()
+    }
+
+    fn new() -> Self {
+        Self {
+            min: f32::INFINITY,
+            max: f32::NEG_INFINITY,
+            count: 0,
+            samples: Vec::with_capacity(Self::CAPACITY),
+            rng_state: 0x9E37_79B9_7F4A_7C15,
+        }
+    }
+
+    pub(crate) fn update(&mut self, slice: &[f32]) {
+        for &v in slice {
+            if v.is_nan() {
+                continue;
+            }
+            if v < self.min {
+                self.min = v;
+            }
+            if v > self.max {
+                self.max = v;
+            }
+            self.count += 1;
+            if self.samples.len() < Self::CAPACITY {
+                self.samples.push(v);
+            } else {
+                // Vitter's R reservoir: replace at uniform random index in
+                // [0, count). Cheap LCG keeps this lock-free.
+                self.rng_state = self
+                    .rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let idx = ((self.rng_state >> 33) % self.count) as usize;
+                if idx < Self::CAPACITY {
+                    self.samples[idx] = v;
+                }
+            }
+        }
+    }
+
+    /// True if no values have been recorded yet.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
 struct Inner {
     per_tensor: Mutex<HashMap<String, MinMax>>,
+    histograms: Mutex<HashMap<String, Histogram>>,
+    histogram_enabled: AtomicBool,
 }
 
 /// Collector for per-tensor activation statistics during a calibration
@@ -109,8 +195,30 @@ impl CalibrationCollector {
         Self {
             inner: Arc::new(Inner {
                 per_tensor: Mutex::new(HashMap::new()),
+                histograms: Mutex::new(HashMap::new()),
+                histogram_enabled: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Enable histogram (reservoir-sampling) collection alongside the
+    /// default min/max. Histograms feed [`super::derive::derive_percentile`]
+    /// and [`super::derive::derive_mse_optimal`]; without them only the
+    /// MinMax-based [`super::derive::derive_asymmetric`] / `derive_symmetric`
+    /// paths are usable. Costs one extra Mutex lock per insert when
+    /// active. Default off.
+    pub fn enable_histograms(&self, on: bool) {
+        self.inner.histogram_enabled.store(on, Ordering::Release);
+    }
+
+    /// Snapshot of aggregated per-tensor histograms. Empty when
+    /// [`Self::enable_histograms`] was never set.
+    pub fn histograms(&self) -> HashMap<String, Histogram> {
+        self.inner
+            .histograms
+            .lock()
+            .expect("calibration histograms mutex poisoned")
+            .clone()
     }
 
     /// Install this collector globally. Returned scope uninstalls on drop.
@@ -201,6 +309,14 @@ pub(crate) fn record_activation(name: &str, tensor: &Tensor) {
         Ok(s) => s,
         Err(_) => return, // non-f32 tensor — calibration only meaningful for fp32
     };
+    if arc.histogram_enabled.load(Ordering::Relaxed)
+        && let Ok(mut hists) = arc.histograms.lock()
+    {
+        hists
+            .entry(name.to_string())
+            .or_insert_with(Histogram::new)
+            .update(slice);
+    }
     if let Ok(mut map) = arc.per_tensor.lock() {
         map.entry(name.to_string()).or_default().update(slice);
     }
