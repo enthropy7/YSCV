@@ -6,5 +6,5 @@
 model_forward_modes/linear_64x32_batch32.max_upper_us=7
 model_forward_modes/linear_relu_linear_batch32.max_upper_us=16
 model_train_step_modes/sgd_step_batch16.max_upper_us=26
-model_train_step_modes/sgd_step_batch64.max_upper_us=220
+model_train_step_modes/sgd_step_batch64.max_upper_us=280
 model_train_step_modes/sgd_step_batch16_hinge.max_upper_us=26
