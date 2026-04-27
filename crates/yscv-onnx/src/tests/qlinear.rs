@@ -95,7 +95,7 @@ fn qlinear_matmul_symmetric_fast_path_with_nontrivial_scales() {
     let out = result["y"].data();
 
     let composite = 0.05_f32 * 0.1 / 0.25;
-    let mut expected = vec![0.0_f32; 16];
+    let mut expected = [0.0_f32; 16];
     for i in 0..4 {
         for j in 0..4 {
             let mut acc: i32 = 0;
@@ -255,7 +255,7 @@ fn matmul_integer_symmetric_fast_path() {
     let result = run_onnx_model(&model, HashMap::new()).unwrap();
     let out = result["y"].data();
 
-    let mut expected = vec![0.0_f32; 9];
+    let mut expected = [0.0_f32; 9];
     for i in 0..3 {
         for j in 0..3 {
             let mut acc: i32 = 0;
