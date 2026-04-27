@@ -862,6 +862,7 @@ pub fn fold_constants(model: &mut OnnxModel) {
             khwc_weights: HashSet::new(),
             dw_khwc_weights: HashSet::new(),
             group_khwc_weights: HashSet::new(),
+            packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };
         mini_model.rebuild_runtime_index();
@@ -1015,6 +1016,7 @@ mod nchwc_stats_tests {
             khwc_weights: HashSet::new(),
             dw_khwc_weights: HashSet::new(),
             group_khwc_weights: HashSet::new(),
+            packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };
         for (i, op) in ops.iter().enumerate() {

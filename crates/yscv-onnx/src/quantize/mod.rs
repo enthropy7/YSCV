@@ -1,8 +1,26 @@
-//! INT4 weight quantization utility for ONNX models.
+//! Quantization utilities for ONNX models.
 //!
-//! Quantizes weight initializer tensors to packed INT4 with per-channel
-//! scale and zero-point, inserting corresponding DequantizeLinear nodes
-//! into the graph.
+//! - [`quantize_weights_int4`]: post-training INT4 weight quantization with
+//!   per-channel scale and zero-point, inserting DequantizeLinear nodes
+//!   into the graph.
+//! - [`calibrate`]: activation-statistics collection for post-training
+//!   quantization (PTQ). Install a `CalibrationCollector` before running
+//!   inference to capture per-tensor min/max/count, then derive scales
+//!   downstream.
+
+pub mod calibrate;
+pub mod derive;
+pub mod packed_int4;
+pub mod rewriter;
+
+pub use calibrate::{CalibrationCollector, CalibrationScope, MinMax};
+pub use derive::{
+    QuantParams, QuantTarget, derive_asymmetric, derive_per_channel_symmetric, derive_symmetric,
+    int4_symmetric_per_channel, int8_asymmetric_per_tensor, int8_symmetric_per_channel,
+    int8_symmetric_per_tensor,
+};
+pub use packed_int4::{PackedInt4Weight, quantize_matmul_weights_int4_packed};
+pub use rewriter::rewrite_to_qdq;
 
 use std::collections::HashMap;
 
@@ -195,6 +213,7 @@ mod tests {
             khwc_weights: Default::default(),
             dw_khwc_weights: Default::default(),
             group_khwc_weights: Default::default(),
+            packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };
 
@@ -252,6 +271,7 @@ mod tests {
             khwc_weights: Default::default(),
             dw_khwc_weights: Default::default(),
             group_khwc_weights: Default::default(),
+            packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };
 

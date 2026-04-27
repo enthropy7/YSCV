@@ -1233,6 +1233,122 @@ pub(super) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
         None
     };
 
+    // Symmetric int8 fast path: NCHW input, OIHW weight, group=1, no
+    // dilation, both zero-points 0. im2col + integer GEMM + composite
+    // requantize. Loader's KHWC permute fires only on `Conv` op_type,
+    // so QLinearConv weights stay OIHW here.
+    if x_zp == 0.0 && w_zp == 0.0 && x.shape().len() == 4 && w.shape().len() == 4 {
+        let group = crate::runner::get_attr_int(node, "group").unwrap_or(1);
+        let dilations =
+            crate::runner::get_attr_ints(node, "dilations").unwrap_or_else(|| vec![1, 1]);
+        if group == 1 && dilations == [1, 1] {
+            let pads =
+                crate::runner::get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+            let strides =
+                crate::runner::get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
+            let xs = x.shape();
+            let ws = w.shape();
+            let (n_n, c_in, ih, iw) = (xs[0], xs[1], xs[2], xs[3]);
+            let (c_out, _, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
+            if ws[1] == c_in && pads.len() == 4 && strides.len() == 2 {
+                let (pt, pl, pb, pr) = (
+                    pads[0] as usize,
+                    pads[1] as usize,
+                    pads[2] as usize,
+                    pads[3] as usize,
+                );
+                let (sh, sw) = (strides[0] as usize, strides[1] as usize);
+                let oh = (ih + pt + pb - kh) / sh + 1;
+                let ow = (iw + pl + pr - kw) / sw + 1;
+                let m = n_n * oh * ow;
+                let k_dim = c_in * kh * kw;
+
+                // im2col NCHW → [M, K] i8.
+                let x_data = x.data();
+                let mut x_im2col: Vec<i8> = vec![0; m * k_dim];
+                for ni in 0..n_n {
+                    for oh_i in 0..oh {
+                        for ow_i in 0..ow {
+                            let row = (ni * oh + oh_i) * ow + ow_i;
+                            for ci in 0..c_in {
+                                for ky in 0..kh {
+                                    for kx in 0..kw {
+                                        let ih_i = oh_i * sh + ky;
+                                        let iw_i = ow_i * sw + kx;
+                                        let col = (ci * kh + ky) * kw + kx;
+                                        let idx = row * k_dim + col;
+                                        if ih_i >= pt
+                                            && ih_i < pt + ih
+                                            && iw_i >= pl
+                                            && iw_i < pl + iw
+                                        {
+                                            let h = ih_i - pt;
+                                            let v = iw_i - pl;
+                                            let src = ((ni * c_in + ci) * ih + h) * iw + v;
+                                            x_im2col[idx] = x_data[src] as i8;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Reshape weight OIHW → [K=C*KH*KW, N=O] (transposed).
+                let w_data = w.data();
+                let mut w_packed: Vec<i8> = vec![0; k_dim * c_out];
+                for o in 0..c_out {
+                    for ci in 0..c_in {
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                let src = ((o * c_in + ci) * kh + ky) * kw + kx;
+                                let dst_k = (ci * kh + ky) * kw + kx;
+                                w_packed[dst_k * c_out + o] = w_data[src] as i8;
+                            }
+                        }
+                    }
+                }
+
+                // Integer GEMM.
+                let mut acc = vec![0_i32; m * c_out];
+                yscv_kernels::int8_matmul_dispatch(&x_im2col, &w_packed, m, k_dim, c_out, &mut acc);
+
+                // Add per-channel bias (i32 stored as f32) if present.
+                if let Some(b) = &bias {
+                    let bdata = b.data();
+                    for row in 0..m {
+                        for o in 0..c_out {
+                            acc[row * c_out + o] += bdata[o] as i32;
+                        }
+                    }
+                }
+
+                // Composite-scale requantize + clamp; reshape [M, O] → NCHW.
+                let composite = (x_scale * w_scale) / y_scale;
+                let mut out = vec![0.0_f32; n_n * c_out * oh * ow];
+                for ni in 0..n_n {
+                    for o in 0..c_out {
+                        for oh_i in 0..oh {
+                            for ow_i in 0..ow {
+                                let row = (ni * oh + oh_i) * ow + ow_i;
+                                let v = (acc[row * c_out + o] as f32) * composite + y_zp;
+                                let dst = ((ni * c_out + o) * oh + oh_i) * ow + ow_i;
+                                out[dst] = v.round().clamp(-128.0, 127.0);
+                            }
+                        }
+                    }
+                }
+                let out_t = Tensor::from_vec(vec![n_n, c_out, oh, ow], out).map_err(|e| {
+                    OnnxError::DecodeFailed {
+                        message: e.to_string(),
+                    }
+                })?;
+                env.insert(node.outputs[0].clone(), out_t);
+                return Ok(());
+            }
+        }
+    }
+
     let deq_x: Vec<f32> = x.data().iter().map(|&v| (v - x_zp) * x_scale).collect();
     let deq_w: Vec<f32> = w.data().iter().map(|&v| (v - w_zp) * w_scale).collect();
 
@@ -1295,6 +1411,105 @@ pub(super) fn exec_conv_integer(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     } else {
         0.0
     };
+
+    // Symmetric int8 fast path: NCHW input + OIHW weight + group=1 +
+    // dilations=[1,1] + zero-points 0 → integer im2col + GEMM, no
+    // requantize (ConvInteger output is raw int32). Same gate / layout
+    // checks as `exec_qlinear_conv`.
+    if x_zp == 0.0 && w_zp == 0.0 && x.shape().len() == 4 && w.shape().len() == 4 {
+        let group = crate::runner::get_attr_int(node, "group").unwrap_or(1);
+        let dilations =
+            crate::runner::get_attr_ints(node, "dilations").unwrap_or_else(|| vec![1, 1]);
+        if group == 1 && dilations == [1, 1] {
+            let pads =
+                crate::runner::get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+            let strides =
+                crate::runner::get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
+            let xs = x.shape();
+            let ws = w.shape();
+            let (n_n, c_in, ih, iw) = (xs[0], xs[1], xs[2], xs[3]);
+            let (c_out, _, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
+            if ws[1] == c_in && pads.len() == 4 && strides.len() == 2 {
+                let (pt, pl, pb, pr) = (
+                    pads[0] as usize,
+                    pads[1] as usize,
+                    pads[2] as usize,
+                    pads[3] as usize,
+                );
+                let (sh, sw) = (strides[0] as usize, strides[1] as usize);
+                let oh = (ih + pt + pb - kh) / sh + 1;
+                let ow = (iw + pl + pr - kw) / sw + 1;
+                let m = n_n * oh * ow;
+                let k_dim = c_in * kh * kw;
+
+                let x_data = x.data();
+                let mut x_im2col: Vec<i8> = vec![0; m * k_dim];
+                for ni in 0..n_n {
+                    for oh_i in 0..oh {
+                        for ow_i in 0..ow {
+                            let row = (ni * oh + oh_i) * ow + ow_i;
+                            for ci in 0..c_in {
+                                for ky in 0..kh {
+                                    for kx in 0..kw {
+                                        let ih_i = oh_i * sh + ky;
+                                        let iw_i = ow_i * sw + kx;
+                                        let col = (ci * kh + ky) * kw + kx;
+                                        let idx = row * k_dim + col;
+                                        if ih_i >= pt
+                                            && ih_i < pt + ih
+                                            && iw_i >= pl
+                                            && iw_i < pl + iw
+                                        {
+                                            let h = ih_i - pt;
+                                            let v = iw_i - pl;
+                                            let src = ((ni * c_in + ci) * ih + h) * iw + v;
+                                            x_im2col[idx] = x_data[src] as i8;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let w_data = w.data();
+                let mut w_packed: Vec<i8> = vec![0; k_dim * c_out];
+                for o in 0..c_out {
+                    for ci in 0..c_in {
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                let src = ((o * c_in + ci) * kh + ky) * kw + kx;
+                                let dst_k = (ci * kh + ky) * kw + kx;
+                                w_packed[dst_k * c_out + o] = w_data[src] as i8;
+                            }
+                        }
+                    }
+                }
+                let mut acc = vec![0_i32; m * c_out];
+                yscv_kernels::int8_matmul_dispatch(&x_im2col, &w_packed, m, k_dim, c_out, &mut acc);
+                // Reshape [M, O] → NCHW [N, O, OH, OW] without requantize
+                // (ConvInteger emits raw i32).
+                let mut out = vec![0.0_f32; n_n * c_out * oh * ow];
+                for ni in 0..n_n {
+                    for o in 0..c_out {
+                        for oh_i in 0..oh {
+                            for ow_i in 0..ow {
+                                let row = (ni * oh + oh_i) * ow + ow_i;
+                                let dst = ((ni * c_out + o) * oh + oh_i) * ow + ow_i;
+                                out[dst] = acc[row * c_out + o] as f32;
+                            }
+                        }
+                    }
+                }
+                let out_t = Tensor::from_vec(vec![n_n, c_out, oh, ow], out).map_err(|e| {
+                    OnnxError::DecodeFailed {
+                        message: e.to_string(),
+                    }
+                })?;
+                env.insert(node.outputs[0].clone(), out_t);
+                return Ok(());
+            }
+        }
+    }
 
     let deq_x: Vec<f32> = x.data().iter().map(|&v| v - x_zp).collect();
     let deq_w: Vec<f32> = w.data().iter().map(|&v| v - w_zp).collect();

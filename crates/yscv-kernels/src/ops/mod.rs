@@ -8,6 +8,8 @@ mod elementwise;
 mod embedding;
 mod first_layer_3x3;
 mod fused_pw_dw_3x3;
+pub mod int4_matmul;
+pub mod int8_matmul;
 mod layout;
 mod matmul;
 mod nchwc_dw3x3;

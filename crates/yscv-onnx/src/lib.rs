@@ -21,7 +21,7 @@ pub use dtype::{OnnxDtype, OnnxTensorData};
 pub use error::OnnxError;
 pub use exporter::{
     OnnxExportAttr, OnnxExportGraph, OnnxExportNode, OnnxExportValueInfo, export_onnx_model,
-    export_onnx_model_to_file,
+    export_onnx_model_to_file, onnx_model_to_export_graph, save_onnx_model_to_file,
 };
 pub use generate::{GenerateConfig, generate};
 pub use loader::{
@@ -32,6 +32,12 @@ pub use optimizer::{
     optimize_onnx_graph,
 };
 pub use quantize::quantize_weights_int4;
+pub use quantize::{CalibrationCollector, CalibrationScope, MinMax};
+pub use quantize::{
+    QuantParams, QuantTarget, derive_asymmetric, derive_symmetric, int4_symmetric_per_channel,
+    int8_asymmetric_per_tensor, int8_symmetric_per_channel, int8_symmetric_per_tensor,
+    rewrite_to_qdq,
+};
 pub use runner::OnnxRunner;
 pub use runner::dump_runner_profile;
 #[cfg(feature = "gpu")]

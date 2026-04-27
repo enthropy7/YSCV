@@ -355,6 +355,10 @@ pub(crate) struct TensorEnv<'m, 'i> {
     next_dynamic: usize,
     /// Reference to model initializers for zero-copy weight access.
     initializers: &'m HashMap<String, Tensor>,
+    /// Side-table of MatMul/Gemm weights packed as symmetric INT4 with
+    /// per-group fp32 scales. Hot-path GEMV dispatch consults this map
+    /// before falling back to the fp32 path.
+    pub(crate) packed_int4_weights: &'m HashMap<String, crate::quantize::PackedInt4Weight>,
     /// Optional borrowed runtime inputs for zero-copy inference entry.
     runtime_inputs: Option<RuntimeInputs<'i>>,
 }
@@ -389,6 +393,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             group_khwc_weights: &model.runtime_index.group_khwc_weight_ids,
             prepacked_weights: &model.runtime_index.prepacked_weights,
             initializers: &model.initializers,
+            packed_int4_weights: &model.packed_int4_weights,
             runtime_inputs,
         }
     }
@@ -449,6 +454,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     /// quantization ops, etc.).
     #[inline]
     pub(crate) fn insert(&mut self, name: String, tensor: Tensor) {
+        crate::quantize::calibrate::record_activation(&name, &tensor);
         if let Some(id) = self.resolve_id(&name) {
             self.slots[id] = Some(tensor);
             if id < self.nhwc_flags.len() {
@@ -463,12 +469,42 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         }
     }
 
+    /// Reverse name lookup for a slot id. O(N) over the static map; only
+    /// invoked when calibration is active. Returns the static name (with
+    /// the model's `'m` lifetime) if present, falling back to dynamic
+    /// names (temporaries like `__qa`).
+    fn name_for_id(&self, id: usize) -> Option<&'m str> {
+        if let Some(name) = self
+            .static_name_to_id
+            .iter()
+            .find_map(|(n, &i)| if i == id { Some(n.as_str()) } else { None })
+        {
+            return Some(name);
+        }
+        // Dynamic names live in `self.dynamic_name_to_id` (owned by the
+        // env, lifetime 'static within this env). They are short-lived
+        // temporaries; record under their name so calibrators can filter.
+        // We can't return the `&str` here without borrowing self mutably
+        // through the dynamic map, so skip dynamic-name records — they
+        // are temporaries (`__qa`, `__qb_mat`) of no interest for PTQ
+        // anyway.
+        let _ = id;
+        None
+    }
+
     /// Session 13 R3: direct slot insertion by pre-resolved ID, skipping
     /// the HashMap lookup inside `resolve_id`. Caller (runner hot path)
     /// passes the slot ID from `node_output_ids` table. Mirrors
     /// `remove_by_id` for output path.
     #[inline]
     pub(crate) fn insert_by_id(&mut self, id: usize, tensor: Tensor) {
+        if crate::quantize::calibrate::calibration_active()
+            && let Some(name) = self.name_for_id(id)
+        {
+            // Static map has lifetime `'m`, so the &str outlives the
+            // following mutable slot write under NLL.
+            crate::quantize::calibrate::record_activation(name, &tensor);
+        }
         if id < self.slots.len() {
             self.slots[id] = Some(tensor);
             if id < self.nhwc_flags.len() {
@@ -529,6 +565,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             prepacked_weights: self.prepacked_weights,
             next_dynamic: self.next_dynamic,
             initializers: self.initializers,
+            packed_int4_weights: self.packed_int4_weights,
             runtime_inputs: self.runtime_inputs,
         }
     }

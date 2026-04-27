@@ -64,6 +64,10 @@ pub use ops::conv2d_nhwc_indirect_padded;
 pub use ops::fused_pw_expand_dw_3x3;
 #[cfg(target_arch = "aarch64")]
 pub use ops::hgemm_6x16_neon;
+pub use ops::int4_matmul::{
+    pack_int4_symmetric_per_group, packed_int4_gemv_dispatch, packed_int4_gemv_scalar,
+};
+pub use ops::int8_matmul::{int8_matmul_dispatch, int8_matmul_scalar};
 pub use ops::quantize::{dequantize_int4_to_f32, quantize_f32_to_int4};
 pub use ops::rope::apply_rotary_embedding;
 pub use ops::{

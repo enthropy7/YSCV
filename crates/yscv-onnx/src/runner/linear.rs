@@ -147,6 +147,44 @@ pub(super) fn exec_fused_transpose_matmul(
 }
 
 pub(super) fn exec_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
+    // Packed-INT4 fast path: weight is in the side-table populated by
+    // `quantize_matmul_weights_int4_packed`. Compute via per-row GEMV
+    // calls — `m_w = N` rows of length K each, output is the dot of
+    // each row with the activation slice of length K.
+    if let Some(packed) = env.packed_int4_weights.get(&node.inputs[1]).cloned() {
+        let a = get_tensor(env, &node.name, &node.inputs[0])?;
+        let a_shape = a.shape();
+        let a_rank = a_shape.len();
+        if a_rank >= 2 && a_shape[a_rank - 1] == packed.k {
+            let m: usize = a_shape[..a_rank - 1].iter().product();
+            let k = packed.k;
+            let n = packed.m_w;
+            let a_data = a.data();
+            let mut out_data = vec![0.0_f32; m * n];
+            for row in 0..m {
+                let act = &a_data[row * k..(row + 1) * k];
+                let dst = &mut out_data[row * n..(row + 1) * n];
+                yscv_kernels::packed_int4_gemv_dispatch(
+                    &packed.packed,
+                    &packed.scales,
+                    act,
+                    dst,
+                    n,
+                    k,
+                    packed.group_size,
+                );
+            }
+            let mut out_shape: Vec<usize> = a_shape[..a_rank - 1].to_vec();
+            out_shape.push(n);
+            let out =
+                Tensor::from_vec(out_shape, out_data).map_err(|e| OnnxError::DecodeFailed {
+                    message: e.to_string(),
+                })?;
+            env.insert(node.outputs[0].clone(), out);
+            return Ok(());
+        }
+    }
+
     let a = get_tensor(env, &node.name, &node.inputs[0])?;
     let b = get_tensor(env, &node.name, &node.inputs[1])?;
 
@@ -263,6 +301,36 @@ pub(super) fn exec_qlinear_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Resul
     let b_zp = get_tensor(env, &node.name, &node.inputs[5])?.data()[0];
     let y_scale = get_tensor(env, &node.name, &node.inputs[6])?.data()[0];
     let y_zp = get_tensor(env, &node.name, &node.inputs[7])?.data()[0];
+
+    // Symmetric fast path: both zero-points are 0, inputs are clean i8.
+    // Pure dot-product via the SIMD kernel; final requantize folds the
+    // composite scale `(a_scale * b_scale) / y_scale` and the output
+    // zero-point. Works only on rank-2 (M,K)·(K,N) — higher-rank batched
+    // matmuls fall through to the f32 reference below.
+    if a_zp == 0.0
+        && b_zp == 0.0
+        && a.shape().len() == 2
+        && b.shape().len() == 2
+        && a.shape()[1] == b.shape()[0]
+    {
+        let m = a.shape()[0];
+        let k = a.shape()[1];
+        let n = b.shape()[1];
+        let a_i8: Vec<i8> = a.data().iter().map(|&v| v as i8).collect();
+        let b_i8: Vec<i8> = b.data().iter().map(|&v| v as i8).collect();
+        let mut acc = vec![0_i32; m * n];
+        yscv_kernels::int8_matmul_dispatch(&a_i8, &b_i8, m, k, n, &mut acc);
+        let composite = (a_scale * b_scale) / y_scale;
+        let quant: Vec<f32> = acc
+            .iter()
+            .map(|&v| ((v as f32) * composite + y_zp).round().clamp(-128.0, 127.0))
+            .collect();
+        let out = Tensor::from_vec(vec![m, n], quant).map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+        env.insert(node.outputs[0].clone(), out);
+        return Ok(());
+    }
 
     let deq_a: Vec<f32> = a.data().iter().map(|&v| (v - a_zp) * a_scale).collect();
     let deq_b: Vec<f32> = b.data().iter().map(|&v| (v - b_zp) * b_scale).collect();
@@ -430,6 +498,30 @@ pub(super) fn exec_matmul_integer(node: &OnnxNode, env: &mut TensorEnv) -> Resul
     } else {
         0.0
     };
+
+    // Symmetric int8 fast path — no zero-point subtraction needed,
+    // output is the raw int32 dot stored as f32 (MatMulInteger has no
+    // requantize step). Rank-2 with matching K only.
+    if a_zp == 0.0
+        && b_zp == 0.0
+        && a.shape().len() == 2
+        && b.shape().len() == 2
+        && a.shape()[1] == b.shape()[0]
+    {
+        let m = a.shape()[0];
+        let k = a.shape()[1];
+        let n = b.shape()[1];
+        let a_i8: Vec<i8> = a.data().iter().map(|&v| v as i8).collect();
+        let b_i8: Vec<i8> = b.data().iter().map(|&v| v as i8).collect();
+        let mut acc = vec![0_i32; m * n];
+        yscv_kernels::int8_matmul_dispatch(&a_i8, &b_i8, m, k, n, &mut acc);
+        let out_data: Vec<f32> = acc.iter().map(|&v| v as f32).collect();
+        let out = Tensor::from_vec(vec![m, n], out_data).map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+        env.insert(node.outputs[0].clone(), out);
+        return Ok(());
+    }
 
     let deq_a: Vec<f32> = a.data().iter().map(|&v| v - a_zp).collect();
     let deq_b: Vec<f32> = b.data().iter().map(|&v| v - b_zp).collect();

@@ -252,6 +252,11 @@ pub struct OnnxModel {
     pub(crate) dw_khwc_weights: HashSet<String>,
     /// Grouped conv weight names pre-permuted [O,I/G,KH,KW] → [O,KH,KW,I/G] at load time.
     pub(crate) group_khwc_weights: HashSet<String>,
+    /// MatMul/Gemm weights packed to INT4 with per-group fp32 scales for
+    /// the LLM decode hot path. Keyed by the original initializer name;
+    /// the original `initializers` entry is removed when a weight is
+    /// packed so dispatch routes through `packed_int4_gemv_dispatch`.
+    pub(crate) packed_int4_weights: HashMap<String, crate::quantize::PackedInt4Weight>,
     /// Precomputed runtime metadata for fast per-inference environment setup.
     pub(crate) runtime_index: RuntimeModelIndex,
 }
@@ -514,6 +519,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         khwc_weights,
         dw_khwc_weights,
         group_khwc_weights,
+        packed_int4_weights: HashMap::new(),
         runtime_index,
     })
 }

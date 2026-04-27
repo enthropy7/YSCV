@@ -10,7 +10,7 @@ and PR workflow.
 
 ## Architecture
 
-17 library crates, 2 apps, 1 examples crate.
+18 library crates, 2 apps, 1 examples crate.
 
 ```
 yscv (umbrella re-export)

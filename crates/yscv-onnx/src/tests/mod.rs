@@ -1,3 +1,4 @@
+mod calibration;
 mod conv_pool;
 mod dynamic_shapes;
 mod elementwise;
@@ -8,6 +9,7 @@ mod integration;
 mod loader;
 mod normalization;
 mod optimizer;
+mod qlinear;
 mod reshape;
 
 use prost::Message;

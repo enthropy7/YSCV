@@ -2910,6 +2910,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "yscv-quantize-cli"
+version = "0.1.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "yscv-onnx",
+ "yscv-tensor",
+]
+
+[[package]]
 name = "yscv-recognize"
 version = "0.1.8"
 dependencies = [

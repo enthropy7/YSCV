@@ -11,7 +11,7 @@ need. Each section is ~5 minutes; each builds on the previous one.
 ## What is yscv?
 
 A **pure-Rust computer-vision and ML framework**. Single workspace,
-17 crates, zero Python or C++ runtime dependencies. Compiles to one
+18 crates, zero Python or C++ runtime dependencies. Compiles to one
 statically-linked binary that runs the same way on a Mac dev box, a
 Linux server, and a Rockchip drone board.
 

@@ -34,7 +34,7 @@ let outputs = runner.run(&[("images", &input)])?;
 - **Pointwise 1×1 fast path**: 1×1 stride-1 convolutions bypass the im2col+conv loop — reshaped directly to `[N*H*W, C_in] × [C_in, C_out]` matmul with fused bias+activation
 - **Depthwise activation fusion**: ReLU fused into depthwise SIMD store (AVX+FMA, AVX, SSE, NEON) — eliminates separate activation pass
 - **Bias preload**: bias vectors for common channel counts (16, 24) preloaded into SIMD registers before the row loop, eliminating per-row memory accesses
-- **Quantization**: INT4 weight-only (`quantize_weights_int4`) + INT8 symmetric/asymmetric/per-channel inference support
+- **Quantization**: INT4 weight-only (`quantize_weights_int4`) + INT8 symmetric/asymmetric/per-channel inference support; per-tensor activation-statistics collection for PTQ via `CalibrationCollector` (install a `CalibrationScope` before running inference, read aggregated min/max with `snapshot()`); `MinMax → QuantParams` derivation in `quantize::derive` (asymmetric uint8 / symmetric int8 / per-channel int8 / per-channel int4)
 - **LLM inference**: autoregressive `generate()` with KV-cache, top-k/top-p sampling, temperature, repetition penalty; RoPE and GroupQueryAttention for decoder-only transformers
 - **GPU inference**: wgpu (Vulkan/Metal/DX12) and native Metal/MPSGraph plan compiler with triple-buffered pipelined `submit`/`wait` API (multi-input models, f16 end-to-end, zero-alloc hot path, ~20 op kinds, automatic CPU fallback for unsupported subgraphs)
 - **Model export**: save optimized graphs back to ONNX format
