@@ -2854,6 +2854,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "yscv-llm-bench"
+version = "0.1.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "yscv-onnx",
+ "yscv-tensor",
+]
+
+[[package]]
 name = "yscv-model"
 version = "0.1.8"
 dependencies = [
