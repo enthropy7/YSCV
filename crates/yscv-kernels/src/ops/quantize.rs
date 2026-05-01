@@ -94,6 +94,104 @@ pub fn quantize_f32_to_int4(data: &[f32], scale: f32, zero_point: i8, output: &m
         });
 }
 
+/// Quantize f32 values to ONNX-style f32 storage containing rounded int8 values.
+///
+/// This matches the existing runner representation for `QuantizeLinear`:
+/// integer payloads are carried in `Tensor<f32>` and later consumed by QLinear
+/// kernels as signed int8 values.
+#[allow(unsafe_code)]
+#[inline]
+pub fn quantize_linear_f32_to_f32_i8_dispatch(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [f32],
+) {
+    debug_assert_eq!(data.len(), output.len());
+
+    if cfg!(miri) {
+        quantize_linear_f32_to_f32_i8_scalar(data, scale, zero_point, output);
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx512f") {
+            unsafe {
+                quantize_linear_f32_to_f32_i8_avx512(data, scale, zero_point, output);
+            }
+            return;
+        }
+        if std::is_x86_feature_detected!("avx2") {
+            unsafe {
+                quantize_linear_f32_to_f32_i8_avx2(data, scale, zero_point, output);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                quantize_linear_f32_to_f32_i8_neon(data, scale, zero_point, output);
+            }
+            return;
+        }
+    }
+
+    quantize_linear_f32_to_f32_i8_scalar(data, scale, zero_point, output);
+}
+
+/// Quantize f32 values directly into signed INT8 storage.
+///
+/// This is the runtime representation used by `yscv-onnx` for internal
+/// QLinear activation edges: once an activation enters the quant domain it
+/// should not bounce through f32-valued integer tensors.
+#[allow(unsafe_code)]
+#[inline]
+pub fn quantize_linear_f32_to_i8_dispatch(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [i8],
+) {
+    debug_assert_eq!(data.len(), output.len());
+
+    if cfg!(miri) {
+        quantize_linear_f32_to_i8_scalar(data, scale, zero_point, output);
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx512f") {
+            unsafe {
+                quantize_linear_f32_to_i8_avx512(data, scale, zero_point, output);
+            }
+            return;
+        }
+        if std::is_x86_feature_detected!("avx2") {
+            unsafe {
+                quantize_linear_f32_to_i8_avx2(data, scale, zero_point, output);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe {
+                quantize_linear_f32_to_i8_neon(data, scale, zero_point, output);
+            }
+            return;
+        }
+    }
+
+    quantize_linear_f32_to_i8_scalar(data, scale, zero_point, output);
+}
+
 // ---------------------------------------------------------------------------
 // Scalar fallback
 // ---------------------------------------------------------------------------
@@ -119,6 +217,297 @@ fn dequantize_int4_to_f32_scalar(packed: &[u8], scale: f32, zero_point: i8, outp
         output[i * 2] = (nibble_lo(byte) as f32 - zp) * scale;
         output[i * 2 + 1] = (nibble_hi(byte) as f32 - zp) * scale;
     });
+}
+
+#[inline]
+pub fn quantize_linear_f32_to_f32_i8_scalar(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [f32],
+) {
+    debug_assert_eq!(data.len(), output.len());
+    for (out, &v) in output.iter_mut().zip(data) {
+        *out = (v / scale + zero_point).round().clamp(-128.0, 127.0);
+    }
+}
+
+#[inline]
+pub fn quantize_linear_f32_to_i8_scalar(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [i8],
+) {
+    debug_assert_eq!(data.len(), output.len());
+    for (out, &v) in output.iter_mut().zip(data) {
+        *out = (v / scale + zero_point).round().clamp(-128.0, 127.0) as i8;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code)]
+unsafe fn quantize_linear_f32_to_f32_i8_avx512(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+
+    unsafe {
+        let scale_v = _mm512_set1_ps(scale);
+        let zp = _mm512_set1_ps(zero_point);
+        let half = _mm512_set1_ps(0.5);
+        let lo = _mm512_set1_ps(-128.0);
+        let hi = _mm512_set1_ps(127.0);
+        let sign_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MIN));
+        let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MAX));
+
+        let chunks = data.len() / 16;
+        for i in 0..chunks {
+            let off = i * 16;
+            let x = _mm512_add_ps(
+                _mm512_div_ps(_mm512_loadu_ps(data.as_ptr().add(off)), scale_v),
+                zp,
+            );
+            let sign = _mm512_and_ps(x, sign_mask);
+            let abs = _mm512_and_ps(x, abs_mask);
+            let rounded_abs = _mm512_roundscale_ps::<{ _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC }>(
+                _mm512_add_ps(abs, half),
+            );
+            let rounded = _mm512_or_ps(rounded_abs, sign);
+            let clamped = _mm512_min_ps(_mm512_max_ps(rounded, lo), hi);
+            _mm512_storeu_ps(output.as_mut_ptr().add(off), clamped);
+        }
+    }
+    let chunks = data.len() / 16;
+    quantize_linear_f32_to_f32_i8_scalar(
+        &data[chunks * 16..],
+        scale,
+        zero_point,
+        &mut output[chunks * 16..],
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code)]
+unsafe fn quantize_linear_f32_to_i8_avx512(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [i8],
+) {
+    use std::arch::x86_64::*;
+
+    unsafe {
+        let scale_v = _mm512_set1_ps(scale);
+        let zp = _mm512_set1_ps(zero_point);
+        let half = _mm512_set1_ps(0.5);
+        let lo = _mm512_set1_ps(-128.0);
+        let hi = _mm512_set1_ps(127.0);
+        let sign_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MIN));
+        let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MAX));
+        let chunks = data.len() / 16;
+        for i in 0..chunks {
+            let off = i * 16;
+            let x = _mm512_add_ps(
+                _mm512_div_ps(_mm512_loadu_ps(data.as_ptr().add(off)), scale_v),
+                zp,
+            );
+            let sign = _mm512_and_ps(x, sign_mask);
+            let abs = _mm512_and_ps(x, abs_mask);
+            let rounded_abs = _mm512_roundscale_ps::<{ _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC }>(
+                _mm512_add_ps(abs, half),
+            );
+            let rounded = _mm512_or_ps(rounded_abs, sign);
+            let clamped = _mm512_min_ps(_mm512_max_ps(rounded, lo), hi);
+            let i32s = _mm512_cvtps_epi32(clamped);
+            let i8s = _mm512_cvtsepi32_epi8(i32s);
+            _mm_storeu_si128(output.as_mut_ptr().add(off).cast::<__m128i>(), i8s);
+        }
+    }
+    let chunks = data.len() / 16;
+    quantize_linear_f32_to_i8_scalar(
+        &data[chunks * 16..],
+        scale,
+        zero_point,
+        &mut output[chunks * 16..],
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_code)]
+unsafe fn quantize_linear_f32_to_f32_i8_avx2(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+
+    unsafe {
+        let scale_v = _mm256_set1_ps(scale);
+        let zp = _mm256_set1_ps(zero_point);
+        let half = _mm256_set1_ps(0.5);
+        let lo = _mm256_set1_ps(-128.0);
+        let hi = _mm256_set1_ps(127.0);
+        let sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MIN));
+        let abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MAX));
+
+        let chunks = data.len() / 8;
+        for i in 0..chunks {
+            let off = i * 8;
+            let x = _mm256_add_ps(
+                _mm256_div_ps(_mm256_loadu_ps(data.as_ptr().add(off)), scale_v),
+                zp,
+            );
+            let sign = _mm256_and_ps(x, sign_mask);
+            let abs = _mm256_and_ps(x, abs_mask);
+            let rounded_abs = _mm256_floor_ps(_mm256_add_ps(abs, half));
+            let rounded = _mm256_or_ps(rounded_abs, sign);
+            let clamped = _mm256_min_ps(_mm256_max_ps(rounded, lo), hi);
+            _mm256_storeu_ps(output.as_mut_ptr().add(off), clamped);
+        }
+    }
+    let chunks = data.len() / 8;
+    quantize_linear_f32_to_f32_i8_scalar(
+        &data[chunks * 8..],
+        scale,
+        zero_point,
+        &mut output[chunks * 8..],
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_code)]
+unsafe fn quantize_linear_f32_to_i8_avx2(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [i8],
+) {
+    use std::arch::x86_64::*;
+
+    unsafe {
+        let scale_v = _mm256_set1_ps(scale);
+        let zp = _mm256_set1_ps(zero_point);
+        let half = _mm256_set1_ps(0.5);
+        let lo = _mm256_set1_ps(-128.0);
+        let hi = _mm256_set1_ps(127.0);
+        let sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MIN));
+        let abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MAX));
+        let chunks = data.len() / 8;
+        for i in 0..chunks {
+            let off = i * 8;
+            let x = _mm256_add_ps(
+                _mm256_div_ps(_mm256_loadu_ps(data.as_ptr().add(off)), scale_v),
+                zp,
+            );
+            let sign = _mm256_and_ps(x, sign_mask);
+            let abs = _mm256_and_ps(x, abs_mask);
+            let rounded_abs = _mm256_floor_ps(_mm256_add_ps(abs, half));
+            let rounded = _mm256_or_ps(rounded_abs, sign);
+            let clamped = _mm256_min_ps(_mm256_max_ps(rounded, lo), hi);
+            let i32s = _mm256_cvtps_epi32(clamped);
+            let lo128 = _mm256_castsi256_si128(i32s);
+            let hi128 = _mm256_extracti128_si256::<1>(i32s);
+            let i16s = _mm_packs_epi32(lo128, hi128);
+            let i8s = _mm_packs_epi16(i16s, _mm_setzero_si128());
+            _mm_storel_epi64(output.as_mut_ptr().add(off).cast::<__m128i>(), i8s);
+        }
+    }
+    let chunks = data.len() / 8;
+    quantize_linear_f32_to_i8_scalar(
+        &data[chunks * 8..],
+        scale,
+        zero_point,
+        &mut output[chunks * 8..],
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code)]
+unsafe fn quantize_linear_f32_to_f32_i8_neon(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [f32],
+) {
+    use std::arch::aarch64::*;
+
+    unsafe {
+        let scale_v = vdupq_n_f32(scale);
+        let zp = vdupq_n_f32(zero_point);
+        let half = vdupq_n_f32(0.5);
+        let zero = vdupq_n_f32(0.0);
+        let lo = vdupq_n_f32(-128.0);
+        let hi = vdupq_n_f32(127.0);
+
+        let chunks = data.len() / 4;
+        for i in 0..chunks {
+            let off = i * 4;
+            let x = vaddq_f32(vdivq_f32(vld1q_f32(data.as_ptr().add(off)), scale_v), zp);
+            let rounded_abs = vrndmq_f32(vaddq_f32(vabsq_f32(x), half));
+            let rounded = vbslq_f32(vcltq_f32(x, zero), vnegq_f32(rounded_abs), rounded_abs);
+            let clamped = vminq_f32(vmaxq_f32(rounded, lo), hi);
+            vst1q_f32(output.as_mut_ptr().add(off), clamped);
+        }
+    }
+    let chunks = data.len() / 4;
+    quantize_linear_f32_to_f32_i8_scalar(
+        &data[chunks * 4..],
+        scale,
+        zero_point,
+        &mut output[chunks * 4..],
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code)]
+unsafe fn quantize_linear_f32_to_i8_neon(
+    data: &[f32],
+    scale: f32,
+    zero_point: f32,
+    output: &mut [i8],
+) {
+    use std::arch::aarch64::*;
+
+    unsafe {
+        let scale_v = vdupq_n_f32(scale);
+        let zp = vdupq_n_f32(zero_point);
+        let half = vdupq_n_f32(0.5);
+        let zero = vdupq_n_f32(0.0);
+        let lo = vdupq_n_f32(-128.0);
+        let hi = vdupq_n_f32(127.0);
+        let mut tmp = [0.0_f32; 4];
+
+        let chunks = data.len() / 4;
+        for i in 0..chunks {
+            let off = i * 4;
+            let x = vaddq_f32(vdivq_f32(vld1q_f32(data.as_ptr().add(off)), scale_v), zp);
+            let rounded_abs = vrndmq_f32(vaddq_f32(vabsq_f32(x), half));
+            let rounded = vbslq_f32(vcltq_f32(x, zero), vnegq_f32(rounded_abs), rounded_abs);
+            let clamped = vminq_f32(vmaxq_f32(rounded, lo), hi);
+            vst1q_f32(tmp.as_mut_ptr(), clamped);
+            for j in 0..4 {
+                output[off + j] = tmp[j] as i8;
+            }
+        }
+    }
+    let chunks = data.len() / 4;
+    quantize_linear_f32_to_i8_scalar(
+        &data[chunks * 4..],
+        scale,
+        zero_point,
+        &mut output[chunks * 4..],
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -405,5 +794,49 @@ mod tests {
         assert!((out[0] - 1.0).abs() < 1e-6);
         assert!((out[1] - 2.0).abs() < 1e-6);
         assert!((out[2] - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quantize_linear_f32_to_f32_i8_matches_scalar() {
+        let data: Vec<f32> = (0..257)
+            .map(|i| ((i as f32 * 0.37).sin() * 40.0) + (i % 7) as f32 * 0.11)
+            .collect();
+        let scale = 3.25;
+        let zp = -2.0;
+        let mut expected = vec![0.0; data.len()];
+        let mut got = vec![0.0; data.len()];
+        quantize_linear_f32_to_f32_i8_scalar(&data, scale, zp, &mut expected);
+        quantize_linear_f32_to_f32_i8_dispatch(&data, scale, zp, &mut got);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn quantize_linear_f32_to_i8_matches_scalar() {
+        let data: Vec<f32> = (0..257)
+            .map(|i| ((i as f32 * 0.37).sin() * 40.0) + (i % 7) as f32 * 0.11)
+            .collect();
+        let scale = 3.25;
+        let zp = -2.0;
+        let mut expected = vec![0_i8; data.len()];
+        let mut got = vec![0_i8; data.len()];
+        quantize_linear_f32_to_i8_scalar(&data, scale, zp, &mut expected);
+        quantize_linear_f32_to_i8_dispatch(&data, scale, zp, &mut got);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn quantize_linear_f32_to_f32_i8_rounds_away_and_clamps() {
+        let data = [-1000.0, -1.5, -0.5, 0.49, 0.5, 1.5, 1000.0];
+        let mut out = [0.0; 7];
+        quantize_linear_f32_to_f32_i8_dispatch(&data, 1.0, 0.0, &mut out);
+        assert_eq!(out, [-128.0, -2.0, -1.0, 0.0, 1.0, 2.0, 127.0]);
+    }
+
+    #[test]
+    fn quantize_linear_f32_to_i8_rounds_away_and_clamps() {
+        let data = [-1000.0, -1.5, -0.5, 0.49, 0.5, 1.5, 1000.0];
+        let mut out = [0_i8; 7];
+        quantize_linear_f32_to_i8_dispatch(&data, 1.0, 0.0, &mut out);
+        assert_eq!(out, [-128, -2, -1, 0, 1, 2, 127]);
     }
 }

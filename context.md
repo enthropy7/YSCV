@@ -27,7 +27,7 @@ yscv (umbrella re-export)
 ├── yscv-recognize       ← Cosine matching, VP-Tree ANN
 ├── yscv-track           ← DeepSORT, ByteTrack, Kalman
 ├── yscv-eval            ← Metrics, 8 dataset adapters
-├── yscv-onnx            ← 121-op ONNX runtime, INT4/INT8 quantization, GPU, Metal, KV-cache, generation
+├── yscv-onnx            ← 122-op ONNX runtime, INT4/INT8 quantization (incl. fused PW->DW + DW->PW chain actions with SIMD requant epilogue), GPU, Metal, KV-cache, generation
 ├── yscv-pipeline        ← Pipeline framework: ONNX/Metal/RKNN dispatch, TOML config
 └── yscv-cli             ← Inference CLI, camera diagnostics
 ```
@@ -37,7 +37,8 @@ yscv (umbrella re-export)
 | Metric | Value |
 |--------|-------|
 | Tests | **1,807** |
-| ONNX operators | **121** |
+| ONNX operators | **122** |
+| Tensor methods | **159** |
 | Imgproc ops | **160** |
 | Model architectures | **17** |
 | WGSL + Metal shaders | **61 + 4** |

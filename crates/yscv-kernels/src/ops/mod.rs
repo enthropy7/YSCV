@@ -9,7 +9,11 @@ mod embedding;
 mod first_layer_3x3;
 mod fused_pw_dw_3x3;
 pub mod int4_matmul;
+pub mod int8_depthwise;
+pub mod int8_fused_dw_pw_3x3;
+pub mod int8_fused_pw_dw_3x3;
 pub mod int8_matmul;
+mod int8_requant;
 mod layout;
 mod matmul;
 mod nchwc_dw3x3;
@@ -71,6 +75,14 @@ pub use elementwise::{
 };
 pub use embedding::{dropout, embedding_lookup};
 pub use fused_pw_dw_3x3::fused_pw_expand_dw_3x3;
+pub use int8_depthwise::{
+    Depthwise3x3I8Params, DepthwiseI8Params, depthwise_i8_i32_nchw_khwc_dispatch,
+    depthwise_i8_i32_nchw_khwc_scalar, depthwise_i8_i32_nhwc_dispatch,
+    depthwise_i8_i32_nhwc_scalar, depthwise3x3_i8_i32_nhwc_dispatch,
+    depthwise3x3_i8_i32_nhwc_scalar,
+};
+pub use int8_fused_dw_pw_3x3::{Int8FusedDwPwParams, int8_fused_dw_pw_dispatch};
+pub use int8_fused_pw_dw_3x3::{Int8FusedPwDwParams, int8_fused_pw_dw_dispatch};
 pub use layout::{nchw_to_nchwc, nchw_to_nhwc_fast, nchwc_to_nchw, nchwc_to_nhwc, nhwc_to_nchwc};
 pub use matmul::matmul_2d_with_config_and_pool;
 pub use nchwc_dw3x3::conv2d_nchwc_dw3x3_s1_same_pad;

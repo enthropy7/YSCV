@@ -444,6 +444,8 @@ fn build_onnx_graph(
         initializers,
         inputs,
         outputs,
+        opset_version: 13,
+        int64_initializers: Vec::new(),
     })
 }
 

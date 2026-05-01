@@ -259,6 +259,33 @@ impl CalibrationCollector {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Push a slice of f32 activation values directly into the
+    /// per-tensor stats (and histogram, if enabled). Bypasses the
+    /// `scope`/runner hook — useful for offline calibration with
+    /// pre-recorded activations or for synthetic accuracy harnesses
+    /// that want to compare derivation strategies without running
+    /// inference.
+    pub fn record(&self, name: &str, values: &[f32]) {
+        {
+            let mut map = self
+                .inner
+                .per_tensor
+                .lock()
+                .expect("calibration map mutex poisoned");
+            map.entry(name.to_string()).or_default().update(values);
+        }
+        if self.inner.histogram_enabled.load(Ordering::Acquire) {
+            let mut hmap = self
+                .inner
+                .histograms
+                .lock()
+                .expect("calibration histograms mutex poisoned");
+            hmap.entry(name.to_string())
+                .or_insert_with(Histogram::new)
+                .update(values);
+        }
+    }
 }
 
 /// RAII scope handle that keeps the collector installed. Drop it (let it

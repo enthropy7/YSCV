@@ -34,9 +34,10 @@ pub use optimizer::{
 pub use quantize::quantize_weights_int4;
 pub use quantize::{CalibrationCollector, CalibrationScope, MinMax};
 pub use quantize::{
-    QuantParams, QuantTarget, derive_asymmetric, derive_symmetric, int4_symmetric_per_channel,
+    QuantParams, QuantTarget, derive_asymmetric, derive_symmetric,
+    fold_constant_qdq_weights_for_yscv_fast, int4_symmetric_per_channel,
     int8_asymmetric_per_tensor, int8_symmetric_per_channel, int8_symmetric_per_tensor,
-    rewrite_to_qdq,
+    prune_unused_initializers, rewrite_to_qdq, rewrite_to_qlinear,
 };
 pub use runner::OnnxRunner;
 pub use runner::dump_runner_profile;
@@ -62,6 +63,7 @@ pub use runner::profile_onnx_model_cpu;
 pub use runner::run_onnx_model;
 pub use runner::run_onnx_model_borrowed;
 pub use runner::run_onnx_model_borrowed_slice;
+pub use runner::{QuantRuntimeStats, quant_runtime_stats, reset_quant_runtime_stats};
 
 #[cfg(feature = "metal-backend")]
 pub use runner::metal_runner::{

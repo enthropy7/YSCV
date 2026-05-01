@@ -115,6 +115,28 @@ the fused-epilogue path (`row_gemm_set_parallel_fused`,
 activation) — all the R4 / R7 / R9 / A2 landings in the April arc
 only fire on the non-BLAS branch.
 
+### `YSCV_QUANT_FAST`
+
+`quantize_tracker --format qdq` defaults to `YSCV_QUANT_FAST=1` behavior:
+constant QDQ weight dequantizers are folded into fp32 initializers and QDQ
+pairs between Conv-like nodes are stripped. This keeps the exported tracker
+model runnable while restoring loader-time Conv layout normalisation and weight
+prepacking for yscv benchmarks. Regular, grouped, and depthwise Conv weights
+are exported in standard OIHW quantized form before the yscv-fast cleanup folds
+constant weight DQ nodes for reload; dead quantized tensors/scales are pruned
+after fold/strip. Set `YSCV_QUANT_FAST=0` when debugging the fully explicit
+QDQ graph.
+
+### `YSCV_QUANT_INT8_FAST`
+
+Runtime A/B knob for quantized ONNX execution. By default yscv folds
+matching `DequantizeLinear -> [Relu] -> QuantizeLinear` boundaries into a
+single quant-domain action and records those executions in
+`quant_runtime_stats()`. Set `YSCV_QUANT_INT8_FAST=0` to force the explicit
+Q/DQ boundary path while leaving standard `QLinearConv` / `QLinearMatMul`
+kernels enabled. This is a debug/measurement escape hatch, not a production
+tuning flag.
+
 On Transformer workloads the tradeoff inverts: one big sgemm per
 attention head dominates and `Accelerate` / `MKL` walk all over any
 hand-tuned blocked GEMM.
@@ -491,6 +513,18 @@ Most used knobs:
 - `YSCV_DIRECT_CONV_WORK_MAX=<N>` — direct-3x3 routing threshold.
 - `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` and
   `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` — low-k blocked matmul route.
+
+Symmetric `QLinearConv` depthwise 3x3/5x5 stride-1 nodes, plus measured-win
+stride-2 tracker shapes, route through the multi-arch INT8 depthwise kernel
+automatically. Unsupported QLinear shapes fall back to the portable path, so
+there is no runtime flag for this route.
+VNNI-friendly explicit QLinear pointwise/MatMul weights (`K >= 4`,
+`N % 16 == 0`) are also packed once at model load into the AVX-512 VNNI 4x16
+RHS layout; this is part of the standard runtime index and has no separate
+feature flag. Entry `QuantizeLinear` nodes that produce QLinear activation
+edges write direct i8 side-table tensors via the shared scalar/AVX2/AVX-512F/
+NEON quantizer; x86 paths pack SIMD lanes directly to i8, avoiding the old scalar collection path for real quant-domain
+storage.
 
 Canonical reference (with defaults, scope, and reproduction commands):
 [`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).

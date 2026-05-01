@@ -9,6 +9,7 @@ pub(crate) use yscv_tensor::{DType, Tensor};
 
 pub(crate) use crate::error::OnnxError;
 pub(crate) use crate::loader::{NodeKind, OnnxAttribute, OnnxModel, OnnxNode};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 mod compare;
 mod conv;
@@ -38,6 +39,116 @@ use normalization::*;
 use pooling::*;
 use reduce::*;
 use reshape::*;
+
+static QUANT_QDQ_BOUNDARY_COUNT: AtomicU64 = AtomicU64::new(0);
+static QUANT_LINEAR_CONV_FAST_COUNT: AtomicU64 = AtomicU64::new(0);
+static QUANT_LINEAR_CONV_FALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+static QUANT_LINEAR_MATMUL_FAST_COUNT: AtomicU64 = AtomicU64::new(0);
+static QUANT_LINEAR_MATMUL_FALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+static QUANT_I8_STORE_COUNT: AtomicU64 = AtomicU64::new(0);
+static QUANT_I8_MATERIALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
+static QUANT_CHAIN_EXECUTED_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Process-wide counters for quantized ONNX runtime execution.
+///
+/// These are intentionally coarse and atomic: they are cheap enough to leave
+/// in production builds and make benchmark logs honest about whether a run
+/// actually executed INT8 kernels or silently fell back to fp32.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QuantRuntimeStats {
+    pub qdq_boundaries: u64,
+    pub qlinear_conv_fast: u64,
+    pub qlinear_conv_fallback: u64,
+    pub qlinear_matmul_fast: u64,
+    pub qlinear_matmul_fallback: u64,
+    pub quant_i8_stores: u64,
+    pub quant_i8_materializations: u64,
+    /// Number of times a fused INT8 quant-domain chain (currently
+    /// `QuantizedPwDw`) executed in the runner this run. Each chain
+    /// replaces 2 `QLinearConv` fast-path executions and one QDQ
+    /// boundary fold; tracking it here lets the bench tracker confirm
+    /// the new action actually fires instead of silently falling
+    /// through to the per-op path.
+    pub quant_chain_executed: u64,
+}
+
+pub fn reset_quant_runtime_stats() {
+    QUANT_QDQ_BOUNDARY_COUNT.store(0, Ordering::Relaxed);
+    QUANT_LINEAR_CONV_FAST_COUNT.store(0, Ordering::Relaxed);
+    QUANT_LINEAR_CONV_FALLBACK_COUNT.store(0, Ordering::Relaxed);
+    QUANT_LINEAR_MATMUL_FAST_COUNT.store(0, Ordering::Relaxed);
+    QUANT_LINEAR_MATMUL_FALLBACK_COUNT.store(0, Ordering::Relaxed);
+    QUANT_I8_STORE_COUNT.store(0, Ordering::Relaxed);
+    QUANT_I8_MATERIALIZE_COUNT.store(0, Ordering::Relaxed);
+    QUANT_CHAIN_EXECUTED_COUNT.store(0, Ordering::Relaxed);
+}
+
+pub fn quant_runtime_stats() -> QuantRuntimeStats {
+    QuantRuntimeStats {
+        qdq_boundaries: QUANT_QDQ_BOUNDARY_COUNT.load(Ordering::Relaxed),
+        qlinear_conv_fast: QUANT_LINEAR_CONV_FAST_COUNT.load(Ordering::Relaxed),
+        qlinear_conv_fallback: QUANT_LINEAR_CONV_FALLBACK_COUNT.load(Ordering::Relaxed),
+        qlinear_matmul_fast: QUANT_LINEAR_MATMUL_FAST_COUNT.load(Ordering::Relaxed),
+        qlinear_matmul_fallback: QUANT_LINEAR_MATMUL_FALLBACK_COUNT.load(Ordering::Relaxed),
+        quant_i8_stores: QUANT_I8_STORE_COUNT.load(Ordering::Relaxed),
+        quant_i8_materializations: QUANT_I8_MATERIALIZE_COUNT.load(Ordering::Relaxed),
+        quant_chain_executed: QUANT_CHAIN_EXECUTED_COUNT.load(Ordering::Relaxed),
+    }
+}
+
+#[inline]
+pub(crate) fn quant_int8_fast_enabled() -> bool {
+    std::env::var("YSCV_QUANT_INT8_FAST").as_deref() != Ok("0")
+}
+
+#[inline]
+pub(crate) fn note_quant_qdq_boundary() {
+    QUANT_QDQ_BOUNDARY_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn note_qlinear_conv_fast() {
+    QUANT_LINEAR_CONV_FAST_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn note_qlinear_conv_fallback() {
+    QUANT_LINEAR_CONV_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn note_qlinear_matmul_fast() {
+    QUANT_LINEAR_MATMUL_FAST_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn note_qlinear_matmul_fallback() {
+    QUANT_LINEAR_MATMUL_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn note_quant_i8_store() {
+    QUANT_I8_STORE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn note_quant_i8_materialize() {
+    QUANT_I8_MATERIALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn note_quant_chain_executed() {
+    QUANT_CHAIN_EXECUTED_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct QuantTensor {
+    pub(crate) data: Vec<i8>,
+    pub(crate) shape: Vec<usize>,
+    pub(crate) scale: f32,
+    pub(crate) zero_point: f32,
+    pub(crate) nhwc: bool,
+}
 
 // ---------------------------------------------------------------------------
 // OnnxRunner — reusable inference session with configurable threading
@@ -335,8 +446,10 @@ impl<'m> OnnxRunner<'m> {
 /// mutation is needed (get_mut/remove) is a clone-on-write performed.
 pub(crate) struct TensorEnv<'m, 'i> {
     static_name_to_id: &'m HashMap<String, usize>,
+    use_counts_by_id: &'m [usize],
     dynamic_name_to_id: HashMap<String, usize>,
     slots: Vec<Option<Tensor>>,
+    quant_slots: Vec<Option<QuantTensor>>,
     /// Per-slot flag: true if the tensor is stored in NHWC layout.
     nhwc_flags: Vec<bool>,
     /// Slot IDs whose tensors have been pre-permuted from OIHW to KHWC.
@@ -350,6 +463,13 @@ pub(crate) struct TensorEnv<'m, 'i> {
     /// Conv/MatMul's weight input name and hands the shared `Arc<PackedB>`
     /// straight into the GEMM layer, skipping fingerprint cache + repack.
     prepacked_weights: &'m HashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
+    /// Symmetric-int8 RHS matrices packed once at model load for
+    /// QLinearConv/QLinearMatMul/MatMulInteger fast paths.
+    prepacked_i8_weights: &'m HashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
+    /// QLinear depthwise 3x3/5x5 weights packed once as KHWC i8.
+    prepacked_i8_depthwise: &'m HashMap<String, std::sync::Arc<Vec<i8>>>,
+    scratch_i8_a: Vec<i8>,
+    scratch_i32: Vec<i32>,
     /// Counter for dynamically allocated temporary names that were not in
     /// the pre-built mapping (e.g., "__qa", "__qb_mat").
     next_dynamic: usize,
@@ -385,13 +505,19 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         TensorEnv {
             next_dynamic: num_slots,
             static_name_to_id: &model.runtime_index.name_to_id,
+            use_counts_by_id: &model.runtime_index.use_counts_by_id,
             dynamic_name_to_id: HashMap::new(),
             slots: vec![None; num_slots],
+            quant_slots: vec![None; num_slots],
             nhwc_flags: vec![false; num_slots],
             khwc_weights: &model.runtime_index.khwc_weight_ids,
             dw_khwc_weights: &model.runtime_index.dw_khwc_weight_ids,
             group_khwc_weights: &model.runtime_index.group_khwc_weight_ids,
             prepacked_weights: &model.runtime_index.prepacked_weights,
+            prepacked_i8_weights: &model.runtime_index.prepacked_i8_weights,
+            prepacked_i8_depthwise: &model.runtime_index.prepacked_i8_depthwise,
+            scratch_i8_a: Vec::new(),
+            scratch_i32: Vec::new(),
             initializers: &model.initializers,
             packed_int4_weights: &model.packed_int4_weights,
             runtime_inputs,
@@ -406,6 +532,49 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         self.prepacked_weights
             .get(weight_name)
             .map(|arc| arc.as_ref())
+    }
+
+    #[inline]
+    pub(crate) fn prepacked_i8_b(&self, weight_name: &str) -> Option<&yscv_kernels::PackedI8B> {
+        self.prepacked_i8_weights
+            .get(weight_name)
+            .map(|arc| arc.as_ref())
+    }
+
+    #[inline]
+    pub(crate) fn prepacked_i8_depthwise(
+        &self,
+        weight_name: &str,
+    ) -> Option<std::sync::Arc<Vec<i8>>> {
+        self.prepacked_i8_depthwise
+            .get(weight_name)
+            .map(std::sync::Arc::clone)
+    }
+
+    #[inline]
+    pub(crate) fn take_i8_scratch_a(&mut self, len: usize) -> Vec<i8> {
+        let mut scratch = std::mem::take(&mut self.scratch_i8_a);
+        scratch.resize(len, 0);
+        scratch
+    }
+
+    #[inline]
+    pub(crate) fn put_i8_scratch_a(&mut self, mut scratch: Vec<i8>) {
+        scratch.clear();
+        self.scratch_i8_a = scratch;
+    }
+
+    #[inline]
+    pub(crate) fn take_i32_scratch(&mut self, len: usize) -> Vec<i32> {
+        let mut scratch = std::mem::take(&mut self.scratch_i32);
+        scratch.resize(len, 0);
+        scratch
+    }
+
+    #[inline]
+    pub(crate) fn put_i32_scratch(&mut self, mut scratch: Vec<i32>) {
+        scratch.clear();
+        self.scratch_i32 = scratch;
     }
 
     #[inline]
@@ -443,6 +612,9 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     pub(crate) fn remove_by_id(&mut self, id: usize) {
         if id < self.slots.len() {
             self.slots[id] = None;
+            if id < self.quant_slots.len() {
+                self.quant_slots[id] = None;
+            }
             if id < self.nhwc_flags.len() {
                 self.nhwc_flags[id] = false;
             }
@@ -457,6 +629,9 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         crate::quantize::calibrate::record_activation(&name, &tensor);
         if let Some(id) = self.resolve_id(&name) {
             self.slots[id] = Some(tensor);
+            if id < self.quant_slots.len() {
+                self.quant_slots[id] = None;
+            }
             if id < self.nhwc_flags.len() {
                 self.nhwc_flags[id] = false;
             }
@@ -465,6 +640,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             self.next_dynamic += 1;
             self.dynamic_name_to_id.insert(name, id);
             self.slots.push(Some(tensor));
+            self.quant_slots.push(None);
             self.nhwc_flags.push(false);
         }
     }
@@ -507,6 +683,9 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         }
         if id < self.slots.len() {
             self.slots[id] = Some(tensor);
+            if id < self.quant_slots.len() {
+                self.quant_slots[id] = None;
+            }
             if id < self.nhwc_flags.len() {
                 self.nhwc_flags[id] = false;
             }
@@ -516,10 +695,73 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             // name_to_id which sized slots at construction.
             while self.slots.len() <= id {
                 self.slots.push(None);
+                self.quant_slots.push(None);
                 self.nhwc_flags.push(false);
             }
             self.slots[id] = Some(tensor);
+            self.quant_slots[id] = None;
         }
+    }
+
+    #[inline]
+    pub(crate) fn insert_quant_i8(&mut self, name: String, tensor: QuantTensor) {
+        note_quant_i8_store();
+        if let Some(id) = self.resolve_id(&name) {
+            self.slots[id] = None;
+            if id >= self.quant_slots.len() {
+                self.quant_slots.resize_with(id + 1, || None);
+            }
+            if id >= self.nhwc_flags.len() {
+                self.nhwc_flags.resize(id + 1, false);
+            }
+            self.nhwc_flags[id] = tensor.nhwc;
+            self.quant_slots[id] = Some(tensor);
+        } else {
+            let id = self.next_dynamic;
+            self.next_dynamic += 1;
+            self.dynamic_name_to_id.insert(name, id);
+            self.slots.push(None);
+            self.nhwc_flags.push(tensor.nhwc);
+            self.quant_slots.push(Some(tensor));
+        }
+    }
+
+    #[inline]
+    pub(crate) fn get_quant_i8(&self, name: &str) -> Option<&QuantTensor> {
+        let id = self.resolve_id(name)?;
+        self.quant_slots.get(id).and_then(Option::as_ref)
+    }
+
+    #[inline]
+    pub(crate) fn take_quant_i8(&mut self, name: &str) -> Option<QuantTensor> {
+        let id = self.resolve_id(name)?;
+        if id < self.nhwc_flags.len() {
+            self.nhwc_flags[id] = false;
+        }
+        self.quant_slots.get_mut(id)?.take()
+    }
+
+    #[inline]
+    pub(crate) fn static_use_count(&self, name: &str) -> usize {
+        self.resolve_id(name)
+            .and_then(|id| self.use_counts_by_id.get(id).copied())
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn materialize_quant_i8_raw(&mut self, name: &str) -> Result<(), OnnxError> {
+        let Some(q) = self.get_quant_i8(name).cloned() else {
+            return Ok(());
+        };
+        note_quant_i8_materialize();
+        let data: Vec<f32> = q.data.iter().map(|&v| v as f32).collect();
+        let out = Tensor::from_vec(q.shape, data).map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+        self.insert(name.to_string(), out);
+        if q.nhwc {
+            self.mark_nhwc(name);
+        }
+        Ok(())
     }
 
     /// Session 13 R3: direct slot NHWC mark by ID.
@@ -556,13 +798,19 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     pub(crate) fn fork(&self) -> Self {
         TensorEnv {
             static_name_to_id: self.static_name_to_id,
+            use_counts_by_id: self.use_counts_by_id,
             dynamic_name_to_id: self.dynamic_name_to_id.clone(),
             slots: self.slots.clone(),
+            quant_slots: self.quant_slots.clone(),
             nhwc_flags: self.nhwc_flags.clone(),
             khwc_weights: self.khwc_weights,
             dw_khwc_weights: self.dw_khwc_weights,
             group_khwc_weights: self.group_khwc_weights,
             prepacked_weights: self.prepacked_weights,
+            prepacked_i8_weights: self.prepacked_i8_weights,
+            prepacked_i8_depthwise: self.prepacked_i8_depthwise,
+            scratch_i8_a: Vec::new(),
+            scratch_i32: Vec::new(),
             next_dynamic: self.next_dynamic,
             initializers: self.initializers,
             packed_int4_weights: self.packed_int4_weights,
@@ -579,6 +827,22 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         for id in 0..n {
             if let Some(t) = other.slots[id].take() {
                 self.slots[id] = Some(t);
+                if id < self.quant_slots.len() {
+                    self.quant_slots[id] = None;
+                }
+                if id < self.nhwc_flags.len() && id < other.nhwc_flags.len() {
+                    self.nhwc_flags[id] = other.nhwc_flags[id];
+                }
+            } else if id < other.quant_slots.len()
+                && let Some(q) = other.quant_slots[id].take()
+            {
+                if id >= self.quant_slots.len() {
+                    self.quant_slots.resize_with(id + 1, || None);
+                }
+                self.quant_slots[id] = Some(q);
+                if id < self.slots.len() {
+                    self.slots[id] = None;
+                }
                 if id < self.nhwc_flags.len() && id < other.nhwc_flags.len() {
                     self.nhwc_flags[id] = other.nhwc_flags[id];
                 }
@@ -599,6 +863,9 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         let id = self.resolve_id(name)?;
         if id < self.nhwc_flags.len() {
             self.nhwc_flags[id] = false;
+        }
+        if id < self.quant_slots.len() {
+            self.quant_slots[id] = None;
         }
         self.slots[id]
             .take()
@@ -672,6 +939,14 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         self.dynamic_name_to_id
             .insert(alias_name.to_string(), target_id);
     }
+}
+
+#[inline]
+pub(crate) fn should_use_prepacked_i8_b(m: usize, k: usize, n: usize) -> bool {
+    // For VNNI-friendly tracker pointwise Conv shapes the load-time packed
+    // 4x16 RHS avoids per-inference B packing. The large MatMul gate keeps
+    // the previous prepacked path for LLM/head-like regimes.
+    (m >= 4 && k >= 4 && n.is_multiple_of(16)) || (m <= 64 && k >= 512 && n >= 1024)
 }
 
 /// Convert NHWC tensor to NCHW in-place in the environment.
@@ -804,6 +1079,53 @@ fn is_passthrough_op_with_kind(kind: NodeKind, op_type: &str) -> bool {
 /// Execute a node with automatic NHWC layout management.
 #[inline]
 fn execute_node_with_layout_kind(
+    node: &OnnxNode,
+    env: &mut TensorEnv,
+    kind: NodeKind,
+) -> Result<(), OnnxError> {
+    let trace = std::env::var("YSCV_TRACE_SHAPES")
+        .ok()
+        .filter(|v| v != "0")
+        .is_some();
+    let result = execute_node_with_layout_kind_inner(node, env, kind);
+    if trace && result.is_ok() {
+        let shapes: Vec<String> = node
+            .outputs
+            .iter()
+            .filter(|n| !n.is_empty())
+            .map(|n| {
+                env.get(n)
+                    .map(|t| format!("{:?}", t.shape()))
+                    .unwrap_or_else(|| "?".to_string())
+            })
+            .collect();
+        eprintln!(
+            "[trace] {:>20}  {} -> {}",
+            node.op_type,
+            node.name,
+            shapes.join(", ")
+        );
+    }
+    result.map_err(|e| match e {
+        // Already tagged — pass through unchanged.
+        OnnxError::DecodeFailed { message } if message.starts_with("node ") => {
+            OnnxError::DecodeFailed { message }
+        }
+        other => OnnxError::DecodeFailed {
+            message: format!(
+                "node {} ({}): {other}",
+                if node.name.is_empty() {
+                    node.outputs.first().map(String::as_str).unwrap_or("?")
+                } else {
+                    node.name.as_str()
+                },
+                node.op_type
+            ),
+        },
+    })
+}
+
+fn execute_node_with_layout_kind_inner(
     node: &OnnxNode,
     env: &mut TensorEnv,
     kind: NodeKind,
@@ -1247,6 +1569,9 @@ fn execute_plan_branch(
             NodeAction::FusedDwPw { dw_idx, .. } => *dw_idx,
             NodeAction::FusedPwDw { pw_idx, .. } => *pw_idx,
             NodeAction::FusedTransposeMatMul { matmul_idx, .. } => *matmul_idx,
+            NodeAction::QuantizedQdq { dequant_idx, .. } => *dequant_idx,
+            NodeAction::QuantizedPwDw { pw_idx, .. } => *pw_idx,
+            NodeAction::QuantizedDwPw { dw_idx, .. } => *dw_idx,
             NodeAction::ConvAdd { conv_idx, .. } => *conv_idx,
             NodeAction::NchwcChain { members, .. } => match members.first() {
                 Some(crate::loader::NchwcChainMember::Conv { node_idx, .. }) => *node_idx,
@@ -1671,6 +1996,120 @@ fn execute_plan_branch(
                 exec_fused_transpose_matmul(transpose_node, matmul_node, env)?;
             }
 
+            NodeAction::QuantizedQdq {
+                dequant_idx,
+                relu_idx,
+                quant_idx,
+            } => {
+                let dequant_node = &nodes[*dequant_idx];
+                let quant_node = &nodes[*quant_idx];
+                if !quant_int8_fast_enabled() {
+                    execute_node_with_layout_kind(dequant_node, env, NodeKind::Other)?;
+                    if let Some(ri) = relu_idx {
+                        execute_node_with_layout_kind(&nodes[*ri], env, NodeKind::Relu)?;
+                    }
+                    execute_node_with_layout_kind(quant_node, env, NodeKind::Other)?;
+                    continue;
+                }
+                note_quant_qdq_boundary();
+                let input_name =
+                    dequant_node
+                        .inputs
+                        .first()
+                        .ok_or_else(|| OnnxError::DecodeFailed {
+                            message: format!("{}: missing quantized input", dequant_node.name),
+                        })?;
+                if let Some(mut qt) = env.take_quant_i8(input_name) {
+                    if relu_idx.is_some() {
+                        for v in &mut qt.data {
+                            *v = (*v).max(0);
+                        }
+                    }
+                    qt.scale = quant_node
+                        .inputs
+                        .get(1)
+                        .and_then(|name| env.get(name))
+                        .and_then(|t| t.data().first().copied())
+                        .unwrap_or(qt.scale);
+                    qt.zero_point = quant_node
+                        .inputs
+                        .get(2)
+                        .and_then(|name| env.get(name))
+                        .and_then(|t| t.data().first().copied())
+                        .unwrap_or(qt.zero_point);
+                    env.insert_quant_i8(quant_node.outputs[0].clone(), qt);
+                    continue;
+                }
+                let mut tensor = env
+                    .remove(input_name)
+                    .or_else(|| env.get(input_name).cloned())
+                    .ok_or_else(|| OnnxError::MissingInput {
+                        node: dequant_node.name.clone(),
+                        input: input_name.clone(),
+                    })?;
+                if relu_idx.is_some() {
+                    relu_inplace(&mut tensor);
+                }
+                env.insert(quant_node.outputs[0].clone(), tensor);
+            }
+
+            NodeAction::QuantizedPwDw {
+                pw_idx,
+                dq_idx,
+                relu_idx,
+                q_idx,
+                dw_idx,
+                has_relu,
+            } => {
+                if !quant_int8_fast_enabled() {
+                    // Disabled via env: run the underlying nodes via the
+                    // standard per-op path. Keeps `YSCV_QUANT_INT8_FAST=0`
+                    // a true bitwise reference for the fused chain.
+                    let pw_node = &nodes[*pw_idx];
+                    execute_node_with_layout_kind(pw_node, env, NodeKind::Other)?;
+                    let dq_node = &nodes[*dq_idx];
+                    execute_node_with_layout_kind(dq_node, env, NodeKind::Other)?;
+                    if let Some(ri) = relu_idx {
+                        execute_node_with_layout_kind(&nodes[*ri], env, NodeKind::Relu)?;
+                    }
+                    let q_node = &nodes[*q_idx];
+                    execute_node_with_layout_kind(q_node, env, NodeKind::Other)?;
+                    let dw_node = &nodes[*dw_idx];
+                    execute_node_with_layout_kind(dw_node, env, NodeKind::Other)?;
+                    continue;
+                }
+                let pw_node = &nodes[*pw_idx];
+                let dw_node = &nodes[*dw_idx];
+                exec_quantized_pw_dw(pw_node, dw_node, env, *has_relu)?;
+            }
+
+            NodeAction::QuantizedDwPw {
+                dw_idx,
+                dq_idx,
+                relu_idx,
+                q_idx,
+                pw_idx,
+                has_relu,
+            } => {
+                if !quant_int8_fast_enabled() {
+                    let dw_node = &nodes[*dw_idx];
+                    execute_node_with_layout_kind(dw_node, env, NodeKind::Other)?;
+                    let dq_node = &nodes[*dq_idx];
+                    execute_node_with_layout_kind(dq_node, env, NodeKind::Other)?;
+                    if let Some(ri) = relu_idx {
+                        execute_node_with_layout_kind(&nodes[*ri], env, NodeKind::Relu)?;
+                    }
+                    let q_node = &nodes[*q_idx];
+                    execute_node_with_layout_kind(q_node, env, NodeKind::Other)?;
+                    let pw_node = &nodes[*pw_idx];
+                    execute_node_with_layout_kind(pw_node, env, NodeKind::Other)?;
+                    continue;
+                }
+                let dw_node = &nodes[*dw_idx];
+                let pw_node = &nodes[*pw_idx];
+                exec_quantized_dw_pw(dw_node, pw_node, env, *has_relu)?;
+            }
+
             NodeAction::Generic { node_idx, kind } => {
                 let node = &nodes[*node_idx];
                 execute_node_with_layout_kind(node, env, *kind)?;
@@ -1686,6 +2125,8 @@ fn execute_plan_branch(
                 NodeAction::Conv { .. }
                 | NodeAction::FusedDwPw { .. }
                 | NodeAction::FusedPwDw { .. }
+                | NodeAction::QuantizedPwDw { .. }
+                | NodeAction::QuantizedDwPw { .. }
                 | NodeAction::ConvAdd { .. } => {
                     *conv_ns += elapsed;
                     *conv_count += 1;
@@ -1828,6 +2269,90 @@ fn execute_plan_branch(
                         out_sh,
                     )
                 }
+                NodeAction::QuantizedQdq {
+                    dequant_idx,
+                    relu_idx,
+                    quant_idx,
+                } => {
+                    let d = &nodes[*dequant_idx];
+                    let q = &nodes[*quant_idx];
+                    let sh = q
+                        .outputs
+                        .first()
+                        .and_then(|nm| env.get(nm))
+                        .map(|t| t.shape().to_vec())
+                        .unwrap_or_default();
+                    let op = if relu_idx.is_some() {
+                        "QuantizedRelu"
+                    } else {
+                        "QuantizedQdq"
+                    };
+                    (d.name.clone(), op.to_string(), sh.clone(), sh)
+                }
+                NodeAction::QuantizedPwDw {
+                    pw_idx,
+                    dw_idx,
+                    has_relu,
+                    ..
+                } => {
+                    let pw = &nodes[*pw_idx];
+                    let dw = &nodes[*dw_idx];
+                    let in_sh = pw
+                        .inputs
+                        .first()
+                        .and_then(|nm| env.get(nm))
+                        .map(|t| t.shape().to_vec())
+                        .unwrap_or_default();
+                    let out_sh = dw
+                        .outputs
+                        .first()
+                        .and_then(|nm| env.get(nm))
+                        .map(|t| t.shape().to_vec())
+                        .unwrap_or_default();
+                    let op = if *has_relu {
+                        "QuantizedPwReluDw"
+                    } else {
+                        "QuantizedPwDw"
+                    };
+                    (
+                        format!("{}+{}", pw.name, dw.name),
+                        op.to_string(),
+                        in_sh,
+                        out_sh,
+                    )
+                }
+                NodeAction::QuantizedDwPw {
+                    dw_idx,
+                    pw_idx,
+                    has_relu,
+                    ..
+                } => {
+                    let dw = &nodes[*dw_idx];
+                    let pw = &nodes[*pw_idx];
+                    let in_sh = dw
+                        .inputs
+                        .first()
+                        .and_then(|nm| env.get(nm))
+                        .map(|t| t.shape().to_vec())
+                        .unwrap_or_default();
+                    let out_sh = pw
+                        .outputs
+                        .first()
+                        .and_then(|nm| env.get(nm))
+                        .map(|t| t.shape().to_vec())
+                        .unwrap_or_default();
+                    let op = if *has_relu {
+                        "QuantizedDwReluPw"
+                    } else {
+                        "QuantizedDwPw"
+                    };
+                    (
+                        format!("{}+{}", dw.name, pw.name),
+                        op.to_string(),
+                        in_sh,
+                        out_sh,
+                    )
+                }
                 NodeAction::Generic { node_idx, .. } => {
                     let n = &nodes[*node_idx];
                     let in_sh = n
@@ -1915,6 +2440,54 @@ fn execute_plan_branch(
             NodeAction::ConvAdd {
                 conv_idx, add_idx, ..
             } => &[*conv_idx, *add_idx][..],
+            NodeAction::QuantizedQdq {
+                dequant_idx,
+                relu_idx,
+                quant_idx,
+            } => match relu_idx {
+                Some(ri) => &[*dequant_idx, *ri, *quant_idx][..],
+                None => &[*dequant_idx, *quant_idx][..],
+            },
+            // Fused INT8 chain: the action wraps PW + DQ + (Relu) + Q + DW.
+            // `exec_quantized_pw_dw` consumes PW's inputs internally
+            // (specifically: `take_quant_i8` on PW.inputs[0] when the
+            // refcount is 1), so the outer cleanup must cover the rest
+            // (PW's other inputs — scales/zps/weights/bias — plus DQ, Q,
+            // optional Relu, and DW). Mirrors how `FusedPwDw` only
+            // cleans DW's inputs because the kernel handles PW's
+            // intra-chain output directly.
+            NodeAction::QuantizedPwDw {
+                pw_idx,
+                dq_idx,
+                relu_idx,
+                q_idx,
+                dw_idx,
+                ..
+            } => {
+                covered_dyn = match relu_idx {
+                    Some(ri) => vec![*pw_idx, *dq_idx, *ri, *q_idx, *dw_idx],
+                    None => vec![*pw_idx, *dq_idx, *q_idx, *dw_idx],
+                };
+                &covered_dyn[..]
+            }
+            // Mirror of QuantizedPwDw: `exec_quantized_dw_pw` consumes
+            // DW's first input internally via `take_quant_i8`; the outer
+            // cleanup covers DW's other inputs (scales/zps/weights/bias),
+            // DQ, optional Relu, Q, and PW.
+            NodeAction::QuantizedDwPw {
+                dw_idx,
+                dq_idx,
+                relu_idx,
+                q_idx,
+                pw_idx,
+                ..
+            } => {
+                covered_dyn = match relu_idx {
+                    Some(ri) => vec![*dw_idx, *dq_idx, *ri, *q_idx, *pw_idx],
+                    None => vec![*dw_idx, *dq_idx, *q_idx, *pw_idx],
+                };
+                &covered_dyn[..]
+            }
             NodeAction::NchwcChain { members, .. } => {
                 covered_dyn = members
                     .iter()
@@ -2113,6 +2686,7 @@ fn run_onnx_model_jit(
 
     // Ensure outputs in NCHW
     for name in &model.outputs {
+        env.materialize_quant_i8_raw(name)?;
         ensure_nchw(&mut env, name)?;
     }
     let mut result = HashMap::with_capacity(model.outputs.len());
@@ -2693,6 +3267,7 @@ fn run_onnx_model_sequential(
 
     // Ensure all outputs are in NCHW (ONNX standard layout)
     for name in &model.outputs {
+        env.materialize_quant_i8_raw(name)?;
         ensure_nchw(&mut env, name)?;
     }
 
@@ -2906,6 +3481,7 @@ pub fn profile_onnx_model_cpu(
     }
 
     for name in &model.outputs {
+        env.materialize_quant_i8_raw(name)?;
         ensure_nchw(&mut env, name)?;
     }
 
@@ -3192,6 +3768,7 @@ fn execute_node_inner_slow(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
         "Greater" => exec_cmp(node, env, 1),
         "Less" => exec_cmp(node, env, 2),
         "Where" => exec_where(node, env),
+        "Trilu" => exec_trilu(node, env),
         "ReduceMean" => exec_reduce_mean(node, env),
         "ReduceSum" => exec_reduce_sum(node, env),
         "Split" => exec_split(node, env),

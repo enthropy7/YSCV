@@ -1,6 +1,110 @@
 use super::*;
 
 #[test]
+fn onnx_gather_axis0_2d_multi_index() {
+    // input [3, 4], indices [2] picks rows 2 and 0 → output [2, 4].
+    let input = Tensor::from_vec(
+        vec![3, 4],
+        vec![
+            0.0, 1.0, 2.0, 3.0, // row 0
+            4.0, 5.0, 6.0, 7.0, // row 1
+            8.0, 9.0, 10.0, 11.0, // row 2
+        ],
+    )
+    .unwrap();
+    let indices = Tensor::from_vec(vec![2], vec![2.0, 0.0]).unwrap();
+    let axis = onnx::AttributeProto {
+        name: Some("axis".into()),
+        r#type: Some(2),
+        i: Some(0),
+        ..Default::default()
+    };
+    let out = run_single_op(
+        "Gather",
+        vec![("data", input), ("indices", indices)],
+        vec![],
+        vec![axis],
+        vec!["data", "indices"],
+        "y",
+    );
+    assert_eq!(out.shape(), &[2, 4]);
+    assert_eq!(out.data(), &[8.0, 9.0, 10.0, 11.0, 0.0, 1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn onnx_gather_axis1_with_2d_indices() {
+    // input [2, 3], indices [[2, 0], [1, 2]] → output [2, 2, 2].
+    let input = Tensor::from_vec(vec![2, 3], vec![10.0, 11.0, 12.0, 20.0, 21.0, 22.0]).unwrap();
+    let indices = Tensor::from_vec(vec![2, 2], vec![2.0, 0.0, 1.0, 2.0]).unwrap();
+    let axis = onnx::AttributeProto {
+        name: Some("axis".into()),
+        r#type: Some(2),
+        i: Some(1),
+        ..Default::default()
+    };
+    let out = run_single_op(
+        "Gather",
+        vec![("data", input), ("indices", indices)],
+        vec![],
+        vec![axis],
+        vec!["data", "indices"],
+        "y",
+    );
+    assert_eq!(out.shape(), &[2, 2, 2]);
+    // row 0: [12,10,11,12], row 1: [22,20,21,22].
+    assert_eq!(
+        out.data(),
+        &[12.0, 10.0, 11.0, 12.0, 22.0, 20.0, 21.0, 22.0]
+    );
+}
+
+#[test]
+fn onnx_gather_negative_indices_and_axis() {
+    // axis = -1 (last), negative index wraps.
+    let input = Tensor::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+    let indices = Tensor::from_vec(vec![2], vec![-1.0, 0.0]).unwrap();
+    let axis = onnx::AttributeProto {
+        name: Some("axis".into()),
+        r#type: Some(2),
+        i: Some(-1),
+        ..Default::default()
+    };
+    let out = run_single_op(
+        "Gather",
+        vec![("data", input), ("indices", indices)],
+        vec![],
+        vec![axis],
+        vec!["data", "indices"],
+        "y",
+    );
+    assert_eq!(out.shape(), &[2, 2]);
+    assert_eq!(out.data(), &[3.0, 1.0, 6.0, 4.0]);
+}
+
+#[test]
+fn onnx_gather_embedding_lookup_negative_index() {
+    // axis=0, rank-1 input — embedding-table fast path, with negative idx.
+    let input = Tensor::from_vec(vec![5], vec![10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
+    let indices = Tensor::from_vec(vec![3], vec![-1.0, 0.0, -3.0]).unwrap();
+    let axis = onnx::AttributeProto {
+        name: Some("axis".into()),
+        r#type: Some(2),
+        i: Some(0),
+        ..Default::default()
+    };
+    let out = run_single_op(
+        "Gather",
+        vec![("data", input), ("indices", indices)],
+        vec![],
+        vec![axis],
+        vec!["data", "indices"],
+        "y",
+    );
+    assert_eq!(out.shape(), &[3]);
+    assert_eq!(out.data(), &[50.0, 10.0, 30.0]);
+}
+
+#[test]
 fn onnx_gather_elements_axis0() {
     let input = Tensor::from_vec(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
     let indices = Tensor::from_vec(vec![2, 2], vec![2.0, 0.0, 0.0, 1.0]).unwrap();

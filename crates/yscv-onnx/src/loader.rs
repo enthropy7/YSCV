@@ -75,6 +75,13 @@ pub(crate) struct RuntimeModelIndex {
     /// Same pre-packed weights, but indexed by dense runtime slot id.
     /// Lets hot paths bypass string hashing by using `node_input_ids`.
     pub(crate) prepacked_weights_by_id: Vec<Option<std::sync::Arc<yscv_kernels::PackedB>>>,
+    /// Load-time packed RHS matrices for symmetric-int8 QLinearConv /
+    /// QLinearMatMul / MatMulInteger fast paths. Keyed by the ONNX
+    /// weight tensor input name; shared by every inference.
+    pub(crate) prepacked_i8_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
+    /// QLinear depthwise 3x3/5x5 weights packed once as KHWC i8 so runtime can
+    /// call the NHWC int8 depthwise kernel without per-inference weight repack.
+    pub(crate) prepacked_i8_depthwise: HashMap<String, std::sync::Arc<Vec<i8>>>,
 }
 
 /// Pre-computed Conv parameters parsed once at model load.
@@ -154,6 +161,51 @@ pub(crate) enum NodeAction {
         transpose_idx: usize,
         matmul_idx: usize,
         cleanup_transpose: bool,
+    },
+    /// QLinear boundary cleanup:
+    /// `DequantizeLinear(q, s, 0) -> [Relu] -> QuantizeLinear(_, s, 0)`.
+    /// yscv stores quantized activations as f32 int8 values, so when the
+    /// quant params match we can keep the tensor quantized and optionally
+    /// apply Relu directly in that domain.
+    QuantizedQdq {
+        dequant_idx: usize,
+        relu_idx: Option<usize>,
+        quant_idx: usize,
+    },
+    /// Fused INT8 quant-domain PW → DW chain:
+    /// `QLinearConv(pw 1×1) → DequantizeLinear → [Relu] → QuantizeLinear →
+    /// QLinearConv(dw kxk)` executed as a single kernel call. No fp32
+    /// fallback inside the chain — PW dot stays in VNNI/SDOT/widen, the
+    /// QDQ boundary becomes an i8 requant + clamp, DW reads those i8 bytes
+    /// directly. Bitwise-identical to the unfused per-op execution because
+    /// the boundary fold gate forces `pw_y_zp == dq_zp == q_zp == 0` and
+    /// `dq_scale == q_scale`, the same predicate `QuantizedQdq` already
+    /// uses to fold the boundary.
+    QuantizedPwDw {
+        pw_idx: usize,
+        dq_idx: usize,
+        relu_idx: Option<usize>,
+        q_idx: usize,
+        dw_idx: usize,
+        has_relu: bool,
+    },
+    /// Fused INT8 quant-domain DW → PW chain — the closing pair of an
+    /// inverted bottleneck:
+    /// `QLinearConv(dw kxk) → DequantizeLinear → [Relu] → QuantizeLinear →
+    /// QLinearConv(pw 1×1)` executed as a single kernel call. Same
+    /// boundary-fold gate as `QuantizedPwDw` (zero zero-points everywhere
+    /// except the chain's output `y_zp`, which is PW's here, and matching
+    /// `dq_scale == q_scale`); the kernel reads NHWC i8 input directly,
+    /// requantises in-register at the boundary, and the PW reduction
+    /// consumes the i8 immediately. Bitwise-identical to the unfused
+    /// per-op chain.
+    QuantizedDwPw {
+        dw_idx: usize,
+        dq_idx: usize,
+        relu_idx: Option<usize>,
+        q_idx: usize,
+        pw_idx: usize,
+        has_relu: bool,
     },
     /// Generic op — falls through to full dispatch.
     Generic { node_idx: usize, kind: NodeKind },
@@ -553,6 +605,26 @@ fn convert_tensor_proto(tp: &onnx::TensorProto) -> Result<Tensor, OnnxError> {
                 tp.float_data.clone()
             } else if let Some(ref raw) = tp.raw_data {
                 raw_bytes_to_f32(raw)
+            } else {
+                vec![0.0f32; expected_len]
+            }
+        }
+        // UINT8 = 2
+        2 => {
+            if !tp.int32_data.is_empty() {
+                tp.int32_data.iter().map(|&v| v as u8 as f32).collect()
+            } else if let Some(ref raw) = tp.raw_data {
+                raw.iter().map(|&v| v as f32).collect()
+            } else {
+                vec![0.0f32; expected_len]
+            }
+        }
+        // INT8 = 3
+        3 => {
+            if !tp.int32_data.is_empty() {
+                tp.int32_data.iter().map(|&v| v as i8 as f32).collect()
+            } else if let Some(ref raw) = tp.raw_data {
+                raw.iter().map(|&v| (v as i8) as f32).collect()
             } else {
                 vec![0.0f32; expected_len]
             }
@@ -1070,6 +1142,127 @@ fn build_runtime_index(
         matches!(perm.as_slice(), [0, 2, 1])
     }
 
+    fn init_scalar(initializers: &HashMap<String, Tensor>, name: &str) -> Option<f32> {
+        initializers
+            .get(name)
+            .and_then(|t| t.data().first())
+            .copied()
+    }
+
+    fn matching_zero_qparams(
+        dequant: &OnnxNode,
+        quant: &OnnxNode,
+        initializers: &HashMap<String, Tensor>,
+    ) -> bool {
+        if dequant.inputs.len() < 3 || quant.inputs.len() < 3 {
+            return false;
+        }
+        let Some(dq_scale) = init_scalar(initializers, &dequant.inputs[1]) else {
+            return false;
+        };
+        let Some(q_scale) = init_scalar(initializers, &quant.inputs[1]) else {
+            return false;
+        };
+        let Some(dq_zp) = init_scalar(initializers, &dequant.inputs[2]) else {
+            return false;
+        };
+        let Some(q_zp) = init_scalar(initializers, &quant.inputs[2]) else {
+            return false;
+        };
+        dq_scale.to_bits() == q_scale.to_bits()
+            && dq_zp.to_bits() == 0.0_f32.to_bits()
+            && q_zp.to_bits() == 0.0_f32.to_bits()
+    }
+
+    /// Classify a `QLinearConv` by weight initializer shape into the chain
+    /// roles we currently fuse. Returns `Some("pw")` for 1×1 group-1 PW,
+    /// `Some("dw")` for 3×3/5×5 depthwise (group=c_out=c_in*group), and
+    /// `None` otherwise. Mirrors `bench_tracker::qlinear_conv_kind` so the
+    /// load-time detector and the static counter agree node-for-node.
+    fn qlc_kind(node: &OnnxNode, initializers: &HashMap<String, Tensor>) -> Option<&'static str> {
+        if node.op_type != "QLinearConv" {
+            return None;
+        }
+        let w_name = node.inputs.get(3)?;
+        let weight = initializers.get(w_name)?;
+        let shape = weight.shape();
+        if shape.len() != 4 {
+            return None;
+        }
+        let group = match node.attributes.get("group") {
+            Some(OnnxAttribute::Int(v)) => *v,
+            _ => 1,
+        };
+        let dilations = match node.attributes.get("dilations") {
+            Some(OnnxAttribute::Ints(v)) => v.clone(),
+            _ => vec![1, 1],
+        };
+        if dilations != [1, 1] {
+            return None;
+        }
+        if group == 1 && shape[2] == 1 && shape[3] == 1 {
+            return Some("pw");
+        }
+        if group > 1
+            && group as usize == shape[0]
+            && shape[1] == 1
+            && shape[2] == shape[3]
+            && (shape[2] == 3 || shape[2] == 5)
+        {
+            return Some("dw");
+        }
+        None
+    }
+
+    /// Symmetric pad + supported stride for the 3×3/5×5 INT8 fused DW.
+    /// The kernel asserts `pad = (kh - 1) / 2` and `stride ∈ {1, 2}`; if
+    /// the QLinearConv carries different params we leave it to the per-op
+    /// path.
+    fn dw_geom_supported(node: &OnnxNode, kh: usize) -> bool {
+        let pads = match node.attributes.get("pads") {
+            Some(OnnxAttribute::Ints(v)) => v.clone(),
+            _ => vec![0, 0, 0, 0],
+        };
+        let strides = match node.attributes.get("strides") {
+            Some(OnnxAttribute::Ints(v)) => v.clone(),
+            _ => vec![1, 1],
+        };
+        if pads.len() != 4 || strides.len() != 2 {
+            return false;
+        }
+        let want_pad = ((kh - 1) / 2) as i64;
+        if !pads.iter().all(|&p| p == want_pad) {
+            return false;
+        }
+        if strides[0] != strides[1] {
+            return false;
+        }
+        matches!(strides[0], 1 | 2)
+    }
+
+    /// All QLinearConv zero-points used by the symmetric chain are 0.
+    /// QLinearConv input layout: `x, x_scale, x_zp, w, w_scale, w_zp,
+    /// y_scale, y_zp, [B]`. PW additionally requires `y_zp == 0` because
+    /// the QDQ boundary fold downstream expects it; DW's `y_zp` is the
+    /// chain output zero-point and may be non-zero.
+    fn qlc_zps_match_chain(
+        node: &OnnxNode,
+        initializers: &HashMap<String, Tensor>,
+        require_y_zp_zero: bool,
+    ) -> bool {
+        let x_zp = init_scalar(initializers, &node.inputs[2]);
+        let w_zp = init_scalar(initializers, &node.inputs[5]);
+        let y_zp = init_scalar(initializers, &node.inputs[7]);
+        let zero = 0.0_f32.to_bits();
+        let xz = x_zp.is_some_and(|v| v.to_bits() == zero);
+        let wz = w_zp.is_some_and(|v| v.to_bits() == zero);
+        if require_y_zp_zero {
+            xz && wz && y_zp.is_some_and(|v| v.to_bits() == zero)
+        } else {
+            xz && wz
+        }
+    }
+
     // Map tensor name → producing node index. Used by the
     // `FusedTransposeMatMul` detection below to walk from a MatMul
     // left-input back to its Transpose producer in O(1).
@@ -1092,6 +1285,268 @@ fn build_runtime_index(
         if plan_skip[i] {
             execution_plan.push(NodeAction::Skip);
             continue;
+        }
+        // Try to fuse `QLinearConv(pw) -> DQ -> [Relu] -> Q -> QLinearConv(dw)`
+        // into a single `QuantizedPwDw` action. Gated on:
+        //   * pw and dw are the supported PW / DW kinds (shape-only check);
+        //   * pw_x_zp = pw_w_zp = pw_y_zp = 0 (last forced by the matching
+        //     boundary fold);
+        //   * dw_x_zp = dw_w_zp = 0 (dw_y_zp may be non-zero — chain output);
+        //   * matching_zero_qparams holds at the boundary;
+        //   * dw geometry supported by the kernel (pad = (kh-1)/2,
+        //     stride ∈ {1, 2});
+        //   * single-use intermediates, no model output along the chain;
+        //   * load-time prepacking for both PW (VNNI 4×16) and DW (KHWC i8)
+        //     is fired by the existing prepack pass under the same shape
+        //     gates we check here, so by the time the chain dispatches the
+        //     `prepacked_i8_b` / `prepacked_i8_depthwise` lookups can't miss.
+        if nodes[i].op_type == "QLinearConv"
+            && qlc_kind(&nodes[i], initializers) == Some("pw")
+            && qlc_zps_match_chain(&nodes[i], initializers, true)
+        {
+            let pw_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
+            let pw_w_name = nodes[i].inputs.get(3).map(String::as_str).unwrap_or("");
+            let dq_idx = i + 1;
+            if !pw_out.is_empty()
+                && !pw_w_name.is_empty()
+                && use_counts.get(pw_out).copied().unwrap_or(0) == 1
+                && !outputs.iter().any(|o| o == pw_out)
+                && nodes
+                    .get(dq_idx)
+                    .is_some_and(|n| n.op_type == "DequantizeLinear")
+                && !plan_skip[dq_idx]
+                && nodes[dq_idx].inputs.first().map(String::as_str) == Some(pw_out)
+            {
+                let dq_out = nodes[dq_idx]
+                    .outputs
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let mut relu_idx = None;
+                let mut q_idx = dq_idx + 1;
+                let mut q_input = dq_out;
+                if let Some(relu_node) = nodes.get(q_idx)
+                    && relu_node.op_type == "Relu"
+                    && !plan_skip[q_idx]
+                    && relu_node.inputs.first().map(String::as_str) == Some(dq_out)
+                    && use_counts.get(dq_out).copied().unwrap_or(0) == 1
+                    && !outputs.iter().any(|o| o == dq_out)
+                {
+                    let relu_out = relu_node.outputs.first().map(String::as_str).unwrap_or("");
+                    if !relu_out.is_empty() && !outputs.iter().any(|o| o == relu_out) {
+                        relu_idx = Some(q_idx);
+                        q_input = relu_out;
+                        q_idx += 1;
+                    }
+                }
+                if !dq_out.is_empty()
+                    && !q_input.is_empty()
+                    && nodes
+                        .get(q_idx)
+                        .is_some_and(|n| n.op_type == "QuantizeLinear")
+                    && !plan_skip[q_idx]
+                    && nodes[q_idx].inputs.first().map(String::as_str) == Some(q_input)
+                    && use_counts.get(q_input).copied().unwrap_or(0) == 1
+                    && matching_zero_qparams(&nodes[dq_idx], &nodes[q_idx], initializers)
+                {
+                    let q_out = nodes[q_idx]
+                        .outputs
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    let dw_idx = q_idx + 1;
+                    if !q_out.is_empty()
+                        && !outputs.iter().any(|o| o == q_out)
+                        && use_counts.get(q_out).copied().unwrap_or(0) == 1
+                        && nodes
+                            .get(dw_idx)
+                            .is_some_and(|n| n.op_type == "QLinearConv")
+                        && !plan_skip[dw_idx]
+                        && nodes[dw_idx].inputs.first().map(String::as_str) == Some(q_out)
+                        && qlc_kind(&nodes[dw_idx], initializers) == Some("dw")
+                        && qlc_zps_match_chain(&nodes[dw_idx], initializers, false)
+                    {
+                        let dw_w_shape = nodes[dw_idx]
+                            .inputs
+                            .get(3)
+                            .and_then(|name| initializers.get(name))
+                            .map(|t| t.shape().to_vec())
+                            .unwrap_or_default();
+                        let kh = dw_w_shape.get(2).copied().unwrap_or(0);
+                        if dw_geom_supported(&nodes[dw_idx], kh) {
+                            let has_relu = relu_idx.is_some();
+                            execution_plan.push(NodeAction::QuantizedPwDw {
+                                pw_idx: i,
+                                dq_idx,
+                                relu_idx,
+                                q_idx,
+                                dw_idx,
+                                has_relu,
+                            });
+                            plan_skip[dq_idx] = true;
+                            if let Some(ri) = relu_idx {
+                                plan_skip[ri] = true;
+                            }
+                            plan_skip[q_idx] = true;
+                            plan_skip[dw_idx] = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        // Try to fuse `QLinearConv(dw) -> DQ -> [Relu] -> Q -> QLinearConv(pw)`
+        // into a single `QuantizedDwPw` action. Mirror of the PW->DW
+        // detector above. Gates:
+        //   * dw and pw are the supported DW / PW kinds (shape-only check);
+        //   * dw_x_zp = dw_w_zp = dw_y_zp = 0 (last forced by the boundary
+        //     fold below);
+        //   * pw_x_zp = pw_w_zp = 0 (pw_y_zp may be non-zero — chain output);
+        //   * matching_zero_qparams holds at the QDQ boundary;
+        //   * dw geometry supported by the kernel (pad = (kh-1)/2,
+        //     stride ∈ {1, 2});
+        //   * single-use intermediates, no model output along the chain;
+        //   * load-time prepacking for both DW (KHWC i8) and PW (VNNI 4×16)
+        //     fires under the same shape gates we check here.
+        if nodes[i].op_type == "QLinearConv"
+            && qlc_kind(&nodes[i], initializers) == Some("dw")
+            && qlc_zps_match_chain(&nodes[i], initializers, true)
+        {
+            let dw_w_shape = nodes[i]
+                .inputs
+                .get(3)
+                .and_then(|name| initializers.get(name))
+                .map(|t| t.shape().to_vec())
+                .unwrap_or_default();
+            let kh = dw_w_shape.get(2).copied().unwrap_or(0);
+            if dw_geom_supported(&nodes[i], kh) {
+                let dw_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
+                let dq_idx = i + 1;
+                if !dw_out.is_empty()
+                    && use_counts.get(dw_out).copied().unwrap_or(0) == 1
+                    && !outputs.iter().any(|o| o == dw_out)
+                    && nodes
+                        .get(dq_idx)
+                        .is_some_and(|n| n.op_type == "DequantizeLinear")
+                    && !plan_skip[dq_idx]
+                    && nodes[dq_idx].inputs.first().map(String::as_str) == Some(dw_out)
+                {
+                    let dq_out = nodes[dq_idx]
+                        .outputs
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    let mut relu_idx = None;
+                    let mut q_idx = dq_idx + 1;
+                    let mut q_input = dq_out;
+                    if let Some(relu_node) = nodes.get(q_idx)
+                        && relu_node.op_type == "Relu"
+                        && !plan_skip[q_idx]
+                        && relu_node.inputs.first().map(String::as_str) == Some(dq_out)
+                        && use_counts.get(dq_out).copied().unwrap_or(0) == 1
+                        && !outputs.iter().any(|o| o == dq_out)
+                    {
+                        let relu_out = relu_node.outputs.first().map(String::as_str).unwrap_or("");
+                        if !relu_out.is_empty() && !outputs.iter().any(|o| o == relu_out) {
+                            relu_idx = Some(q_idx);
+                            q_input = relu_out;
+                            q_idx += 1;
+                        }
+                    }
+                    if !dq_out.is_empty()
+                        && !q_input.is_empty()
+                        && nodes
+                            .get(q_idx)
+                            .is_some_and(|n| n.op_type == "QuantizeLinear")
+                        && !plan_skip[q_idx]
+                        && nodes[q_idx].inputs.first().map(String::as_str) == Some(q_input)
+                        && use_counts.get(q_input).copied().unwrap_or(0) == 1
+                        && matching_zero_qparams(&nodes[dq_idx], &nodes[q_idx], initializers)
+                    {
+                        let q_out = nodes[q_idx]
+                            .outputs
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or("");
+                        let pw_idx = q_idx + 1;
+                        if !q_out.is_empty()
+                            && !outputs.iter().any(|o| o == q_out)
+                            && use_counts.get(q_out).copied().unwrap_or(0) == 1
+                            && nodes
+                                .get(pw_idx)
+                                .is_some_and(|n| n.op_type == "QLinearConv")
+                            && !plan_skip[pw_idx]
+                            && nodes[pw_idx].inputs.first().map(String::as_str) == Some(q_out)
+                            && qlc_kind(&nodes[pw_idx], initializers) == Some("pw")
+                            && qlc_zps_match_chain(&nodes[pw_idx], initializers, false)
+                        {
+                            let has_relu = relu_idx.is_some();
+                            execution_plan.push(NodeAction::QuantizedDwPw {
+                                dw_idx: i,
+                                dq_idx,
+                                relu_idx,
+                                q_idx,
+                                pw_idx,
+                                has_relu,
+                            });
+                            plan_skip[dq_idx] = true;
+                            if let Some(ri) = relu_idx {
+                                plan_skip[ri] = true;
+                            }
+                            plan_skip[q_idx] = true;
+                            plan_skip[pw_idx] = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        if nodes[i].op_type == "DequantizeLinear" {
+            let dequant_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
+            let dequant_input = nodes[i].inputs.first().map(String::as_str).unwrap_or("");
+            if !dequant_out.is_empty()
+                && !dequant_input.is_empty()
+                && use_counts.get(dequant_input).copied().unwrap_or(0) == 1
+                && !outputs.iter().any(|o| o == dequant_out)
+            {
+                let mut relu_idx = None;
+                let mut quant_idx = i + 1;
+                if let Some(relu_node) = nodes.get(i + 1)
+                    && !plan_skip[i + 1]
+                    && node_kinds[i + 1] == NodeKind::Relu
+                    && relu_node.inputs.len() == 1
+                    && relu_node.inputs[0] == dequant_out
+                    && use_counts.get(dequant_out).copied().unwrap_or(0) == 1
+                    && !outputs.iter().any(|o| o == &relu_node.outputs[0])
+                {
+                    relu_idx = Some(i + 1);
+                    quant_idx = i + 2;
+                }
+
+                if let Some(quant_node) = nodes.get(quant_idx)
+                    && !plan_skip[quant_idx]
+                    && quant_node.op_type == "QuantizeLinear"
+                    && quant_node.inputs.len() >= 3
+                    && quant_node.outputs.len() == 1
+                    && ((relu_idx.is_none() && quant_node.inputs[0] == dequant_out)
+                        || relu_idx
+                            .map(|ri| quant_node.inputs[0] == nodes[ri].outputs[0])
+                            .unwrap_or(false))
+                    && use_counts.get(&quant_node.inputs[0]).copied().unwrap_or(0) == 1
+                    && matching_zero_qparams(&nodes[i], quant_node, initializers)
+                {
+                    execution_plan.push(NodeAction::QuantizedQdq {
+                        dequant_idx: i,
+                        relu_idx,
+                        quant_idx,
+                    });
+                    if let Some(ri) = relu_idx {
+                        plan_skip[ri] = true;
+                    }
+                    plan_skip[quant_idx] = true;
+                    continue;
+                }
+            }
         }
         match kind {
             NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu => {
@@ -1418,6 +1873,160 @@ fn build_runtime_index(
         }
     }
 
+    fn attr_int(node: &OnnxNode, name: &str, default: i64) -> i64 {
+        match node.attributes.get(name) {
+            Some(OnnxAttribute::Int(v)) => *v,
+            _ => default,
+        }
+    }
+
+    fn attr_ints(node: &OnnxNode, name: &str, default: &[i64]) -> Vec<i64> {
+        match node.attributes.get(name) {
+            Some(OnnxAttribute::Ints(v)) => v.clone(),
+            _ => default.to_vec(),
+        }
+    }
+
+    fn tensor_data_as_i8(t: &Tensor) -> Vec<i8> {
+        t.data().iter().map(|&v| v.round() as i8).collect()
+    }
+
+    fn should_prepack_i8_b(k: usize, n: usize) -> bool {
+        // Load-time packing now carries the AVX-512 VNNI 4x16 layout in
+        // addition to transposed-B, so tracker pointwise Conv (small K/N,
+        // huge M) can skip per-inference RHS packing. Keep the previous
+        // large MatMul gate for non-conv heads.
+        (k >= 4 && n.is_multiple_of(16)) || (k >= 512 && n >= 1024)
+    }
+
+    let mut prepacked_i8_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>> =
+        HashMap::new();
+    let mut prepacked_i8_depthwise: HashMap<String, std::sync::Arc<Vec<i8>>> = HashMap::new();
+    // Closing-pair `QuantizedDwPw` chains always need the PW weight
+    // prepacked because the kernel reads `env.prepacked_i8_b` directly
+    // and there is no per-iteration packing fallback. The default
+    // `should_prepack_i8_b` predicate skips PWs whose `c_out` is not a
+    // multiple of 16 (typical bottleneck/head widths like 24, 12, 4),
+    // so collect those PW weight names from the execution plan and
+    // force-prepack them below regardless of the gate. The transposed-B
+    // fallback inside `pack_i8_b_for_matmul` handles non-multiples of
+    // 16 — the VNNI 4×16 path is just unavailable; the kernel's
+    // `int8_matmul_prepacked_dispatch` picks the next-best variant.
+    let chain_pw_weights: std::collections::HashSet<String> = execution_plan
+        .iter()
+        .filter_map(|action| {
+            if let NodeAction::QuantizedDwPw { pw_idx, .. } = action {
+                nodes[*pw_idx].inputs.get(3).cloned()
+            } else {
+                None
+            }
+        })
+        .collect();
+    for node in nodes {
+        match node.op_type.as_str() {
+            "QLinearMatMul" => {
+                let Some(w_name) = node.inputs.get(3) else {
+                    continue;
+                };
+                if prepacked_i8_weights.contains_key(w_name) {
+                    continue;
+                }
+                let Some(weight) = initializers.get(w_name) else {
+                    continue;
+                };
+                let shape = weight.shape();
+                if shape.len() == 2 && should_prepack_i8_b(shape[0], shape[1]) {
+                    let (k, n) = (shape[0], shape[1]);
+                    let data = tensor_data_as_i8(weight);
+                    let packed = yscv_kernels::pack_i8_b_for_matmul(&data, k, n);
+                    prepacked_i8_weights.insert(w_name.clone(), std::sync::Arc::new(packed));
+                }
+            }
+            "MatMulInteger" => {
+                let Some(w_name) = node.inputs.get(1) else {
+                    continue;
+                };
+                if prepacked_i8_weights.contains_key(w_name) {
+                    continue;
+                }
+                let Some(weight) = initializers.get(w_name) else {
+                    continue;
+                };
+                let shape = weight.shape();
+                if shape.len() == 2 && should_prepack_i8_b(shape[0], shape[1]) {
+                    let (k, n) = (shape[0], shape[1]);
+                    let data = tensor_data_as_i8(weight);
+                    let packed = yscv_kernels::pack_i8_b_for_matmul(&data, k, n);
+                    prepacked_i8_weights.insert(w_name.clone(), std::sync::Arc::new(packed));
+                }
+            }
+            "QLinearConv" | "ConvInteger" => {
+                let w_input_idx = if node.op_type == "QLinearConv" { 3 } else { 1 };
+                let Some(w_name) = node.inputs.get(w_input_idx) else {
+                    continue;
+                };
+                if prepacked_i8_weights.contains_key(w_name) {
+                    continue;
+                }
+                let group = attr_int(node, "group", 1);
+                let dilations = attr_ints(node, "dilations", &[1, 1]);
+                let Some(weight) = initializers.get(w_name) else {
+                    continue;
+                };
+                let shape = weight.shape();
+                if shape.len() != 4 {
+                    continue;
+                }
+                let (c_out, c_in, kh, kw) = (shape[0], shape[1], shape[2], shape[3]);
+                if group > 1
+                    && group as usize == c_out
+                    && c_in == 1
+                    && kh == kw
+                    && (kh == 3 || kh == 5)
+                    && dilations == [1, 1]
+                {
+                    let mut khwc = vec![0_i8; kh * kw * c_out];
+                    let w_data = weight.data();
+                    for c in 0..c_out {
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                let src = ((c * c_in) * kh + ky) * kw + kx;
+                                let dst = (ky * kw + kx) * c_out + c;
+                                khwc[dst] = w_data[src].round() as i8;
+                            }
+                        }
+                    }
+                    prepacked_i8_depthwise.insert(w_name.clone(), std::sync::Arc::new(khwc));
+                    continue;
+                }
+                if group != 1 || dilations != [1, 1] {
+                    continue;
+                }
+                let k_dim = c_in * kh * kw;
+                let force_for_chain = chain_pw_weights.contains(w_name);
+                if !should_prepack_i8_b(k_dim, c_out) && !force_for_chain {
+                    continue;
+                }
+                let w_data = weight.data();
+                let mut b = vec![0_i8; k_dim * c_out];
+                for o in 0..c_out {
+                    for ci in 0..c_in {
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                let src = ((o * c_in + ci) * kh + ky) * kw + kx;
+                                let dst_k = (ci * kh + ky) * kw + kx;
+                                b[dst_k * c_out + o] = w_data[src].round() as i8;
+                            }
+                        }
+                    }
+                }
+                let packed = yscv_kernels::pack_i8_b_for_matmul(&b, k_dim, c_out);
+                prepacked_i8_weights.insert(w_name.clone(), std::sync::Arc::new(packed));
+            }
+            _ => {}
+        }
+    }
+
     RuntimeModelIndex {
         name_to_id,
         khwc_weight_ids,
@@ -1433,6 +2042,8 @@ fn build_runtime_index(
         execution_plan,
         prepacked_weights,
         prepacked_weights_by_id,
+        prepacked_i8_weights,
+        prepacked_i8_depthwise,
     }
 }
 

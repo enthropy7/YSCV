@@ -55,6 +55,14 @@ proptest = "1"
 name = "kernels_cpu_ops"
 harness = false
 
+[[bench]]
+name = "int8_fused_pw_dw_3x3"
+harness = false
+
+[[bench]]
+name = "int8_fused_dw_pw_3x3"
+harness = false
+
 [package.metadata.docs.rs]
 features = ["gpu", "metal-backend", "rknn"]
 

@@ -23,6 +23,61 @@ fn exec_sigmoid_single_op() {
 }
 
 #[test]
+fn exec_where_same_shape() {
+    let cond = Tensor::from_vec(vec![4], vec![1.0, 0.0, 1.0, 0.0]).unwrap();
+    let x = Tensor::from_vec(vec![4], vec![10.0, 20.0, 30.0, 40.0]).unwrap();
+    let y = Tensor::from_vec(vec![4], vec![-1.0, -2.0, -3.0, -4.0]).unwrap();
+    let out = run_single_op(
+        "Where",
+        vec![("cond", cond), ("x", x), ("y", y)],
+        vec![],
+        vec![],
+        vec!["cond", "x", "y"],
+        "out",
+    );
+    assert_eq!(out.data(), &[10.0, -2.0, 30.0, -4.0]);
+}
+
+#[test]
+fn exec_where_broadcast_mask_to_attention_shape() {
+    // Causal-attention masking pattern from HuggingFace exports:
+    //   Where(mask_true_on_kept_positions, scores [1,H,L,L], -inf [1])
+    // The mask broadcasts from [1,1,L,L] to [1,H,L,L]; the scalar -inf
+    // broadcasts from [1] to [1,H,L,L].
+    let cond = Tensor::from_vec(
+        vec![1, 1, 3, 3],
+        // Lower-triangular keep (true = keep the score):
+        //   1 0 0
+        //   1 1 0
+        //   1 1 1
+        vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0],
+    )
+    .unwrap();
+    // 2 heads × 3 × 3 attention scores.
+    let x_data: Vec<f32> = (0..18).map(|i| i as f32).collect();
+    let x = Tensor::from_vec(vec![1, 2, 3, 3], x_data.clone()).unwrap();
+    let y = Tensor::from_vec(vec![1], vec![-1e9]).unwrap();
+    let out = run_single_op(
+        "Where",
+        vec![("cond", cond), ("x", x), ("y", y)],
+        vec![],
+        vec![],
+        vec!["cond", "x", "y"],
+        "out",
+    );
+    assert_eq!(out.shape(), &[1, 2, 3, 3]);
+    let expected: Vec<f32> = (0..18)
+        .map(|i| {
+            let pos_in_3x3 = i % 9;
+            let row = pos_in_3x3 / 3;
+            let col = pos_in_3x3 % 3;
+            if col <= row { x_data[i] } else { -1e9 }
+        })
+        .collect();
+    assert_eq!(out.data(), expected);
+}
+
+#[test]
 fn exec_add_broadcast() {
     let a = Tensor::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
     let b = Tensor::from_vec(vec![3], vec![10.0, 20.0, 30.0]).unwrap();

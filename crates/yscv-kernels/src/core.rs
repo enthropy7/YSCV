@@ -68,15 +68,22 @@ pub use ops::int4_matmul::{
     pack_int4_symmetric_per_group, packed_int4_gemm_dispatch, packed_int4_gemm_scalar,
     packed_int4_gemv_dispatch, packed_int4_gemv_scalar,
 };
-pub use ops::int8_matmul::{int8_matmul_dispatch, int8_matmul_scalar};
-pub use ops::quantize::{dequantize_int4_to_f32, quantize_f32_to_int4};
+pub use ops::int8_matmul::{
+    PackedI8B, int8_matmul_dispatch, int8_matmul_prepacked_dispatch, int8_matmul_prepacked_scalar,
+    int8_matmul_scalar, pack_i8_b_for_matmul,
+};
+pub use ops::quantize::{
+    dequantize_int4_to_f32, quantize_f32_to_int4, quantize_linear_f32_to_f32_i8_dispatch,
+    quantize_linear_f32_to_f32_i8_scalar, quantize_linear_f32_to_i8_dispatch,
+    quantize_linear_f32_to_i8_scalar,
+};
 pub use ops::rope::apply_rotary_embedding;
 pub use ops::{
     BinaryKind, DEFAULT_ELEMENTWISE_MIN_PARALLEL_ELEMENTS,
     DEFAULT_MATMUL_MIN_PARALLEL_OUTPUT_ELEMENTS, DEFAULT_MATMUL_MIN_PARALLEL_SHARED_DIM,
-    GemmEpilogue, PackedB, ParallelElementwiseConfig, ParallelMatmulConfig, add_nchwc,
-    add_reduce_dispatch, add_with_config_and_pool, avg_pool2d_nchw, avg_pool2d_nchwc,
-    avg_pool2d_nhwc_with_config_and_pool, batch_norm2d_nchwc,
+    Depthwise3x3I8Params, DepthwiseI8Params, GemmEpilogue, PackedB, ParallelElementwiseConfig,
+    ParallelMatmulConfig, add_nchwc, add_reduce_dispatch, add_with_config_and_pool,
+    avg_pool2d_nchw, avg_pool2d_nchwc, avg_pool2d_nhwc_with_config_and_pool, batch_norm2d_nchwc,
     batch_norm2d_nhwc_with_config_and_pool, binary_same_shape_dispatch,
     conv2d_nchwc_dw3x3_s1_same_pad, conv2d_nchwc_pointwise_with_activation_prepacked,
     conv2d_nchwc_with_activation_prepacked, conv2d_nhwc_pointwise_with_residual_relu,
@@ -85,7 +92,10 @@ pub use ops::{
     depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool,
     depthwise_conv2d_nhwc_padded_with_config_and_pool,
     depthwise_conv2d_nhwc_with_activation_with_config_and_pool,
-    depthwise_conv2d_nhwc_with_config_and_pool, exp_slice_dispatch, exp_with_config_and_pool,
+    depthwise_conv2d_nhwc_with_config_and_pool, depthwise_i8_i32_nchw_khwc_dispatch,
+    depthwise_i8_i32_nchw_khwc_scalar, depthwise_i8_i32_nhwc_dispatch,
+    depthwise_i8_i32_nhwc_scalar, depthwise3x3_i8_i32_nhwc_dispatch,
+    depthwise3x3_i8_i32_nhwc_scalar, exp_slice_dispatch, exp_with_config_and_pool,
     fma_slice_dispatch, fused_dw_pw_nhwc_streaming, group_norm_nhwc_with_config_and_pool,
     layer_norm_last_dim_with_config_and_pool, log_softmax_last_dim_with_config_and_pool,
     logsumexp_last_dim_with_config_and_pool, matmul_2d_slices_fused_maybe_packed,
@@ -98,6 +108,9 @@ pub use ops::{
     sigmoid_with_config_and_pool, silu_nchwc, softmax_last_dim_with_config_and_pool,
     sub_exp_slice_dispatch, sub_with_config_and_pool, tanh_act_with_config_and_pool,
     tanh_slice_dispatch,
+};
+pub use ops::{
+    Int8FusedDwPwParams, Int8FusedPwDwParams, int8_fused_dw_pw_dispatch, int8_fused_pw_dw_dispatch,
 };
 
 #[cfg(test)]

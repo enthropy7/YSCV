@@ -1649,8 +1649,19 @@ impl Tensor {
         let lhs_is_lastdim_vec =
             lhs_last == rhs_last && lhs_shape.iter().rev().skip(1).all(|&d| d == 1);
 
+        // The fast path is safe only when the "row vector" side (all-1
+        // except possibly the last dim) ALSO has rank ≤ the other side
+        // and its 1-padding doesn't introduce extra dims. Otherwise the
+        // broadcast result has a higher rank than the big tensor, and
+        // we fall through to the general path so the output shape
+        // matches numpy semantics.
         if rhs_is_lastdim_vec && !lhs_is_lastdim_vec {
-            // Broadcast rhs across all rows of lhs
+            // rhs is the row-vector. Safe iff rhs_shape is rank-1 OR
+            // rhs's rank is ≤ lhs's rank (otherwise rhs's leading 1s
+            // would still expand the broadcast rank past lhs's).
+            if rhs_shape.len() > lhs_shape.len() {
+                return None;
+            }
             let lhs_data = self.data();
             let rhs_data = rhs.data();
             let row_len = lhs_last;
@@ -1675,7 +1686,9 @@ impl Tensor {
                 out_data,
             )))
         } else if lhs_is_lastdim_vec && !rhs_is_lastdim_vec {
-            // Broadcast lhs across all rows of rhs
+            if lhs_shape.len() > rhs_shape.len() {
+                return None;
+            }
             let lhs_data = self.data();
             let rhs_data = rhs.data();
             let row_len = rhs_last;
@@ -1702,6 +1715,58 @@ impl Tensor {
         } else {
             None
         }
+    }
+
+    /// Ternary `where` with NumPy-style broadcasting:
+    /// `out[i] = if cond[i] != 0 { x[i] } else { y[i] }`, where each
+    /// operand is broadcast to the common shape derived from all three.
+    /// Mirrors ONNX's `Where` op (and `np.where` semantics).
+    pub fn where_select(cond: &Self, x: &Self, y: &Self) -> Result<Self, TensorError> {
+        // Same-shape fast path — no broadcasting work needed.
+        if cond.shape() == x.shape() && cond.shape() == y.shape() {
+            let cd = cond.data();
+            let xd = x.data();
+            let yd = y.data();
+            let data: Vec<f32> = cd
+                .iter()
+                .zip(xd.iter().zip(yd.iter()))
+                .map(|(&c, (&xv, &yv))| if c != 0.0 { xv } else { yv })
+                .collect();
+            return Tensor::from_vec(cond.shape().to_vec(), data);
+        }
+        let cx_shape = broadcast_shape(cond.shape(), x.shape()).ok_or_else(|| {
+            TensorError::BroadcastIncompatible {
+                left: cond.shape().to_vec(),
+                right: x.shape().to_vec(),
+            }
+        })?;
+        let out_shape = broadcast_shape(&cx_shape, y.shape()).ok_or_else(|| {
+            TensorError::BroadcastIncompatible {
+                left: cx_shape.clone(),
+                right: y.shape().to_vec(),
+            }
+        })?;
+        let out_count =
+            shape_element_count(&out_shape).ok_or_else(|| TensorError::SizeOverflow {
+                shape: out_shape.clone(),
+            })?;
+        let mut out_data = vec![0.0_f32; out_count];
+        let mut coords = vec![0_usize; out_shape.len()];
+        let cd = cond.data();
+        let xd = x.data();
+        let yd = y.data();
+        for value in &mut out_data {
+            let c_off = broadcast_offset(cond.shape(), cond.strides(), &coords);
+            let x_off = broadcast_offset(x.shape(), x.strides(), &coords);
+            let y_off = broadcast_offset(y.shape(), y.strides(), &coords);
+            *value = if cd[c_off] != 0.0 {
+                xd[x_off]
+            } else {
+                yd[y_off]
+            };
+            increment_coords(&mut coords, &out_shape);
+        }
+        Tensor::from_vec(out_shape, out_data)
     }
 
     fn binary_broadcast_op<F>(&self, rhs: &Self, op: F) -> Result<Self, TensorError>

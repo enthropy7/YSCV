@@ -228,7 +228,85 @@ unsafe fn packed_int4_gemv_avx2(
     }
 }
 
-/// Runtime-dispatched packed-INT4 GEMV. NEON / AVX2+FMA / scalar.
+/// AVX-512 + FMA GEMV with vectorised nibble unpack.
+///
+/// Inner loop processes one 32-nibble block per FMA pair: loads 16
+/// packed bytes into XMM, sign-extends each pair of nibbles into two
+/// 16-element i32 lanes via `slli/srai_epi16`, converts to f32, FMAs
+/// against 32 contiguous activation lanes (two ZMM). The bottleneck of
+/// the AVX2 path was the per-byte scalar nibble decode into a temp
+/// buffer; this kernel does the decode in 4 SIMD ops per 16 bytes.
+///
+/// Requires `group_size` ≥ 32 and a multiple of 32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn packed_int4_gemv_avx512(
+    weight_packed: &[u8],
+    scales: &[f32],
+    activation: &[f32],
+    output: &mut [f32],
+    m_w: usize,
+    k: usize,
+    group_size: usize,
+) {
+    use std::arch::x86_64::*;
+    debug_assert!(group_size.is_multiple_of(32));
+    let groups = k / group_size;
+    let blocks_per_group = group_size / 32; // each block = 16 bytes = 32 nibbles
+
+    // Constant index vectors for gathering even/odd activation lanes.
+    // _mm512_permutex2var_ps(a0, idx, a1) treats `a0` as lanes 0-15 and
+    // `a1` as lanes 16-31; an index `i` selects lane i across the
+    // concatenation. For 32 contiguous activations, even-indexed = 2*i.
+    let idx_even = _mm512_setr_epi32(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30);
+    let idx_odd = _mm512_setr_epi32(1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31);
+
+    for row in 0..m_w {
+        let row_bytes = &weight_packed[row * k / 2..(row + 1) * k / 2];
+        let row_scales = &scales[row * groups..(row + 1) * groups];
+        let mut acc_total = _mm512_setzero_ps();
+        // Defer scaling until each group's accumulator is collapsed; we
+        // multiply by the per-group fp32 scale and add into a row-wide
+        // ZMM accumulator. Cheaper than scaling per-block.
+        for g in 0..groups {
+            let scale = row_scales[g];
+            let scale_v = _mm512_set1_ps(scale);
+            let byte_base = g * group_size / 2;
+            let act_base = g * group_size;
+            let mut group_acc = _mm512_setzero_ps();
+            for blk in 0..blocks_per_group {
+                let byte_off = byte_base + blk * 16;
+                let act_off = act_base + blk * 32;
+                // Load 16 packed bytes (32 nibbles).
+                let packed = _mm_loadu_si128(row_bytes.as_ptr().add(byte_off) as *const __m128i);
+                // Zero-extend bytes → 16 i16 lanes.
+                let p16 = _mm256_cvtepu8_epi16(packed);
+                // Low nibble: place in upper 4 bits of each 16-bit lane,
+                // arithmetic-shift right 12 → signed [-8, 7].
+                let lo = _mm256_srai_epi16::<12>(_mm256_slli_epi16::<12>(p16));
+                // High nibble: shift left 8, arithmetic-shift right 12.
+                let hi = _mm256_srai_epi16::<12>(_mm256_slli_epi16::<8>(p16));
+                // i16 → i32 → f32 (16 lanes each, no cross-lane shuffle).
+                let lo_f = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(lo));
+                let hi_f = _mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(hi));
+                // Gather even/odd activation lanes so the FMA pairs
+                // weight[2*i] = lo[i] with activation[2*i], and
+                // weight[2*i+1] = hi[i] with activation[2*i+1] — same
+                // ordering the scalar reference produces.
+                let a0 = _mm512_loadu_ps(activation.as_ptr().add(act_off));
+                let a1 = _mm512_loadu_ps(activation.as_ptr().add(act_off + 16));
+                let a_even = _mm512_permutex2var_ps(a0, idx_even, a1);
+                let a_odd = _mm512_permutex2var_ps(a0, idx_odd, a1);
+                group_acc = _mm512_fmadd_ps(lo_f, a_even, group_acc);
+                group_acc = _mm512_fmadd_ps(hi_f, a_odd, group_acc);
+            }
+            acc_total = _mm512_fmadd_ps(group_acc, scale_v, acc_total);
+        }
+        output[row] = _mm512_reduce_add_ps(acc_total);
+    }
+}
+
+/// Runtime-dispatched packed-INT4 GEMV. NEON / AVX-512 / AVX2+FMA / scalar.
 pub fn packed_int4_gemv_dispatch(
     weight_packed: &[u8],
     scales: &[f32],
@@ -240,6 +318,23 @@ pub fn packed_int4_gemv_dispatch(
 ) {
     #[cfg(target_arch = "x86_64")]
     {
+        if std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("avx512bw")
+            && group_size.is_multiple_of(32)
+        {
+            unsafe {
+                packed_int4_gemv_avx512(
+                    weight_packed,
+                    scales,
+                    activation,
+                    output,
+                    m_w,
+                    k,
+                    group_size,
+                )
+            };
+            return;
+        }
         if std::is_x86_feature_detected!("avx2")
             && std::is_x86_feature_detected!("fma")
             && group_size.is_multiple_of(16)

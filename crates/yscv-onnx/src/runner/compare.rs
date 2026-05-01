@@ -52,24 +52,67 @@ pub(super) fn exec_where(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onn
     let cond = get_tensor(env, &node.name, &node.inputs[0])?;
     let x = get_tensor(env, &node.name, &node.inputs[1])?;
     let y = get_tensor(env, &node.name, &node.inputs[2])?;
-    let cd = cond.data();
-    let xd = x.data();
-    let yd = y.data();
-    if cd.len() != xd.len() || cd.len() != yd.len() {
+    let out = Tensor::where_select(cond, x, y).map_err(|e| OnnxError::DecodeFailed {
+        message: format!("Where: {e}"),
+    })?;
+    env.insert(node.outputs[0].clone(), out);
+    Ok(())
+}
+
+/// `Trilu` — element-wise upper or lower triangular over the last two
+/// dims. `upper` attribute (default 1) selects upper triangle; the
+/// optional second input `k` (scalar i64) shifts the diagonal. Output
+/// keeps shape; entries outside the selected triangle are zeroed.
+///
+/// Used by HuggingFace ONNX exports to build the causal-attention mask
+/// in cached-decoder mode (Llama / Qwen / Phi).
+pub(super) fn exec_trilu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
+    let input = get_tensor(env, &node.name, &node.inputs[0])?;
+    let upper = get_attr_int(node, "upper").unwrap_or(1) != 0;
+    let k = if node.inputs.len() >= 2 {
+        let kt = get_tensor(env, &node.name, &node.inputs[1])?;
+        if kt.data().is_empty() {
+            0
+        } else {
+            kt.data()[0] as i64
+        }
+    } else {
+        0
+    };
+
+    let shape = input.shape().to_vec();
+    if shape.len() < 2 {
         return Err(OnnxError::DecodeFailed {
-            message: "Where: shape mismatch".into(),
+            message: format!("Trilu requires rank ≥ 2 input, got {:?}", shape),
         });
     }
-    let data: Vec<f32> = cd
-        .iter()
-        .enumerate()
-        .map(|(i, &c)| if c > 0.0 { xd[i] } else { yd[i] })
-        .collect();
-    let out =
-        Tensor::from_vec(cond.shape().to_vec(), data).map_err(|e| OnnxError::DecodeFailed {
-            message: e.to_string(),
-        })?;
-    env.insert(node.outputs[0].clone(), out);
+    let rows = shape[shape.len() - 2];
+    let cols = shape[shape.len() - 1];
+    let plane = rows * cols;
+    let outer: usize = shape[..shape.len() - 2].iter().product();
+
+    let src = input.data();
+    let mut out = vec![0.0_f32; src.len()];
+    for o in 0..outer {
+        let base = o * plane;
+        for i in 0..rows {
+            for j in 0..cols {
+                let keep = if upper {
+                    (j as i64) >= (i as i64) + k
+                } else {
+                    (j as i64) <= (i as i64) + k
+                };
+                if keep {
+                    out[base + i * cols + j] = src[base + i * cols + j];
+                }
+            }
+        }
+    }
+
+    let result = Tensor::from_vec(shape, out).map_err(|e| OnnxError::DecodeFailed {
+        message: e.to_string(),
+    })?;
+    env.insert(node.outputs[0].clone(), result);
     Ok(())
 }
 

@@ -116,6 +116,16 @@ that tracker at 1..4 threads.
   single-thread on Zen 4).
 - `depthwise_conv2d_nhwc_row_avx512` — 128/64/32/16-wide ZMM tiles with
   YMM and scalar tail handling.
+- `depthwise_i8_i32_nhwc_dispatch` — symmetric INT8 NHWC depthwise
+  3×3/5×5 accumulator for quantized tracker chains; scalar, AVX2,
+  AVX-512BW and NEON paths share bitwise parity tests.
+- `quantize_linear_f32_to_f32_i8_dispatch` — per-tensor `QuantizeLinear`
+  hot path for ONNX QLinear/QDQ boundaries; scalar, AVX2, AVX-512F and NEON
+  preserve the runner's rounded-f32 signed-int8 representation.
+- `quantize_linear_f32_to_i8_dispatch` — direct activation-entry quantizer for
+  internal QLinear side-table tensors; same scalar/AVX2/AVX-512F/NEON dispatch, with packed AVX2/AVX-512 i8 stores,
+  but writes real `i8` storage so the ONNX runner does not allocate f32-coded
+  integer tensors on the quant-domain path.
 - `spec16_tile8_interior` — 8 adjacent output columns with 8 independent
   ZMM accumulators, breaks the 27-tap FMA latency chain in first-layer
   3×3 RGB.

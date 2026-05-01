@@ -146,10 +146,14 @@ pub(super) fn exec_transpose(node: &OnnxNode, env: &mut TensorEnv) -> Result<(),
         return Ok(());
     }
 
+    let input_rank = input.rank();
     let out = input.permute(&axes).map_err(|e| OnnxError::DecodeFailed {
         message: e.to_string(),
     })?;
     env.insert(node.outputs[0].clone(), out);
+    if input_rank == 4 && axes.as_slice() == [0, 2, 3, 1] {
+        env.mark_nhwc(&node.outputs[0]);
+    }
     Ok(())
 }
 

@@ -90,6 +90,25 @@ fn arb_same_shape_triple() -> impl Strategy<Value = (Tensor, Tensor, Tensor)> {
     })
 }
 
+#[test]
+fn add_preserves_max_rank_under_broadcast() {
+    // Regression: the lastdim-SIMD fast path used to return the
+    // big-tensor's shape verbatim, dropping rank when the small
+    // side was a higher-rank all-1s "row vector". Numpy says the
+    // broadcast result keeps max(rank(lhs), rank(rhs)). This bug
+    // showed up end-to-end as "broadcast mismatch [2] vs [4]"
+    // on cached-decoder Qwen because downstream Shape ops then
+    // saw a rank-2 tensor where the model expected rank-4.
+    let a = Tensor::from_vec(vec![1, 1, 1, 1], vec![5.0]).unwrap();
+    let data: Vec<f32> = (0..43).map(|i| i as f32).collect();
+    let b = Tensor::from_vec(vec![43, 1], data.clone()).unwrap();
+    let c = a.add(&b).expect("broadcast add");
+    assert_eq!(c.shape(), &[1, 1, 43, 1]);
+    // Symmetric: high-rank-vector on the rhs.
+    let d = b.add(&a).expect("broadcast add reverse");
+    assert_eq!(d.shape(), &[1, 1, 43, 1]);
+}
+
 proptest! {
     #[test]
     fn broadcast_shape_matches_numpy_rules(

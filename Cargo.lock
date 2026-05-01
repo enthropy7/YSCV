@@ -2860,6 +2860,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "yscv-kernels",
  "yscv-onnx",
  "yscv-tensor",
 ]

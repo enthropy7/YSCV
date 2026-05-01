@@ -20,7 +20,10 @@ pub use derive::{
     int8_symmetric_per_channel, int8_symmetric_per_tensor,
 };
 pub use packed_int4::{PackedInt4Weight, quantize_matmul_weights_int4_packed};
-pub use rewriter::rewrite_to_qdq;
+pub use rewriter::{
+    fold_constant_qdq_weights_for_yscv_fast, prune_unused_initializers, rewrite_to_qdq,
+    rewrite_to_qlinear,
+};
 
 use std::collections::HashMap;
 

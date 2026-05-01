@@ -335,9 +335,24 @@ pub(super) fn exec_qlinear_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Resul
         let k = a.shape()[1];
         let n = b.shape()[1];
         let a_i8: Vec<i8> = a.data().iter().map(|&v| v as i8).collect();
-        let b_i8: Vec<i8> = b.data().iter().map(|&v| v as i8).collect();
         let mut acc = vec![0_i32; m * n];
-        yscv_kernels::int8_matmul_dispatch(&a_i8, &b_i8, m, k, n, &mut acc);
+        if crate::runner::should_use_prepacked_i8_b(m, k, n)
+            && let Some(packed) = env.prepacked_i8_b(&node.inputs[3])
+        {
+            if packed.k() == k && packed.n() == n {
+                yscv_kernels::int8_matmul_prepacked_dispatch(&a_i8, packed, m, &mut acc);
+            } else {
+                return Err(OnnxError::DecodeFailed {
+                    message: format!(
+                        "QLinearMatMul {}: prepacked weight shape mismatch",
+                        node.name
+                    ),
+                });
+            }
+        } else {
+            let b_i8: Vec<i8> = b.data().iter().map(|&v| v as i8).collect();
+            yscv_kernels::int8_matmul_dispatch(&a_i8, &b_i8, m, k, n, &mut acc);
+        }
         let composite = (a_scale * b_scale) / y_scale;
         let quant: Vec<f32> = acc
             .iter()
@@ -347,9 +362,11 @@ pub(super) fn exec_qlinear_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Resul
             message: e.to_string(),
         })?;
         env.insert(node.outputs[0].clone(), out);
+        crate::runner::note_qlinear_matmul_fast();
         return Ok(());
     }
 
+    crate::runner::note_qlinear_matmul_fallback();
     let deq_a: Vec<f32> = a.data().iter().map(|&v| (v - a_zp) * a_scale).collect();
     let deq_b: Vec<f32> = b.data().iter().map(|&v| (v - b_zp) * b_scale).collect();
 
@@ -530,9 +547,24 @@ pub(super) fn exec_matmul_integer(node: &OnnxNode, env: &mut TensorEnv) -> Resul
         let k = a.shape()[1];
         let n = b.shape()[1];
         let a_i8: Vec<i8> = a.data().iter().map(|&v| v as i8).collect();
-        let b_i8: Vec<i8> = b.data().iter().map(|&v| v as i8).collect();
         let mut acc = vec![0_i32; m * n];
-        yscv_kernels::int8_matmul_dispatch(&a_i8, &b_i8, m, k, n, &mut acc);
+        if crate::runner::should_use_prepacked_i8_b(m, k, n)
+            && let Some(packed) = env.prepacked_i8_b(&node.inputs[1])
+        {
+            if packed.k() == k && packed.n() == n {
+                yscv_kernels::int8_matmul_prepacked_dispatch(&a_i8, packed, m, &mut acc);
+            } else {
+                return Err(OnnxError::DecodeFailed {
+                    message: format!(
+                        "MatMulInteger {}: prepacked weight shape mismatch",
+                        node.name
+                    ),
+                });
+            }
+        } else {
+            let b_i8: Vec<i8> = b.data().iter().map(|&v| v as i8).collect();
+            yscv_kernels::int8_matmul_dispatch(&a_i8, &b_i8, m, k, n, &mut acc);
+        }
         let out_data: Vec<f32> = acc.iter().map(|&v| v as f32).collect();
         let out = Tensor::from_vec(vec![m, n], out_data).map_err(|e| OnnxError::DecodeFailed {
             message: e.to_string(),

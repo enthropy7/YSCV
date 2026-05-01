@@ -3,31 +3,94 @@ use super::*;
 pub(super) fn exec_gather(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let indices = get_tensor(env, &node.name, &node.inputs[1])?;
-    let axis = get_attr_int(node, "axis").unwrap_or(0) as usize;
+    let axis_raw = get_attr_int(node, "axis").unwrap_or(0);
+    let rank = input.rank() as i64;
+    let axis = if axis_raw < 0 {
+        (rank + axis_raw) as usize
+    } else {
+        axis_raw as usize
+    };
+    if axis >= input.rank() {
+        return Err(OnnxError::DecodeFailed {
+            message: format!(
+                "Gather axis {axis} out of range for rank-{} input",
+                input.rank()
+            ),
+        });
+    }
 
+    // Fast path: axis=0, rank-1 input — straight 1-D embedding lookup
+    // (the LLM token-embedding hot path; keep the bulk-copyless impl).
     if axis == 0 && input.rank() == 1 {
         let data = input.data();
         let idx_data = indices.data();
-        let out_data: Vec<f32> = idx_data.iter().map(|&i| data[i as usize]).collect();
+        let src_dim = data.len() as i64;
+        let out_data: Vec<f32> = idx_data
+            .iter()
+            .map(|&i| {
+                let mut k = i as i64;
+                if k < 0 {
+                    k += src_dim;
+                }
+                data[k as usize]
+            })
+            .collect();
         let out = Tensor::from_vec(indices.shape().to_vec(), out_data).map_err(|e| {
             OnnxError::DecodeFailed {
                 message: e.to_string(),
             }
         })?;
         env.insert(node.outputs[0].clone(), out);
-    } else if indices.len() == 1 {
-        let idx = indices.data()[0] as usize;
-        let out = input
-            .select(axis, idx)
-            .map_err(|e| OnnxError::DecodeFailed {
-                message: e.to_string(),
-            })?;
-        env.insert(node.outputs[0].clone(), out);
-    } else {
-        return Err(OnnxError::UnsupportedOpType {
-            op_type: format!("Gather(axis={axis}, multi-index)"),
-        });
+        return Ok(());
     }
+
+    // General path. ONNX Gather:
+    //   out[i_0..i_{a-1}, j_0..j_{q-1}, i_{a+1}..i_{r-1}]
+    //     = input[i_0..i_{a-1}, indices[j], i_{a+1}..]
+    // where j ranges over indices.shape and a == axis. Output shape is
+    // input.shape[..axis] ++ indices.shape ++ input.shape[axis+1..].
+    let in_shape = input.shape();
+    let idx_shape = indices.shape();
+    let mut out_shape: Vec<usize> = Vec::with_capacity(in_shape.len() + idx_shape.len() - 1);
+    out_shape.extend_from_slice(&in_shape[..axis]);
+    out_shape.extend_from_slice(idx_shape);
+    out_shape.extend_from_slice(&in_shape[axis + 1..]);
+
+    let outer: usize = in_shape[..axis].iter().product();
+    let src_dim = in_shape[axis];
+    let inner: usize = in_shape[axis + 1..].iter().product();
+    let idx_count = indices.len().max(1);
+
+    let src = input.data();
+    let idx_data = indices.data();
+    let mut out = vec![0.0_f32; outer * idx_count * inner];
+
+    let src_outer_stride = src_dim * inner;
+    for o in 0..outer {
+        let src_o = o * src_outer_stride;
+        let dst_o = o * idx_count * inner;
+        for (q, &raw) in idx_data.iter().enumerate() {
+            let mut k = raw as i64;
+            if k < 0 {
+                k += src_dim as i64;
+            }
+            if k < 0 || k as usize >= src_dim {
+                return Err(OnnxError::DecodeFailed {
+                    message: format!(
+                        "Gather index {raw} out of bounds for axis {axis} (dim {src_dim})"
+                    ),
+                });
+            }
+            let src_off = src_o + (k as usize) * inner;
+            let dst_off = dst_o + q * inner;
+            out[dst_off..dst_off + inner].copy_from_slice(&src[src_off..src_off + inner]);
+        }
+    }
+
+    let result = Tensor::from_vec(out_shape, out).map_err(|e| OnnxError::DecodeFailed {
+        message: e.to_string(),
+    })?;
+    env.insert(node.outputs[0].clone(), result);
     Ok(())
 }
 

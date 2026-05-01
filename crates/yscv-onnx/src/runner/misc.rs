@@ -49,16 +49,34 @@ pub(super) fn exec_quantize_linear(node: &OnnxNode, env: &mut TensorEnv) -> Resu
 
     let s = scale.data()[0];
     let zp = zero_point.map_or(0.0f32, |t| t.data()[0]);
-    let data: Vec<f32> = input
-        .data()
-        .iter()
-        .map(|&v| ((v / s + zp).round()).clamp(-128.0, 127.0))
-        .collect();
-    let out =
-        Tensor::from_vec(input.shape().to_vec(), data).map_err(|e| OnnxError::DecodeFailed {
-            message: e.to_string(),
+    if !node
+        .outputs
+        .first()
+        .map(|name| name.contains("__qlinear_x_q"))
+        .unwrap_or(false)
+    {
+        let mut data = vec![0.0_f32; input.data().len()];
+        yscv_kernels::quantize_linear_f32_to_f32_i8_dispatch(input.data(), s, zp, &mut data);
+        let out = Tensor::from_vec(input.shape().to_vec(), data).map_err(|e| {
+            OnnxError::DecodeFailed {
+                message: e.to_string(),
+            }
         })?;
-    env.insert(node.outputs[0].clone(), out);
+        env.insert(node.outputs[0].clone(), out);
+        return Ok(());
+    }
+    let mut data = vec![0_i8; input.data().len()];
+    yscv_kernels::quantize_linear_f32_to_i8_dispatch(input.data(), s, zp, &mut data);
+    env.insert_quant_i8(
+        node.outputs[0].clone(),
+        QuantTensor {
+            data,
+            shape: input.shape().to_vec(),
+            scale: s,
+            zero_point: zp,
+            nhwc: env.is_nhwc(&node.inputs[0]),
+        },
+    );
     Ok(())
 }
 
@@ -66,7 +84,6 @@ pub(super) fn exec_dequantize_linear(
     node: &OnnxNode,
     env: &mut TensorEnv,
 ) -> Result<(), OnnxError> {
-    let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let scale = get_tensor(env, &node.name, &node.inputs[1])?;
     let zero_point = if node.inputs.len() > 2 && !node.inputs[2].is_empty() {
         Some(get_tensor(env, &node.name, &node.inputs[2])?)
@@ -74,6 +91,67 @@ pub(super) fn exec_dequantize_linear(
         None
     };
 
+    if let Some(input) = env.get_quant_i8(&node.inputs[0]) {
+        let in_shape = input.shape.clone();
+        let input_nhwc = input.nhwc;
+        let scale_data = scale.data();
+        let data: Vec<f32> = if scale_data.len() == 1 {
+            let s = scale_data[0];
+            let zp = zero_point.map_or(0.0f32, |t| t.data()[0]);
+            input.data.iter().map(|&v| ((v as f32) - zp) * s).collect()
+        } else {
+            let axis = match node.attributes.get("axis") {
+                Some(crate::loader::OnnxAttribute::Int(a)) => *a,
+                _ => 1,
+            };
+            let axis = if axis < 0 {
+                (in_shape.len() as i64 + axis) as usize
+            } else {
+                axis as usize
+            };
+            let chan = in_shape[axis];
+            if scale_data.len() != chan {
+                return Err(OnnxError::DecodeFailed {
+                    message: format!(
+                        "DequantizeLinear: scale len={} but axis-{axis} dim={chan}",
+                        scale_data.len()
+                    ),
+                });
+            }
+            let zp_storage: Vec<f32>;
+            let zp_data: &[f32] = match zero_point {
+                Some(t) => t.data(),
+                None => {
+                    zp_storage = vec![0.0_f32; chan];
+                    &zp_storage
+                }
+            };
+            let outer = in_shape[..axis].iter().product::<usize>();
+            let inner = in_shape[axis + 1..].iter().product::<usize>();
+            let mut out = vec![0.0_f32; input.data.len()];
+            for o in 0..outer {
+                for c in 0..chan {
+                    let s = scale_data[c];
+                    let zp = zp_data[c];
+                    let base = (o * chan + c) * inner;
+                    for i in 0..inner {
+                        out[base + i] = ((input.data[base + i] as f32) - zp) * s;
+                    }
+                }
+            }
+            out
+        };
+        let out = Tensor::from_vec(in_shape, data).map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+        env.insert(node.outputs[0].clone(), out);
+        if input_nhwc {
+            env.mark_nhwc(&node.outputs[0]);
+        }
+        return Ok(());
+    }
+
+    let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let in_shape = input.shape();
     let scale_data = scale.data();
     let data: Vec<f32> = if scale_data.len() == 1 {

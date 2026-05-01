@@ -526,6 +526,22 @@ pub unsafe fn matmul_row_set_dispatch(
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        // AVX-512 wins on wide shapes (large K or large N) where 16-wide
+        // FMA throughput dominates; loses on K=N≈2048 where the AVX path
+        // already saturates memory BW and AVX-512's frequency tax shows up
+        // (kernel_bench Zen 4: 4-16% AVX-512 win at K≥4096 or N≥4096,
+        // 1.4× AVX win at K=N=2048). Gate by shape; honour kill-switch.
+        static AVX512_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let avx512_off =
+            *AVX512_OFF.get_or_init(|| std::env::var_os("YSCV_AVX512_ROWGEMM_OFF").is_some());
+        if !avx512_off
+            && (n >= 4096 || k >= 4096)
+            && std::is_x86_feature_detected!("avx512f")
+            && std::is_x86_feature_detected!("fma")
+        {
+            matmul_row_set_avx512(left_row, right, out_row, k, n);
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             matmul_row_set_avx(left_row, right, out_row, k, n);
             return;
@@ -829,6 +845,94 @@ unsafe fn matmul_row_set_avx_fma(
         }
         _mm_storeu_ps(out_row.add(col), acc);
         col += 4;
+    }
+    while col < n {
+        let mut sum = 0.0f32;
+        for p in 0..k {
+            sum += *left_row.add(p) * *right.add(p * n + col);
+        }
+        *out_row.add(col) = sum;
+        col += 1;
+    }
+}
+
+/// AVX-512 single-row matmul: `out[1, n] = left_row[1, k] @ right[k, n]`
+/// — the M=1 fp32 skinny-GEMM hot path used by every transformer
+/// matmul on the decode side. 4 ZMM accumulators × 64 N-cols per outer
+/// iteration with K unrolled by 2 keeps Zen 4's two FMA units fed
+/// through the 4-cycle FMA latency. Scalar / SSE / 8-wide tails for
+/// non-aligned residuals.
+///
+/// Only used for fp32 weights — packed-INT4 weights take the
+/// `packed_int4_gemv_dispatch` route at a higher level. This kernel
+/// fires on RoPE / attention compute / LayerNorm-fed residual
+/// projections that the int4 packer doesn't touch.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn matmul_row_set_avx512(
+    left_row: *const f32,
+    right: *const f32,
+    out_row: *mut f32,
+    k: usize,
+    n: usize,
+) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let mut col = 0usize;
+    while col + 64 <= n {
+        let mut a0 = _mm512_setzero_ps();
+        let mut a1 = _mm512_setzero_ps();
+        let mut a2 = _mm512_setzero_ps();
+        let mut a3 = _mm512_setzero_ps();
+        let mut b0 = _mm512_setzero_ps();
+        let mut b1 = _mm512_setzero_ps();
+        let mut b2 = _mm512_setzero_ps();
+        let mut b3 = _mm512_setzero_ps();
+        let k2 = k & !1;
+        let mut p = 0usize;
+        while p < k2 {
+            let va = _mm512_set1_ps(*left_row.add(p));
+            let row = right.add(p * n + col);
+            a0 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row), a0);
+            a1 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row.add(16)), a1);
+            a2 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row.add(32)), a2);
+            a3 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row.add(48)), a3);
+            let vb = _mm512_set1_ps(*left_row.add(p + 1));
+            let row1 = right.add((p + 1) * n + col);
+            b0 = _mm512_fmadd_ps(vb, _mm512_loadu_ps(row1), b0);
+            b1 = _mm512_fmadd_ps(vb, _mm512_loadu_ps(row1.add(16)), b1);
+            b2 = _mm512_fmadd_ps(vb, _mm512_loadu_ps(row1.add(32)), b2);
+            b3 = _mm512_fmadd_ps(vb, _mm512_loadu_ps(row1.add(48)), b3);
+            p += 2;
+        }
+        if p < k {
+            let va = _mm512_set1_ps(*left_row.add(p));
+            let row = right.add(p * n + col);
+            a0 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row), a0);
+            a1 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row.add(16)), a1);
+            a2 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row.add(32)), a2);
+            a3 = _mm512_fmadd_ps(va, _mm512_loadu_ps(row.add(48)), a3);
+        }
+        _mm512_storeu_ps(out_row.add(col), _mm512_add_ps(a0, b0));
+        _mm512_storeu_ps(out_row.add(col + 16), _mm512_add_ps(a1, b1));
+        _mm512_storeu_ps(out_row.add(col + 32), _mm512_add_ps(a2, b2));
+        _mm512_storeu_ps(out_row.add(col + 48), _mm512_add_ps(a3, b3));
+        col += 64;
+    }
+    while col + 16 <= n {
+        let mut acc = _mm512_setzero_ps();
+        for p in 0..k {
+            let a = _mm512_set1_ps(*left_row.add(p));
+            let b = _mm512_loadu_ps(right.add(p * n + col));
+            acc = _mm512_fmadd_ps(a, b, acc);
+        }
+        _mm512_storeu_ps(out_row.add(col), acc);
+        col += 16;
     }
     while col < n {
         let mut sum = 0.0f32;

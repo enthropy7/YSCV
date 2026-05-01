@@ -14,9 +14,30 @@ keywords.workspace = true
 name = "yscv-llm-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "kernel_bench"
+path = "src/bin/kernel_bench.rs"
+
+[[bin]]
+name = "calib_accuracy"
+path = "src/bin/calib_accuracy.rs"
+
+[[bin]]
+name = "inspect"
+path = "src/bin/inspect.rs"
+
+[[bin]]
+name = "quantize_tracker"
+path = "src/bin/quantize_tracker.rs"
+
+[[bin]]
+name = "bench_tracker"
+path = "src/bin/bench_tracker.rs"
+
 [dependencies]
 yscv-onnx = { version = "0.1", path = "../../crates/yscv-onnx", default-features = false }
 yscv-tensor = { version = "0.1", path = "../../crates/yscv-tensor" }
+yscv-kernels = { version = "0.1", path = "../../crates/yscv-kernels", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror.workspace = true

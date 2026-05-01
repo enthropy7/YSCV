@@ -61,27 +61,25 @@ pub(crate) fn conv2d_nhwc_backward(
                 .unwrap_or(false);
 
             let gw = if needs_weight {
-                match backend.conv2d_weight_backward(upstream, iv, &w_shape, stride_h, stride_w) {
-                    Ok(t) => Some(t),
-                    Err(_e) => {
+                backend
+                    .conv2d_weight_backward(upstream, iv, &w_shape, stride_h, stride_w)
+                    .inspect_err(|_e| {
                         #[cfg(debug_assertions)]
                         eprintln!("[autograd] conv2d_weight_backward GPU fallback: {_e}");
-                        None
-                    }
-                }
+                    })
+                    .ok()
             } else {
                 Some(Tensor::zeros(vec![1])?) // placeholder, won't be used
             };
 
             let gb = if gw.is_some() && needs_bias {
-                match backend.conv2d_bias_backward(upstream, c_out) {
-                    Ok(t) => Some(t),
-                    Err(_e) => {
+                backend
+                    .conv2d_bias_backward(upstream, c_out)
+                    .inspect_err(|_e| {
                         #[cfg(debug_assertions)]
                         eprintln!("[autograd] conv2d_bias_backward GPU fallback: {_e}");
-                        None
-                    }
-                }
+                    })
+                    .ok()
             } else if gw.is_some() {
                 Some(Tensor::zeros(vec![1])?) // placeholder, won't be used
             } else {
