@@ -75,9 +75,11 @@ pub struct PackedI8B {
     k: usize,
     n: usize,
     bt: Vec<i8>,
+    #[cfg(target_arch = "x86_64")]
     vnni_4x16: Option<PackedI8BVnni4x16>,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[derive(Debug, Clone)]
 struct PackedI8BVnni4x16 {
     k4_full: usize,
@@ -105,6 +107,7 @@ impl PackedI8B {
 /// Pack row-major `b` (`[K, N]`) for repeated INT8 GEMM calls.
 pub fn pack_i8_b_for_matmul(b: &[i8], k: usize, n: usize) -> PackedI8B {
     debug_assert_eq!(b.len(), k * n);
+    #[cfg(target_arch = "x86_64")]
     let vnni_4x16 = if n.is_multiple_of(16) && k >= 4 {
         let (bp, k4_full) = pack_b_vnni_4x16(b, k, n);
         let mut col_sum_b_vnni = vec![0_i32; n];
@@ -127,6 +130,7 @@ pub fn pack_i8_b_for_matmul(b: &[i8], k: usize, n: usize) -> PackedI8B {
         k,
         n,
         bt: transpose_b(b, k, n),
+        #[cfg(target_arch = "x86_64")]
         vnni_4x16,
     }
 }
@@ -517,6 +521,7 @@ unsafe fn int8_matmul_prepacked_avx_vnni(a: &[i8], b: &PackedI8B, m: usize, out:
 /// 64 bytes are interleaved so a single ZMM load gives one VNNI input.
 /// Caller must guarantee `n % 16 == 0`; K is rounded down to a multiple
 /// of 4 (`k4_full`), the K tail handled scalar-side.
+#[cfg(target_arch = "x86_64")]
 fn pack_b_vnni_4x16(b: &[i8], k: usize, n: usize) -> (Vec<i8>, usize) {
     debug_assert_eq!(n % 16, 0);
     let k4_full = (k / 4) * 4;
