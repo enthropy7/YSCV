@@ -16,12 +16,14 @@ fi
 CRATES=(
     yscv-tensor       # no yscv deps
     yscv-video-mpp    # no yscv deps, standalone
-    yscv-kernels      # <- tensor
+    yscv-threadpool   # no yscv deps (kernels + onnx depend on it)
+    yscv-kernels      # <- tensor, threadpool
     yscv-imgproc      # <- tensor
     yscv-video        # <- tensor
     yscv-recognize    # <- tensor
     yscv-autograd     # <- kernels, tensor
-    yscv-onnx         # <- kernels, tensor
+    yscv-onnx         # <- kernels, tensor, threadpool
+    yscv-quantize-cli # <- onnx, tensor (binary crate)
     yscv-optim        # <- autograd, tensor
     yscv-detect       # <- onnx, tensor, video
     yscv-pipeline     # <- kernels, tensor, onnx, (video optional)

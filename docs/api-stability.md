@@ -38,11 +38,9 @@ Before any version bump, all of these must be true:
 
 ## Publishing
 
-Crates must be published in dependency order because each crate depends on the ones before it. The order is automated via `scripts/publish.sh`:
+Crates must be published in dependency order because each crate depends on the ones before it. The order is automated via `scripts/publish.sh` (see the `CRATES=(…)` array there for the canonical list).
 
-1. yscv-tensor → 2. yscv-kernels → 3. yscv-autograd → 4. yscv-optim → 5. yscv-imgproc → 6. yscv-video → 7. yscv-video-mpp → 8. yscv-onnx → 9. yscv-pipeline → 10. yscv-detect → 11. yscv-recognize → 12. yscv-track → 13. yscv-eval → 14. yscv-model → 15. yscv-cli → 16. yscv (umbrella)
-
-The `apps/bench` and `apps/camera-face-tool` binaries live in the workspace but are not part of the 16-crate library set and are not published to crates.io.
+Published library/binary crates include `yscv-threadpool` and `yscv-quantize-cli`; workspace `apps/*` and `examples` are not published to crates.io.
 
 To bump all crate versions at once, run `scripts/bump-version.sh <version>`.
 
