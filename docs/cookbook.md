@@ -32,7 +32,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-yscv = "0.1.7"
+yscv = "0.1.8"
 ```
 
 That's it. No Python, no C++ libraries, no system packages required. On macOS, Apple's Accelerate framework is used automatically for BLAS.
@@ -41,9 +41,9 @@ For GPU support, add feature flags:
 
 ```toml
 [dependencies]
-yscv = { version = "0.1.7", features = ["gpu"] }           # wgpu (Vulkan/Metal/DX12)
+yscv = { version = "0.1.8", features = ["gpu"] }           # wgpu (Vulkan/Metal/DX12)
 # or
-yscv = { version = "0.1.7", features = ["metal-backend"] }  # Metal-native (macOS only, fastest)
+yscv = { version = "0.1.8", features = ["metal-backend"] }  # Metal-native (macOS only, fastest)
 ```
 
 ### Verify it works
@@ -229,7 +229,7 @@ LossKind::Huber
 
 ## ONNX Inference (CPU)
 
-Load any ONNX model and run inference on CPU. No GPU required. Supports 128+ ONNX operators including opset 22.
+Load any ONNX model and run inference on CPU. No GPU required. Supports 122 ONNX operators including opset 22.
 
 ```rust
 use yscv_onnx::{load_onnx_model_from_file, run_onnx_model};

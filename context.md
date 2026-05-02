@@ -10,7 +10,7 @@ and PR workflow.
 
 ## Architecture
 
-18 library crates, 2 apps, 1 examples crate.
+18 library crates, 3 apps, 1 examples crate.
 
 ```
 yscv (umbrella re-export)
@@ -36,7 +36,7 @@ yscv (umbrella re-export)
 
 | Metric | Value |
 |--------|-------|
-| Tests | **1,807** |
+| Tests | **1,861** |
 | ONNX operators | **122** |
 | Tensor methods | **159** |
 | Imgproc ops | **160** |

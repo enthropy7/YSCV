@@ -16,13 +16,13 @@ The crates form a layered architecture. Lower layers know nothing about higher l
 `yscv-autograd` builds on kernels to provide a dynamic computation graph with tape-based reverse-mode autodiff. `yscv-optim` provides optimizers and schedulers.
 
 **Layer 3 — Model and Training:**
-`yscv-model` combines autograd, kernels, and optim into a high-level training API with 39 layer types, 17 loss functions, the `Trainer` helper, model zoo (13 architectures), TensorBoard logging, StreamingDataLoader, LoRA, EMA, mixed precision, distributed training (AllReduce + pipeline parallel + tensor sharding), and gradient clipping.
+`yscv-model` combines autograd, kernels, and optim into a high-level training API with 39 layer types, 17 loss functions, the `Trainer` helper, model zoo (17 architectures), TensorBoard logging, StreamingDataLoader, LoRA, EMA, mixed precision, distributed training (AllReduce + pipeline parallel + tensor sharding), and gradient clipping.
 
 **Layer 4 — Domain:**
-`yscv-imgproc` (159 image processing ops), `yscv-video` (H.264/HEVC codecs, hardware decode, MP4/MKV containers, camera, audio metadata), `yscv-detect` (YOLOv8/v11), `yscv-track` (DeepSORT/ByteTrack/Kalman), `yscv-recognize` (VP-Tree matching, Recognizer), `yscv-eval` (classification/detection/tracking/regression/image-quality metrics + 8 dataset adapters), and `yscv-onnx` (128 CPU op runtime + ~20-op Metal/MPSGraph plan compiler with triple-buffered async `submit`/`wait` API for multi-input models) each handle a specific domain. They depend on the foundation but not on each other (except detect → video for frame types, track → detect for detection types).
+`yscv-imgproc` (160 image processing ops), `yscv-video` (H.264/HEVC codecs, hardware decode, MP4/MKV containers, camera, audio metadata), `yscv-detect` (YOLOv8/v11), `yscv-track` (DeepSORT/ByteTrack/Kalman), `yscv-recognize` (VP-Tree matching, Recognizer), `yscv-eval` (classification/detection/tracking/regression/image-quality metrics + 8 dataset adapters), and `yscv-onnx` (122 CPU op runtime + ~20-op Metal/MPSGraph plan compiler with triple-buffered async `submit`/`wait` API for multi-input models) each handle a specific domain. They depend on the foundation but not on each other (except detect → video for frame types, track → detect for detection types).
 
 **Layer 5 — Applications:**
-`yscv-cli` (in-workspace crate) plus `apps/bench` and `apps/camera-face-tool` are end-to-end binaries that wire everything together. The `apps/` programs are not part of the 14-crate workspace library set; they live alongside it as standalone applications.
+`yscv-cli` (in-workspace crate) plus `apps/bench` and `apps/camera-face-tool` are end-to-end binaries that wire everything together. The `apps/` programs are not part of the 18-crate workspace library set; they live alongside it as standalone applications.
 
 ## SIMD dispatch model
 

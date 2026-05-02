@@ -39,6 +39,20 @@ zero/random benchmark inputs for speed only, `--iters 200`, median p50:
 | QLinear export + both fused chains + SIMD requant epilogue (`int8_requant::requant_i32_row_to_i8_dispatch` AVX-512BW / AVX2 / NEON, 3x200 iter median, 36 chains/inference) | 1 | **34.23 ms** | 29.38 ms | replaces scalar f32 round/clamp inner loop with 16-lane (AVX-512BW) / 8-lane (AVX2) / 4-lane (NEON) SIMD; 60% total win vs original QLinear at 1T, within **1.17× of ORT** |
 | QLinear export + both fused chains + SIMD requant epilogue (`int8_requant::requant_i32_row_to_i8_dispatch` AVX-512BW / AVX2 / NEON, 3x200 iter median, 36 chains/inference) | 6 | **22.37 ms** | 10.31 ms | 71% total win vs original QLinear at 6T |
 
+### Independent rerun snapshot (2026-05-01)
+
+Same harness (`apps/llm-bench/scripts/bench_tracker_quant_matrix.sh`), same
+model/shapes, `iters=200`, `runs=3`; table values are median of run p50.
+
+| Pipeline | Threads | yscv p50 | yscv FPS | ORT p50 | ORT FPS | yscv vs ORT |
+|---|---:|---:|---:|---:|---:|---:|
+| fp32 | 1 | 11.735 ms | 85.22 | 8.300 ms | 120.48 | 1.41x slower |
+| fp32 | 6 | 3.506 ms | 285.23 | 1.890 ms | 529.10 | 1.86x slower |
+| QDQ-fast | 1 | 11.969 ms | 83.55 | 8.439 ms | 118.50 | 1.42x slower |
+| QDQ-fast | 6 | 4.107 ms | 243.51 | 2.038 ms | 490.68 | 2.02x slower |
+| QLinear | 1 | 31.837 ms | 31.41 | 30.530 ms | 32.75 | 1.04x slower |
+| QLinear | 6 | 20.802 ms | 48.07 | 9.944 ms | 100.56 | 2.09x slower |
+
 The QLinear numbers are not the shipping quantized target yet: they are
 the explicit standard-ONNX QLinear graph. The default yscv speed path is
 still QDQ-fast while QLinear is being used as an interoperability and
@@ -46,11 +60,13 @@ kernel bring-up target. Accuracy gates must use representative paired
 template/search crops; synthetic random calibration is smoke-only.
 The workspace-native `bench_tracker` harness reports quant-runtime
 counters; current QDQ-fast runs show `qlinear_conv_fast=0`, while QLinear
-runs execute 88 `QLinearConv` fast paths and 49 quant-domain QDQ
-boundaries per inference. QLinearConv / QuantizeLinear outputs now live in
-an internal i8 side-table until a true fp32 consumer requests materialization;
-the tracker QLinear path reports 176 i8 stores and 0 quant materializations
-per inference. VNNI-friendly pointwise/MatMul RHS tensors are now packed once
+runs in the latest rerun report `quant_chain_executed=36`,
+`quant_chain_fallback=15`, `qlinear_conv_fast=3200`, `qdq_boundaries=2600`,
+`quant_i8_stores=20800`, and `quant_i8_materializations=0` over 200
+iterations (about 16 fast QLinearConv hits, 13 quant-domain boundaries, and
+104 i8 stores per inference). QLinearConv / QuantizeLinear outputs now live in
+an internal i8 side-table until a true fp32 consumer requests materialization.
+VNNI-friendly pointwise/MatMul RHS tensors are now packed once
 at model load into the 4x16 AVX-512 VNNI layout, avoiding per-inference RHS
 packing on explicit QLinearConv pointwise layers. Entry `QuantizeLinear` nodes
 that feed QLinear activations now quantize directly into i8 side-table storage
@@ -65,6 +81,8 @@ now execute 36 fused chains per inference on the desktop tracker
 candidates are residual `Conv-Add-Q` patterns out of scope for this arc).
 Each fused dispatch removes two `qlinear_conv_fast` hits and one QDQ
 boundary on the per-op path.
+
+See also the rerun snapshot in [`perf-arc-2026-04.md`](perf-arc-2026-04.md).
 
 ## Hot kernel paths
 

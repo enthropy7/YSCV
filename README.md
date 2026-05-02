@@ -8,7 +8,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/enthropy7/yscv?style=flat&logo=github)](https://github.com/enthropy7/yscv/stargazers)
 [![CI](https://github.com/enthropy7/yscv/actions/workflows/ci.yml/badge.svg)](https://github.com/enthropy7/yscv/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1861%20passing%20%7C%201897%20all--features-brightgreen.svg)]()
+![Tests](https://img.shields.io/badge/tests-1861%20passing%20%7C%201897%20all--features-brightgreen.svg)
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
@@ -156,7 +156,7 @@ The framework is split into 18 crates, each doing one thing well:
 | `yscv-track` | DeepSORT, ByteTrack, Kalman filter, Hungarian assignment, Re-ID |
 | `yscv-recognize` | Cosine matching, VP-Tree ANN indexing, Recognizer with enroll/match |
 | `yscv-eval` | Classification/detection/tracking/regression/image-quality metrics, 8 dataset adapters |
-| `yscv-onnx` | 128+ op ONNX CPU runtime, INT4/INT8 quantization, LLM generation (KV-cache, RoPE, GQA), graph optimizer, Metal/MPSGraph GPU |
+| `yscv-onnx` | 122-op ONNX CPU runtime, INT4/INT8 quantization, LLM generation (KV-cache, RoPE, GQA), graph optimizer, Metal/MPSGraph GPU |
 | `yscv-pipeline` | TOML-driven multi-accelerator dispatch (CPU / RKNN / MPSGraph / GPU), RT wiring, recovery, hot-reload |
 | `yscv-video-mpp` | Rockchip MPP hardware encoder integration (H.264, H.265) |
 | `yscv-cli` | Inference + evaluation CLI: camera diagnostics, dataset eval, pipeline runner |
@@ -292,4 +292,4 @@ YSCV is faster than PyTorch on individual operations (85 benchmark wins across a
 
 ## License
 
-Licensed under either of [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
+Licensed under [LICENSE](LICENSE).

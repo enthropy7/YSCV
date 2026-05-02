@@ -10,7 +10,7 @@ The framework covers the full pipeline: tensors and autograd, neural network lay
 
 ## Project shape
 
-The workspace has 16 library crates, 2 application binaries (`apps/bench`, `apps/camera-face-tool`), and an examples crate (21 examples in `examples/src/`). There are 1,861 default tests (1,897 with `--features "rknn metal-backend gpu realtime rknn-validate"`) across the 16 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.1.7`.
+The workspace has 18 library crates, 3 application binaries (`apps/bench`, `apps/camera-face-tool`, `apps/llm-bench`), and an examples crate (26 examples in `examples/src/`). There are 1,861 default tests (1,897 with `--features "rknn metal-backend gpu realtime rknn-validate"`) across the 18 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.1.8`.
 
 Key crates and what they do:
 
@@ -18,14 +18,14 @@ Key crates and what they do:
 - **yscv-kernels** — CPU and GPU compute backends. SIMD dispatch (AVX + SSE + NEON with scalar fallback), 61 WGSL + 4 Metal compute shaders, rayon threading.
 - **yscv-autograd** — dynamic computation graph with 61 `Op` variants and gradient checkpointing.
 - **yscv-optim** — 8 optimizers (SGD/Adam/AdamW/RAdam/RmsProp/Adagrad/Lamb/Lars) all with NEON+AVX+SSE SIMD, Lookahead meta-optimizer, 11 LR schedulers.
-- **yscv-model** — 39 `ModelLayer` variants, Trainer API, model zoo (13 architectures: ResNet18/34/50/101, VGG16/19, MobileNetV2, EfficientNetB0, AlexNet, ViTTiny/Base/Large, DeiTTiny), 17 loss functions, LoRA, EMA, mixed precision, TensorBoard logging, StreamingDataLoader, distributed training.
-- **yscv-imgproc** — 159 free public image processing functions in `ops/`. The u8 operations (grayscale, blur, morphology, edge detection, resize) have hand-written NEON, AVX2 and SSE/SSSE3 SIMD and beat OpenCV 4.13 on all benchmarked operations.
+- **yscv-model** — 39 `ModelLayer` variants, Trainer API, model zoo (17 architectures), 17 loss functions, LoRA, EMA, mixed precision, TensorBoard logging, StreamingDataLoader, distributed training.
+- **yscv-imgproc** — 160 free public image processing functions in `ops/`. The u8 operations (grayscale, blur, morphology, edge detection, resize) have hand-written NEON, AVX2 and SSE/SSSE3 SIMD and beat OpenCV 4.13 on all benchmarked operations.
 - **yscv-video** — H.264/HEVC software decode (4.5×/1.4× faster than ffmpeg), MP4/MKV demux, HW decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), audio metadata extraction (AAC/ALAC/Opus/Vorbis/MP3/FLAC), camera I/O (V4L2/AVFoundation/MediaFoundation via `nokhwa`). 220 tests, 21 named SIMD functions (8 NEON + 11 SSE2 + 2 AVX2).
 - **yscv-detect** — YOLOv8 + YOLOv11 ONNX pipelines, NMS (hard/soft/batched), heatmap decoding, anchor generation, RoI pool/align.
 - **yscv-track** — DeepSORT, ByteTrack, 8-state Kalman filter, Hungarian assignment, ReId (color histogram + gallery).
 - **yscv-recognize** — cosine similarity matching, VP-Tree ANN indexing, `Recognizer` with enroll/match and JSON snapshot persistence.
 - **yscv-eval** — 37 public metric/eval functions (mAP, MOTA, HOTA, IDF1, PSNR, SSIM, classification, regression, counting, camera diagnostics), 8 dataset adapters (COCO, JSONL, KITTI, MOT, OpenImages, VOC, WIDERFACE, YOLO).
-- **yscv-onnx** — 128 op ONNX CPU runtime with INT8 quantization, graph optimization (Conv+BN folding, constant folding, Conv+ReLU/BN+ReLU fusion, dead code elimination), fp16/bf16 cast-compute-cast, dynamic shapes; Metal/MPSGraph plan compiler with ~17 op kinds.
+- **yscv-onnx** — 122-op ONNX CPU runtime with INT8 quantization, graph optimization (Conv+BN folding, constant folding, Conv+ReLU/BN+ReLU fusion, dead code elimination), fp16/bf16 cast-compute-cast, dynamic shapes; Metal/MPSGraph plan compiler with ~17 op kinds.
 - **yscv-cli** — command-line tool for inference, benchmarking, and evaluation.
 
 ## Performance philosophy
@@ -82,7 +82,7 @@ Every change should follow this workflow:
 3. **Test** — add or update tests. New logic needs tests. Performance code needs benchmarks.
 4. **Document** — if behavior or public APIs changed, update docs in the same commit.
 5. **Update capability matrix** — if a new capability was added, update `docs/ecosystem-capability-matrix.md`.
-6. **Check freshness** — verify that `agents.md` and `context.md` still reflect reality.
+6. **Check freshness** — verify that `AGENTS.md` and `context.md` still reflect reality.
 
 ### Technical constraints
 

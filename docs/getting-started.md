@@ -46,7 +46,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-yscv = "0.1.7"
+yscv = "0.1.8"
 
 [profile.release]
 lto = "thin"
@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 cargo run --release
 ```
 
-This is the **CPU runner** — pure Rust, 128+ ONNX ops, NEON/AVX
+This is the **CPU runner** — pure Rust, 122 ONNX ops, NEON/AVX
 SIMD. For YOLO post-processing (decoding bbox grid + NMS) see
 [examples/src/yolo_detect.rs](../examples/src/yolo_detect.rs) — it's
 ~150 lines and you can copy-paste the relevant bits.
@@ -145,7 +145,7 @@ SIMD. For YOLO post-processing (decoding bbox grid + NMS) see
 On macOS, add `metal-backend` to the feature list:
 
 ```toml
-yscv = { version = "0.1.7", features = ["metal-backend"] }
+yscv = { version = "0.1.8", features = ["metal-backend"] }
 ```
 
 ```rust
@@ -296,7 +296,7 @@ priorities — the framework offers a TOML-driven runtime.
 
 ```toml
 [dependencies]
-yscv-pipeline = { version = "0.1.7", features = ["rknn", "realtime"] }
+yscv-pipeline = { version = "0.1.8", features = ["rknn", "realtime"] }
 ```
 
 `config.toml`:
@@ -420,9 +420,9 @@ in a high-level API.
 | If you want to... | Read |
 |---|---|
 | Browse all 160 image-processing ops | [docs/cookbook.md §image processing](cookbook.md#image-processing) |
-| Fine-tune a YOLO on your data | [docs/cookbook.md §yolo finetune](cookbook.md#yolo-finetune) |
+| Fine-tune a YOLO on your data | [docs/cookbook.md §fine-tuning a detection head](cookbook.md#fine-tuning-a-detection-head) |
 | Decode video faster than ffmpeg | [docs/video-pipeline.md](video-pipeline.md) |
-| Cross-compile for ARM Linux | [docs/cookbook.md §cross-compilation](cookbook.md#cross-compilation) |
+| Cross-compile for ARM Linux | [docs/cookbook.md §cross-compilation](cookbook.md#cross-compilation-and-deployment) |
 | Understand the architecture | [docs/architecture.md](architecture.md) |
 | Compare against PyTorch / OpenCV / ORT | [docs/performance-benchmarks.md](performance-benchmarks.md) |
 | Wire up a custom NPU op | [docs/edge-deployment.md §custom ops](edge-deployment.md) |

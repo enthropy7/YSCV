@@ -40,7 +40,7 @@ Pick your starting point.
 ### Inference
 
 - **[onnx-inference.md](onnx-inference.md)** — ONNX runtime: CPU
-  (128+ ops), Apple MPSGraph, wgpu (cross-platform GPU). Triple-
+  (122 ops), Apple MPSGraph, wgpu (cross-platform GPU). Triple-
   buffered submit/wait API for sustained throughput.
 - **[onnx-cpu-kernels.md](onnx-cpu-kernels.md)** — CPU hot-path map
   for ONNX Conv/MatMul: fused kernels, asm vs intrinsics coverage,
@@ -120,7 +120,7 @@ Pick your starting point.
 | [yscv-track](../crates/yscv-track/README.md) | DeepSORT, ByteTrack, Kalman filter, Hungarian assignment. |
 | [yscv-recognize](../crates/yscv-recognize/README.md) | Cosine matching, VP-Tree ANN indexing, enroll/match. |
 | [yscv-eval](../crates/yscv-eval/README.md) | Classification / detection / tracking / regression / image-quality metrics. |
-| [yscv-onnx](../crates/yscv-onnx/README.md) | 128+ op ONNX CPU runtime, INT4/INT8 quantization, LLM generation, MPSGraph GPU. |
+| [yscv-onnx](../crates/yscv-onnx/README.md) | 122-op ONNX CPU runtime, INT4/INT8 quantization, LLM generation, MPSGraph GPU. |
 | [yscv-pipeline](../crates/yscv-pipeline/README.md) | TOML-driven multi-accelerator dispatch, RT wiring, recovery. |
 | [yscv-cli](../crates/yscv-cli/README.md) | Inference + evaluation CLI: camera diagnostics, dataset eval, pipeline runner. |
 

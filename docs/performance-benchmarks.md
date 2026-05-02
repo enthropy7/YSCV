@@ -2,7 +2,7 @@
 
 Comprehensive benchmark results comparing yscv against NumPy, PyTorch, OpenCV, ffmpeg, onnxruntime, and CoreML.
 
-**Last updated**: 2026-04-21 | **Tests**: 1,861 default / 1,897 all-features across 18 crates | **CI**: macOS + Linux + Windows + ARM64
+**Last updated**: 2026-04-25 | **Tests**: 1,861 default / 1,897 all-features across 18 crates | **CI**: macOS + Linux + Windows + ARM64
 
 ## Hardware & Methodology
 
@@ -522,6 +522,9 @@ at 4 threads.
 Kernel-path notes for this run (streaming fused Conv paths, asm vs
 intrinsics, and runtime A/B toggles):
 [`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
+Latest private Zen4 rerun snapshot (fp32 / QDQ-fast / QLinear, 1T/6T):
+[`onnx-cpu-kernels.md`](onnx-cpu-kernels.md) and
+[`perf-arc-2026-04.md`](perf-arc-2026-04.md).
 
 ## Cross-Platform SIMD Coverage
 
@@ -564,7 +567,7 @@ intrinsics, and runtime A/B toggles):
 | yscv-kernels | 120 | CPU ops, GPU backend, SIMD activation, GEMM |
 | yscv-autograd | 106 | Forward/backward graph, all op gradients |
 | yscv-eval | 95 | COCO/YOLO/VOC/KITTI/WiderFace/MOT metrics |
-| yscv-onnx | 166 | Per-operator coverage for all 128 CPU dispatch arms, fusion regressions, quantization, vision ops |
+| yscv-onnx | 166 | Per-operator coverage for all 122 CPU dispatch arms, fusion regressions, quantization, vision ops |
 | yscv-optim | 76 | SGD, Adam, LR schedulers, weight decay |
 | yscv-detect | 60 | YOLOv8/v11 decode, NMS, letterbox |
 | yscv-track | 57 | Hungarian, Kalman, IoU matching |

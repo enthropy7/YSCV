@@ -23,7 +23,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-yscv = "0.1.7"
+yscv = "0.1.8"
 
 [profile.release]
 lto = "thin"
@@ -53,7 +53,7 @@ cargo run --release
 That's it. **160 image-processing operations** are available — find the
 ones you need in [docs/cookbook.md](docs/cookbook.md). For YOLO
 detection with bbox decode + NMS, see
-[§Object detection](docs/cookbook.md#object-detection).
+[§Object detection](docs/cookbook.md#yolo-object-detection).
 
 ---
 
@@ -101,7 +101,7 @@ cargo run --release
 For real datasets (COCO, ImageFolder, JSONL), see
 [docs/dataset-adapters.md](docs/dataset-adapters.md). For pretrained
 weights (ResNet, ViT, MobileNet — 17 architectures), see
-[§Model zoo in cookbook](docs/cookbook.md#model-zoo).
+[§Model zoo in cookbook](docs/cookbook.md#image-classification-with-pretrained-model).
 
 ---
 
@@ -117,7 +117,7 @@ cargo new my-drone-app && cd my-drone-app
 
 ```toml
 [dependencies]
-yscv-pipeline = { version = "0.1.7", features = ["rknn", "realtime"] }
+yscv-pipeline = { version = "0.1.8", features = ["rknn", "realtime"] }
 
 [profile.release]
 lto = "thin"

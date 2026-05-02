@@ -25,6 +25,31 @@ Hardware: AMD Ryzen 5 7500F (Zen 4, 6C/12T), NixOS, no-BLAS default build.
 
 ---
 
+## Re-run snapshot (2026-05-01, identical tracker harness)
+
+Independent re-run from the workspace script:
+`apps/llm-bench/scripts/bench_tracker_quant_matrix.sh`.
+
+Method:
+- same model and shapes (`input.1:1x3x128x128`, `input.249:1x3x256x256`)
+- `iters=200`, `runs=3` for each cell
+- values below are **median of run p50** (ms), plus FPS (`1000/ms`)
+
+| pipeline | threads | yscv p50 (ms) | yscv FPS | ORT p50 (ms) | ORT FPS | yscv vs ORT |
+|---|---:|---:|---:|---:|---:|---:|
+| fp32 | 1T | 11.735 | 85.22 | 8.300 | 120.48 | 1.41x slower |
+| fp32 | 6T | 3.506 | 285.23 | 1.890 | 529.10 | 1.86x slower |
+| qdq-fast | 1T | 11.969 | 83.55 | 8.439 | 118.50 | 1.42x slower |
+| qdq-fast | 6T | 4.107 | 243.51 | 2.038 | 490.68 | 2.02x slower |
+| qlinear | 1T | 31.837 | 31.41 | 30.530 | 32.75 | 1.04x slower |
+| qlinear | 6T | 20.802 | 48.07 | 9.944 | 100.56 | 2.09x slower |
+
+Notes:
+- This confirms near-parity on **QLinear 1T** and a larger gap on **QLinear 6T**.
+- ORT prints shape-merge warnings for quantized exports in this setup, but runs complete and timings are stable across runs.
+
+---
+
 ## Landings (default-ON, shipped)
 
 | step | change | 6T p50 delta | notes |

@@ -149,7 +149,7 @@ yscv = "0.1"
 yscv = { version = "0.1", default-features = false }
 ```
 
-See [`performance-benchmarks.md`](performance-benchmarks.md#onnx-siamese-tracker-zen-4-7500f-fp32-cpu)
+See [`performance-benchmarks.md`](performance-benchmarks.md).
 for the tracker-specific numbers and
 [`perf-arc-2026-04.md`](perf-arc-2026-04.md) for why the non-BLAS
 path wins on this class of model.
