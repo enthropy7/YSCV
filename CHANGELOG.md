@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-05-02
+
+### Changed
+
+- Bumped workspace version to `0.1.9` and aligned user-facing documentation
+  and `scripts/check-doc-counts.sh` with the release.
+
 ### Benchmark update — Siamese tracker vs ORT (Apple Silicon)
 
 Fresh measurements against `onnxruntime 1.19.2` on the same M-series
 host, 219-node Siamese tracker model (1×3×128×128 + 1×3×256×256
 inputs):
 
-| Backend | yscv 0.1.8 | ORT 1.19.2 | yscv vs ORT |
+| Backend | yscv 0.1.9 | ORT 1.19.2 | yscv vs ORT |
 |---|---:|---:|---:|
 | CPU | 43.1 FPS (23.2 ms) | 18.9 FPS (53.0 ms) | **2.3×** |
 | GPU sync | 728 FPS (1.37 ms) | 532 FPS (1.88 ms, CoreML) | **1.4×** |

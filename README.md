@@ -25,7 +25,7 @@ We built this because deploying ML in production shouldn't require Docker contai
 
 ```toml
 [dependencies]
-yscv = "0.1.8"
+yscv = "0.1.9"
 ```
 
 Load an image, process it, save the result — three lines:

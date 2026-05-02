@@ -6,7 +6,7 @@ This document explains how yscv handles versioning, what stability guarantees ea
 
 All workspace crates follow [Semantic Versioning 2.0](https://semver.org/). During pre-1.0 development (the current stage), minor version bumps may include breaking changes. Once a crate reaches 1.0, breaking changes will require a major version bump.
 
-All crates currently share workspace version `0.1.8` (defined in the root `Cargo.toml`). The public API is functional and tested, but not yet frozen.
+All crates currently share workspace version `0.1.9` (defined in the root `Cargo.toml`). The public API is functional and tested, but not yet frozen.
 
 ## Stability tiers
 

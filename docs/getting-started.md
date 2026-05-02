@@ -46,7 +46,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-yscv = "0.1.8"
+yscv = "0.1.9"
 
 [profile.release]
 lto = "thin"
@@ -145,7 +145,7 @@ SIMD. For YOLO post-processing (decoding bbox grid + NMS) see
 On macOS, add `metal-backend` to the feature list:
 
 ```toml
-yscv = { version = "0.1.8", features = ["metal-backend"] }
+yscv = { version = "0.1.9", features = ["metal-backend"] }
 ```
 
 ```rust
@@ -296,7 +296,7 @@ priorities — the framework offers a TOML-driven runtime.
 
 ```toml
 [dependencies]
-yscv-pipeline = { version = "0.1.8", features = ["rknn", "realtime"] }
+yscv-pipeline = { version = "0.1.9", features = ["rknn", "realtime"] }
 ```
 
 `config.toml`:

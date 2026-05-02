@@ -285,7 +285,7 @@ Same two-tower Siamese tracker (219 ONNX nodes, inputs 1×3×128×128 +
 against the corresponding ORT provider on the identical host (M-series
 macOS). 200 iterations after 40-iter warmup; p50 is the reported number.
 
-| Backend | yscv 0.1.8 | ORT 1.19.2 | yscv vs ORT |
+| Backend | yscv 0.1.9 | ORT 1.19.2 | yscv vs ORT |
 |---|---:|---:|---:|
 | **CPU** | **43.1 FPS** (23.2 ms) | 18.9 FPS (53.0 ms) | **2.3× faster** |
 | **GPU sync** | **728 FPS** (1.37 ms) | 532 FPS (1.88 ms, CoreML) | **1.4× faster** |
