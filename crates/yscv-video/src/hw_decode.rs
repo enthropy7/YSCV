@@ -681,7 +681,9 @@ pub mod videotoolbox {
     }
 
     /// NEON-accelerated NV12 BT.601 → RGB8.
-    /// Processes 8 pixels per iteration using int16 arithmetic.
+    /// Processes 8 pixels per iteration using i32 widening multiply to avoid
+    /// the i16 overflow that occurs with the half-scale approach when bright
+    /// luma meets saturated chroma (e.g. 149*(Y-16) + 204*(Cr-128) > 32767).
     #[cfg(target_arch = "aarch64")]
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn nv12_bt601_to_rgb_neon(
@@ -697,12 +699,13 @@ pub mod videotoolbox {
 
         let v16 = vdupq_n_s16(16);
         let v128 = vdupq_n_s16(128);
-        let c298 = vdupq_n_s16(149); // 298/2 (work in half-scale to avoid overflow)
-        let c409 = vdupq_n_s16(204); // 409/2
-        let c100 = vdupq_n_s16(50); // 100/2
-        let c208 = vdupq_n_s16(104); // 208/2
-        let c516 = vdupq_n_s16(258u16 as i16); // 516/2 (wraps but ok for signed mul)
-        let half = vdupq_n_s16(64); // 128/2
+        let c298 = vdup_n_s16(298);
+        let c409 = vdup_n_s16(409);
+        let c100 = vdup_n_s16(100);
+        let c208 = vdup_n_s16(208);
+        let c516 = vdup_n_s16(516);
+        let half = vdupq_n_s32(128);
+        let zero16 = vdupq_n_s16(0);
 
         for row in 0..h {
             let y_row = y_ptr.add(row * y_stride);
@@ -711,61 +714,49 @@ pub mod videotoolbox {
             let mut col = 0usize;
 
             while col + 8 <= w {
-                // Load 8 Y values
                 let y8 = vld1_u8(y_row.add(col));
                 let y16 = vreinterpretq_s16_u16(vmovl_u8(y8));
-                let y_adj = vsubq_s16(y16, v16); // Y - 16
+                let y_adj = vsubq_s16(y16, v16);
 
-                // Load 4 UV pairs (interleaved Cb,Cr), duplicate to 8
                 let uv8 = vld1_u8(uv_row.add((col / 2) * 2));
                 let uv16 = vreinterpretq_s16_u16(vmovl_u8(uv8));
-                // Deinterleave: cb = uv[0,2,4,6], cr = uv[1,3,5,7]
-                let cb4 = vuzp1q_s16(uv16, uv16); // even indices
-                let cr4 = vuzp2q_s16(uv16, uv16); // odd indices
-                // Each UV pair covers 2 pixels — duplicate: [a,b,c,d] → [a,a,b,b,c,c,d,d]
+                let cb4 = vuzp1q_s16(uv16, uv16);
+                let cr4 = vuzp2q_s16(uv16, uv16);
                 let cb = vzip1q_s16(cb4, cb4);
                 let cr = vzip1q_s16(cr4, cr4);
-                let cb_adj = vsubq_s16(cb, v128); // Cb - 128
-                let cr_adj = vsubq_s16(cr, v128); // Cr - 128
+                let cb_adj = vsubq_s16(cb, v128);
+                let cr_adj = vsubq_s16(cr, v128);
 
-                // BT.601: work in half-scale (>>7 instead of >>8) to stay in i16
-                // c = 149 * (Y-16)
-                let c_val = vmulq_s16(c298, y_adj);
-                // r = (c + 204*(Cr-128) + 64) >> 7
-                let r16 = vshrq_n_s16(
-                    vaddq_s16(vaddq_s16(c_val, vmulq_s16(c409, cr_adj)), half),
-                    7,
-                );
-                // g = (c - 104*(Cr-128) - 50*(Cb-128) + 64) >> 7
-                let g16 = vshrq_n_s16(
-                    vaddq_s16(
-                        vsubq_s16(
-                            vsubq_s16(c_val, vmulq_s16(c208, cr_adj)),
-                            vmulq_s16(c100, cb_adj),
-                        ),
-                        half,
-                    ),
-                    7,
-                );
-                // b = (c + 258*(Cb-128) + 64) >> 7
-                let b16 = vshrq_n_s16(
-                    vaddq_s16(vaddq_s16(c_val, vmulq_s16(c516, cb_adj)), half),
-                    7,
-                );
+                // Low 4 pixels — widening multiply i16×i16 → i32
+                let y_lo = vget_low_s16(y_adj);
+                let cb_lo = vget_low_s16(cb_adj);
+                let cr_lo = vget_low_s16(cr_adj);
+                let c_lo = vmull_s16(c298, y_lo);
+                let r_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c409, cr_lo)), half), 8);
+                let g_lo = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_lo, vmull_s16(c208, cr_lo)), vmull_s16(c100, cb_lo)), half), 8);
+                let b_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c516, cb_lo)), half), 8);
 
-                // Clamp to [0, 255] and narrow to u8
-                let r8 = vqmovun_s16(vmaxq_s16(r16, vdupq_n_s16(0)));
-                let g8 = vqmovun_s16(vmaxq_s16(g16, vdupq_n_s16(0)));
-                let b8 = vqmovun_s16(vmaxq_s16(b16, vdupq_n_s16(0)));
+                // High 4 pixels
+                let y_hi = vget_high_s16(y_adj);
+                let cb_hi = vget_high_s16(cb_adj);
+                let cr_hi = vget_high_s16(cr_adj);
+                let c_hi = vmull_s16(c298, y_hi);
+                let r_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c409, cr_hi)), half), 8);
+                let g_hi = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_hi, vmull_s16(c208, cr_hi)), vmull_s16(c100, cb_hi)), half), 8);
+                let b_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c516, cb_hi)), half), 8);
 
-                // Interleave RGB and store
-                let rgb_triple = uint8x8x3_t(r8, g8, b8);
-                vst3_u8(dst_row.as_mut_ptr().add(col * 3), rgb_triple);
+                // Narrow i32 → i16, clamp [0,255], narrow i16 → u8
+                let r16 = vcombine_s16(vmovn_s32(r_lo), vmovn_s32(r_hi));
+                let g16 = vcombine_s16(vmovn_s32(g_lo), vmovn_s32(g_hi));
+                let b16 = vcombine_s16(vmovn_s32(b_lo), vmovn_s32(b_hi));
+                let r8 = vqmovun_s16(vmaxq_s16(r16, zero16));
+                let g8 = vqmovun_s16(vmaxq_s16(g16, zero16));
+                let b8 = vqmovun_s16(vmaxq_s16(b16, zero16));
 
+                vst3_u8(dst_row.as_mut_ptr().add(col * 3), uint8x8x3_t(r8, g8, b8));
                 col += 8;
             }
 
-            // Scalar tail
             while col < w {
                 let y_val = *y_row.add(col) as i32;
                 let cb_val = *uv_row.add((col / 2) * 2) as i32;
