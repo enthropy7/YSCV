@@ -18,6 +18,8 @@ mod layout;
 mod matmul;
 mod nchwc_dw3x3;
 mod nchwc_ops;
+pub mod nchwc_pack;
+mod nchwc_pointwise;
 mod norm;
 mod pool;
 pub mod quantize;
@@ -39,8 +41,8 @@ pub use elementwise::{
 pub use matmul::hgemm_6x16_neon;
 pub use matmul::{
     GemmEpilogue, PackedB, matmul_2d, matmul_2d_sequential, matmul_2d_slices,
-    matmul_2d_slices_fused_maybe_packed, matmul_2d_slices_trans_a, matmul_2d_with_config,
-    pack_b_for_session,
+    matmul_2d_slices_fused_maybe_packed, matmul_2d_slices_parallel, matmul_2d_slices_trans_a,
+    matmul_2d_with_config, pack_b_for_session,
 };
 pub use simd::{
     add_reduce_dispatch, binary_same_shape_dispatch, exp_slice_dispatch, fma_slice_dispatch,
@@ -58,9 +60,11 @@ pub use conv::conv2d_nhwc_indirect_padded;
 pub use conv::conv2d_nhwc_padded;
 pub use conv::conv3d;
 pub use conv::{
-    conv2d_nchwc_pointwise_with_activation_prepacked, conv2d_nchwc_with_activation_prepacked,
-    conv2d_nhwc_pointwise_with_residual_relu, conv2d_nhwc_with_activation_prepacked,
-    conv2d_nhwc_with_activation_with_config_and_pool, conv2d_nhwc_with_config_and_pool,
+    conv2d_nchwc_pointwise_with_activation_prepacked,
+    conv2d_nchwc_pointwise_with_residual_activation_prepacked,
+    conv2d_nchwc_with_activation_prepacked, conv2d_nhwc_pointwise_with_residual_relu,
+    conv2d_nhwc_with_activation_prepacked, conv2d_nhwc_with_activation_with_config_and_pool,
+    conv2d_nhwc_with_config_and_pool,
     depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool,
     depthwise_conv2d_nhwc_padded_with_config_and_pool,
     depthwise_conv2d_nhwc_with_activation_with_config_and_pool,
@@ -74,22 +78,41 @@ pub use elementwise::{
     tanh_act_with_config_and_pool,
 };
 pub use embedding::{dropout, embedding_lookup};
-pub use fused_pw_dw_3x3::fused_pw_expand_dw_3x3;
+pub use fused_pw_dw_3x3::dw_prof;
+pub use fused_pw_dw_3x3::{Dw3RowFn, select_dw3_row_fn};
+pub use fused_pw_dw_3x3::{
+    FusedPwDw5x5, FusedPwDwPwReduce, fused_pw_expand_dw_3x3, fused_pw_expand_dw_5x5,
+    fused_pw_expand_dw_pw_reduce_3x3, fused_pw_expand_dw_pw_reduce_5x5,
+    pack_pw_reduce_bias_for_fusion, pack_pw_reduce_weight_for_fusion,
+};
+#[cfg(target_arch = "x86_64")]
+pub use fused_pw_dw_3x3::{
+    compute_dw_row_nchwc_avx512, compute_pw_reduce_row_nchwc_avx512, compute_pw_row_nchwc_avx512,
+    fused_pw_expand_dw_pw_reduce_3x3_nchwc_streaming, pack_dw_weight_nchwc_blocked,
+};
 pub use int8_depthwise::{
     Depthwise3x3I8Params, DepthwiseI8Params, depthwise_i8_i32_nchw_khwc_dispatch,
     depthwise_i8_i32_nchw_khwc_scalar, depthwise_i8_i32_nhwc_dispatch,
-    depthwise_i8_i32_nhwc_scalar, depthwise3x3_i8_i32_nhwc_dispatch,
-    depthwise3x3_i8_i32_nhwc_scalar,
+    depthwise_i8_i32_nhwc_dispatch_with_pool, depthwise_i8_i32_nhwc_scalar,
+    depthwise3x3_i8_i32_nhwc_dispatch, depthwise3x3_i8_i32_nhwc_scalar,
 };
 pub use int8_fused_dw_pw_3x3::{Int8FusedDwPwParams, int8_fused_dw_pw_dispatch};
-pub use int8_fused_pw_dw_3x3::{Int8FusedPwDwParams, int8_fused_pw_dw_dispatch};
-pub use layout::{nchw_to_nchwc, nchw_to_nhwc_fast, nchwc_to_nchw, nchwc_to_nhwc, nhwc_to_nchwc};
+pub use int8_fused_pw_dw_3x3::{
+    Int8FusedPwDwParams, int8_fused_pw_dw_dispatch, int8_fused_pw_dw_with_pw_side_dispatch,
+};
+pub use int8_requant::requant_i32_row_to_i8_dispatch;
+pub use layout::{
+    nchw_to_nchwc, nchw_to_nhwc_fast, nchwc_to_nchw, nchwc_to_nhwc, nhwc_to_nchw_fast,
+    nhwc_to_nchwc,
+};
 pub use matmul::matmul_2d_with_config_and_pool;
 pub use nchwc_dw3x3::conv2d_nchwc_dw3x3_s1_same_pad;
 pub use nchwc_ops::{
     add_nchwc, avg_pool2d_nchwc, batch_norm2d_nchwc, max_pool2d_nchwc, relu_nchwc, sigmoid_nchwc,
     silu_nchwc,
 };
+pub use nchwc_pack::{PackedNChwBc, pack_dw_nchwc_for_session, runtime_nchwc_block};
+pub use nchwc_pointwise::nchwc_pw_compute;
 pub use norm::{
     batch_norm2d_nhwc_with_config_and_pool, group_norm_nhwc_with_config_and_pool,
     layer_norm_last_dim_with_config_and_pool, log_softmax_last_dim_with_config_and_pool,

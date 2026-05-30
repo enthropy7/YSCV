@@ -74,6 +74,13 @@ pub(super) fn exec_fused_transpose_matmul(
     matmul_node: &OnnxNode,
     env: &mut TensorEnv,
 ) -> Result<(), OnnxError> {
+    // When the upstream Reshape elided its NHWC→NCHW permute and propagated
+    // the NHWC tag, the physical data is already in post-transpose
+    // `[..., M, K]` order. Skip the implicit transpose by routing through
+    // `matmul_2d_slices` (non-transposed)
+    // instead of `matmul_2d_slices_trans_a`. The declared shape stays
+    // `[..., K, M]` (NCHW logical) so M/K derivation below is identical.
+    let a_input_is_nhwc = env.is_nhwc(&transpose_node.inputs[0]);
     let a_pre = get_tensor(env, &transpose_node.name, &transpose_node.inputs[0])?;
     let b = get_tensor(env, &matmul_node.name, &matmul_node.inputs[1])?;
 
@@ -118,30 +125,51 @@ pub(super) fn exec_fused_transpose_matmul(
     let a_batch_total: usize = a_batch.iter().product::<usize>().max(1);
     let b_batch_total: usize = b_batch.iter().product::<usize>().max(1);
 
-    let mut out_data = vec![0.0f32; batch_size * out_mat_stride];
-    for batch_idx in 0..batch_size {
-        let a_idx = if a_batch_total == 1 {
-            0
-        } else {
-            batch_idx % a_batch_total
-        };
-        let b_idx = if b_batch_total == 1 {
-            0
-        } else {
-            batch_idx % b_batch_total
-        };
-        let a_slice = &a_data[a_idx * a_mat_stride..(a_idx + 1) * a_mat_stride];
-        let b_slice = &b_data[b_idx * b_mat_stride..(b_idx + 1) * b_mat_stride];
-        let dst = &mut out_data[batch_idx * out_mat_stride..(batch_idx + 1) * out_mat_stride];
-        yscv_kernels::matmul_2d_slices_trans_a(a_slice, m, k, b_slice, n, dst);
+    // Allocate the output directly as `AlignedVec` (was `vec![0.0; N]` +
+    // `Tensor::from_vec` which round-tripped through an unaligned `Vec`
+    // and paid a 16K-float zero-init + memcpy per call). D3 microbench
+    // showed the kernel runs in 44µs/call but the runner wrapper added
+    // ~100µs of overhead per call on the cls_dw / reg_dw heads. The
+    // matmul kernel writes every output element so `uninitialized` is
+    // correct (no read-before-write).
+    #[allow(unsafe_code)]
+    let mut out_aligned =
+        yscv_tensor::AlignedVec::<f32>::uninitialized(batch_size * out_mat_stride);
+    {
+        let out_slice = out_aligned.as_mut_slice();
+        for batch_idx in 0..batch_size {
+            let a_idx = if a_batch_total == 1 {
+                0
+            } else {
+                batch_idx % a_batch_total
+            };
+            let b_idx = if b_batch_total == 1 {
+                0
+            } else {
+                batch_idx % b_batch_total
+            };
+            let a_slice = &a_data[a_idx * a_mat_stride..(a_idx + 1) * a_mat_stride];
+            let b_slice = &b_data[b_idx * b_mat_stride..(b_idx + 1) * b_mat_stride];
+            let dst = &mut out_slice[batch_idx * out_mat_stride..(batch_idx + 1) * out_mat_stride];
+            if a_input_is_nhwc {
+                // Physical data is already in `[M, K]` (post-transpose)
+                // order — skip the trans-A pivot. Use the parallel
+                // (row-distributed) variant so 6T scaling matches the
+                // trans-A path.
+                yscv_kernels::matmul_2d_slices_parallel(a_slice, m, k, b_slice, n, dst);
+            } else {
+                yscv_kernels::matmul_2d_slices_trans_a(a_slice, m, k, b_slice, n, dst);
+            }
+        }
     }
 
     let mut out_shape = out_batch;
     out_shape.push(m);
     out_shape.push(n);
-    let out = Tensor::from_vec(out_shape, out_data).map_err(|e| OnnxError::DecodeFailed {
-        message: e.to_string(),
-    })?;
+    let out =
+        Tensor::from_aligned(out_shape, out_aligned).map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
     env.insert(matmul_node.outputs[0].clone(), out);
     Ok(())
 }
@@ -206,7 +234,39 @@ pub(super) fn exec_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
     let a = get_tensor(env, &node.name, &node.inputs[0])?;
     let b = get_tensor(env, &node.name, &node.inputs[1])?;
 
-    if a.rank() <= 2 && b.rank() <= 2 {
+    if a.rank() == 2 && b.rank() == 2 {
+        let m = a.shape()[0];
+        let k = a.shape()[1];
+        let n = b.shape()[1];
+        if k != b.shape()[0] {
+            return Err(OnnxError::DecodeFailed {
+                message: format!(
+                    "MatMul {} shape mismatch: {:?} x {:?}",
+                    node.name,
+                    a.shape(),
+                    b.shape()
+                ),
+            });
+        }
+        let mut out_data = vec![0.0_f32; m * n];
+        yscv_kernels::matmul_2d_slices_fused_maybe_packed(
+            a.data(),
+            m,
+            k,
+            b.data(),
+            n,
+            &mut out_data,
+            env.prepacked_b(&node.inputs[1]),
+            yscv_kernels::GemmEpilogue::new(None, yscv_kernels::Activation::None),
+            yscv_kernels::ParallelMatmulConfig::default(),
+            None,
+        );
+        let out = Tensor::from_vec(vec![m, n], out_data).map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+        env.insert(node.outputs[0].clone(), out);
+        return Ok(());
+    } else if a.rank() <= 2 && b.rank() <= 2 {
         let out = matmul_2d(a, b).map_err(|e| OnnxError::DecodeFailed {
             message: e.to_string(),
         })?;
@@ -254,6 +314,11 @@ pub(super) fn exec_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
     let b_batch_total: usize = b_batch.iter().product::<usize>().max(1);
 
     let mut out_data = vec![0.0f32; batch_size * out_mat_stride];
+    let packed_b = if b_batch_total == 1 {
+        env.prepacked_b(&node.inputs[1])
+    } else {
+        None
+    };
     for batch_idx in 0..batch_size {
         let a_idx = if a_batch_total == 1 {
             0
@@ -269,8 +334,22 @@ pub(super) fn exec_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
         let b_slice = &b_data[b_idx * b_mat_stride..(b_idx + 1) * b_mat_stride];
         let dst = &mut out_data[batch_idx * out_mat_stride..(batch_idx + 1) * out_mat_stride];
 
-        // Zero-copy: call BLAS/GEMM directly on slices, no Tensor wrapping
-        matmul_2d_slices(a_slice, m, k, b_slice, n, dst);
+        // Zero-copy: call the fused GEMM slice path directly, no Tensor
+        // wrapping. This rank-3 path is the common LLM linear projection
+        // shape (`[1, seq, hidden] @ [hidden, out]`), so it must use the
+        // same parallel/prepacked-B route as rank-2 MatMul.
+        yscv_kernels::matmul_2d_slices_fused_maybe_packed(
+            a_slice,
+            m,
+            k,
+            b_slice,
+            n,
+            dst,
+            if b_idx == 0 { packed_b } else { None },
+            yscv_kernels::GemmEpilogue::new(None, yscv_kernels::Activation::None),
+            yscv_kernels::ParallelMatmulConfig::default(),
+            None,
+        );
     }
 
     let mut out_shape = out_batch;

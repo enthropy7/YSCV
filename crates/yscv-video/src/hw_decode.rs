@@ -733,7 +733,16 @@ pub mod videotoolbox {
                 let cr_lo = vget_low_s16(cr_adj);
                 let c_lo = vmull_s16(c298, y_lo);
                 let r_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c409, cr_lo)), half), 8);
-                let g_lo = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_lo, vmull_s16(c208, cr_lo)), vmull_s16(c100, cb_lo)), half), 8);
+                let g_lo = vshrq_n_s32(
+                    vaddq_s32(
+                        vsubq_s32(
+                            vsubq_s32(c_lo, vmull_s16(c208, cr_lo)),
+                            vmull_s16(c100, cb_lo),
+                        ),
+                        half,
+                    ),
+                    8,
+                );
                 let b_lo = vshrq_n_s32(vaddq_s32(vaddq_s32(c_lo, vmull_s16(c516, cb_lo)), half), 8);
 
                 // High 4 pixels
@@ -742,7 +751,16 @@ pub mod videotoolbox {
                 let cr_hi = vget_high_s16(cr_adj);
                 let c_hi = vmull_s16(c298, y_hi);
                 let r_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c409, cr_hi)), half), 8);
-                let g_hi = vshrq_n_s32(vaddq_s32(vsubq_s32(vsubq_s32(c_hi, vmull_s16(c208, cr_hi)), vmull_s16(c100, cb_hi)), half), 8);
+                let g_hi = vshrq_n_s32(
+                    vaddq_s32(
+                        vsubq_s32(
+                            vsubq_s32(c_hi, vmull_s16(c208, cr_hi)),
+                            vmull_s16(c100, cb_hi),
+                        ),
+                        half,
+                    ),
+                    8,
+                );
                 let b_hi = vshrq_n_s32(vaddq_s32(vaddq_s32(c_hi, vmull_s16(c516, cb_hi)), half), 8);
 
                 // Narrow i32 → i16, clamp [0,255], narrow i16 → u8

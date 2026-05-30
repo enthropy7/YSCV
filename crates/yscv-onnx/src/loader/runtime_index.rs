@@ -1,865 +1,9 @@
-use std::collections::{HashMap, HashSet};
+//! build_runtime_index: the load-time graph optimizer that classifies
+//! each node (NodeKind), plans fusions (NodeAction), and prepacks weights.
 
-use prost::Message;
-use yscv_tensor::Tensor;
+use super::*;
 
-use crate::error::OnnxError;
-use crate::proto::onnx;
-
-/// A named tensor extracted from an ONNX model initializer.
-#[derive(Debug, Clone)]
-pub struct OnnxTensor {
-    pub name: String,
-    pub tensor: Tensor,
-}
-
-/// An ONNX operator node with its type, inputs, outputs, and attributes.
-#[derive(Debug, Clone)]
-pub struct OnnxNode {
-    pub op_type: String,
-    pub name: String,
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
-    pub attributes: HashMap<String, OnnxAttribute>,
-}
-
-/// Supported ONNX attribute value types.
-#[derive(Debug, Clone)]
-pub enum OnnxAttribute {
-    Int(i64),
-    Float(f32),
-    String(String),
-    Ints(Vec<i64>),
-    Floats(Vec<f32>),
-    Tensor(Tensor),
-}
-
-/// Precomputed runtime metadata built once at model load time.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct RuntimeModelIndex {
-    /// Dense slot id per tensor name for TensorEnv hot-path lookups.
-    pub(crate) name_to_id: HashMap<String, usize>,
-    /// Slot ids for weights pre-permuted OIHW -> KHWC.
-    pub(crate) khwc_weight_ids: HashSet<usize>,
-    /// Slot ids for depthwise weights pre-permuted [O,1,KH,KW] -> [KH,KW,C,dm].
-    pub(crate) dw_khwc_weight_ids: HashSet<usize>,
-    /// Slot ids for grouped-conv weights pre-permuted [O,I/G,KH,KW] -> [O,KH,KW,I/G].
-    pub(crate) group_khwc_weight_ids: HashSet<usize>,
-    /// Number of graph uses per value name (input edge count).
-    pub(crate) use_counts: HashMap<String, usize>,
-    /// Dense use-count table indexed by runtime slot id.
-    pub(crate) use_counts_by_id: Vec<usize>,
-    /// Lightweight op tags for fast fusion pattern matching at runtime.
-    pub(crate) node_kinds: Vec<NodeKind>,
-    /// Per-node branch classification for tower-parallel execution of
-    /// siamese-style graphs. 0 = first-input-only, 1 = second-input-only,
-    /// 2 = merge/head. Empty when the graph has no parallelizable split
-    /// (single-input models, or both branches share too many nodes).
-    pub(crate) node_branches: Vec<u8>,
-    /// Pre-resolved slot IDs for each node's inputs.
-    pub(crate) node_input_ids: Vec<Vec<Option<usize>>>,
-    /// Pre-resolved slot IDs for each node's outputs (Session 13 R3).
-    pub(crate) node_output_ids: Vec<Vec<Option<usize>>>,
-    /// Pre-parsed Conv parameters per node. Only populated for Conv nodes.
-    pub(crate) conv_params: Vec<Option<ConvParams>>,
-    /// Pre-compiled execution plan. Each entry maps to a node action.
-    /// Built once at model load — eliminates per-inference dispatch overhead.
-    pub(crate) execution_plan: Vec<NodeAction>,
-    /// Pre-packed B-matrix (blocked-GEMM layout) per constant Conv/MatMul
-    /// weight tensor, keyed by weight tensor name. Built once at model load
-    /// via `yscv_kernels::pack_b_for_session`; shared `Arc` handed to every
-    /// inference, skipping both the fingerprint cache lookup AND the pack
-    /// itself on the hot path. Only populated for weights whose dispatch
-    /// routes through blocked GEMM (pointwise Conv with KHWC layout, MatMul).
-    pub(crate) prepacked_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
-    /// Same pre-packed weights, but indexed by dense runtime slot id.
-    /// Lets hot paths bypass string hashing by using `node_input_ids`.
-    pub(crate) prepacked_weights_by_id: Vec<Option<std::sync::Arc<yscv_kernels::PackedB>>>,
-    /// Load-time packed RHS matrices for symmetric-int8 QLinearConv /
-    /// QLinearMatMul / MatMulInteger fast paths. Keyed by the ONNX
-    /// weight tensor input name; shared by every inference.
-    pub(crate) prepacked_i8_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
-    /// QLinear depthwise 3x3/5x5 weights packed once as KHWC i8 so runtime can
-    /// call the NHWC int8 depthwise kernel without per-inference weight repack.
-    pub(crate) prepacked_i8_depthwise: HashMap<String, std::sync::Arc<Vec<i8>>>,
-}
-
-/// Pre-computed Conv parameters parsed once at model load.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ConvParams {
-    pub stride_h: usize,
-    pub stride_w: usize,
-    pub pad_top: usize,
-    pub pad_left: usize,
-    pub pad_bottom: usize,
-    pub pad_right: usize,
-    pub group: usize,
-    pub has_padding: bool,
-    /// True if group == output_channels (depthwise convolution).
-    pub is_depthwise: bool,
-    /// True if kernel is 1×1 (pointwise convolution).
-    pub is_pointwise: bool,
-}
-
-/// Pre-compiled execution action for JIT dispatch.
-/// Built once at model load, eliminates per-inference NodeKind matching + layout checks.
-#[derive(Debug, Clone)]
-pub(crate) enum NodeAction {
-    /// Conv with pre-resolved params + activation.
-    Conv {
-        node_idx: usize,
-        activation: u8, // 0=None, 1=Relu, 2=Silu
-    },
-    /// Conv + Add (residual) in-place: reuse Conv's output buffer as the Add
-    /// destination. Optionally applies Relu in-place after the Add.
-    ConvAdd {
-        conv_idx: usize,
-        add_idx: usize,
-        skip_input_idx: u8,
-        post_activation: u8, // 0=none, 1=Relu
-        relu_idx: u32,       // valid only when post_activation == 1
-    },
-    /// Fused DW+PW: execute both convolutions back-to-back.
-    FusedDwPw {
-        dw_idx: usize,
-        pw_idx: usize,
-        dw_activation: u8,
-        pw_activation: u8,
-    },
-    /// Fused PW+DW: PW (expansion 1×1) feeds directly into DW, with
-    /// the PW output kept as a local `Tensor` (never inserted into
-    /// `env`). Mirror of `FusedDwPw` for the inverted-bottleneck
-    /// opening — MobileNet-style blocks are `PW_expand → DW → PW_reduce`,
-    /// where the (DW, PW_reduce) pair is typically fused into
-    /// `FusedDwPw` for non-residual blocks and (PW_reduce, Add) into
-    /// `Conv_Add_fused` for residual blocks; the remaining
-    /// (PW_expand, DW) pair is what this variant targets.
-    FusedPwDw {
-        pw_idx: usize,
-        dw_idx: usize,
-        pw_activation: u8,
-        dw_activation: u8,
-    },
-    /// MatMul where the left operand comes directly from a `Transpose`
-    /// with `perm=[0, 2, 1]` (swap of the last two axes of a rank-3
-    /// tensor). The Transpose node is elided at dispatch time: the
-    /// MatMul reads the pre-transpose input via a `transA=1` kernel
-    /// (`matmul_2d_slices_trans_a`), so no intermediate transposed
-    /// tensor hits the env HashMap or memory. Mirrors ORT's
-    /// `MatmulTransposeFusion` contrib op.
-    ///
-    /// `transpose_idx` is the Transpose node's index (for profile
-    /// labels and potential reuse when the Transpose has multiple
-    /// MatMul consumers). `matmul_idx` is the MatMul node.
-    /// `cleanup_transpose` is set only on the LAST `FusedTransposeMatMul`
-    /// that references this transpose — at cleanup time that one is the
-    /// sole variant that decrements the transpose's input-refcount,
-    /// matching the original graph's single Transpose-use of its input
-    /// (e.g. `Reshape_output_0`). Earlier variants re-read the same
-    /// pre-transpose tensor and must not evict it from `env`.
-    FusedTransposeMatMul {
-        transpose_idx: usize,
-        matmul_idx: usize,
-        cleanup_transpose: bool,
-    },
-    /// QLinear boundary cleanup:
-    /// `DequantizeLinear(q, s, 0) -> [Relu] -> QuantizeLinear(_, s, 0)`.
-    /// yscv stores quantized activations as f32 int8 values, so when the
-    /// quant params match we can keep the tensor quantized and optionally
-    /// apply Relu directly in that domain.
-    QuantizedQdq {
-        dequant_idx: usize,
-        relu_idx: Option<usize>,
-        quant_idx: usize,
-    },
-    /// Fused INT8 quant-domain PW → DW chain:
-    /// `QLinearConv(pw 1×1) → DequantizeLinear → [Relu] → QuantizeLinear →
-    /// QLinearConv(dw kxk)` executed as a single kernel call. No fp32
-    /// fallback inside the chain — PW dot stays in VNNI/SDOT/widen, the
-    /// QDQ boundary becomes an i8 requant + clamp, DW reads those i8 bytes
-    /// directly. Bitwise-identical to the unfused per-op execution because
-    /// the boundary fold gate forces `pw_y_zp == dq_zp == q_zp == 0` and
-    /// `dq_scale == q_scale`, the same predicate `QuantizedQdq` already
-    /// uses to fold the boundary.
-    QuantizedPwDw {
-        pw_idx: usize,
-        dq_idx: usize,
-        relu_idx: Option<usize>,
-        q_idx: usize,
-        dw_idx: usize,
-        has_relu: bool,
-    },
-    /// Fused INT8 quant-domain DW → PW chain — the closing pair of an
-    /// inverted bottleneck:
-    /// `QLinearConv(dw kxk) → DequantizeLinear → [Relu] → QuantizeLinear →
-    /// QLinearConv(pw 1×1)` executed as a single kernel call. Same
-    /// boundary-fold gate as `QuantizedPwDw` (zero zero-points everywhere
-    /// except the chain's output `y_zp`, which is PW's here, and matching
-    /// `dq_scale == q_scale`); the kernel reads NHWC i8 input directly,
-    /// requantises in-register at the boundary, and the PW reduction
-    /// consumes the i8 immediately. Bitwise-identical to the unfused
-    /// per-op chain.
-    QuantizedDwPw {
-        dw_idx: usize,
-        dq_idx: usize,
-        relu_idx: Option<usize>,
-        q_idx: usize,
-        pw_idx: usize,
-        has_relu: bool,
-    },
-    /// Generic op — falls through to full dispatch.
-    Generic { node_idx: usize, kind: NodeKind },
-    /// Skipped (fused into previous action).
-    Skip,
-    /// Step A: consecutive NCHWc-capable ops that should execute as a
-    /// single layout-native chain. At runtime, the input is reordered
-    /// NHWC→NCHWc once at chain entry; every inner op runs on NCHWc
-    /// tensors via `*_nchwc` kernels; the last output is reordered
-    /// back to NHWC. Enabled via `YSCV_NCHWC_CHAIN=1` env (default off
-    /// until runner dispatch lands in A.2).
-    ///
-    /// `members` is the list of execution-plan sub-actions that form
-    /// this chain. Each one must be a Conv/ConvAdd/FusedDwPw or other
-    /// NCHWc-capable variant. The original actions are still in
-    /// `execution_plan` but marked `Skip`; `NchwcChain` owns dispatch.
-    NchwcChain {
-        /// Sub-actions belonging to this chain. At most one NchwcChain
-        /// covers any given action index.
-        members: Vec<NchwcChainMember>,
-        /// NHWC input tensor name (consumed once at chain entry).
-        entry_input: String,
-        /// NHWC output tensor name (produced once at chain exit).
-        exit_output: String,
-    },
-}
-
-/// Step A: member of an `NchwcChain`. Stored as an enum (not a bare
-/// `NodeAction` variant reference) so the chain carries all the data
-/// needed for NCHWc dispatch without round-trips through
-/// `execution_plan` indexing.
-#[derive(Debug, Clone)]
-pub(crate) enum NchwcChainMember {
-    /// A single Conv (possibly with fused activation). Corresponds to
-    /// [`NodeAction::Conv`].
-    Conv { node_idx: usize, activation: u8 },
-}
-
-/// Small runtime op classification used by the CPU runner's fusion scanner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NodeKind {
-    Conv,
-    ConvRelu,
-    ConvSilu,
-    BatchNormalization,
-    Relu,
-    Sigmoid,
-    Mul,
-    Gemm,
-    Add,
-    MatMul,
-    Reshape,
-    Constant,
-    Concat,
-    Transpose,
-    Other,
-}
-
-impl NodeKind {
-    #[inline]
-    pub(crate) fn from_op_type(op_type: &str) -> Self {
-        match op_type {
-            "Conv" => Self::Conv,
-            "Conv_Relu" => Self::ConvRelu,
-            "Conv_SiLU" => Self::ConvSilu,
-            "BatchNormalization" => Self::BatchNormalization,
-            "Relu" => Self::Relu,
-            "Sigmoid" => Self::Sigmoid,
-            "Mul" => Self::Mul,
-            "Gemm" => Self::Gemm,
-            "Add" => Self::Add,
-            "MatMul" => Self::MatMul,
-            "Reshape" => Self::Reshape,
-            "Constant" => Self::Constant,
-            "Concat" => Self::Concat,
-            "Transpose" => Self::Transpose,
-            _ => Self::Other,
-        }
-    }
-}
-
-/// Parsed ONNX model containing graph topology and weight tensors.
-#[derive(Debug, Clone)]
-pub struct OnnxModel {
-    pub ir_version: i64,
-    pub opset_version: i64,
-    pub producer_name: String,
-    pub graph_name: String,
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
-    pub initializers: HashMap<String, Tensor>,
-    pub nodes: Vec<OnnxNode>,
-    /// Conv weight names that were pre-permuted OIHW → KHWC at load time.
-    pub(crate) khwc_weights: HashSet<String>,
-    /// Depthwise conv weight names pre-permuted [O,1,KH,KW] → [KH,KW,C,dm] at load time.
-    pub(crate) dw_khwc_weights: HashSet<String>,
-    /// Grouped conv weight names pre-permuted [O,I/G,KH,KW] → [O,KH,KW,I/G] at load time.
-    pub(crate) group_khwc_weights: HashSet<String>,
-    /// MatMul/Gemm weights packed to INT4 with per-group fp32 scales for
-    /// the LLM decode hot path. Keyed by the original initializer name;
-    /// the original `initializers` entry is removed when a weight is
-    /// packed so dispatch routes through `packed_int4_gemv_dispatch`.
-    pub(crate) packed_int4_weights: HashMap<String, crate::quantize::PackedInt4Weight>,
-    /// Precomputed runtime metadata for fast per-inference environment setup.
-    pub(crate) runtime_index: RuntimeModelIndex,
-}
-
-impl OnnxModel {
-    /// Returns the weight tensor for a given initializer name, if present.
-    pub fn get_initializer(&self, name: &str) -> Option<&Tensor> {
-        self.initializers.get(name)
-    }
-
-    /// Returns the number of operator nodes in the graph.
-    pub fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Rebuilds runtime slot/id metadata after graph mutations.
-    pub(crate) fn rebuild_runtime_index(&mut self) {
-        self.runtime_index = build_runtime_index(
-            &self.inputs,
-            &self.outputs,
-            &self.initializers,
-            &self.nodes,
-            &self.khwc_weights,
-            &self.dw_khwc_weights,
-            &self.group_khwc_weights,
-        );
-    }
-}
-
-/// Loads an ONNX model from raw protobuf bytes.
-pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
-    let model_proto = onnx::ModelProto::decode(data).map_err(|e| OnnxError::DecodeFailed {
-        message: e.to_string(),
-    })?;
-
-    let graph = model_proto.graph.ok_or(OnnxError::MissingGraph)?;
-
-    let opset_version = model_proto
-        .opset_import
-        .first()
-        .and_then(|o| o.version)
-        .unwrap_or(0);
-
-    let inputs: Vec<String> = graph
-        .input
-        .iter()
-        .map(|v| v.name.clone().unwrap_or_default())
-        .collect();
-
-    let outputs: Vec<String> = graph
-        .output
-        .iter()
-        .map(|v| v.name.clone().unwrap_or_default())
-        .collect();
-
-    let mut initializers = HashMap::new();
-    for init in &graph.initializer {
-        let name = init.name.clone().unwrap_or_default();
-        let tensor = convert_tensor_proto(init)?;
-        initializers.insert(name, tensor);
-    }
-
-    let mut nodes = Vec::new();
-    for node_proto in &graph.node {
-        let mut attributes = HashMap::new();
-        for attr in &node_proto.attribute {
-            let attr_name = attr.name.clone().unwrap_or_default();
-            let value = convert_attribute(attr);
-            if let Some(v) = value {
-                attributes.insert(attr_name, v);
-            }
-        }
-        nodes.push(OnnxNode {
-            op_type: node_proto.op_type.clone().unwrap_or_default(),
-            name: node_proto.name.clone().unwrap_or_default(),
-            inputs: node_proto.input.clone(),
-            outputs: node_proto.output.clone(),
-            attributes,
-        });
-    }
-
-    // Pre-permute group=1 Conv weights OIHW → KHWC at load time
-    // so we don't pay the ~11ms permutation cost on every inference call.
-    let mut khwc_weights = HashSet::new();
-    for node in &nodes {
-        if node.op_type != "Conv" || node.inputs.len() < 2 {
-            continue;
-        }
-        let weight_name = &node.inputs[1];
-        if khwc_weights.contains(weight_name) {
-            continue;
-        }
-        // Only pre-permute group=1 conv weights
-        let group = node
-            .attributes
-            .get("group")
-            .and_then(|a| match a {
-                OnnxAttribute::Int(v) => Some(*v),
-                _ => None,
-            })
-            .unwrap_or(1);
-        if group != 1 {
-            continue;
-        }
-        if let Some(w) = initializers.get(weight_name)
-            && w.rank() == 4
-            && let Ok(permuted) = w.permute(&[2, 3, 1, 0])
-        {
-            initializers.insert(weight_name.clone(), permuted);
-            khwc_weights.insert(weight_name.clone());
-        }
-    }
-
-    // Pre-pack depthwise dm=1 weights to [KH, KW, C, 1] on CPU-only builds.
-    // This removes per-inference OIHW→depthwise repack work in the hot path.
-    //
-    // Skipped on Metal and wgpu GPU builds: those backends' CPU fallback +
-    // accelerator dispatch paths read weights in the original ONNX OIHW
-    // layout. Keeping the export layout there means the same loader can
-    // feed both CPU and accelerator runners; the accelerator handles its
-    // own pre-permute internally if any.
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    let mut dw_khwc_weights = HashSet::new();
-    #[cfg(any(feature = "metal-backend", feature = "gpu"))]
-    let dw_khwc_weights = HashSet::new();
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    for node in &nodes {
-        if node.op_type != "Conv" || node.inputs.len() < 2 {
-            continue;
-        }
-        let weight_name = &node.inputs[1];
-        if dw_khwc_weights.contains(weight_name) {
-            continue;
-        }
-        let group = node
-            .attributes
-            .get("group")
-            .and_then(|a| match a {
-                OnnxAttribute::Int(v) => Some(*v as usize),
-                _ => None,
-            })
-            .unwrap_or(1);
-        if group <= 1 {
-            continue;
-        }
-
-        if let Some(w) = initializers.get(weight_name)
-            && w.rank() == 4
-        {
-            let ws = w.shape();
-            let (o_ch, i_per_g, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
-            // CPU depthwise fast path currently handles dm=1 only.
-            if i_per_g != 1 || o_ch != group {
-                continue;
-            }
-
-            let w_data = w.data();
-            let mut packed = vec![0.0f32; kh * kw * group];
-            for oc in 0..o_ch {
-                for ki in 0..kh {
-                    for kj in 0..kw {
-                        let src = ((oc * i_per_g) * kh + ki) * kw + kj;
-                        let dst = (ki * kw + kj) * group + oc;
-                        packed[dst] = w_data[src];
-                    }
-                }
-            }
-
-            let packed_t = Tensor::from_vec(vec![kh, kw, group, 1], packed).map_err(|e| {
-                OnnxError::DecodeFailed {
-                    message: e.to_string(),
-                }
-            })?;
-            initializers.insert(weight_name.clone(), packed_t);
-            dw_khwc_weights.insert(weight_name.clone());
-        }
-    }
-
-    // Pre-pack grouped conv weights [O, I/G, KH, KW] -> [O, KH, KW, I/G] on
-    // CPU-only builds. This removes per-inference OIHW reordering in grouped
-    // fallback path.
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    let mut group_khwc_weights = HashSet::new();
-    #[cfg(any(feature = "metal-backend", feature = "gpu"))]
-    let group_khwc_weights = HashSet::new();
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    for node in &nodes {
-        if node.op_type != "Conv" || node.inputs.len() < 2 {
-            continue;
-        }
-        let weight_name = &node.inputs[1];
-        if group_khwc_weights.contains(weight_name) || dw_khwc_weights.contains(weight_name) {
-            continue;
-        }
-        let group = node
-            .attributes
-            .get("group")
-            .and_then(|a| match a {
-                OnnxAttribute::Int(v) => Some(*v as usize),
-                _ => None,
-            })
-            .unwrap_or(1);
-        if group <= 1 {
-            continue;
-        }
-
-        if let Some(w) = initializers.get(weight_name)
-            && w.rank() == 4
-        {
-            let ws = w.shape();
-            let (o_ch, i_per_g, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
-            // Depthwise dm=1 is handled by the dedicated prepack path above.
-            if i_per_g == 1 && o_ch == group {
-                continue;
-            }
-
-            let w_data = w.data();
-            let mut packed = vec![0.0f32; o_ch * kh * kw * i_per_g];
-            for oc in 0..o_ch {
-                for ki in 0..kh {
-                    for kj in 0..kw {
-                        for ci in 0..i_per_g {
-                            let src = ((oc * i_per_g + ci) * kh + ki) * kw + kj;
-                            let dst = ((oc * kh + ki) * kw + kj) * i_per_g + ci;
-                            packed[dst] = w_data[src];
-                        }
-                    }
-                }
-            }
-
-            let packed_t = Tensor::from_vec(vec![o_ch, kh, kw, i_per_g], packed).map_err(|e| {
-                OnnxError::DecodeFailed {
-                    message: e.to_string(),
-                }
-            })?;
-            initializers.insert(weight_name.clone(), packed_t);
-            group_khwc_weights.insert(weight_name.clone());
-        }
-    }
-
-    let runtime_index = build_runtime_index(
-        &inputs,
-        &outputs,
-        &initializers,
-        &nodes,
-        &khwc_weights,
-        &dw_khwc_weights,
-        &group_khwc_weights,
-    );
-
-    Ok(OnnxModel {
-        ir_version: model_proto.ir_version.unwrap_or(0),
-        opset_version,
-        producer_name: model_proto.producer_name.unwrap_or_default(),
-        graph_name: graph.name.unwrap_or_default(),
-        inputs,
-        outputs,
-        initializers,
-        nodes,
-        khwc_weights,
-        dw_khwc_weights,
-        group_khwc_weights,
-        packed_int4_weights: HashMap::new(),
-        runtime_index,
-    })
-}
-
-/// Loads an ONNX model from a file path.
-///
-/// Accepts any path-like type (`&str`, `String`, `&Path`, `PathBuf`, etc.).
-pub fn load_onnx_model_from_file(
-    path: impl AsRef<std::path::Path>,
-) -> Result<OnnxModel, OnnxError> {
-    let path = path.as_ref();
-    let data = std::fs::read(path).map_err(|e| OnnxError::Io {
-        message: format!("{}: {e}", path.display()),
-    })?;
-    load_onnx_model(&data)
-}
-
-fn convert_tensor_proto(tp: &onnx::TensorProto) -> Result<Tensor, OnnxError> {
-    let shape: Vec<usize> = tp.dims.iter().map(|&d| d as usize).collect();
-    let expected_len: usize = if shape.is_empty() {
-        1
-    } else {
-        shape.iter().product()
-    };
-    let data_type = tp.data_type.unwrap_or(0);
-
-    let data = match data_type {
-        // FLOAT = 1
-        1 => {
-            if !tp.float_data.is_empty() {
-                tp.float_data.clone()
-            } else if let Some(ref raw) = tp.raw_data {
-                raw_bytes_to_f32(raw)
-            } else {
-                vec![0.0f32; expected_len]
-            }
-        }
-        // UINT8 = 2
-        2 => {
-            if !tp.int32_data.is_empty() {
-                tp.int32_data.iter().map(|&v| v as u8 as f32).collect()
-            } else if let Some(ref raw) = tp.raw_data {
-                raw.iter().map(|&v| v as f32).collect()
-            } else {
-                vec![0.0f32; expected_len]
-            }
-        }
-        // INT8 = 3
-        3 => {
-            if !tp.int32_data.is_empty() {
-                tp.int32_data.iter().map(|&v| v as i8 as f32).collect()
-            } else if let Some(ref raw) = tp.raw_data {
-                raw.iter().map(|&v| (v as i8) as f32).collect()
-            } else {
-                vec![0.0f32; expected_len]
-            }
-        }
-        // DOUBLE = 11
-        11 => {
-            if !tp.double_data.is_empty() {
-                tp.double_data.iter().map(|&d| d as f32).collect()
-            } else if let Some(ref raw) = tp.raw_data {
-                raw_bytes_to_f64_as_f32(raw)
-            } else {
-                vec![0.0f32; expected_len]
-            }
-        }
-        // INT64 = 7
-        7 => {
-            if !tp.int64_data.is_empty() {
-                tp.int64_data.iter().map(|&v| v as f32).collect()
-            } else if let Some(ref raw) = tp.raw_data {
-                raw_bytes_to_i64_as_f32(raw)
-            } else {
-                vec![0.0f32; expected_len]
-            }
-        }
-        // INT32 = 6
-        6 => {
-            if !tp.int32_data.is_empty() {
-                tp.int32_data.iter().map(|&v| v as f32).collect()
-            } else if let Some(ref raw) = tp.raw_data {
-                raw_bytes_to_i32_as_f32(raw)
-            } else {
-                vec![0.0f32; expected_len]
-            }
-        }
-        other => {
-            return Err(OnnxError::UnsupportedDataType { data_type: other });
-        }
-    };
-
-    if data.len() != expected_len {
-        return Err(OnnxError::InitializerShapeMismatch {
-            name: tp.name.clone().unwrap_or_default(),
-            expected: expected_len,
-            got: data.len(),
-        });
-    }
-
-    // Preserve 0-D scalar shapes: ONNX TensorProto with dims=[] is a 0-D
-    // scalar, not a 1-D tensor.  Many graph patterns (Gather with scalar
-    // indices → Unsqueeze → Concat for reshape targets) depend on correct
-    // rank propagation.
-    Tensor::from_vec(shape, data).map_err(|e| OnnxError::DecodeFailed {
-        message: e.to_string(),
-    })
-}
-
-fn raw_bytes_to_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
-}
-
-fn raw_bytes_to_f64_as_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(8)
-        .map(|c| {
-            let v = f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
-            v as f32
-        })
-        .collect()
-}
-
-fn raw_bytes_to_i64_as_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(8)
-        .map(|c| {
-            let v = i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
-            v as f32
-        })
-        .collect()
-}
-
-fn raw_bytes_to_i32_as_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(4)
-        .map(|c| {
-            let v = i32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-            v as f32
-        })
-        .collect()
-}
-
-fn convert_attribute(attr: &onnx::AttributeProto) -> Option<OnnxAttribute> {
-    // Some exporter/toolchain combinations omit `AttributeProto.type` for
-    // Constant nodes and rely on the populated value field (`t`, `ints`, ...).
-    // Infer the type from payload presence when the enum tag is missing.
-    let attr_type = attr.r#type.unwrap_or_else(|| {
-        if attr.t.is_some() {
-            4
-        } else if attr.f.is_some() {
-            1
-        } else if attr.i.is_some() {
-            2
-        } else if attr.s.is_some() {
-            3
-        } else if !attr.floats.is_empty() {
-            6
-        } else if !attr.ints.is_empty() {
-            7
-        } else {
-            0
-        }
-    });
-    match attr_type {
-        1 => Some(OnnxAttribute::Float(attr.f.unwrap_or(0.0))),
-        2 => Some(OnnxAttribute::Int(attr.i.unwrap_or(0))),
-        3 => {
-            let s = attr
-                .s
-                .as_deref()
-                .map(|b| String::from_utf8_lossy(b).to_string())
-                .unwrap_or_default();
-            Some(OnnxAttribute::String(s))
-        }
-        // TENSOR — used by Constant nodes to embed full tensor values
-        4 => {
-            let tp = attr.t.as_ref()?;
-            convert_tensor_proto(tp).ok().map(OnnxAttribute::Tensor)
-        }
-        6 => Some(OnnxAttribute::Floats(attr.floats.clone())),
-        7 => Some(OnnxAttribute::Ints(attr.ints.clone())),
-        _ => None,
-    }
-}
-
-/// Step A.1: coalesce consecutive NCHWc-capable `NodeAction::Conv` entries
-/// into `NodeAction::NchwcChain`. Runs after the main fusion loop builds
-/// `execution_plan`. For safety, chains are detected only when every
-/// intermediate tensor has `use_count == 1` (no branching out of the
-/// chain — a branching tensor would need to stay NHWC for the other
-/// consumer).
-///
-/// Current scope (A.1): only LINEAR Conv chains are detected. Conv_Add
-/// (residual) complicates NCHWc (skip tensor must also be in NCHWc
-/// layout) — deferred to later Step A sub-phase. FusedDwPw likewise
-/// deferred. This conservative scope is safe to enable incrementally.
-fn fuse_nchwc_chains(
-    execution_plan: &mut [NodeAction],
-    nodes: &[OnnxNode],
-    use_counts: &HashMap<String, usize>,
-) {
-    let mut i = 0;
-    while i < execution_plan.len() {
-        let start_node_idx = match &execution_plan[i] {
-            NodeAction::Conv { node_idx, .. } => *node_idx,
-            _ => {
-                i += 1;
-                continue;
-            }
-        };
-
-        // Collect a contiguous run of Conv actions where the previous
-        // Conv's output feeds this Conv's first input AND the previous
-        // Conv's output has use_count == 1 (no branching).
-        let mut chain_members: Vec<NchwcChainMember> = Vec::new();
-        let mut end = i;
-        let mut prev_node_idx = start_node_idx;
-        while let NodeAction::Conv {
-            node_idx,
-            activation,
-        } = execution_plan[end]
-        {
-            // First member always joins.
-            if chain_members.is_empty() {
-                chain_members.push(NchwcChainMember::Conv {
-                    node_idx,
-                    activation,
-                });
-                end += 1;
-                prev_node_idx = node_idx;
-                if end >= execution_plan.len() {
-                    break;
-                }
-                continue;
-            }
-            // Subsequent members: check prev Conv's output feeds this
-            // Conv AND has use_count == 1.
-            let prev_output = &nodes[prev_node_idx].outputs[0];
-            let this_input = nodes[node_idx].inputs.first();
-            let prev_use = use_counts.get(prev_output).copied().unwrap_or(0);
-            if this_input.map(|s| s.as_str()) != Some(prev_output.as_str()) || prev_use != 1 {
-                break;
-            }
-            chain_members.push(NchwcChainMember::Conv {
-                node_idx,
-                activation,
-            });
-            prev_node_idx = node_idx;
-            end += 1;
-            if end >= execution_plan.len() {
-                break;
-            }
-        }
-
-        // Only emit a chain of ≥2 members — single-Conv chains pay the
-        // reorder cost for zero gain.
-        if chain_members.len() >= 2 {
-            let entry_node = chain_members
-                .first()
-                .map(|m| match m {
-                    NchwcChainMember::Conv { node_idx, .. } => *node_idx,
-                })
-                .expect("non-empty");
-            let exit_node = chain_members
-                .last()
-                .map(|m| match m {
-                    NchwcChainMember::Conv { node_idx, .. } => *node_idx,
-                })
-                .expect("non-empty");
-            let entry_input = nodes[entry_node].inputs[0].clone();
-            let exit_output = nodes[exit_node].outputs[0].clone();
-            // Replace first member's slot with the chain; mark the rest Skip.
-            execution_plan[i] = NodeAction::NchwcChain {
-                members: chain_members,
-                entry_input,
-                exit_output,
-            };
-            for j in (i + 1)..end {
-                execution_plan[j] = NodeAction::Skip;
-            }
-            i = end;
-        } else {
-            i += 1;
-        }
-    }
-}
-
-fn build_runtime_index(
+pub(super) fn build_runtime_index(
     inputs: &[String],
     outputs: &[String],
     initializers: &HashMap<String, Tensor>,
@@ -995,7 +139,7 @@ fn build_runtime_index(
         })
         .collect();
 
-    // Session 13 R3: pre-resolve output names to slot IDs. Used by
+    // pre-resolve output names to slot IDs. Used by
     // `env.insert_by_id` on the hot path to skip the HashMap lookup
     // inside `resolve_id`. `node_input_ids` was already cached; this
     // extends the same optimisation to output slots.
@@ -1070,12 +214,10 @@ fn build_runtime_index(
             // load-time normalization above (`khwc_weights` pass) for
             // group==1 Conv. Check both layouts and infer which applies.
             //
-            // Session 11 R1 bug fix: previously we indexed shape[2]/shape[3]
-            // assuming OIHW layout, but KHWC-permuted weights have
-            // [KH, KW, I, O] meaning shape[2]=I, shape[3]=O. For a 1×1
-            // pointwise Conv with I=16 O=96, that read `kh_w=16 kw_w=96`
-            // → `is_pointwise=false` → Conv_Add fast-path never fires
-            // on ALL 24 tracker residuals. Fix: dispatch by layout.
+            // Must dispatch by layout: KHWC-permuted weights are [KH, KW, I, O]
+            // (shape[2]=I, shape[3]=O), not OIHW. Reading shape[2]/shape[3] as
+            // kernel dims on a KHWC 1×1 weight misclassifies it as non-pointwise
+            // and the Conv_Add fast path never fires.
             let weight_name = node.inputs.get(1).map(|s| s.as_str()).unwrap_or("");
             let weight_shape = initializers
                 .get(weight_name)
@@ -1084,7 +226,7 @@ fn build_runtime_index(
             let weight_is_khwc = khwc_weights.contains(weight_name);
             let weight_is_dw_khwc = dw_khwc_weights.contains(weight_name);
             let weight_is_group_khwc = group_khwc_weights.contains(weight_name);
-            // Session 15 R5 (true-fuse): the loader permutes three KHWC
+            // the loader permutes three KHWC
             // variants. DW-permuted `[KH, KW, C, dm]` and grouped
             // `[O, KH, KW, I/G]` previously fell through to the OIHW
             // branch and produced garbage, wrongly setting
@@ -1501,6 +643,205 @@ fn build_runtime_index(
                 }
             }
         }
+        // Forked quant pair: the first QLinearConv's dequantized output has
+        // a side consumer (usually a residual Add), so the stricter fused
+        // kernel above cannot consume the DQ/Q boundary exclusively. Keep
+        // the same graph values but schedule the pair as one quant action.
+        if nodes[i].op_type == "QLinearConv"
+            && let Some(first_kind) = qlc_kind(&nodes[i], initializers)
+        {
+            let first_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
+            let dq_idx = i + 1;
+            if !first_out.is_empty()
+                && use_counts.get(first_out).copied().unwrap_or(0) == 1
+                && !outputs.iter().any(|o| o == first_out)
+                && nodes
+                    .get(dq_idx)
+                    .is_some_and(|n| n.op_type == "DequantizeLinear")
+                && !plan_skip[dq_idx]
+                && nodes[dq_idx].inputs.first().map(String::as_str) == Some(first_out)
+            {
+                let dq_out = nodes[dq_idx]
+                    .outputs
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let mut relu_idx = None;
+                let mut q_idx = dq_idx + 1;
+                let mut q_input = dq_out;
+                if let Some(relu_node) = nodes.get(q_idx)
+                    && relu_node.op_type == "Relu"
+                    && !plan_skip[q_idx]
+                    && relu_node.inputs.first().map(String::as_str) == Some(dq_out)
+                {
+                    let relu_out = relu_node.outputs.first().map(String::as_str).unwrap_or("");
+                    if !relu_out.is_empty() {
+                        relu_idx = Some(q_idx);
+                        q_input = relu_out;
+                        q_idx += 1;
+                    }
+                }
+                if !q_input.is_empty()
+                    && nodes
+                        .get(q_idx)
+                        .is_some_and(|n| n.op_type == "QuantizeLinear")
+                    && !plan_skip[q_idx]
+                    && nodes[q_idx].inputs.first().map(String::as_str) == Some(q_input)
+                    && use_counts.get(q_input).copied().unwrap_or(0) > 1
+                {
+                    let q_out = nodes[q_idx]
+                        .outputs
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    let second_idx = q_idx + 1;
+                    let want_second = if first_kind == "pw" { "dw" } else { "pw" };
+                    if !q_out.is_empty()
+                        && !outputs.iter().any(|o| o == q_out)
+                        && use_counts.get(q_out).copied().unwrap_or(0) == 1
+                        && nodes
+                            .get(second_idx)
+                            .is_some_and(|n| n.op_type == "QLinearConv")
+                        && !plan_skip[second_idx]
+                        && nodes[second_idx].inputs.first().map(String::as_str) == Some(q_out)
+                        && qlc_kind(&nodes[second_idx], initializers) == Some(want_second)
+                    {
+                        execution_plan.push(NodeAction::QuantizedForkPair {
+                            first_idx: i,
+                            dq_idx,
+                            relu_idx,
+                            q_idx,
+                            second_idx,
+                            first_kind: u8::from(first_kind == "dw"),
+                            has_relu: relu_idx.is_some(),
+                        });
+                        plan_skip[dq_idx] = true;
+                        if let Some(ri) = relu_idx {
+                            plan_skip[ri] = true;
+                        }
+                        plan_skip[q_idx] = true;
+                        plan_skip[second_idx] = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        // Residual suffix: QLinearConv output is dequantized, passed through
+        // Relu, then a fp32 pointwise Conv + Add, and finally quantized back
+        // for the next INT8 chain. This action keeps the suffix in one plan
+        // slot and accounts for it as a quant-chain execution.
+        if nodes[i].op_type == "QLinearConv"
+            && let Some(kind) = qlc_kind(&nodes[i], initializers)
+        {
+            let qconv_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
+            let dq_idx = i + 1;
+            let relu_idx = i + 2;
+            let conv_idx = i + 3;
+            let add_idx = i + 4;
+            let q_idx = i + 5;
+            if !qconv_out.is_empty()
+                && use_counts.get(qconv_out).copied().unwrap_or(0) == 1
+                && !outputs.iter().any(|o| o == qconv_out)
+                && nodes
+                    .get(dq_idx)
+                    .is_some_and(|n| n.op_type == "DequantizeLinear")
+                && nodes.get(relu_idx).is_some_and(|n| n.op_type == "Relu")
+                && nodes.get(conv_idx).is_some_and(|n| n.op_type == "Conv")
+                && nodes.get(add_idx).is_some_and(|n| n.op_type == "Add")
+                && nodes
+                    .get(q_idx)
+                    .is_some_and(|n| n.op_type == "QuantizeLinear")
+                && !plan_skip[dq_idx]
+                && !plan_skip[relu_idx]
+                && !plan_skip[conv_idx]
+                && !plan_skip[add_idx]
+                && !plan_skip[q_idx]
+                && nodes[dq_idx].inputs.first().map(String::as_str) == Some(qconv_out)
+                && nodes[relu_idx].inputs.first() == nodes[dq_idx].outputs.first()
+                && nodes[conv_idx].inputs.first() == nodes[relu_idx].outputs.first()
+                && nodes[add_idx]
+                    .inputs
+                    .iter()
+                    .any(|input| Some(input) == nodes[conv_idx].outputs.first())
+                && nodes[q_idx].inputs.first() == nodes[add_idx].outputs.first()
+                && use_counts
+                    .get(
+                        nodes[dq_idx]
+                            .outputs
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                    )
+                    .copied()
+                    .unwrap_or(0)
+                    == 1
+                && use_counts
+                    .get(
+                        nodes[relu_idx]
+                            .outputs
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                    )
+                    .copied()
+                    .unwrap_or(0)
+                    == 1
+                && use_counts
+                    .get(
+                        nodes[conv_idx]
+                            .outputs
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                    )
+                    .copied()
+                    .unwrap_or(0)
+                    == 1
+            {
+                execution_plan.push(NodeAction::QuantizedResidualChain {
+                    qconv_idx: i,
+                    dq_idx,
+                    relu_idx,
+                    conv_idx,
+                    add_idx,
+                    q_idx,
+                    qconv_kind: u8::from(kind == "dw"),
+                });
+                plan_skip[dq_idx] = true;
+                plan_skip[relu_idx] = true;
+                plan_skip[conv_idx] = true;
+                plan_skip[add_idx] = true;
+                plan_skip[q_idx] = true;
+                continue;
+            }
+        }
+        if nodes[i].op_type == "QLinearConv"
+            && let Some(kind) = qlc_kind(&nodes[i], initializers)
+        {
+            let qconv_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
+            let dq_idx = i + 1;
+            if !qconv_out.is_empty()
+                && use_counts.get(qconv_out).copied().unwrap_or(0) == 1
+                && !outputs.iter().any(|o| o == qconv_out)
+                && nodes
+                    .get(dq_idx)
+                    .is_some_and(|n| n.op_type == "DequantizeLinear")
+                && !plan_skip[dq_idx]
+                && nodes[dq_idx].inputs.first().map(String::as_str) == Some(qconv_out)
+                && nodes[dq_idx]
+                    .outputs
+                    .first()
+                    .is_some_and(|out| !outputs.iter().any(|model_out| model_out == out))
+            {
+                execution_plan.push(NodeAction::QuantizedConvDq {
+                    qconv_idx: i,
+                    dq_idx,
+                    qconv_kind: u8::from(kind == "dw"),
+                });
+                plan_skip[dq_idx] = true;
+                continue;
+            }
+        }
         if nodes[i].op_type == "DequantizeLinear" {
             let dequant_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
             let dequant_input = nodes[i].inputs.first().map(String::as_str).unwrap_or("");
@@ -1583,20 +924,18 @@ fn build_runtime_index(
                                 && nodes[j].inputs.first().map(|s| s.as_str())
                                     == Some(dw_out.as_str())
                             {
-                                // Skip DW+PW when PW would
-                                // instead form ConvAdd.
+                                // Skip DW+PW when PW would instead form ConvAdd.
+                                // `pointwise_nx16_direct` in ConvAdd is faster than
+                                // band-streaming for N%16==0 shapes (e.g. N=112).
                                 let pw_kind_plain = matches!(nk, NodeKind::Conv);
-                                let pw_out_uses = {
-                                    let pw_out = &nodes[j].outputs[0];
-                                    use_counts.get(pw_out).copied().unwrap_or(0)
-                                };
+                                let pw_out = &nodes[j].outputs[0];
+                                let pw_out_uses = use_counts.get(pw_out).copied().unwrap_or(0);
                                 let pw_has_convadd = pw_kind_plain
                                     && pw_out_uses == 1
                                     && nodes.get(j + 1).is_some_and(|n| {
                                         node_kinds[j + 1] == NodeKind::Add
                                             && n.inputs.len() == 2
-                                            && (n.inputs[0] == nodes[j].outputs[0]
-                                                || n.inputs[1] == nodes[j].outputs[0])
+                                            && (n.inputs[0] == *pw_out || n.inputs[1] == *pw_out)
                                     });
                                 if pw_has_convadd {
                                     break;
@@ -1812,14 +1151,43 @@ fn build_runtime_index(
         }
     }
 
-    // after Conv/Add/DwPw fusions have been applied, coalesces runs of
-    // NCHWc-capable actions (currently linear Conv chains) into
-    // `NodeAction::NchwcChain` entries. Original sub-actions become
-    // `Skip`. Enabled only when `YSCV_NCHWC_CHAIN=1` — default off
-    // until runner dispatch lands and chain dispatch is actually
-    // faster than per-op.
-    if std::env::var("YSCV_NCHWC_CHAIN").as_deref() == Ok("1") {
-        fuse_nchwc_chains(&mut execution_plan, nodes, &use_counts);
+    // build the set of `Reshape` output tensor names whose
+    // single consumer is a `Transpose(perm=[0,2,1])` that got absorbed
+    // into a `FusedTransposeMatMul`. The runtime fast path checks this
+    // set before deciding whether to skip the NHWC→NCHW permute for a
+    // Reshape input. Only NHWC-passthrough-safe Reshapes get the
+    // optimisation; others continue paying the legacy `ensure_nchw`.
+    let mut reshape_nhwc_passthrough_safe: HashSet<String> = HashSet::new();
+    for action in &execution_plan {
+        let NodeAction::FusedTransposeMatMul { transpose_idx, .. } = action else {
+            continue;
+        };
+        // The Transpose's input is the candidate producer.
+        let Some(t_in) = nodes[*transpose_idx].inputs.first() else {
+            continue;
+        };
+        if t_in.is_empty() {
+            continue;
+        }
+        let Some(&prod_idx) = producers.get(t_in.as_str()) else {
+            continue;
+        };
+        if prod_idx >= nodes.len() {
+            continue;
+        }
+        // Producer must be a Reshape node.
+        if node_kinds.get(prod_idx).copied() != Some(NodeKind::Reshape) {
+            continue;
+        }
+        // Reshape's output must have exactly ONE graph consumer (the
+        // Transpose). If the same tensor is read by other ops, those
+        // ops won't honour the NHWC tag and would see garbage.
+        let edge_uses = use_counts.get(t_in.as_str()).copied().unwrap_or(0);
+        let is_model_output = model_outputs.contains(t_in.as_str());
+        if edge_uses + usize::from(is_model_output) != 1 {
+            continue;
+        }
+        reshape_nhwc_passthrough_safe.insert(t_in.clone());
     }
 
     // Load-time weight pre-packing. For every pointwise Conv (KH=KW=1,
@@ -1862,6 +1230,35 @@ fn build_runtime_index(
         }
         let k = shape[2];
         let n = shape[3];
+        let packed = yscv_kernels::pack_b_for_session(weight.data(), k, n);
+        prepacked_weights.insert(w_name.clone(), packed);
+    }
+    for node in nodes {
+        if node.op_type != "MatMul" {
+            continue;
+        }
+        let Some(w_name) = node.inputs.get(1) else {
+            continue;
+        };
+        if prepacked_weights.contains_key(w_name) {
+            continue;
+        }
+        let Some(weight) = initializers.get(w_name) else {
+            continue;
+        };
+        let shape = weight.shape();
+        if shape.len() != 2 {
+            continue;
+        }
+        let k = shape[0];
+        let n = shape[1];
+        // Prepacking every tiny MatMul would bloat model load for little gain.
+        // LLM projection weights are MB-class and run once per layer/token, so
+        // they easily amortize this load-time pack and must not repack in
+        // every decode step.
+        if k.saturating_mul(n) < 256 * 1024 {
+            continue;
+        }
         let packed = yscv_kernels::pack_b_for_session(weight.data(), k, n);
         prepacked_weights.insert(w_name.clone(), packed);
     }
@@ -1914,12 +1311,19 @@ fn build_runtime_index(
     // `int8_matmul_prepacked_dispatch` picks the next-best variant.
     let chain_pw_weights: std::collections::HashSet<String> = execution_plan
         .iter()
-        .filter_map(|action| {
-            if let NodeAction::QuantizedDwPw { pw_idx, .. } = action {
-                nodes[*pw_idx].inputs.get(3).cloned()
-            } else {
-                None
-            }
+        .filter_map(|action| match action {
+            NodeAction::QuantizedDwPw { pw_idx, .. } => nodes[*pw_idx].inputs.get(3).cloned(),
+            NodeAction::QuantizedForkPair {
+                first_idx,
+                first_kind,
+                ..
+            } if *first_kind == 0 => nodes[*first_idx].inputs.get(3).cloned(),
+            NodeAction::QuantizedConvDq {
+                qconv_idx,
+                qconv_kind,
+                ..
+            } if *qconv_kind == 0 => nodes[*qconv_idx].inputs.get(3).cloned(),
+            _ => None,
         })
         .collect();
     for node in nodes {
@@ -2027,6 +1431,319 @@ fn build_runtime_index(
         }
     }
 
+    // NCHWc PW conv weight prepack (K.4). Pack 1×1 pointwise weights stored in
+    // KHWC format [1, 1, Cin, Cexp] as PackedB [Cin, Cexp] for the fused
+    // PW→DW streaming kernel.  These are small (Cin*Cexp << 256K) so they
+    // are not covered by the existing MatMul prepack threshold loop above.
+    for (i, node) in nodes.iter().enumerate() {
+        let Some(cp) = conv_params[i].as_ref() else {
+            continue;
+        };
+        if !cp.is_pointwise || cp.group != 1 {
+            continue;
+        }
+        let Some(w_name) = node.inputs.get(1) else {
+            continue;
+        };
+        if prepacked_weights.contains_key(w_name) {
+            continue;
+        }
+        if !khwc_weights.contains(w_name) {
+            continue;
+        }
+        let Some(weight) = initializers.get(w_name) else {
+            continue;
+        };
+        let shape = weight.shape();
+        // KHWC 1×1 pointwise: [1, 1, Cin, Cexp].
+        if shape.len() != 4 || shape[0] != 1 || shape[1] != 1 {
+            continue;
+        }
+        let (cin, cexp) = (shape[2], shape[3]);
+        let packed = yscv_kernels::pack_b_for_session(weight.data(), cin, cexp);
+        prepacked_weights.insert(w_name.clone(), packed);
+    }
+    // Rebuild prepacked_weights_by_id after PW conv packs are added.
+    prepacked_weights_by_id = vec![None; name_to_id.len()];
+    for (name, packed) in &prepacked_weights {
+        if let Some(&id) = name_to_id.get(name) {
+            prepacked_weights_by_id[id] = Some(packed.clone());
+        }
+    }
+
+    // ── FusedPwDwPwReduce: streaming PW_expand → DW 3×3 → PW_reduce ──
+    // Scan the execution plan one more time. For each FusedPwDw action,
+    // check if the next non-skipped node is a 1×1 PW Conv consuming the
+    // DW output, with c_in matching DW's c_out and no Add/Relu (Conv_Add
+    // residual blocks keep the existing ConvAdd path which is faster on
+    // those shapes). If so, rewrite the action into FusedPwDwPwReduce and
+    // prepack the PW reduce weight + bias for runtime.
+    //
+    // Kill switch: `YSCV_FUSED_PW_DW_PW_REDUCE_OFF=1` keeps everything as
+    // FusedPwDw and lets the PW reduce stay a separate Conv action.
+    let mut prepacked_fused_pw_dw_pw_reduce: HashMap<
+        usize,
+        std::sync::Arc<FusedPwDwPwReduceWeights>,
+    > = HashMap::new();
+    let fusion_off = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some();
+    let fusion_debug = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_DEBUG").is_some();
+    if !fusion_off {
+        // Walk the execution plan; replace FusedPwDw actions in-place when
+        // the next live node is a fusable PW reduce.
+        let mut new_plan: Vec<NodeAction> = Vec::with_capacity(execution_plan.len());
+        let mut skip_pw_reduce_actions: HashSet<usize> = HashSet::new();
+        let mut fused_count = 0usize;
+        let mut pwdw_total = 0usize;
+        for action in execution_plan.iter() {
+            if let NodeAction::FusedPwDw {
+                pw_idx,
+                dw_idx,
+                pw_activation,
+                dw_activation,
+            } = action
+            {
+                pwdw_total += 1;
+                // Activations: kernel supports None (0) / Relu (1) only.
+                if *pw_activation > 1 || *dw_activation > 1 {
+                    new_plan.push(action.clone());
+                    continue;
+                }
+                let dw_out = &nodes[*dw_idx].outputs[0];
+                let dw_uses = use_counts.get(dw_out).copied().unwrap_or(0);
+                if dw_uses != 1 {
+                    new_plan.push(action.clone());
+                    continue;
+                }
+                // Streaming kernel supports 3×3 DW always; 5×5 DW when
+                // c_exp ≤ 256 (microbench shows regression for wider c_exp,
+                // where the existing oc_tiled path's output-channel tiling
+                // wins on cache behaviour).
+                let dw_shape = nodes[*dw_idx]
+                    .inputs
+                    .get(1)
+                    .and_then(|n| initializers.get(n))
+                    .map(|t| t.shape().to_vec());
+                // c_exp lives in s[2] for KHWC depthwise [kH, kW, c_exp, 1].
+                // 5×5 gated at c_exp ≤ 256: wider c_exp uses the existing
+                // `fused_pw_expand_dw_5x5_oc_tiled` path which beats streaming.
+                let dw_kernel_size: u8 = match dw_shape.as_deref() {
+                    Some(s) if s.len() == 4 && s[0] == 3 && s[1] == 3 => 3,
+                    Some(s) if s.len() == 4 && s[0] == 5 && s[1] == 5 && s[2] <= 256 => 5,
+                    _ => 0,
+                };
+                if dw_kernel_size == 0 {
+                    new_plan.push(action.clone());
+                    continue;
+                }
+                // Find the immediate consumer of the DW output by scanning
+                // forward past nodes already marked as skipped.
+                let mut pw_reduce_node_idx: Option<usize> = None;
+                for j in (*dw_idx + 1)..nodes.len() {
+                    if plan_skip[j] {
+                        continue;
+                    }
+                    if nodes[j].inputs.first().map(|s| s.as_str()) == Some(dw_out.as_str()) {
+                        pw_reduce_node_idx = Some(j);
+                    }
+                    break;
+                }
+                let Some(pw_reduce_idx) = pw_reduce_node_idx else {
+                    new_plan.push(action.clone());
+                    continue;
+                };
+                let pw_kind = node_kinds[pw_reduce_idx];
+                if !matches!(pw_kind, NodeKind::Conv | NodeKind::ConvRelu) {
+                    new_plan.push(action.clone());
+                    continue;
+                }
+                let Some(pw_cp) = &conv_params[pw_reduce_idx] else {
+                    new_plan.push(action.clone());
+                    continue;
+                };
+                if !pw_cp.is_pointwise || pw_cp.has_padding {
+                    new_plan.push(action.clone());
+                    continue;
+                }
+                // Detect optional residual Add (inverted bottleneck skip).
+                // Folded inline by the streaming kernel via the `residual`
+                // arg — no per-pixel ConvAdd needed.
+                let pw_out = &nodes[pw_reduce_idx].outputs[0];
+                let pw_out_uses = use_counts.get(pw_out).copied().unwrap_or(0);
+                // Note: don't check plan_skip on Add/Relu — those will be
+                // set because the existing ConvAdd fusion has already
+                // absorbed them. Our pass subsumes that ConvAdd entirely.
+                let residual_meta: Option<FusedPwDwPwReduceResidual> = if pw_out_uses == 1
+                    && let Some(add_node) = nodes.get(pw_reduce_idx + 1)
+                    && node_kinds[pw_reduce_idx + 1] == NodeKind::Add
+                    && add_node.inputs.len() == 2
+                    && (add_node.inputs[0] == *pw_out || add_node.inputs[1] == *pw_out)
+                {
+                    let residual_skip_input: u8 = if add_node.inputs[0] == *pw_out { 1 } else { 0 };
+                    let add_out = &add_node.outputs[0];
+                    let (post_activation, relu_idx) = if let Some(relu_node) =
+                        nodes.get(pw_reduce_idx + 2)
+                        && node_kinds[pw_reduce_idx + 2] == NodeKind::Relu
+                        && relu_node.inputs.len() == 1
+                        && relu_node.inputs[0] == *add_out
+                        && use_counts.get(add_out).copied().unwrap_or(0) == 1
+                    {
+                        (1u8, (pw_reduce_idx + 2) as u32)
+                    } else {
+                        (0u8, 0u32)
+                    };
+                    Some(FusedPwDwPwReduceResidual {
+                        add_idx: pw_reduce_idx + 1,
+                        residual_skip_input,
+                        post_activation,
+                        relu_idx,
+                    })
+                } else {
+                    None
+                };
+                // Resolve PW reduce weight from initializers.
+                let Some(w_name) = nodes[pw_reduce_idx].inputs.get(1) else {
+                    new_plan.push(action.clone());
+                    continue;
+                };
+                let Some(weight) = initializers.get(w_name) else {
+                    new_plan.push(action.clone());
+                    continue;
+                };
+                let w_shape = weight.shape();
+                // KHWC 1×1 weight shape: [1, 1, c_exp, c_out].
+                if w_shape.len() != 4 || w_shape[0] != 1 || w_shape[1] != 1 {
+                    new_plan.push(action.clone());
+                    continue;
+                }
+                let c_exp = w_shape[2];
+                let c_out = w_shape[3];
+                // DW's c_exp must match PW reduce c_in.
+                let dw_weight_name = nodes[*dw_idx].inputs.get(1);
+                let dw_c_exp = dw_weight_name
+                    .and_then(|n| initializers.get(n))
+                    .map(|t| {
+                        let s = t.shape();
+                        // KHWC depthwise weight: [kH, kW, c_exp, 1].
+                        if s.len() == 4 { s[2] } else { 0 }
+                    })
+                    .unwrap_or(0);
+                if dw_c_exp != c_exp {
+                    new_plan.push(action.clone());
+                    continue;
+                }
+                // Build the packed weight: KHWC `[1,1,c_exp,c_out]` is
+                // c_exp-major (HWIO order). pack_pw_reduce_weight_for_fusion
+                // expects c_out-major `[c_out, c_exp]`, so transpose first.
+                let mut khwc_cout_major: Vec<f32> = vec![0.0; c_out * c_exp];
+                let w_data = weight.data();
+                for cx in 0..c_exp {
+                    for oc in 0..c_out {
+                        khwc_cout_major[oc * c_exp + cx] = w_data[cx * c_out + oc];
+                    }
+                }
+                let c_out_padded = c_out.div_ceil(16) * 16;
+                let weight_packed = yscv_kernels::pack_pw_reduce_weight_for_fusion(
+                    &khwc_cout_major,
+                    c_out,
+                    c_exp,
+                    c_out_padded,
+                );
+                let bias_padded = nodes[pw_reduce_idx]
+                    .inputs
+                    .get(2)
+                    .and_then(|n| initializers.get(n))
+                    .and_then(|t| {
+                        let bias_data = t.data();
+                        if bias_data.len() == c_out {
+                            yscv_kernels::pack_pw_reduce_bias_for_fusion(
+                                Some(bias_data),
+                                c_out,
+                                c_out_padded,
+                            )
+                        } else {
+                            None
+                        }
+                    });
+                let pw_reduce_activation: u8 = match pw_kind {
+                    NodeKind::ConvRelu => 1,
+                    _ => 0,
+                };
+                prepacked_fused_pw_dw_pw_reduce.insert(
+                    pw_reduce_idx,
+                    std::sync::Arc::new(FusedPwDwPwReduceWeights {
+                        weight_packed,
+                        bias_padded,
+                        c_out,
+                        c_out_padded,
+                        c_exp,
+                    }),
+                );
+                skip_pw_reduce_actions.insert(pw_reduce_idx);
+                if let Some(r) = &residual_meta {
+                    skip_pw_reduce_actions.insert(r.add_idx);
+                    if r.post_activation == 1 {
+                        skip_pw_reduce_actions.insert(r.relu_idx as usize);
+                    }
+                }
+                fused_count += 1;
+                if fusion_debug {
+                    let has_res = residual_meta.is_some();
+                    eprintln!(
+                        "FusedPwDwPwReduce: pw_expand_idx={} dw_idx={} pw_reduce_idx={} c_exp={} c_out={} c_out_padded={} residual={} ({}/{})",
+                        *pw_idx,
+                        *dw_idx,
+                        pw_reduce_idx,
+                        c_exp,
+                        c_out,
+                        c_out_padded,
+                        has_res,
+                        nodes[*pw_idx].name,
+                        nodes[pw_reduce_idx].name,
+                    );
+                }
+                new_plan.push(NodeAction::FusedPwDwPwReduce {
+                    pw_expand_idx: *pw_idx,
+                    dw_idx: *dw_idx,
+                    pw_reduce_idx,
+                    pw_expand_activation: *pw_activation,
+                    dw_activation: *dw_activation,
+                    pw_reduce_activation,
+                    dw_kernel_size,
+                    residual: residual_meta,
+                });
+            } else {
+                new_plan.push(action.clone());
+            }
+        }
+        // Now drop any action whose target node was just absorbed into
+        // a FusedPwDwPwReduce — standalone Conv, ConvAdd, generic Add/Relu.
+        new_plan.retain(|act| match act {
+            NodeAction::Conv { node_idx, .. } => !skip_pw_reduce_actions.contains(node_idx),
+            NodeAction::Generic { node_idx, .. } => !skip_pw_reduce_actions.contains(node_idx),
+            NodeAction::ConvAdd {
+                conv_idx,
+                add_idx,
+                relu_idx,
+                post_activation,
+                ..
+            } => {
+                let conv_absorbed = skip_pw_reduce_actions.contains(conv_idx);
+                let add_absorbed = skip_pw_reduce_actions.contains(add_idx);
+                let relu_absorbed =
+                    *post_activation == 1 && skip_pw_reduce_actions.contains(&(*relu_idx as usize));
+                !(conv_absorbed || add_absorbed || relu_absorbed)
+            }
+            _ => true,
+        });
+        execution_plan = new_plan;
+        if fusion_debug {
+            eprintln!(
+                "FusedPwDwPwReduce summary: fused={}/{} FusedPwDw actions",
+                fused_count, pwdw_total
+            );
+        }
+    }
+
     RuntimeModelIndex {
         name_to_id,
         khwc_weight_ids,
@@ -2044,113 +1761,7 @@ fn build_runtime_index(
         prepacked_weights_by_id,
         prepacked_i8_weights,
         prepacked_i8_depthwise,
-    }
-}
-
-#[cfg(test)]
-mod nchwc_chain_tests {
-    use super::*;
-
-    fn conv_node(name: &str, input: &str, output: &str) -> OnnxNode {
-        OnnxNode {
-            op_type: "Conv".into(),
-            name: name.into(),
-            inputs: vec![input.into(), format!("{name}_weight")],
-            outputs: vec![output.into()],
-            attributes: HashMap::new(),
-        }
-    }
-
-    #[test]
-    fn fuse_nchwc_chains_coalesces_linear_conv_run() {
-        let nodes = vec![
-            conv_node("c0", "input", "t1"),
-            conv_node("c1", "t1", "t2"),
-            conv_node("c2", "t2", "out"),
-        ];
-        let mut use_counts: HashMap<String, usize> = HashMap::new();
-        use_counts.insert("input".into(), 1);
-        use_counts.insert("t1".into(), 1);
-        use_counts.insert("t2".into(), 1);
-        let mut plan = vec![
-            NodeAction::Conv {
-                node_idx: 0,
-                activation: 0,
-            },
-            NodeAction::Conv {
-                node_idx: 1,
-                activation: 1,
-            },
-            NodeAction::Conv {
-                node_idx: 2,
-                activation: 0,
-            },
-        ];
-        fuse_nchwc_chains(&mut plan, &nodes, &use_counts);
-        // First slot becomes the chain; remaining are Skip.
-        match &plan[0] {
-            NodeAction::NchwcChain {
-                members,
-                entry_input,
-                exit_output,
-            } => {
-                assert_eq!(members.len(), 3);
-                assert_eq!(entry_input, "input");
-                assert_eq!(exit_output, "out");
-            }
-            other => panic!("expected NchwcChain, got {:?}", other),
-        }
-        assert!(matches!(plan[1], NodeAction::Skip));
-        assert!(matches!(plan[2], NodeAction::Skip));
-    }
-
-    #[test]
-    fn fuse_nchwc_chains_breaks_on_branch() {
-        // Middle output used twice → chain must stop there.
-        let nodes = vec![
-            conv_node("c0", "input", "t1"),
-            conv_node("c1", "t1", "t2"),
-            conv_node("c2", "t2", "out"),
-        ];
-        let mut use_counts: HashMap<String, usize> = HashMap::new();
-        use_counts.insert("input".into(), 1);
-        use_counts.insert("t1".into(), 1);
-        use_counts.insert("t2".into(), 2); // branches — chain cannot cross.
-        let mut plan = vec![
-            NodeAction::Conv {
-                node_idx: 0,
-                activation: 0,
-            },
-            NodeAction::Conv {
-                node_idx: 1,
-                activation: 0,
-            },
-            NodeAction::Conv {
-                node_idx: 2,
-                activation: 0,
-            },
-        ];
-        fuse_nchwc_chains(&mut plan, &nodes, &use_counts);
-        // Chain contains first two only; third remains as-is.
-        match &plan[0] {
-            NodeAction::NchwcChain { members, .. } => assert_eq!(members.len(), 2),
-            other => panic!("expected NchwcChain, got {:?}", other),
-        }
-        assert!(matches!(plan[1], NodeAction::Skip));
-        assert!(matches!(plan[2], NodeAction::Conv { node_idx: 2, .. }));
-    }
-
-    #[test]
-    fn fuse_nchwc_chains_skips_singleton() {
-        // Single Conv should not be wrapped (no gain, pays reorder cost).
-        let nodes = vec![conv_node("c0", "input", "out")];
-        let mut use_counts: HashMap<String, usize> = HashMap::new();
-        use_counts.insert("input".into(), 1);
-        let mut plan = vec![NodeAction::Conv {
-            node_idx: 0,
-            activation: 1,
-        }];
-        fuse_nchwc_chains(&mut plan, &nodes, &use_counts);
-        assert!(matches!(plan[0], NodeAction::Conv { node_idx: 0, .. }));
+        prepacked_fused_pw_dw_pw_reduce,
+        reshape_nhwc_passthrough_safe,
     }
 }

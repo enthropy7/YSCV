@@ -45,6 +45,9 @@ use crate::core::error::KernelError;
 /// Returns the output `NCHWc [N, Cb, H, W, block]` tagged with the same
 /// block size as the input.
 #[allow(clippy::too_many_arguments)]
+/// K.3: pass `prepacked_dw = Some(&packed)` to use blocked `[C_blocks, KH, KW, block]`
+/// weight layout (tighter strides → L1-resident kernel weights during inner loop).
+/// Pass `None` to fall back to KHWC tensor layout (all existing callers use `None`).
 pub fn conv2d_nchwc_dw3x3_s1_same_pad(
     input: &Tensor,
     kernel: &Tensor,
@@ -53,6 +56,7 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
     actual_channels: usize,
     _config: ParallelElementwiseConfig,
     _thread_pool: Option<&ThreadPool>,
+    prepacked_dw: Option<&super::nchwc_pack::PackedNChwBc>,
 ) -> Result<Tensor, KernelError> {
     let in_shape = input.shape();
     if in_shape.len() != 5 {
@@ -111,6 +115,104 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
         .map(|b| b.try_data().map_err(KernelError::from))
         .transpose()?;
 
+    let in_n_stride = cb * h * w * block;
+    let in_cb_stride = h * w * block;
+    let out_cb_stride = h * w * block;
+    let out_total = n_batch * cb * out_cb_stride;
+
+    // K.3: PackedNChwBc stores weights as [C_blocks, KH, KW, block] with
+    // kernel_c_stride = block, kernel_row_stride = KW * block.  All 9
+    // weights for one co-block are in 9*block contiguous floats → L1-resident
+    // across all spatial positions in the inner loop.
+    //
+    // KHWC fallback: kernel_c_stride = C (actual_channels); 9 weights span
+    // a much larger non-contiguous region within the global kernel tensor.
+    let (use_packed, packed_raw, per_cb_step) = if let Some(p) = prepacked_dw {
+        (true, p.raw_data(), p.kh * p.kw * block)
+    } else {
+        (false, kernel_data, 0)
+    };
+    let kernel_c_stride = if use_packed { block } else { actual_channels };
+    let kernel_row_stride = if use_packed {
+        3 * block
+    } else {
+        3 * actual_channels
+    };
+
+    // No-pad-buffer AVX-512 block=16 fast path. The R1 pattern (pre-load 9
+    // weight ZMMs, register-resident accumulators, border-aware loads in the
+    // inner loop) lets us skip the 415 KB pad calloc + 320 KB input copy +
+    // 320 KB output calloc per call that the legacy padded path pays. HOT
+    // c=320 16×16 drops from ~196 µs → ~15 µs in micro-bench.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if block == 16
+            && !cfg!(miri)
+            && std::is_x86_feature_detected!("avx512f")
+            && !nchwc_dw3x3_nopad_disabled()
+        {
+            let mut out = AlignedVec::<f32>::uninitialized(out_total);
+            let out_slice = out.as_mut_slice();
+            if cb_used < cb {
+                // Zero only the tail channel-blocks; the inner kernel writes
+                // every used output cell.
+                let tail_off =
+                    n_batch.saturating_sub(1) * cb * out_cb_stride + cb_used * out_cb_stride;
+                let _ = tail_off; // batch-loop below handles per-batch tails
+                for n in 0..n_batch {
+                    let tail_lo = n * cb * out_cb_stride + cb_used * out_cb_stride;
+                    let tail_hi = (n + 1) * cb * out_cb_stride;
+                    out_slice[tail_lo..tail_hi].fill(0.0);
+                }
+            }
+
+            let in_ref: &[f32] = input_data;
+            let kernel_ref: &[f32] = kernel_data;
+            let bias_ref: Option<&[f32]> = bias_data;
+
+            super::super::scope_ctx::par_chunks_mut_dispatch(
+                out_slice,
+                out_cb_stride,
+                move |unit_idx, out_chunk| {
+                    let n = unit_idx / cb;
+                    let cb_i = unit_idx % cb;
+                    if cb_i >= cb_used {
+                        return;
+                    }
+                    let in_base = n * in_n_stride + cb_i * in_cb_stride;
+                    let in_slab = &in_ref[in_base..in_base + in_cb_stride];
+
+                    let kernel_cb: &[f32] = if use_packed {
+                        &packed_raw[cb_i * per_cb_step..(cb_i + 1) * per_cb_step]
+                    } else {
+                        &kernel_ref[cb_i * block..]
+                    };
+                    let bias_cb = bias_ref.map(|b| &b[cb_i * block..cb_i * block + block]);
+                    // SAFETY: avx512f detected at runtime above; in_slab is
+                    // exactly h*w*16 floats; out_chunk is h*w*16 floats.
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        dw3x3_inner_avx512_block16_nopad(
+                            in_slab,
+                            kernel_cb,
+                            kernel_c_stride,
+                            kernel_row_stride,
+                            bias_cb,
+                            out_chunk,
+                            h,
+                            w,
+                            activation,
+                        );
+                    }
+                },
+            );
+
+            let out_shape = vec![n_batch, cb, h, w, block];
+            let out_tensor = Tensor::from_aligned(out_shape, out).map_err(KernelError::from)?;
+            return Ok(out_tensor.with_layout(Layout::NCHWc { block: block as u8 }));
+        }
+    }
+
     // Pad input into [N, Cb, H+2, W+2, block] zero-init.
     let padded_h = h + 2;
     let padded_w = w + 2;
@@ -119,8 +221,6 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
     let padded_row_stride = padded_w * block;
     let mut padded_buf = AlignedVec::<f32>::calloc(n_batch * padded_n_stride);
     let pad_slice = padded_buf.as_mut_slice();
-    let in_n_stride = cb * h * w * block;
-    let in_cb_stride = h * w * block;
     let in_row_stride = w * block;
     for n in 0..n_batch {
         for cb_i in 0..cb {
@@ -138,18 +238,9 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
 
     // Output [N, Cb, H, W, block] zero-init so tail cb (cb_used..cb)
     // stays clean.
-    let out_cb_stride = h * w * block;
-    let out_total = n_batch * cb * out_cb_stride;
     let mut out = AlignedVec::<f32>::calloc(out_total);
     let out_slice = out.as_mut_slice();
 
-    // Parallelize over (n, cb_i). Each chunk = one (n, cb_i) output
-    // slice, size `out_cb_stride`. Tail cb (cb_i >= cb_used) is
-    // skipped; their output stays zero.
-    let kernel_c_stride = actual_channels;
-    let kernel_row_stride = 3 * actual_channels;
-
-    // Capture by immutable reference for the Fn-bound closure.
     let pad_ref: &[f32] = pad_slice;
     let kernel_ref: &[f32] = kernel_data;
     let bias_ref: Option<&[f32]> = bias_data;
@@ -165,13 +256,14 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
             }
             let pad_base = n * padded_n_stride + cb_i * padded_cb_stride;
             let pad_slab = &pad_ref[pad_base..pad_base + padded_cb_stride];
-            let kernel_cb_off = cb_i * block;
-            // kernel_cb length covers the span we touch — from the block
-            // of channel offsets for this cb, through all 9 (ky,kx)
-            // positions. The last position's last lane sits at
-            // `2*kernel_row_stride + 2*kernel_c_stride + (block-1)`.
-            let kernel_cb = &kernel_ref[kernel_cb_off..];
-            let bias_cb = bias_ref.map(|b| &b[kernel_cb_off..kernel_cb_off + block]);
+
+            let kernel_cb: &[f32] = if use_packed {
+                &packed_raw[cb_i * per_cb_step..(cb_i + 1) * per_cb_step]
+            } else {
+                // KHWC: offset to first channel of this co-block
+                &kernel_ref[cb_i * block..]
+            };
+            let bias_cb = bias_ref.map(|b| &b[cb_i * block..cb_i * block + block]);
             dw3x3_dispatch(
                 pad_slab,
                 kernel_cb,
@@ -193,7 +285,20 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
     Ok(out_tensor.with_layout(Layout::NCHWc { block: block as u8 }))
 }
 
+/// Env-cached kill switch for the AVX-512 block=16 no-pad fast path.
+/// Set `YSCV_NCHWC_DW3X3_NOPAD_OFF=1` to fall back to the padded variant
+/// (legacy) for A/B comparison.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline]
+fn nchwc_dw3x3_nopad_disabled() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var_os("YSCV_NCHWC_DW3X3_NOPAD_OFF").is_some())
+}
+
 /// Arch dispatch for the per-(n, cb_i) inner kernel.
+///
+/// `pad_slab` layout: `[(h+2), padded_w, block]` row-major.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn dw3x3_dispatch(
@@ -211,6 +316,24 @@ fn dw3x3_dispatch(
 ) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        if block == 16 && std::is_x86_feature_detected!("avx512f") {
+            #[allow(unsafe_code)]
+            unsafe {
+                dw3x3_inner_avx512_block16(
+                    pad_slab,
+                    kernel_cb,
+                    kernel_c_stride,
+                    kernel_row_stride,
+                    bias_cb,
+                    out_chunk,
+                    h,
+                    w,
+                    padded_w,
+                    activation,
+                );
+            }
+            return;
+        }
         if block == 8
             && std::is_x86_feature_detected!("avx")
             && std::is_x86_feature_detected!("fma")
@@ -383,6 +506,513 @@ unsafe fn dw3x3_inner_avx2_fma_block8(
                 }
                 let _ = _mm256_add_ps; // reserved for future bias path splits
                 _mm256_storeu_ps(o_row.add(xo), acc);
+            }
+        }
+    }
+}
+
+/// AVX-512 inner kernel for block=16 (16 channels per block).
+///
+/// Processes 4 spatial positions per inner iteration via 4 independent ZMM
+/// accumulators — the 4-way unrolling saturates the 2-FMA/cycle Zen 4
+/// pipeline and matches NHWC AVX-512 DW throughput (~4.5 cyc/pixel).
+///
+/// ZMM budget at peak: 9 weights + 6 inputs (loaded per row) + 4 acc +
+/// 1 bias = 20 ZMMs live. Well within the 32-ZMM AVX-512 register file.
+///
+/// Tail handling: pixels beyond the last W=4 tile are processed one at
+/// a time with 9 FMAs (still ZMM-wide, 16 channels × 1 pixel).
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code)]
+unsafe fn dw3x3_inner_avx512_block16(
+    pad_slab: &[f32],
+    kernel_cb: &[f32],
+    kernel_c_stride: usize,
+    kernel_row_stride: usize,
+    bias_cb: Option<&[f32]>,
+    out_chunk: &mut [f32],
+    h: usize,
+    w: usize,
+    padded_w: usize,
+    activation: Activation,
+) {
+    unsafe {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::*;
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::*;
+
+        const B: usize = 16;
+
+        let kp = kernel_cb.as_ptr();
+        let k00 = _mm512_loadu_ps(kp);
+        let k01 = _mm512_loadu_ps(kp.add(kernel_c_stride));
+        let k02 = _mm512_loadu_ps(kp.add(2 * kernel_c_stride));
+        let k10 = _mm512_loadu_ps(kp.add(kernel_row_stride));
+        let k11 = _mm512_loadu_ps(kp.add(kernel_row_stride + kernel_c_stride));
+        let k12 = _mm512_loadu_ps(kp.add(kernel_row_stride + 2 * kernel_c_stride));
+        let k20 = _mm512_loadu_ps(kp.add(2 * kernel_row_stride));
+        let k21 = _mm512_loadu_ps(kp.add(2 * kernel_row_stride + kernel_c_stride));
+        let k22 = _mm512_loadu_ps(kp.add(2 * kernel_row_stride + 2 * kernel_c_stride));
+
+        let bias_v = match bias_cb {
+            Some(b) => _mm512_loadu_ps(b.as_ptr()),
+            None => _mm512_setzero_ps(),
+        };
+
+        let pad_ptr = pad_slab.as_ptr();
+        let out_ptr = out_chunk.as_mut_ptr();
+        let pad_row_b = padded_w * B;
+        let out_row_b = w * B;
+        let do_relu = matches!(activation, Activation::Relu);
+
+        for y in 0..h {
+            let p0 = pad_ptr.add(y * pad_row_b);
+            let p1 = pad_ptr.add((y + 1) * pad_row_b);
+            let p2 = pad_ptr.add((y + 2) * pad_row_b);
+            let o_row = out_ptr.add(y * out_row_b);
+
+            let mut x = 0usize;
+            // 4-pixel tile: processes output positions x, x+1, x+2, x+3 together.
+            // Loads 6 input ZMMs per input row (covering kx=0..2 for each output).
+            while x + 4 <= w {
+                let xb = x * B;
+                // Row 0
+                let i0_0 = _mm512_loadu_ps(p0.add(xb));
+                let i0_1 = _mm512_loadu_ps(p0.add(xb + B));
+                let i0_2 = _mm512_loadu_ps(p0.add(xb + 2 * B));
+                let i0_3 = _mm512_loadu_ps(p0.add(xb + 3 * B));
+                let i0_4 = _mm512_loadu_ps(p0.add(xb + 4 * B));
+                let i0_5 = _mm512_loadu_ps(p0.add(xb + 5 * B));
+                // Row 1
+                let i1_0 = _mm512_loadu_ps(p1.add(xb));
+                let i1_1 = _mm512_loadu_ps(p1.add(xb + B));
+                let i1_2 = _mm512_loadu_ps(p1.add(xb + 2 * B));
+                let i1_3 = _mm512_loadu_ps(p1.add(xb + 3 * B));
+                let i1_4 = _mm512_loadu_ps(p1.add(xb + 4 * B));
+                let i1_5 = _mm512_loadu_ps(p1.add(xb + 5 * B));
+                // Row 2
+                let i2_0 = _mm512_loadu_ps(p2.add(xb));
+                let i2_1 = _mm512_loadu_ps(p2.add(xb + B));
+                let i2_2 = _mm512_loadu_ps(p2.add(xb + 2 * B));
+                let i2_3 = _mm512_loadu_ps(p2.add(xb + 3 * B));
+                let i2_4 = _mm512_loadu_ps(p2.add(xb + 4 * B));
+                let i2_5 = _mm512_loadu_ps(p2.add(xb + 5 * B));
+
+                // Accumulators initialized with bias. Each acc covers one output pixel.
+                // acc[j] = bias + sum_ky sum_kx input[ky][x+j+kx] * weight[ky][kx]
+                let mut acc0 = _mm512_fmadd_ps(i0_0, k00, bias_v);
+                let mut acc1 = _mm512_fmadd_ps(i0_1, k00, bias_v);
+                let mut acc2 = _mm512_fmadd_ps(i0_2, k00, bias_v);
+                let mut acc3 = _mm512_fmadd_ps(i0_3, k00, bias_v);
+                // row 0, kx=1
+                acc0 = _mm512_fmadd_ps(i0_1, k01, acc0);
+                acc1 = _mm512_fmadd_ps(i0_2, k01, acc1);
+                acc2 = _mm512_fmadd_ps(i0_3, k01, acc2);
+                acc3 = _mm512_fmadd_ps(i0_4, k01, acc3);
+                // row 0, kx=2
+                acc0 = _mm512_fmadd_ps(i0_2, k02, acc0);
+                acc1 = _mm512_fmadd_ps(i0_3, k02, acc1);
+                acc2 = _mm512_fmadd_ps(i0_4, k02, acc2);
+                acc3 = _mm512_fmadd_ps(i0_5, k02, acc3);
+                // row 1, kx=0
+                acc0 = _mm512_fmadd_ps(i1_0, k10, acc0);
+                acc1 = _mm512_fmadd_ps(i1_1, k10, acc1);
+                acc2 = _mm512_fmadd_ps(i1_2, k10, acc2);
+                acc3 = _mm512_fmadd_ps(i1_3, k10, acc3);
+                // row 1, kx=1
+                acc0 = _mm512_fmadd_ps(i1_1, k11, acc0);
+                acc1 = _mm512_fmadd_ps(i1_2, k11, acc1);
+                acc2 = _mm512_fmadd_ps(i1_3, k11, acc2);
+                acc3 = _mm512_fmadd_ps(i1_4, k11, acc3);
+                // row 1, kx=2
+                acc0 = _mm512_fmadd_ps(i1_2, k12, acc0);
+                acc1 = _mm512_fmadd_ps(i1_3, k12, acc1);
+                acc2 = _mm512_fmadd_ps(i1_4, k12, acc2);
+                acc3 = _mm512_fmadd_ps(i1_5, k12, acc3);
+                // row 2, kx=0
+                acc0 = _mm512_fmadd_ps(i2_0, k20, acc0);
+                acc1 = _mm512_fmadd_ps(i2_1, k20, acc1);
+                acc2 = _mm512_fmadd_ps(i2_2, k20, acc2);
+                acc3 = _mm512_fmadd_ps(i2_3, k20, acc3);
+                // row 2, kx=1
+                acc0 = _mm512_fmadd_ps(i2_1, k21, acc0);
+                acc1 = _mm512_fmadd_ps(i2_2, k21, acc1);
+                acc2 = _mm512_fmadd_ps(i2_3, k21, acc2);
+                acc3 = _mm512_fmadd_ps(i2_4, k21, acc3);
+                // row 2, kx=2
+                acc0 = _mm512_fmadd_ps(i2_2, k22, acc0);
+                acc1 = _mm512_fmadd_ps(i2_3, k22, acc1);
+                acc2 = _mm512_fmadd_ps(i2_4, k22, acc2);
+                acc3 = _mm512_fmadd_ps(i2_5, k22, acc3);
+
+                if do_relu {
+                    let z = _mm512_setzero_ps();
+                    acc0 = _mm512_max_ps(acc0, z);
+                    acc1 = _mm512_max_ps(acc1, z);
+                    acc2 = _mm512_max_ps(acc2, z);
+                    acc3 = _mm512_max_ps(acc3, z);
+                } else if matches!(activation, Activation::Silu) {
+                    // Per-ZMM scalar SiLU — rare in tracker DW chains.
+                    macro_rules! silu_zmm {
+                        ($v:expr) => {{
+                            let mut tmp = [0.0f32; 16];
+                            _mm512_storeu_ps(tmp.as_mut_ptr(), $v);
+                            for f in tmp.iter_mut() {
+                                *f *= 1.0 / (1.0 + (-*f).exp());
+                            }
+                            _mm512_loadu_ps(tmp.as_ptr())
+                        }};
+                    }
+                    acc0 = silu_zmm!(acc0);
+                    acc1 = silu_zmm!(acc1);
+                    acc2 = silu_zmm!(acc2);
+                    acc3 = silu_zmm!(acc3);
+                }
+
+                _mm512_storeu_ps(o_row.add(xb), acc0);
+                _mm512_storeu_ps(o_row.add(xb + B), acc1);
+                _mm512_storeu_ps(o_row.add(xb + 2 * B), acc2);
+                _mm512_storeu_ps(o_row.add(xb + 3 * B), acc3);
+                x += 4;
+            }
+
+            // 1-pixel tail using 9 ZMM FMAs.
+            while x < w {
+                let xb = x * B;
+                let i00 = _mm512_loadu_ps(p0.add(xb));
+                let i01 = _mm512_loadu_ps(p0.add(xb + B));
+                let i02 = _mm512_loadu_ps(p0.add(xb + 2 * B));
+                let i10 = _mm512_loadu_ps(p1.add(xb));
+                let i11 = _mm512_loadu_ps(p1.add(xb + B));
+                let i12 = _mm512_loadu_ps(p1.add(xb + 2 * B));
+                let i20 = _mm512_loadu_ps(p2.add(xb));
+                let i21 = _mm512_loadu_ps(p2.add(xb + B));
+                let i22 = _mm512_loadu_ps(p2.add(xb + 2 * B));
+                let mut acc = _mm512_fmadd_ps(i00, k00, bias_v);
+                acc = _mm512_fmadd_ps(i01, k01, acc);
+                acc = _mm512_fmadd_ps(i02, k02, acc);
+                acc = _mm512_fmadd_ps(i10, k10, acc);
+                acc = _mm512_fmadd_ps(i11, k11, acc);
+                acc = _mm512_fmadd_ps(i12, k12, acc);
+                acc = _mm512_fmadd_ps(i20, k20, acc);
+                acc = _mm512_fmadd_ps(i21, k21, acc);
+                acc = _mm512_fmadd_ps(i22, k22, acc);
+                if do_relu {
+                    acc = _mm512_max_ps(acc, _mm512_setzero_ps());
+                } else if matches!(activation, Activation::Silu) {
+                    let mut tmp = [0.0f32; 16];
+                    _mm512_storeu_ps(tmp.as_mut_ptr(), acc);
+                    for f in tmp.iter_mut() {
+                        *f *= 1.0 / (1.0 + (-*f).exp());
+                    }
+                    acc = _mm512_loadu_ps(tmp.as_ptr());
+                }
+                _mm512_storeu_ps(o_row.add(xb), acc);
+                x += 1;
+            }
+        }
+    } // end unsafe
+}
+
+/// AVX-512 block=16 NCHWc DW kernel with NO pad buffer. Reads from the
+/// raw NCHWc input slab `[h, w, 16]` directly and applies the 3×3 SAME
+/// pad inline via row/col validity flags. This eliminates the per-call
+/// pad-buffer calloc + input-copy (~415 KB at c=320 16×16) that the
+/// legacy padded variant pays.
+///
+/// Hot interior rows (1 ≤ out_y ≤ h-2) use a 4-pixel tile (4 acc ZMMs +
+/// 18 input ZMM loads + 9 weight ZMMs + 1 bias = 32 ZMMs, exactly the
+/// AVX-512 register file). Top/bottom border rows fall back to a single-
+/// pixel loop with full bounds checks.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code)]
+unsafe fn dw3x3_inner_avx512_block16_nopad(
+    in_slab: &[f32],
+    kernel_cb: &[f32],
+    kernel_c_stride: usize,
+    kernel_row_stride: usize,
+    bias_cb: Option<&[f32]>,
+    out_chunk: &mut [f32],
+    h: usize,
+    w: usize,
+    activation: Activation,
+) {
+    unsafe {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::*;
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::*;
+
+        const B: usize = 16;
+        let kp = kernel_cb.as_ptr();
+        let w00 = _mm512_loadu_ps(kp);
+        let w01 = _mm512_loadu_ps(kp.add(kernel_c_stride));
+        let w02 = _mm512_loadu_ps(kp.add(2 * kernel_c_stride));
+        let w10 = _mm512_loadu_ps(kp.add(kernel_row_stride));
+        let w11 = _mm512_loadu_ps(kp.add(kernel_row_stride + kernel_c_stride));
+        let w12 = _mm512_loadu_ps(kp.add(kernel_row_stride + 2 * kernel_c_stride));
+        let w20 = _mm512_loadu_ps(kp.add(2 * kernel_row_stride));
+        let w21 = _mm512_loadu_ps(kp.add(2 * kernel_row_stride + kernel_c_stride));
+        let w22 = _mm512_loadu_ps(kp.add(2 * kernel_row_stride + 2 * kernel_c_stride));
+
+        let bias_v = match bias_cb {
+            Some(b) => _mm512_loadu_ps(b.as_ptr()),
+            None => _mm512_setzero_ps(),
+        };
+        let zero = _mm512_setzero_ps();
+        let do_relu = matches!(activation, Activation::Relu);
+        let do_silu = matches!(activation, Activation::Silu);
+
+        let in_row = w * B;
+        let in_ptr = in_slab.as_ptr();
+        let out_ptr = out_chunk.as_mut_ptr();
+
+        // SiLU epilog (rare in DW chains) — scalar fallback.
+        let silu_epi = |acc: __m512| -> __m512 {
+            let mut tmp = [0.0f32; 16];
+            _mm512_storeu_ps(tmp.as_mut_ptr(), acc);
+            for f in tmp.iter_mut() {
+                *f *= 1.0 / (1.0 + (-*f).exp());
+            }
+            _mm512_loadu_ps(tmp.as_ptr())
+        };
+
+        for out_y in 0..h {
+            let top_ok = out_y > 0;
+            let bot_ok = out_y + 1 < h;
+
+            let p_mid = in_ptr.add(out_y * in_row);
+            let p_top = if top_ok {
+                in_ptr.add((out_y - 1) * in_row)
+            } else {
+                core::ptr::null()
+            };
+            let p_bot = if bot_ok {
+                in_ptr.add((out_y + 1) * in_row)
+            } else {
+                core::ptr::null()
+            };
+            let o_row = out_ptr.add(out_y * in_row);
+
+            if top_ok && bot_ok && w >= 2 {
+                // Interior row: 1 left-edge pixel + 4-tile interior + tail + 1 right-edge pixel.
+
+                // Left edge: out_x = 0 (no kx=0 column).
+                {
+                    let pt1 = _mm512_loadu_ps(p_top);
+                    let pt2 = _mm512_loadu_ps(p_top.add(B));
+                    let pm1 = _mm512_loadu_ps(p_mid);
+                    let pm2 = _mm512_loadu_ps(p_mid.add(B));
+                    let pb1 = _mm512_loadu_ps(p_bot);
+                    let pb2 = _mm512_loadu_ps(p_bot.add(B));
+                    let mut acc = _mm512_fmadd_ps(pt1, w01, bias_v);
+                    acc = _mm512_fmadd_ps(pt2, w02, acc);
+                    acc = _mm512_fmadd_ps(pm1, w11, acc);
+                    acc = _mm512_fmadd_ps(pm2, w12, acc);
+                    acc = _mm512_fmadd_ps(pb1, w21, acc);
+                    acc = _mm512_fmadd_ps(pb2, w22, acc);
+                    if do_relu {
+                        acc = _mm512_max_ps(acc, zero);
+                    } else if do_silu {
+                        acc = silu_epi(acc);
+                    }
+                    _mm512_storeu_ps(o_row, acc);
+                }
+
+                // 4-tile interior: out_x in [1, w-5] (each tile covers x..x+3,
+                // all fully interior). Each pixel needs 9 FMAs from cols x-1..x+1
+                // (for out_x=x), so the tile reads cols x-1..x+4 = 6 ZMMs per row.
+                let mut x = 1usize;
+                while x + 4 < w {
+                    let xb = x * B;
+                    let i0_0 = _mm512_loadu_ps(p_top.add(xb - B));
+                    let i0_1 = _mm512_loadu_ps(p_top.add(xb));
+                    let i0_2 = _mm512_loadu_ps(p_top.add(xb + B));
+                    let i0_3 = _mm512_loadu_ps(p_top.add(xb + 2 * B));
+                    let i0_4 = _mm512_loadu_ps(p_top.add(xb + 3 * B));
+                    let i0_5 = _mm512_loadu_ps(p_top.add(xb + 4 * B));
+                    let i1_0 = _mm512_loadu_ps(p_mid.add(xb - B));
+                    let i1_1 = _mm512_loadu_ps(p_mid.add(xb));
+                    let i1_2 = _mm512_loadu_ps(p_mid.add(xb + B));
+                    let i1_3 = _mm512_loadu_ps(p_mid.add(xb + 2 * B));
+                    let i1_4 = _mm512_loadu_ps(p_mid.add(xb + 3 * B));
+                    let i1_5 = _mm512_loadu_ps(p_mid.add(xb + 4 * B));
+                    let i2_0 = _mm512_loadu_ps(p_bot.add(xb - B));
+                    let i2_1 = _mm512_loadu_ps(p_bot.add(xb));
+                    let i2_2 = _mm512_loadu_ps(p_bot.add(xb + B));
+                    let i2_3 = _mm512_loadu_ps(p_bot.add(xb + 2 * B));
+                    let i2_4 = _mm512_loadu_ps(p_bot.add(xb + 3 * B));
+                    let i2_5 = _mm512_loadu_ps(p_bot.add(xb + 4 * B));
+
+                    let mut acc0 = _mm512_fmadd_ps(i0_0, w00, bias_v);
+                    let mut acc1 = _mm512_fmadd_ps(i0_1, w00, bias_v);
+                    let mut acc2 = _mm512_fmadd_ps(i0_2, w00, bias_v);
+                    let mut acc3 = _mm512_fmadd_ps(i0_3, w00, bias_v);
+
+                    acc0 = _mm512_fmadd_ps(i0_1, w01, acc0);
+                    acc1 = _mm512_fmadd_ps(i0_2, w01, acc1);
+                    acc2 = _mm512_fmadd_ps(i0_3, w01, acc2);
+                    acc3 = _mm512_fmadd_ps(i0_4, w01, acc3);
+
+                    acc0 = _mm512_fmadd_ps(i0_2, w02, acc0);
+                    acc1 = _mm512_fmadd_ps(i0_3, w02, acc1);
+                    acc2 = _mm512_fmadd_ps(i0_4, w02, acc2);
+                    acc3 = _mm512_fmadd_ps(i0_5, w02, acc3);
+
+                    acc0 = _mm512_fmadd_ps(i1_0, w10, acc0);
+                    acc1 = _mm512_fmadd_ps(i1_1, w10, acc1);
+                    acc2 = _mm512_fmadd_ps(i1_2, w10, acc2);
+                    acc3 = _mm512_fmadd_ps(i1_3, w10, acc3);
+
+                    acc0 = _mm512_fmadd_ps(i1_1, w11, acc0);
+                    acc1 = _mm512_fmadd_ps(i1_2, w11, acc1);
+                    acc2 = _mm512_fmadd_ps(i1_3, w11, acc2);
+                    acc3 = _mm512_fmadd_ps(i1_4, w11, acc3);
+
+                    acc0 = _mm512_fmadd_ps(i1_2, w12, acc0);
+                    acc1 = _mm512_fmadd_ps(i1_3, w12, acc1);
+                    acc2 = _mm512_fmadd_ps(i1_4, w12, acc2);
+                    acc3 = _mm512_fmadd_ps(i1_5, w12, acc3);
+
+                    acc0 = _mm512_fmadd_ps(i2_0, w20, acc0);
+                    acc1 = _mm512_fmadd_ps(i2_1, w20, acc1);
+                    acc2 = _mm512_fmadd_ps(i2_2, w20, acc2);
+                    acc3 = _mm512_fmadd_ps(i2_3, w20, acc3);
+
+                    acc0 = _mm512_fmadd_ps(i2_1, w21, acc0);
+                    acc1 = _mm512_fmadd_ps(i2_2, w21, acc1);
+                    acc2 = _mm512_fmadd_ps(i2_3, w21, acc2);
+                    acc3 = _mm512_fmadd_ps(i2_4, w21, acc3);
+
+                    acc0 = _mm512_fmadd_ps(i2_2, w22, acc0);
+                    acc1 = _mm512_fmadd_ps(i2_3, w22, acc1);
+                    acc2 = _mm512_fmadd_ps(i2_4, w22, acc2);
+                    acc3 = _mm512_fmadd_ps(i2_5, w22, acc3);
+
+                    if do_relu {
+                        acc0 = _mm512_max_ps(acc0, zero);
+                        acc1 = _mm512_max_ps(acc1, zero);
+                        acc2 = _mm512_max_ps(acc2, zero);
+                        acc3 = _mm512_max_ps(acc3, zero);
+                    } else if do_silu {
+                        acc0 = silu_epi(acc0);
+                        acc1 = silu_epi(acc1);
+                        acc2 = silu_epi(acc2);
+                        acc3 = silu_epi(acc3);
+                    }
+                    _mm512_storeu_ps(o_row.add(xb), acc0);
+                    _mm512_storeu_ps(o_row.add(xb + B), acc1);
+                    _mm512_storeu_ps(o_row.add(xb + 2 * B), acc2);
+                    _mm512_storeu_ps(o_row.add(xb + 3 * B), acc3);
+                    x += 4;
+                }
+
+                // 1-pixel interior tail: out_x in [x, w-2].
+                while x < w - 1 {
+                    let xb = x * B;
+                    let i0_l = _mm512_loadu_ps(p_top.add(xb - B));
+                    let i0_m = _mm512_loadu_ps(p_top.add(xb));
+                    let i0_r = _mm512_loadu_ps(p_top.add(xb + B));
+                    let i1_l = _mm512_loadu_ps(p_mid.add(xb - B));
+                    let i1_m = _mm512_loadu_ps(p_mid.add(xb));
+                    let i1_r = _mm512_loadu_ps(p_mid.add(xb + B));
+                    let i2_l = _mm512_loadu_ps(p_bot.add(xb - B));
+                    let i2_m = _mm512_loadu_ps(p_bot.add(xb));
+                    let i2_r = _mm512_loadu_ps(p_bot.add(xb + B));
+                    let mut acc = _mm512_fmadd_ps(i0_l, w00, bias_v);
+                    acc = _mm512_fmadd_ps(i0_m, w01, acc);
+                    acc = _mm512_fmadd_ps(i0_r, w02, acc);
+                    acc = _mm512_fmadd_ps(i1_l, w10, acc);
+                    acc = _mm512_fmadd_ps(i1_m, w11, acc);
+                    acc = _mm512_fmadd_ps(i1_r, w12, acc);
+                    acc = _mm512_fmadd_ps(i2_l, w20, acc);
+                    acc = _mm512_fmadd_ps(i2_m, w21, acc);
+                    acc = _mm512_fmadd_ps(i2_r, w22, acc);
+                    if do_relu {
+                        acc = _mm512_max_ps(acc, zero);
+                    } else if do_silu {
+                        acc = silu_epi(acc);
+                    }
+                    _mm512_storeu_ps(o_row.add(xb), acc);
+                    x += 1;
+                }
+
+                // Right edge: out_x = w-1 (no kx=2 column).
+                {
+                    let xb = (w - 1) * B;
+                    let i0_l = _mm512_loadu_ps(p_top.add(xb - B));
+                    let i0_m = _mm512_loadu_ps(p_top.add(xb));
+                    let i1_l = _mm512_loadu_ps(p_mid.add(xb - B));
+                    let i1_m = _mm512_loadu_ps(p_mid.add(xb));
+                    let i2_l = _mm512_loadu_ps(p_bot.add(xb - B));
+                    let i2_m = _mm512_loadu_ps(p_bot.add(xb));
+                    let mut acc = _mm512_fmadd_ps(i0_l, w00, bias_v);
+                    acc = _mm512_fmadd_ps(i0_m, w01, acc);
+                    acc = _mm512_fmadd_ps(i1_l, w10, acc);
+                    acc = _mm512_fmadd_ps(i1_m, w11, acc);
+                    acc = _mm512_fmadd_ps(i2_l, w20, acc);
+                    acc = _mm512_fmadd_ps(i2_m, w21, acc);
+                    if do_relu {
+                        acc = _mm512_max_ps(acc, zero);
+                    } else if do_silu {
+                        acc = silu_epi(acc);
+                    }
+                    _mm512_storeu_ps(o_row.add(xb), acc);
+                }
+            } else {
+                // Border row (out_y=0 or out_y=h-1) — also covers degenerate
+                // w=1 case. Per-pixel with full bounds checks.
+                for out_x in 0..w {
+                    let xb = out_x * B;
+                    let left_ok = out_x > 0;
+                    let right_ok = out_x + 1 < w;
+                    let mut acc = bias_v;
+                    if top_ok {
+                        if left_ok {
+                            let p = p_top.add(xb - B);
+                            acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w00, acc);
+                        }
+                        let p = p_top.add(xb);
+                        acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w01, acc);
+                        if right_ok {
+                            let p = p_top.add(xb + B);
+                            acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w02, acc);
+                        }
+                    }
+                    if left_ok {
+                        let p = p_mid.add(xb - B);
+                        acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w10, acc);
+                    }
+                    let pmid = p_mid.add(xb);
+                    acc = _mm512_fmadd_ps(_mm512_loadu_ps(pmid), w11, acc);
+                    if right_ok {
+                        let p = p_mid.add(xb + B);
+                        acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w12, acc);
+                    }
+                    if bot_ok {
+                        if left_ok {
+                            let p = p_bot.add(xb - B);
+                            acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w20, acc);
+                        }
+                        let p = p_bot.add(xb);
+                        acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w21, acc);
+                        if right_ok {
+                            let p = p_bot.add(xb + B);
+                            acc = _mm512_fmadd_ps(_mm512_loadu_ps(p), w22, acc);
+                        }
+                    }
+                    if do_relu {
+                        acc = _mm512_max_ps(acc, zero);
+                    } else if do_silu {
+                        acc = silu_epi(acc);
+                    }
+                    _mm512_storeu_ps(o_row.add(xb), acc);
+                }
             }
         }
     }
@@ -610,6 +1240,7 @@ mod tests {
             c,
             ParallelElementwiseConfig::default(),
             None,
+            None,
         )
         .unwrap();
         let native_nhwc = nchwc_to_nhwc(&native_out, c).unwrap();
@@ -702,14 +1333,37 @@ mod tests {
             20,
             ParallelElementwiseConfig::default(),
             None,
+            None,
         );
         assert!(r.is_err(), "expected error on tail block");
     }
 
     #[test]
     fn dw3x3_nchwc_scalar_path_matches_avx() {
-        // Force a non-8 block to exercise the scalar fallback path.
+        // On AVX-512 this now hits the fast AVX-512 block=16 path; on
+        // other archs it falls to scalar. Both must match NHWC reference.
         run_case(16, 16, 16, 16, Activation::Relu, true);
+    }
+
+    #[test]
+    fn dw3x3_nchwc_block16_avx512_relu_bias() {
+        run_case(32, 32, 96, 16, Activation::Relu, true);
+    }
+
+    #[test]
+    fn dw3x3_nchwc_block16_avx512_none_nobias() {
+        run_case(16, 16, 96, 16, Activation::None, false);
+    }
+
+    #[test]
+    fn dw3x3_nchwc_block16_avx512_c320_relu() {
+        run_case(16, 16, 320, 16, Activation::Relu, true);
+    }
+
+    #[test]
+    fn dw3x3_nchwc_block16_avx512_tail_w() {
+        // w=13 is not a multiple of 4 — exercises the 1-pixel tail path.
+        run_case(13, 13, 32, 16, Activation::Relu, false);
     }
 
     /// Micro-bench native NCHWc DW (including NHWC↔NCHWc conversion
@@ -785,6 +1439,7 @@ mod tests {
                     c,
                     ParallelElementwiseConfig::default(),
                     None,
+                    None,
                 )
                 .unwrap();
             }
@@ -822,6 +1477,7 @@ mod tests {
                     c,
                     ParallelElementwiseConfig::default(),
                     None,
+                    None,
                 )
                 .unwrap();
                 std::hint::black_box(r);
@@ -838,6 +1494,7 @@ mod tests {
                     Activation::Relu,
                     c,
                     ParallelElementwiseConfig::default(),
+                    None,
                     None,
                 )
                 .unwrap();

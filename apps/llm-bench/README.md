@@ -89,6 +89,8 @@ the existing `yscv_onnx::generate` helper.
 - `--max-tokens N` — number of new tokens to generate (default 64).
 - `--warmup K` — discarded warm-up forward passes before the timed
   run (default 2). Catches first-touch allocs / page faults.
+- `--threads N` — run yscv through `OnnxRunner::with_threads(N)`;
+  `0` keeps the default runner policy.
 - `--input-name NAME` / `--output-name NAME` — override the input
   tensor name (default `input_ids`) / logits output name (default
   `logits`) for non-standard exports.
@@ -178,10 +180,12 @@ Single human-readable line on stderr plus a JSON line on stdout:
 
 ```
 prompt=32t  prefill=215.4ms  decode=64t / 4823.2ms = 13.27 tok/s  total=5039.2ms
-{"model":"…/model.onnx","prompt_tokens":32,"decode_tokens":64,"prefill_ms":215.4,"decode_total_ms":4823.2,"decode_tokens_per_sec":13.27,"total_wall_ms":5039.2}
+{"model":"…/model.onnx","threads":6,"prompt_tokens":32,"decode_tokens":64,"prefill_ms":215.4,"decode_total_ms":4823.2,"decode_tokens_per_sec":13.27,"total_wall_ms":5039.2}
 ```
 
 Pipe stdout through `jq` to aggregate across runs.
+Set `YSCV_RUNNER_PROFILE=/tmp/llm-profile.json` to dump the same per-node
+runner profile schema used by `bench_tracker`.
 
 ## Tracker Multi-Input Quantization
 
@@ -260,14 +264,23 @@ QLinearConv and QuantizeLinear outputs are stored internally as real i8 tensors;
 `bench_tracker` reports `quant_i8_stores` and `quant_i8_materializations` so a
 run can prove whether it stayed quantized between Conv-like nodes. Entry
 `QuantizeLinear` nodes that feed QLinear activations quantize directly into i8
-storage through the scalar/AVX2/AVX-512F/NEON dispatch in `yscv-kernels` with packed x86 i8 stores; the
-old scalar iterator path is gone from that hot route. For explicit QLinear
-pointwise/MatMul shapes, yscv also builds the AVX-512 VNNI 4x16 RHS layout at
-model load so repeated tracker runs do not repack the same INT8 weights in the
-hot path. The benchmark JSON includes `quant_chain_candidates`,
-`quant_chain_executed`, and `quant_chain_fallback`; until fused INT8 chain
-actions land, the private tracker QLinear export should show candidates but
-zero executed chains.
+storage through the scalar/AVX2/AVX-512F/NEON dispatch in `yscv-kernels` with
+packed x86 i8 stores; large activation tensors split into per-thread chunks on
+multi-threaded runners, and the old scalar iterator path is gone from that hot
+route. Residual/fork QLinear chains also parallelize INT8 depthwise
+accumulation, NCHW/NHWC layout conversion, and requant/dequant glue. For
+explicit QLinear pointwise/MatMul shapes, yscv also builds the AVX-512 VNNI
+4x16 RHS layout at model load so repeated tracker runs do not repack the same
+INT8 weights in the hot path. The benchmark JSON includes `quant_chain_candidates`,
+`quant_chain_executed`, and `quant_chain_fallback`; the candidate count follows
+the same greedy non-overlapping ownership as the runtime plan, including
+PW->DW / DW->PW kernels, residual/fork suffix actions, and split
+`QLinearConv -> DQ` boundaries. On the private tracker QLinear export the
+expected Chunk 4 steady state is `quant_chain_candidates=50`,
+`quant_chain_executed=50`, `quant_chain_fallback=0`, and
+`qlinear_conv_fast=0`, meaning no `QLinearConv` is left to run as an
+individual per-node op. The current 3x200 QLinear gate on the private tracker
+is 27.63 ms at 1T, 11.67 ms at 4T, and 10.87 ms at 6T.
 
 To reproduce the tracker comparison matrix while tuning quant kernels:
 

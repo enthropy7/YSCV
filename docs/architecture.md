@@ -90,14 +90,15 @@ If you need to change something, these are the most important files:
 
 | What | Where |
 |---|---|
-| u8 image ops (SIMD) | `crates/yscv-imgproc/src/ops/u8ops.rs` (~5500 lines) |
-| f32 SIMD kernels | `crates/yscv-kernels/src/ops/simd.rs` (~3000 lines) |
-| Tensor SIMD | `crates/yscv-tensor/src/simd.rs` (~3000 lines) |
+| u8 image ops (SIMD) | `crates/yscv-imgproc/src/ops/` (`u8_filters.rs`, `color.rs`, …) |
+| f32 SIMD kernels | `crates/yscv-kernels/src/ops/simd/` |
+| Tensor SIMD | `crates/yscv-tensor/src/simd/` |
 | Tensor core | `crates/yscv-tensor/src/tensor.rs` |
 | Autograd graph | `crates/yscv-autograd/src/graph.rs` |
-| CPU backend | `crates/yscv-kernels/src/backend.rs` |
-| ONNX runtime | `crates/yscv-onnx/src/runner/mod.rs` |
-| Metal plan compiler | `crates/yscv-onnx/src/runner/metal.rs` |
+| CPU backend | `crates/yscv-kernels/src/backend/` |
+| ONNX runtime | `crates/yscv-onnx/src/runner/` (`mod.rs` + dispatch submodules) |
+| Conv / MatMul kernels | `crates/yscv-kernels/src/ops/conv/`, `ops/matmul/` |
+| Metal plan compiler | `crates/yscv-onnx/src/runner/metal/` |
 | Benchmark harness | `apps/bench/src/main.rs` |
 | OpenCV comparison | `bench_opencv.py` |
 | CI pipeline | `.github/workflows/ci.yml` |
@@ -150,7 +151,7 @@ The framework has three tiers of GPU execution, each with different trade-offs:
 | What | Where |
 |---|---|
 | Metal backend | `crates/yscv-kernels/src/metal_backend.rs` |
-| Metal plan compiler | `crates/yscv-onnx/src/runner/metal.rs` |
+| Metal plan compiler | `crates/yscv-onnx/src/runner/metal/` |
 | Conv GEMM shader | `crates/yscv-kernels/src/shaders/conv_gemm_metal_basic.metal` |
 | Winograd shader | `crates/yscv-kernels/src/shaders/conv_winograd.metal` |
 | Utility shaders | `crates/yscv-kernels/src/shaders/metal_ops.metal` |

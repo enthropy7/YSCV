@@ -4,101 +4,31 @@ This note documents the current hot CPU kernel paths used by `yscv-onnx`
 for tracker-class models, where assembly is used, where NEON/AVX
 intrinsics are used, and which env vars are intended only for A/B.
 
-## Current public status (Orange Pi Zero 3, 2026-04-21)
+## Status
 
-Siamese tracker (`model.onnx`, sha256
-`6336fbde82e3996128cd18e2141682c7a6b9a7575018ca9ffee974df546f22ab`),
-`--iters 200`, same inputs/threads for both engines:
-
-| Threads | yscv p50 | ORT p50 | yscv vs ORT |
-|---:|---:|---:|---:|
-| 1 | **461.63 ms** | 499.25 ms | **1.08× faster** |
-| 2 | **252.08 ms** | 273.18 ms | **1.08× faster** |
-| 3 | **192.91 ms** | 199.41 ms | **1.03× faster** |
-| 4 | **150.17 ms** | 164.56 ms | **1.10× faster** |
-
-## Current desktop tracker status (Zen 4, 2026-04-29)
-
-Private two-input tracker (`private/private/model.onnx`), synthetic
-zero/random benchmark inputs for speed only, `--iters 200`, median p50:
-
-| Model / path | Threads | yscv p50 | ORT p50 | Status |
-|---|---:|---:|---:|---|
-| fp32 original | 1 | 11.34 ms | **8.03 ms** | yscv 1.41× slower |
-| fp32 original | 6 | 2.93 ms | **1.80 ms** | yscv 1.63× slower |
-| QDQ-fast export | 1 | 11.60 ms | **8.16 ms** | yscv 1.42× slower |
-| QDQ-fast export | 6 | 3.44 ms | **1.84 ms** | yscv 1.87× slower |
-| QLinear export before NCHW DW | 1 | 85.81 ms | **29.38 ms** | explicit INT8 still too slow |
-| QLinear export after NCHW DW + QDQ boundary fuse + i8 edge storage + VNNI RHS prepack + direct i8 QuantizeLinear packed-store | 1 | **61.35 ms** | 29.38 ms | 29% yscv win vs prior |
-| QLinear export before NCHW DW | 6 | 78.74 ms | **10.31 ms** | explicit INT8 still too slow |
-| QLinear export after NCHW DW + QDQ boundary fuse + i8 edge storage + VNNI RHS prepack + direct i8 QuantizeLinear packed-store | 6 | **51.95 ms** | 10.31 ms | 34% yscv win vs prior |
-| QLinear export + fused PW->DW quant-domain chain (`NodeAction::QuantizedPwDw`, 3x200 iter median, 31 chains/inference) | 1 | **46.63 ms** | 29.38 ms | 24% yscv win vs prior QLinear baseline |
-| QLinear export + fused PW->DW quant-domain chain (`NodeAction::QuantizedPwDw`, 3x200 iter median, 31 chains/inference) | 6 | **29.87 ms** | 10.31 ms | 43% yscv win vs prior QLinear baseline |
-| QLinear export + fused PW->DW + DW->PW quant-domain chains (`NodeAction::QuantizedPwDw` + `NodeAction::QuantizedDwPw`, 3x200 iter median, 36 chains/inference) | 1 | **45.95 ms** | 29.38 ms | adds the inverted-bottleneck closing pair; total 25% win vs original QLinear |
-| QLinear export + fused PW->DW + DW->PW quant-domain chains (`NodeAction::QuantizedPwDw` + `NodeAction::QuantizedDwPw`, 3x200 iter median, 36 chains/inference) | 6 | **26.01 ms** | 10.31 ms | 50% win vs original QLinear baseline at 6T |
-| QLinear export + both fused chains + SIMD requant epilogue (`int8_requant::requant_i32_row_to_i8_dispatch` AVX-512BW / AVX2 / NEON, 3x200 iter median, 36 chains/inference) | 1 | **34.23 ms** | 29.38 ms | replaces scalar f32 round/clamp inner loop with 16-lane (AVX-512BW) / 8-lane (AVX2) / 4-lane (NEON) SIMD; 60% total win vs original QLinear at 1T, within **1.17× of ORT** |
-| QLinear export + both fused chains + SIMD requant epilogue (`int8_requant::requant_i32_row_to_i8_dispatch` AVX-512BW / AVX2 / NEON, 3x200 iter median, 36 chains/inference) | 6 | **22.37 ms** | 10.31 ms | 71% total win vs original QLinear at 6T |
-
-### Independent rerun snapshot (2026-05-01)
-
-Same harness (`apps/llm-bench/scripts/bench_tracker_quant_matrix.sh`), same
-model/shapes, `iters=200`, `runs=3`; table values are median of run p50.
-
-| Pipeline | Threads | yscv p50 | yscv FPS | ORT p50 | ORT FPS | yscv vs ORT |
-|---|---:|---:|---:|---:|---:|---:|
-| fp32 | 1 | 11.735 ms | 85.22 | 8.300 ms | 120.48 | 1.41x slower |
-| fp32 | 6 | 3.506 ms | 285.23 | 1.890 ms | 529.10 | 1.86x slower |
-| QDQ-fast | 1 | 11.969 ms | 83.55 | 8.439 ms | 118.50 | 1.42x slower |
-| QDQ-fast | 6 | 4.107 ms | 243.51 | 2.038 ms | 490.68 | 2.02x slower |
-| QLinear | 1 | 31.837 ms | 31.41 | 30.530 ms | 32.75 | 1.04x slower |
-| QLinear | 6 | 20.802 ms | 48.07 | 9.944 ms | 100.56 | 2.09x slower |
-
-The QLinear numbers are not the shipping quantized target yet: they are
-the explicit standard-ONNX QLinear graph. The default yscv speed path is
-still QDQ-fast while QLinear is being used as an interoperability and
-kernel bring-up target. Accuracy gates must use representative paired
-template/search crops; synthetic random calibration is smoke-only.
-The workspace-native `bench_tracker` harness reports quant-runtime
-counters; current QDQ-fast runs show `qlinear_conv_fast=0`, while QLinear
-runs in the latest rerun report `quant_chain_executed=36`,
-`quant_chain_fallback=15`, `qlinear_conv_fast=3200`, `qdq_boundaries=2600`,
-`quant_i8_stores=20800`, and `quant_i8_materializations=0` over 200
-iterations (about 16 fast QLinearConv hits, 13 quant-domain boundaries, and
-104 i8 stores per inference). QLinearConv / QuantizeLinear outputs now live in
-an internal i8 side-table until a true fp32 consumer requests materialization.
-VNNI-friendly pointwise/MatMul RHS tensors are now packed once
-at model load into the 4x16 AVX-512 VNNI layout, avoiding per-inference RHS
-packing on explicit QLinearConv pointwise layers. Entry `QuantizeLinear` nodes
-that feed QLinear activations now quantize directly into i8 side-table storage
-through scalar/AVX2/AVX-512F/NEON dispatch, with packed AVX2/AVX-512 i8 stores, instead of scalar iterator
-collection. `bench_tracker` also reports
-static QLinear Conv-chain candidates; the current tracker QLinear export has 51
-`PW->DW`, `DW->PW`, or residual-style chain candidates. The first production
-INT8 chain actions (`NodeAction::QuantizedPwDw` + `NodeAction::QuantizedDwPw`)
-now execute 36 fused chains per inference on the desktop tracker
-(26 PW->DW opening pairs + 10 DW->PW closing pairs;
-`quant_chain_executed=36`, `quant_chain_fallback=15` — the remaining 15
-candidates are residual `Conv-Add-Q` patterns out of scope for this arc).
-Each fused dispatch removes two `qlinear_conv_fast` hits and one QDQ
-boundary on the per-op path.
-
-See also the rerun snapshot in [`perf-arc-2026-04.md`](perf-arc-2026-04.md).
+For current cross-thread and cross-hardware benchmark numbers (fp32, QDQ,
+and explicit QLinear paths), see
+[`performance-benchmarks.md`](performance-benchmarks.md). In short: yscv's
+fp32 and QDQ-fast paths are competitive with ONNX Runtime on ARM SBCs and
+trail it on desktop Zen 4; the explicit-QLinear path is an interoperability
+and kernel bring-up target, not the default speed path. The default
+quantized path is QDQ-fast with internal quant-domain boundary folding.
 
 ## Hot kernel paths
 
 - `FusedPwDw` (pointwise expand -> depthwise 3x3):
-  - runner entry: `crates/yscv-onnx/src/runner/conv.rs` (`exec_fused_pw_dw`)
-  - kernel: `crates/yscv-kernels/src/ops/fused_pw_dw_3x3.rs`
+  - runner entry: `crates/yscv-onnx/src/runner/conv/fused.rs` (`exec_fused_pw_dw`)
+  - kernel: `crates/yscv-kernels/src/ops/fused_pw_dw_3x3/`
   - default: streaming path ON (kill-switch only).
 - `FusedDwPw` (depthwise 3x3 -> pointwise 1x1):
-  - runner entry: `crates/yscv-onnx/src/runner/conv.rs` (`exec_fused_dw_pw`)
-  - kernel: `crates/yscv-kernels/src/ops/conv.rs` (`fused_dw_pw_nhwc_streaming`)
+  - runner entry: `crates/yscv-onnx/src/runner/conv/fused.rs` (`exec_fused_dw_pw`)
+  - kernel: `crates/yscv-kernels/src/ops/conv/mod.rs` (`fused_dw_pw_nhwc_streaming`)
   - default: streaming ON for supported shapes, padded streaming OFF by default.
 - pointwise/MatMul heavy ops:
-  - `crates/yscv-kernels/src/ops/matmul.rs`
+  - `crates/yscv-kernels/src/ops/matmul/`
   - blocked GEMM + row GEMM dispatch, BLAS routing where enabled.
 - explicit quantized depthwise:
-  - runner entry: `crates/yscv-onnx/src/runner/conv.rs` (`exec_qlinear_conv`)
+  - runner entry: `crates/yscv-onnx/src/runner/conv/quantized.rs` (`exec_qlinear_conv`)
   - kernel: `crates/yscv-kernels/src/ops/int8_depthwise.rs`
   - default: symmetric `QLinearConv` depthwise 3x3/5x5 stride-1 and measured-win
     stride-2 tracker weights are packed once at load and executed through
@@ -107,7 +37,7 @@ See also the rerun snapshot in [`perf-arc-2026-04.md`](perf-arc-2026-04.md).
     KHWC-packed-weights scalar path to avoid a losing NCHW→NHWC layout
     materialisation.
 - explicit quantized pointwise/MatMul:
-  - runner entry: `crates/yscv-onnx/src/runner/conv.rs` (`exec_qlinear_conv`)
+  - runner entry: `crates/yscv-onnx/src/runner/conv/quantized.rs` (`exec_qlinear_conv`)
     and `crates/yscv-onnx/src/runner/linear.rs` (`exec_qlinear_matmul`)
   - kernel: `crates/yscv-kernels/src/ops/int8_matmul.rs`
   - default: VNNI-friendly RHS matrices (`K >= 4`, `N % 16 == 0`) are packed
@@ -127,7 +57,7 @@ See also the rerun snapshot in [`perf-arc-2026-04.md`](perf-arc-2026-04.md).
     folding for A/B; explicit QLinearConv kernels still run so the model
     remains valid.
 - fused INT8 quant-domain chains:
-  - runner entry: `crates/yscv-onnx/src/runner/conv.rs`
+  - runner entry: `crates/yscv-onnx/src/runner/conv/quantized.rs`
     (`exec_quantized_pw_dw`, `exec_quantized_dw_pw`)
   - kernels: `crates/yscv-kernels/src/ops/int8_fused_pw_dw_3x3.rs`,
     `crates/yscv-kernels/src/ops/int8_fused_dw_pw_3x3.rs`
@@ -151,7 +81,7 @@ See also the rerun snapshot in [`perf-arc-2026-04.md`](perf-arc-2026-04.md).
     clamp to `[-128, 127]`, optional Relu) runs through the shared
     `int8_requant::requant_i32_row_to_i8_dispatch` (AVX-512BW 16-lane /
     AVX2+SSE4.1 8-lane / NEON 4-lane / scalar) and is bitwise-identical
-    to the per-op QLinearConv requant in `runner/conv.rs`. The
+    to the per-op QLinearConv requant in `runner/conv/quantized.rs`. The
     closing-pair PW weight
     is force-prepacked even when `c_out` is not a multiple of 16 (head
     layers like `bbox_pred` `c_out=4` or `cls_pred` `c_out=1`); the
@@ -174,7 +104,7 @@ Covered families include:
 - x86_64: SGEMM 4x8, 4x24 fused epilogue, 4x32 AVX-512, 12x32 AVX-512.
 - aarch64: SGEMM 4x24 NEON, 8x12 NEON.
 
-Important: the tracker's fused PW->DW path on aarch64 (`fused_pw_dw_3x3.rs`)
+Important: the tracker's fused PW->DW path on aarch64 (`fused_pw_dw_3x3/`)
 is currently NEON intrinsics (including PW2X mode), not inline asm.
 
 ## Runtime env knobs (A/B / rollback)

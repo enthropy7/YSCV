@@ -115,6 +115,26 @@ the fused-epilogue path (`row_gemm_set_parallel_fused`,
 activation) — all the R4 / R7 / R9 / A2 landings in the April arc
 only fire on the non-BLAS branch.
 
+### `YSCV_AVX512_SGEMM` — AVX-512 MR=12×NR=32 GEMM kernel (x86_64)
+
+Default **OFF**. Set `YSCV_AVX512_SGEMM=1` to enable.
+
+Uses the full 32-ZMM register file (24 accumulators, 2 B-load,
+1 A-broadcast, 5 epilogue scratch). Epilogue supports: bias, residual,
+Relu (all in asm), SiLU (ZMM post-store pass via bit-trick exp).
+m-tail (<12 rows) handled via tail_tile copy path.
+Session prepack also produces NR=32 layout (`PackedB::data_nr32`) when
+enabled, eliminating per-inference B packing.
+
+Shapes routed through 12×32: n%32==0 && m≥12 && k≥16.
+Shapes that fall through: routed to MR=4×24 AVX2 (default).
+
+**Zen 4 note:** 4×24 AVX2 wins on AMD Zen 4 (verified 2026-05-14).
+Measured regression: +156µs 1T vs 4×24 baseline even with session
+prepack. Zen 4 executes 2 YMM FMAs/clock vs 1 ZMM FMA/clock, giving
+4×24 a 2× throughput advantage for the tracker's shape mix.
+Enable on Intel (Sapphire Rapids+) or AMD Zen 5 where ZMM is native.
+
 ### `YSCV_QUANT_FAST`
 
 `quantize_tracker --format qdq` defaults to `YSCV_QUANT_FAST=1` behavior:
@@ -149,10 +169,10 @@ yscv = "0.1"
 yscv = { version = "0.1", default-features = false }
 ```
 
-See [`performance-benchmarks.md`](performance-benchmarks.md).
-for the tracker-specific numbers and
-[`perf-arc-2026-04.md`](perf-arc-2026-04.md) for why the non-BLAS
-path wins on this class of model.
+See [`performance-benchmarks.md`](performance-benchmarks.md) for the
+tracker-specific numbers. On small-channel depthwise/pointwise models
+like the tracker, the custom blocked-GEMM + streaming-fused Conv paths
+beat a generic BLAS call, so the non-BLAS build is often faster there.
 
 ### `metal-backend` — Apple MPSGraph (macOS, fastest on Apple Silicon)
 
@@ -508,11 +528,23 @@ Most used knobs:
 - `YSCV_FUSED_PW_DW_STREAM_OFF=1` — disable PW->DW streaming fused path.
 - `YSCV_FUSED_PW_DW_PW2X_OFF=1` — disable NEON PW2X inner-loop variant.
 - `YSCV_FUSED_PW_DW_W_TILE=<N>` — override fused PW->DW strip-mining tile.
+- `YSCV_FUSED_PW_DW_DW_INTERIOR=1` — opt into the experimental AVX-512
+  stride-1/stride-2 depthwise interior fast path inside PW->DW fusion.
 - `YSCV_FUSED_DW_PW_STREAM_OFF=1` — disable DW->PW streaming fused path.
-- `YSCV_FUSED_DW_PW_STREAM_PADDED=1` — enable padded streaming variant.
+- `YSCV_FUSED_DW_PW_STREAM_PADDED=1` — enable padded streaming variant
+  on non-x86; x86_64 enables it by default.
+- `YSCV_FUSED_DW_PW_STREAM_PADDED_OFF=1` — disable x86_64 default padded
+  DW->PW streaming.
+- `YSCV_FUSED_DW_PW_ROW_BATCH=<N>` — override DW->PW streaming y-band size.
 - `YSCV_DIRECT_CONV_WORK_MAX=<N>` — direct-3x3 routing threshold.
+- `YSCV_NO_POINTWISE_16X16_DIRECT=1` — disable the direct NHWC 1×1
+  `K=16,N=16` pointwise kernel with fused bias/residual/activation epilogue.
+- `YSCV_NO_POINTWISE_NX16_DIRECT=1` — disable the single-thread direct
+  NHWC residual pointwise kernel for small-`M`, `N % 16 == 0` ConvAdd blocks.
 - `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` and
   `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` — low-k blocked matmul route.
+- `YSCV_NO_X86_LOW_K_BLOCKED=1` — disable the x86 low-k pointwise route
+  through the blocked 4x24/4x16 AVX+FMA GEMM kernels.
 
 Symmetric `QLinearConv` depthwise 3x3/5x5 stride-1 nodes, plus measured-win
 stride-2 tracker shapes, route through the multi-arch INT8 depthwise kernel

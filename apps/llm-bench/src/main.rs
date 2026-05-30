@@ -36,13 +36,15 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use yscv_onnx::quantize::quantize_matmul_weights_int4_packed;
-use yscv_onnx::{GenerateConfig, OnnxRunner, generate, load_onnx_model_from_file};
+use yscv_onnx::{
+    GenerateConfig, OnnxRunner, dump_runner_profile, generate, load_onnx_model_from_file,
+};
 use yscv_tensor::Tensor;
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error(
-        "usage: yscv-llm-bench --model <path.onnx> --input-ids <ids.json> [--max-tokens N] [--warmup K] [--input-name NAME]"
+        "usage: yscv-llm-bench --model <path.onnx> --input-ids <ids.json> [--max-tokens N] [--warmup K] [--threads N] [--input-name NAME]"
     )]
     Usage,
     #[error("missing required argument: {0}")]
@@ -67,6 +69,7 @@ struct Args {
     input_ids: PathBuf,
     max_tokens: usize,
     warmup: usize,
+    threads: usize,
     input_name: String,
     output_name: String,
     /// Some HuggingFace ONNX exports require an `attention_mask` input
@@ -108,6 +111,7 @@ fn parse_args() -> Result<Args, CliError> {
     let mut input_ids: Option<PathBuf> = None;
     let mut max_tokens = 64_usize;
     let mut warmup = 2_usize;
+    let mut threads = 0_usize;
     let mut input_name = "input_ids".to_string();
     let mut output_name = "logits".to_string();
     let mut with_attention_mask = false;
@@ -141,6 +145,12 @@ fn parse_args() -> Result<Args, CliError> {
                 warmup = v
                     .parse()
                     .map_err(|e| CliError::InvalidArg(format!("--warmup: {e}")))?;
+            }
+            "--threads" => {
+                let v = iter.next().ok_or(CliError::MissingArg("--threads"))?;
+                threads = v
+                    .parse()
+                    .map_err(|e| CliError::InvalidArg(format!("--threads: {e}")))?;
             }
             "--input-name" => {
                 input_name = iter.next().ok_or(CliError::MissingArg("--input-name"))?;
@@ -195,6 +205,7 @@ fn parse_args() -> Result<Args, CliError> {
         input_ids: input_ids.ok_or(CliError::MissingArg("--input-ids"))?,
         max_tokens,
         warmup,
+        threads,
         input_name,
         output_name,
         with_attention_mask,
@@ -289,6 +300,7 @@ fn read_input_ids(path: &PathBuf) -> Result<Vec<u32>, CliError> {
 #[derive(serde::Serialize)]
 struct BenchSummary {
     model: String,
+    threads: usize,
     prompt_tokens: usize,
     decode_tokens: usize,
     prefill_ms: f64,
@@ -309,7 +321,12 @@ fn run(args: Args) -> Result<(), CliError> {
             model.initializers.len()
         );
     }
-    let runner = OnnxRunner::new(&model)?;
+    let runner = if args.threads == 0 {
+        OnnxRunner::new(&model)?
+    } else {
+        OnnxRunner::with_threads(&model, args.threads)?
+    };
+    eprintln!("threads: {}", runner.num_threads());
 
     let prompt_ids = read_input_ids(&args.input_ids)?;
     if prompt_ids.is_empty() {
@@ -542,6 +559,7 @@ fn run(args: Args) -> Result<(), CliError> {
 
     let summary = BenchSummary {
         model: args.model.display().to_string(),
+        threads: runner.num_threads(),
         prompt_tokens: prompt_ids.len(),
         decode_tokens: generated.len(),
         prefill_ms,
@@ -563,6 +581,11 @@ fn run(args: Args) -> Result<(), CliError> {
         "{}",
         serde_json::to_string(&summary).expect("BenchSummary serialises")
     );
+    if let Ok(path) = std::env::var("YSCV_RUNNER_PROFILE")
+        && !path.trim().is_empty()
+    {
+        dump_runner_profile(&path)?;
+    }
     Ok(())
 }
 

@@ -28,6 +28,7 @@ use super::exp::{fast_exp_avx, fast_exp_bittrick_avx, fast_exp_bittrick_sse, fas
 // ReLU dispatch
 // ===========================================================================
 
+/// In-place ReLU over an f32 slice (AVX / SSE / NEON / scalar dispatch).
 #[allow(unsafe_code)]
 #[inline]
 pub fn relu_slice_dispatch(values: &mut [f32]) {
@@ -319,8 +320,8 @@ pub fn bias_add_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usi
     }
 }
 
-/// Step S.4: fused per-row epilogue — residual + bias + activation in
-/// a single SIMD pass over `out_row`. Replaces the 2-3 separate passes
+/// Fused per-row epilogue — residual + bias + activation in a single SIMD
+/// pass over `out_row`. Replaces the 2-3 separate passes
 /// that `row_gemm_set_parallel_fused` used to do (matmul store →
 /// scalar residual add → `bias_relu_nhwc_dispatch`). Cuts post-matmul
 /// memory traffic from 3× to 1× over the row.

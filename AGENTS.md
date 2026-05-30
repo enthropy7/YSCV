@@ -73,7 +73,7 @@ reverted on sight, regardless of benchmark numbers.
    together, or stay scalar. Runtime feature detection via
    `std::arch::is_*_feature_detected!`. The dispatch pattern is
    consistent across the codebase — copy from
-   `crates/yscv-kernels/src/ops/matmul.rs` if in doubt.
+   `crates/yscv-kernels/src/ops/matmul/` if in doubt.
 
 3. Minimal code. Smallest correct change. Iterators where the
    compiler vectorises them, no `unwrap`, no `#[allow(dead_code)]`,

@@ -52,7 +52,7 @@ thread_local! {
     static CURRENT_WORKER: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
-// Step 3 Session C: per-worker dispatch context installed by
+// per-worker dispatch context installed by
 // `worker_loop` before entering the steal/sleep cycle. Used by
 // `section::try_run_regular_task` when a section is active but
 // `current_loop` is empty — instead of spinning idle, the worker
@@ -77,19 +77,17 @@ pub(crate) struct WorkerDispatchCtx {
 pub mod affinity;
 mod scope;
 mod section;
-pub use scope::ParallelScope;
+pub use scope::{AmbientRayonScope, ParallelScope};
 pub use section::{PersistentSection, SectionGuard, current_section};
 
 /// `YSCV_POOL_SPIN_US` — microseconds workers spin on empty before parking.
-/// Default 0 — **measured optimum for ONNX inference workloads** on
-/// tracker-style graphs (fine-grained, 100–200 dispatches/inf, 10–50µs
-/// apart). Spin burns CPU cycles that steal from the main thread's
-/// useful work; zero-spin + park defers to the OS scheduler which wakes
-/// fast enough via `thread::unpark` (futex). Raise via env for coarse
-/// install-per-task patterns where spin pays off.
-///
-/// Measured on Zen 4 Siamese tracker (2026-04-19): spin=0 gave 4.29ms/6T,
-/// spin=50 gave 6.0ms, spin=300 gave 9.3ms, spin=1000 gave 19ms.
+/// Default 0 — the optimum for fine-grained ONNX inference graphs
+/// (100–200 dispatches/inf, ~10–50µs apart). Spin burns CPU cycles that
+/// steal from the main thread's useful work; zero-spin + park defers to the
+/// OS scheduler, which wakes fast enough via `thread::unpark` (futex). Higher
+/// spin values progressively regress this workload. Raise via
+/// `YSCV_POOL_SPIN_US` for coarse install-per-task patterns where spin pays
+/// off.
 fn spin_us() -> u64 {
     static CACHED: OnceLock<u64> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -408,9 +406,8 @@ impl YscvPool {
     /// pushing N helper tasks. A single `fetch_add(N)` on the counter +
     /// optionally up to `n` unparks wakes at most `n` Sleeping workers
     /// instead of doing one `submit` per helper with N cascaded atomic
-    /// RMWs. Measured to save ~50-100 µs per 6T inference on the
-    /// tracker (200 parallel regions × ~6 helpers each = 1200 fewer
-    /// atomic RMWs).
+    /// RMWs. On a graph with hundreds of parallel regions this removes
+    /// thousands of cascaded atomic RMWs per inference.
     fn notify_workers(&self, job_count: usize) {
         let event = self.shared.jobs_event.load(Ordering::Acquire);
         let num_sleepy = unpack_sleepy(event);
@@ -742,8 +739,8 @@ impl YscvPool {
         (ra, rb)
     }
 
-    /// Step 3: enter a session-scoped [`PersistentSection`]. All pool
-    /// workers are held in [`section_worker_loop`] for the duration of
+    /// enter a session-scoped [`PersistentSection`]. All pool
+    /// workers are held in `section_worker_loop` for the duration of
     /// `f`; regular `submit` / `install` paths are effectively blocked
     /// during the section (all workers busy). Each
     /// [`PersistentSection::parallel_for`] call inside the closure
@@ -882,7 +879,7 @@ fn worker_loop(worker_id: usize, local: DequeWorker<Task>, shared: Arc<Shared>) 
     let spin_duration = Duration::from_micros(spin_us());
     let spin_enabled = spin_duration > Duration::ZERO;
 
-    // Step 3 Session C: stash dispatch context in TLS so
+    // stash dispatch context in TLS so
     // `section::section_worker_loop` can call `find_task` to pick up
     // regular tasks (e.g. `join_dyn` submits from tower-parallel)
     // while the worker is ALSO processing section chunks. Without this,

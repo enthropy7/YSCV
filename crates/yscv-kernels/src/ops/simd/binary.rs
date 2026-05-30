@@ -72,6 +72,7 @@ unsafe extern "C" {
 // Dispatchers
 // ===========================================================================
 
+/// Elementwise binary op over equal-length f32 slices (AVX / SSE / NEON / scalar dispatch).
 #[allow(unsafe_code, unreachable_code)]
 #[inline]
 pub fn binary_same_shape_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind: BinaryKind) {

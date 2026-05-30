@@ -92,7 +92,7 @@ pub struct PersistentSection {
     /// Workers observe `false` and exit their loop. Main thread stores
     /// `false` on section drop.
     active: AtomicBool,
-    /// Step 3 Session C: spin-lock to serialise concurrent
+    /// spin-lock to serialise concurrent
     /// `parallel_for` calls from different threads — critical for
     /// tower-parallel graphs where both branches post loops to the
     /// same section. Without this, branch A's `current_loop` store
@@ -206,7 +206,7 @@ impl PersistentSection {
             return;
         }
 
-        // Session C: acquire dispatch-busy spin-lock. Concurrent
+        // acquire dispatch-busy spin-lock. Concurrent
         // `parallel_for` calls from different threads (e.g. two
         // tower-parallel branches) would otherwise race on
         // `current_loop`. Spin-lock because the critical section is
@@ -330,7 +330,7 @@ impl PersistentSection {
 /// Worker-side loop. Submitted to each pool worker when a section
 /// is entered; returns when `section.active` flips to `false`.
 ///
-/// Step 3 Session C: when no section chunk is available, the worker
+/// when no section chunk is available, the worker
 /// also attempts to pick up a regular task (e.g. a `join_dyn` submit
 /// from tower-parallel). Without this, tower-parallel graphs would
 /// deadlock — all workers in section mode, `join_dyn` submit has no
@@ -398,7 +398,7 @@ pub(crate) unsafe fn section_worker_loop(section: &PersistentSection) {
             section.inflight_derefs.fetch_sub(1, Ordering::AcqRel);
         }
 
-        // Step 3 Session C: try regular tasks (join_dyn, submit).
+        // try regular tasks (join_dyn, submit).
         // When called on a pool worker, `WORKER_DISPATCH_CTX` gives us
         // access to `find_task` to pick up the submitted task. Outside
         // a pool worker (e.g. unit tests driving section_worker_loop
@@ -422,7 +422,7 @@ pub(crate) unsafe fn section_worker_loop(section: &PersistentSection) {
     section.workers_remaining.fetch_sub(1, Ordering::Release);
 }
 
-/// Step 3 Session C: pick up a regular task from the worker's local
+/// pick up a regular task from the worker's local
 /// deque / injector / steal-from-peer. Returns `true` if a task was
 /// executed. Only fires when `WORKER_DISPATCH_CTX` is set (i.e. we're
 /// on a pool worker inside `worker_loop`). Caller keeps its own rng

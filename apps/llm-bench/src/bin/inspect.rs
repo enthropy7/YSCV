@@ -46,5 +46,16 @@ fn main() {
                 println!("  [graph input or external]");
             }
         }
+        println!("outputs:");
+        for out in &node.outputs {
+            println!("  {out}");
+            for consumer in m
+                .nodes
+                .iter()
+                .filter(|n| n.inputs.iter().any(|inp| inp == out))
+            {
+                println!("    -> {} op={}", consumer.name, consumer.op_type);
+            }
+        }
     }
 }

@@ -13,7 +13,7 @@
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
-> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, profiled and CI-gated against a baseline. On bare-metal ARM SBCs we currently beat ONNX Runtime CPU on a public Siamese tracker; the rest of the perf arc is documented in [`docs/perf-arc-2026-04.md`](docs/perf-arc-2026-04.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, Intel/AMD BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, profiled and CI-gated against a baseline. On bare-metal ARM SBCs we currently beat ONNX Runtime CPU on a public Siamese tracker; benchmarks across threads and hardware are in [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, Intel/AMD BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 >
 > Agent-friendly documentation. YSCV is structured so that an AI coding agent can wire it into a downstream project end-to-end without prior context: every crate has a focused `README.md` describing its surface, [`docs/cookbook.md`](docs/cookbook.md) has recipes per task, [`docs/feature-flags.md`](docs/feature-flags.md) is exhaustive on Cargo features and runtime env knobs, [`AGENTS.md`](AGENTS.md) has the workflow + style rules verbatim, and per-op profile labels (`YSCV_RUNNER_PROFILE=path` dumps fused-path JSON) make hot-path issues self-diagnosing. The benefit is downstream: agents can build working code on top of yscv quickly, not the other way around. Responsibility for any PR — including patches drafted by an agent — rests with the human author submitting it.
 
@@ -134,8 +134,8 @@ Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on
 | YOLO11n MPSGraph | **5.9ms** | all competitors FAIL | **WIN** |
 | Siamese tracker 1T (Orange Pi Zero 3, 2026-04-21) | **461.6ms** | onnxruntime 499.3ms | **1.08× faster** |
 | Siamese tracker 4T (Orange Pi Zero 3, 2026-04-21) | **150.2ms** | onnxruntime 164.6ms | **1.10× faster** |
-| Siamese tracker 1T (Zen 4 7500F, 2026-04-25) | 11.22ms | onnxruntime 8.07ms | 1.39× slower |
-| Siamese tracker 6T (Zen 4 7500F, 2026-04-25) | 3.17ms | onnxruntime 1.74ms | 1.82× slower |
+| Siamese tracker 1T (Zen 4 7500F, 2026-05-30) | 8.66ms | onnxruntime 1.24.4 8.10ms | 1.07× slower |
+| Siamese tracker 6T (Zen 4 7500F, 2026-05-30) | 2.48ms | onnxruntime 1.24.4 1.75ms | 1.42× slower |
 
 Full benchmark results in [docs/performance-benchmarks.md](docs/performance-benchmarks.md).
 
@@ -156,7 +156,7 @@ The framework is split into 18 crates, each doing one thing well:
 | `yscv-track` | DeepSORT, ByteTrack, Kalman filter, Hungarian assignment, Re-ID |
 | `yscv-recognize` | Cosine matching, VP-Tree ANN indexing, Recognizer with enroll/match |
 | `yscv-eval` | Classification/detection/tracking/regression/image-quality metrics, 8 dataset adapters |
-| `yscv-onnx` | 122-op ONNX CPU runtime, INT4/INT8 quantization, LLM generation (KV-cache, RoPE, GQA), graph optimizer, Metal/MPSGraph GPU |
+| `yscv-onnx` | 122 op ONNX CPU runtime, INT4/INT8 quantization, LLM generation (KV-cache, RoPE, GQA), graph optimizer, Metal/MPSGraph GPU |
 | `yscv-pipeline` | TOML-driven multi-accelerator dispatch (CPU / RKNN / MPSGraph / GPU), RT wiring, recovery, hot-reload |
 | `yscv-video-mpp` | Rockchip MPP hardware encoder integration (H.264, H.265) |
 | `yscv-cli` | Inference + evaluation CLI: camera diagnostics, dataset eval, pipeline runner |

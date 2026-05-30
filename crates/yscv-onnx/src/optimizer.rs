@@ -301,6 +301,7 @@ pub fn strip_qdq_within_fusion_chains(model: &mut OnnxModel) -> usize {
     removed
 }
 
+/// Fuse `Conv` -> `Relu` node pairs into a single fused-activation Conv.
 pub fn fuse_conv_relu(model: &mut OnnxModel) {
     let mut fuse_pairs: Vec<(usize, usize)> = Vec::new();
     for i in 0..model.nodes.len().saturating_sub(1) {

@@ -54,6 +54,7 @@
 use rayon::ThreadPool;
 use rayon::prelude::*;
 
+use super::int8_depthwise::DepthwiseI8Params;
 use super::int8_matmul::{PackedI8B, int8_matmul_prepacked_dispatch};
 use super::int8_requant::requant_i32_row_to_i8_dispatch;
 
@@ -74,7 +75,7 @@ pub struct Int8FusedPwDwParams {
     pub out_h: usize,
     pub out_w: usize,
     /// Apply Relu to the PW i8 output before DW reads it. Equivalent to the
-    /// `(*v).max(0)` fold in [`crate::loader::NodeAction::QuantizedQdq`].
+    /// `(*v).max(0)` fold in `NodeAction::QuantizedQdq`.
     pub pw_relu: bool,
     /// `(pw_x_scale * pw_w_scale) / pw_y_scale`. PW `y_zp` is 0 (chain gate).
     pub pw_composite: f32,
@@ -581,18 +582,224 @@ fn run_chunk_nhwc(
 /// pre-allocated `[N, C, H, W]` slice. Used at chain exit since the kernel
 /// computes naturally in NHWC but `exec_qlinear_conv` (and downstream
 /// consumers) expect NCHW.
-fn nhwc_to_nchw_i8(nhwc: &[i8], nchw: &mut [i8], batch: usize, h: usize, w: usize, c: usize) {
+fn nhwc_to_nchw_i8(
+    nhwc: &[i8],
+    nchw: &mut [i8],
+    batch: usize,
+    h: usize,
+    w: usize,
+    c: usize,
+    thread_pool: Option<&ThreadPool>,
+) {
     debug_assert_eq!(nhwc.len(), batch * h * w * c);
     debug_assert_eq!(nchw.len(), batch * c * h * w);
-    for n in 0..batch {
-        for ch in 0..c {
-            for y in 0..h {
-                for x in 0..w {
-                    nchw[((n * c + ch) * h + y) * w + x] = nhwc[((n * h + y) * w + x) * c + ch];
+    let planes = batch * c;
+    let mut work = || {
+        nchw.par_chunks_mut(h * w)
+            .enumerate()
+            .take(planes)
+            .for_each(|(plane, dst)| {
+                let n = plane / c;
+                let ch = plane % c;
+                for y in 0..h {
+                    for x in 0..w {
+                        dst[y * w + x] = nhwc[((n * h + y) * w + x) * c + ch];
+                    }
+                }
+            });
+    };
+    let nthreads = thread_pool
+        .map(|p| p.current_num_threads().max(1))
+        .unwrap_or_else(|| rayon::current_num_threads().max(1));
+    if !cfg!(miri) && planes >= nthreads && h * w >= 16 && nthreads > 1 {
+        if let Some(pool) = thread_pool {
+            pool.install(work);
+        } else {
+            work();
+        }
+    } else {
+        for n in 0..batch {
+            for ch in 0..c {
+                for y in 0..h {
+                    for x in 0..w {
+                        nchw[((n * c + ch) * h + y) * w + x] = nhwc[((n * h + y) * w + x) * c + ch];
+                    }
                 }
             }
         }
     }
+}
+
+fn nhwc_i8_to_nchw_f32(
+    nhwc: &[i8],
+    nchw: &mut [f32],
+    batch: usize,
+    h: usize,
+    w: usize,
+    c: usize,
+    scale: f32,
+    zero_point: f32,
+    thread_pool: Option<&ThreadPool>,
+) {
+    debug_assert_eq!(nhwc.len(), batch * h * w * c);
+    debug_assert_eq!(nchw.len(), batch * c * h * w);
+    let planes = batch * c;
+    let mut work = || {
+        nchw.par_chunks_mut(h * w)
+            .enumerate()
+            .take(planes)
+            .for_each(|(plane, dst)| {
+                let n = plane / c;
+                let ch = plane % c;
+                for y in 0..h {
+                    for x in 0..w {
+                        let q = nhwc[((n * h + y) * w + x) * c + ch] as f32;
+                        dst[y * w + x] = (q - zero_point) * scale;
+                    }
+                }
+            });
+    };
+    let nthreads = thread_pool
+        .map(|p| p.current_num_threads().max(1))
+        .unwrap_or_else(|| rayon::current_num_threads().max(1));
+    if !cfg!(miri) && planes >= nthreads && h * w >= 16 && nthreads > 1 {
+        if let Some(pool) = thread_pool {
+            pool.install(work);
+        } else {
+            work();
+        }
+    } else {
+        for n in 0..batch {
+            for ch in 0..c {
+                for y in 0..h {
+                    for x in 0..w {
+                        let q = nhwc[((n * h + y) * w + x) * c + ch] as f32;
+                        nchw[((n * c + ch) * h + y) * w + x] = (q - zero_point) * scale;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_pw_i8_nhwc(
+    input_nhwc: &[i8],
+    pw_weight_packed: &PackedI8B,
+    pw_bias: Option<&[i32]>,
+    p: Int8FusedPwDwParams,
+    pw_i8_nhwc: &mut [i8],
+    thread_pool: Option<&ThreadPool>,
+) {
+    let input_row = p.in_w * p.c_in;
+    let output_row = p.in_w * p.c_exp;
+    let rows = p.batch * p.in_h;
+    let run_row = |row_idx: usize, dst: &mut [i8]| {
+        let input = &input_nhwc[row_idx * input_row..(row_idx + 1) * input_row];
+        let mut acc = vec![0_i32; output_row];
+        int8_matmul_prepacked_dispatch(input, pw_weight_packed, p.in_w, &mut acc);
+        requant_i32_row_to_i8_dispatch(&acc, pw_bias, p.pw_composite, 0.0, p.pw_relu, dst, p.c_exp);
+    };
+
+    let nthreads = thread_pool
+        .map(|p| p.current_num_threads().max(1))
+        .unwrap_or_else(|| rayon::current_num_threads().max(1));
+    if !cfg!(miri) && rows >= 4 && nthreads > 1 {
+        let iter = pw_i8_nhwc.par_chunks_mut(output_row).enumerate().take(rows);
+        if let Some(pool) = thread_pool {
+            pool.install(|| iter.for_each(|(row_idx, dst)| run_row(row_idx, dst)));
+        } else {
+            iter.for_each(|(row_idx, dst)| run_row(row_idx, dst));
+        }
+    } else {
+        for row_idx in 0..rows {
+            let dst = &mut pw_i8_nhwc[row_idx * output_row..(row_idx + 1) * output_row];
+            run_row(row_idx, dst);
+        }
+    }
+}
+
+struct TwoPhasePwDw<'a> {
+    input_nhwc: &'a [i8],
+    pw_weight_packed: &'a PackedI8B,
+    pw_bias: Option<&'a [i32]>,
+    dw_weight: &'a [i8],
+    dw_bias: Option<&'a [i32]>,
+    params: Int8FusedPwDwParams,
+    thread_pool: Option<&'a ThreadPool>,
+}
+
+#[cold]
+fn run_two_phase_nhwc(req: TwoPhasePwDw<'_>, output_nchw: &mut [i8]) {
+    let p = req.params;
+    let elements = p.batch * p.out_h * p.out_w * p.c_exp;
+    let mut pw_i8_nhwc = vec![0_i8; p.batch * p.in_h * p.in_w * p.c_exp];
+    compute_pw_i8_nhwc(
+        req.input_nhwc,
+        req.pw_weight_packed,
+        req.pw_bias,
+        p,
+        &mut pw_i8_nhwc,
+        req.thread_pool,
+    );
+
+    let dw_params = DepthwiseI8Params {
+        batch: p.batch,
+        in_h: p.in_h,
+        in_w: p.in_w,
+        channels: p.c_exp,
+        kernel: p.kh,
+        stride_h: p.stride,
+        stride_w: p.stride,
+        pad_top: p.pad,
+        pad_left: p.pad,
+        out_h: p.out_h,
+        out_w: p.out_w,
+    };
+    let mut dw_acc = vec![0_i32; elements];
+    super::int8_depthwise::depthwise_i8_i32_nhwc_dispatch_with_pool(
+        &pw_i8_nhwc,
+        req.dw_weight,
+        dw_params,
+        &mut dw_acc,
+        req.thread_pool,
+    );
+
+    let mut nhwc_out = vec![0_i8; elements];
+    let row_len = p.out_w * p.c_exp;
+    let rows = p.batch * p.out_h;
+    let mut requant = || {
+        nhwc_out
+            .par_chunks_mut(row_len)
+            .enumerate()
+            .take(rows)
+            .for_each(|(row, dst)| {
+                let src = &dw_acc[row * row_len..(row + 1) * row_len];
+                requant_i32_row_to_i8_dispatch(
+                    src,
+                    req.dw_bias,
+                    p.dw_composite,
+                    p.dw_y_zp,
+                    false,
+                    dst,
+                    p.c_exp,
+                );
+            });
+    };
+    if let Some(pool) = req.thread_pool {
+        pool.install(requant);
+    } else {
+        requant();
+    }
+    nhwc_to_nchw_i8(
+        &nhwc_out,
+        output_nchw,
+        p.batch,
+        p.out_h,
+        p.out_w,
+        p.c_exp,
+        req.thread_pool,
+    );
 }
 
 /// Streaming INT8 PW->DW chain dispatch.
@@ -625,6 +832,26 @@ pub fn int8_fused_pw_dw_dispatch(
         debug_assert_eq!(b.len(), p.c_exp);
     }
 
+    let nthreads = thread_pool
+        .map(|p| p.current_num_threads().max(1))
+        .unwrap_or_else(|| rayon::current_num_threads().max(1));
+    let elements = p.batch * p.out_h * p.out_w * p.c_exp;
+    if !cfg!(miri) && nthreads > 1 && elements >= 65_536 {
+        run_two_phase_nhwc(
+            TwoPhasePwDw {
+                input_nhwc,
+                pw_weight_packed,
+                pw_bias,
+                dw_weight,
+                dw_bias,
+                params: p,
+                thread_pool,
+            },
+            output_nchw,
+        );
+        return;
+    }
+
     let nhwc_batch_stride = p.out_h * p.out_w * p.c_exp;
     let mut nhwc_out = vec![0_i8; p.batch * nhwc_batch_stride];
 
@@ -633,10 +860,6 @@ pub fn int8_fused_pw_dw_dispatch(
         let row_bytes = p.out_w * p.c_exp;
 
         let par_min_rows = 4;
-        let nthreads = thread_pool
-            .map(|p| p.current_num_threads().max(1))
-            .unwrap_or_else(|| rayon::current_num_threads().max(1));
-
         if !cfg!(miri) && p.out_h >= par_min_rows && nthreads > 1 {
             let rows_per_chunk = p.out_h.div_ceil(nthreads).max(1);
             let bytes_per_chunk = rows_per_chunk * row_bytes;
@@ -698,7 +921,138 @@ pub fn int8_fused_pw_dw_dispatch(
         }
     }
 
-    nhwc_to_nchw_i8(&nhwc_out, output_nchw, p.batch, p.out_h, p.out_w, p.c_exp);
+    nhwc_to_nchw_i8(
+        &nhwc_out,
+        output_nchw,
+        p.batch,
+        p.out_h,
+        p.out_w,
+        p.c_exp,
+        thread_pool,
+    );
+}
+
+/// PW->DW fused path for residual forks. It computes the PW quant output once,
+/// exposes its graph-visible f32 side tensor, and feeds the DW directly from
+/// the same NHWC i8 buffer without a DQ->Q round trip.
+#[allow(clippy::too_many_arguments)]
+pub fn int8_fused_pw_dw_with_pw_side_dispatch(
+    input_nhwc: &[i8],
+    pw_weight_packed: &PackedI8B,
+    pw_bias: Option<&[i32]>,
+    dw_weight: &[i8],
+    dw_bias: Option<&[i32]>,
+    p: Int8FusedPwDwParams,
+    pw_side_scale: f32,
+    pw_side_zp: f32,
+    pw_side_nchw: &mut [f32],
+    output_nchw: &mut [i8],
+    thread_pool: Option<&ThreadPool>,
+) {
+    debug_assert_eq!(input_nhwc.len(), p.input_len());
+    debug_assert_eq!(pw_side_nchw.len(), p.batch * p.c_exp * p.in_h * p.in_w);
+    debug_assert_eq!(output_nchw.len(), p.output_len());
+    debug_assert_eq!(pw_weight_packed.k(), p.c_in);
+    debug_assert_eq!(pw_weight_packed.n(), p.c_exp);
+    debug_assert_eq!(dw_weight.len(), p.dw_weight_len());
+
+    let mut pw_i8_nhwc = vec![0_i8; p.batch * p.in_h * p.in_w * p.c_exp];
+    compute_pw_i8_nhwc(
+        input_nhwc,
+        pw_weight_packed,
+        pw_bias,
+        p,
+        &mut pw_i8_nhwc,
+        thread_pool,
+    );
+    nhwc_i8_to_nchw_f32(
+        &pw_i8_nhwc,
+        pw_side_nchw,
+        p.batch,
+        p.in_h,
+        p.in_w,
+        p.c_exp,
+        pw_side_scale,
+        pw_side_zp,
+        thread_pool,
+    );
+
+    let dw_params = DepthwiseI8Params {
+        batch: p.batch,
+        in_h: p.in_h,
+        in_w: p.in_w,
+        channels: p.c_exp,
+        kernel: p.kh,
+        stride_h: p.stride,
+        stride_w: p.stride,
+        pad_top: p.pad,
+        pad_left: p.pad,
+        out_h: p.out_h,
+        out_w: p.out_w,
+    };
+    let mut dw_acc = vec![0_i32; p.batch * p.out_h * p.out_w * p.c_exp];
+    super::int8_depthwise::depthwise_i8_i32_nhwc_dispatch_with_pool(
+        &pw_i8_nhwc,
+        dw_weight,
+        dw_params,
+        &mut dw_acc,
+        thread_pool,
+    );
+
+    let mut dw_i8_nhwc = vec![0_i8; p.batch * p.out_h * p.out_w * p.c_exp];
+    let row_len = p.out_w * p.c_exp;
+    let requant_rows = p.batch * p.out_h;
+    let mut requant_work = || {
+        dw_i8_nhwc
+            .par_chunks_mut(row_len)
+            .enumerate()
+            .take(requant_rows)
+            .for_each(|(row, dst)| {
+                let src = &dw_acc[row * row_len..(row + 1) * row_len];
+                requant_i32_row_to_i8_dispatch(
+                    src,
+                    dw_bias,
+                    p.dw_composite,
+                    p.dw_y_zp,
+                    false,
+                    dst,
+                    p.c_exp,
+                );
+            });
+    };
+    let nthreads = thread_pool
+        .map(|pool| pool.current_num_threads().max(1))
+        .unwrap_or_else(|| rayon::current_num_threads().max(1));
+    if !cfg!(miri) && requant_rows >= nthreads && nthreads > 1 {
+        if let Some(pool) = thread_pool {
+            pool.install(requant_work);
+        } else {
+            requant_work();
+        }
+    } else {
+        for row in 0..requant_rows {
+            let src = &dw_acc[row * row_len..(row + 1) * row_len];
+            let dst = &mut dw_i8_nhwc[row * row_len..(row + 1) * row_len];
+            requant_i32_row_to_i8_dispatch(
+                src,
+                dw_bias,
+                p.dw_composite,
+                p.dw_y_zp,
+                false,
+                dst,
+                p.c_exp,
+            );
+        }
+    }
+    nhwc_to_nchw_i8(
+        &dw_i8_nhwc,
+        output_nchw,
+        p.batch,
+        p.out_h,
+        p.out_w,
+        p.c_exp,
+        thread_pool,
+    );
 }
 
 #[cfg(test)]
@@ -915,6 +1269,42 @@ mod tests {
         let packed = pack_i8_b_for_matmul(&pw_weight, p.c_in, p.c_exp);
         let mut got = vec![0_i8; p.output_len()];
         int8_fused_pw_dw_dispatch(&input, &packed, None, &dw_weight, None, p, &mut got, None);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn large_mt_two_phase_matches_reference() {
+        let p = make_params(1, 32, 32, 48, 96, 3, 1, true, 0.012, 0.008, 0.0);
+        let input = pseudo_i8(0x44, p.input_len());
+        let pw_weight = pseudo_i8(0x55, p.c_in * p.c_exp);
+        let dw_weight = pseudo_i8(0x66, p.dw_weight_len());
+        let pw_bias = pseudo_i32(0x77, p.c_exp, 1024);
+        let dw_bias = pseudo_i32(0x88, p.c_exp, 1024);
+
+        let expected = reference_chain(
+            &input,
+            &pw_weight,
+            Some(&pw_bias),
+            &dw_weight,
+            Some(&dw_bias),
+            p,
+        );
+        let packed = pack_i8_b_for_matmul(&pw_weight, p.c_in, p.c_exp);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("test pool");
+        let mut got = vec![0_i8; p.output_len()];
+        int8_fused_pw_dw_dispatch(
+            &input,
+            &packed,
+            Some(&pw_bias),
+            &dw_weight,
+            Some(&dw_bias),
+            p,
+            &mut got,
+            Some(&pool),
+        );
         assert_eq!(got, expected);
     }
 }

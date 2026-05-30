@@ -1,10 +1,8 @@
 //! Dedicated microkernel for the model's first-layer 3×3 stride-2 RGB Conv.
 //!
 //! This shape (`kh=kw=3, stride=2, C_in=3`) shows up at the head of every
-//! computer-vision model that takes raw RGB input, and it's the single
-//! largest Conv in our Siamese tracker's fused-path profile — 0.75ms per
-//! inference at 6T across the two first-layer Convs, 13% of the measured
-//! time. See `scripts/gap_reports/2026-04-19_part_a_prime_and_b_profile.md`.
+//! computer-vision model that takes raw RGB input, and is one of the largest
+//! Convs in the Siamese tracker's profile.
 //!
 //! Why the generic im2col + BLAS sgemm path is bad here: k = 3·3·3 = 27.
 //! Blocked GEMM's `KC = 256` collapses to a single panel of 27 cols, so
@@ -65,11 +63,9 @@ fn out_dim(in_dim: usize, pad_lo: usize, pad_hi: usize, k: usize, stride: usize)
     (in_dim + pad_lo + pad_hi - k) / stride + 1
 }
 
-/// Session 14 R4: minimum out_h for parallel dispatch. Below this, the
-/// threading overhead (~5-10 µs rayon pool wake-up) dominates the per-row
-/// work. 32 rows × 128 cols × 16 channels × 27 MACs/pixel = ~1.7M FMAs
-/// per chunk — large enough to amortise the wake-up, small enough that
-/// batch=1 tracker shapes (out_h=128) still split into 6 chunks.
+/// Minimum out_h for parallel dispatch. Below this the rayon pool wake-up
+/// overhead dominates the per-row work; 32 rows is large enough to amortise
+/// it while still letting batch=1 shapes (out_h=128) split into ~6 chunks.
 const PARALLEL_MIN_OUT_H: usize = 32;
 
 /// Environment kill-switch for the parallel dispatch path. Leave unset
@@ -267,9 +263,9 @@ fn select_variant(
 ) {
     #[cfg(target_arch = "x86_64")]
     {
-        // Step A3: AVX-512 first-layer default ON on Zen 4 (ZMM FMA latency
-        // matches YMM at 4 cycles, and halved uop count amortises dispatch).
-        // Kill-switch `YSCV_FIRST_LAYER_AVX512_OFF=1` falls back to AVX2.
+        // AVX-512 first layer, default ON (ZMM FMA latency matches YMM at
+        // 4 cycles and the halved uop count amortises dispatch). Kill switch
+        // `YSCV_FIRST_LAYER_AVX512_OFF=1` falls back to AVX2.
         fn first_layer_avx512_disabled() -> bool {
             static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *CACHED.get_or_init(|| std::env::var_os("YSCV_FIRST_LAYER_AVX512_OFF").is_some())
@@ -959,17 +955,68 @@ mod avx512 {
 
                 // Tile-8 fast path: for c_out=16 and interior rows, process
                 // 8 adjacent output columns at a time with 8 independent ZMM
-                // accumulators. Breaks the 27-tap FMA latency chain that the
-                // per-pixel path below serialises — 8 parallel chains × 4
-                // cycle FMA latency is ~fully hidden at Zen 4's 2-FMA-port
-                // throughput. Projected: ~9× speedup over the per-pixel
-                // path on tracker's `/xif0_0/conv_1/Conv` (256×256 → 128×128,
-                // c_out=16), closing most of the 238 µs gap vs ORT.
+                // accumulators, hiding the 27-tap FMA latency chain.
+                //
+                // BUG HISTORY: the original loop checked `ow >= ow_interior_lo`
+                // inside the while condition, which failed on the first iteration
+                // (ow=0, ow_interior_lo=1 for pad=1) — so tile-8 never fired and
+                // all pixels fell through to the serial per-pixel path below.
+                // Fix: handle left-boundary columns first, then tile-8 from the
+                // first interior column onward.
                 if c_out == 16 && oh_is_interior {
                     let ih_0 = ih0 as usize;
                     let ih_1 = (ih0 + 1) as usize;
                     let ih_2 = (ih0 + 2) as usize;
-                    while ow + 8 <= out_w && ow >= ow_interior_lo && (ow + 7) < ow_interior_hi {
+
+                    // Left-boundary columns [0, ow_interior_lo): typically
+                    // just ow=0 for pad=1. oh is interior so no ih check needed;
+                    // only iw can be out-of-bounds.
+                    while ow < ow_interior_lo.min(out_w) {
+                        let iw0 = (ow as isize) * 2 - pad_left as isize;
+                        let out_off = row_out_base + ow * c_out;
+                        let mut oc_chunk_start = 0usize;
+                        while oc_chunk_start < c_out {
+                            let mut acc = match bias {
+                                Some(b) => _mm512_loadu_ps(b.as_ptr().add(oc_chunk_start)),
+                                None => zero,
+                            };
+                            for ky in 0..3isize {
+                                let ih = (ih0 + ky) as usize;
+                                for kx in 0..3isize {
+                                    let iw = iw0 + kx;
+                                    if iw < 0 || (iw as usize) >= in_w {
+                                        continue;
+                                    }
+                                    let iw = iw as usize;
+                                    let in_off =
+                                        ni * in_batch_stride + ih * in_row_stride + iw * c_in;
+                                    let w_off =
+                                        ky as usize * w_ky_stride + kx as usize * w_kx_stride;
+                                    for c in 0..c_in {
+                                        let x = _mm512_set1_ps(*input.as_ptr().add(in_off + c));
+                                        let w = _mm512_loadu_ps(
+                                            weight
+                                                .as_ptr()
+                                                .add(w_off + c * w_c_stride + oc_chunk_start),
+                                        );
+                                        acc = _mm512_fmadd_ps(x, w, acc);
+                                    }
+                                }
+                            }
+                            if relu {
+                                acc = _mm512_max_ps(acc, zero);
+                            }
+                            _mm512_storeu_ps(
+                                output_chunk.as_mut_ptr().add(out_off + oc_chunk_start),
+                                acc,
+                            );
+                            oc_chunk_start += 16;
+                        }
+                        ow += 1;
+                    }
+
+                    // Interior tile-8: ow is now >= ow_interior_lo.
+                    while ow + 8 <= out_w && (ow + 7) < ow_interior_hi {
                         spec16_tile8_interior(
                             input,
                             weight,
@@ -1469,9 +1516,9 @@ mod tests {
         run_case(2, 12, 12, 16, 1, Activation::None, true);
     }
 
-    /// Session 14 R4 parallel-dispatch correctness: the same kernel
-    /// invoked with a `thread_pool` must produce bitwise-identical
-    /// output to the sequential path. Input size chosen large enough
+    /// Parallel-dispatch correctness: the same kernel invoked with a
+    /// `thread_pool` must produce bitwise-identical output to the sequential
+    /// path. Input size chosen large enough
     /// to clear `PARALLEL_MIN_OUT_H = 32` so the par branch actually
     /// fires.
     #[cfg(not(miri))]

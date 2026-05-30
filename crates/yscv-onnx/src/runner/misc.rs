@@ -1,4 +1,5 @@
 use super::*;
+use rayon::prelude::*;
 
 pub(super) fn exec_constant(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     if let Some(OnnxAttribute::Tensor(t)) = node.attributes.get("value") {
@@ -56,7 +57,17 @@ pub(super) fn exec_quantize_linear(node: &OnnxNode, env: &mut TensorEnv) -> Resu
         .unwrap_or(false)
     {
         let mut data = vec![0.0_f32; input.data().len()];
-        yscv_kernels::quantize_linear_f32_to_f32_i8_dispatch(input.data(), s, zp, &mut data);
+        let nthreads = rayon::current_num_threads().max(1);
+        if !cfg!(miri) && data.len() >= 65_536 && nthreads > 1 {
+            let chunk = data.len().div_ceil(nthreads * 2).max(16_384);
+            data.par_chunks_mut(chunk)
+                .zip(input.data().par_chunks(chunk))
+                .for_each(|(dst, src)| {
+                    yscv_kernels::quantize_linear_f32_to_f32_i8_dispatch(src, s, zp, dst);
+                });
+        } else {
+            yscv_kernels::quantize_linear_f32_to_f32_i8_dispatch(input.data(), s, zp, &mut data);
+        }
         let out = Tensor::from_vec(input.shape().to_vec(), data).map_err(|e| {
             OnnxError::DecodeFailed {
                 message: e.to_string(),
@@ -66,7 +77,17 @@ pub(super) fn exec_quantize_linear(node: &OnnxNode, env: &mut TensorEnv) -> Resu
         return Ok(());
     }
     let mut data = vec![0_i8; input.data().len()];
-    yscv_kernels::quantize_linear_f32_to_i8_dispatch(input.data(), s, zp, &mut data);
+    let nthreads = rayon::current_num_threads().max(1);
+    if !cfg!(miri) && data.len() >= 65_536 && nthreads > 1 {
+        let chunk = data.len().div_ceil(nthreads * 2).max(16_384);
+        data.par_chunks_mut(chunk)
+            .zip(input.data().par_chunks(chunk))
+            .for_each(|(dst, src)| {
+                yscv_kernels::quantize_linear_f32_to_i8_dispatch(src, s, zp, dst);
+            });
+    } else {
+        yscv_kernels::quantize_linear_f32_to_i8_dispatch(input.data(), s, zp, &mut data);
+    }
     env.insert_quant_i8(
         node.outputs[0].clone(),
         QuantTensor {

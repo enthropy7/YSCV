@@ -9,6 +9,7 @@ use super::config::{
 };
 use super::simd::{log_softmax_row_fused_dispatch, softmax_row_fused_dispatch};
 
+/// NHWC batch-norm with an explicit parallel config and thread pool.
 pub fn batch_norm2d_nhwc_with_config_and_pool(
     input: &Tensor,
     params: BatchNorm2dTensors<'_>,
@@ -142,6 +143,7 @@ pub fn log_softmax_last_dim_with_config_and_pool(
     Tensor::from_aligned(input.shape().to_vec(), output).map_err(Into::into)
 }
 
+/// Log-sum-exp over the last dimension with explicit config and thread pool.
 pub fn logsumexp_last_dim_with_config_and_pool(
     input: &Tensor,
     config: ParallelElementwiseConfig,
@@ -763,6 +765,7 @@ unsafe fn layer_norm_apply_avx(
 // GroupNorm NHWC
 // ---------------------------------------------------------------------------
 
+/// NHWC group-norm with an explicit parallel config and thread pool.
 pub fn group_norm_nhwc_with_config_and_pool(
     input: &Tensor,
     params: GroupNorm2dTensors<'_>,
@@ -954,6 +957,7 @@ fn validate_group_norm_parameter(
 // RMSNorm (last dimension)
 // ---------------------------------------------------------------------------
 
+/// RMS-norm over the last dimension with explicit config and thread pool.
 pub fn rms_norm_last_dim_with_config_and_pool(
     input: &Tensor,
     params: RmsNormLastDimTensors<'_>,

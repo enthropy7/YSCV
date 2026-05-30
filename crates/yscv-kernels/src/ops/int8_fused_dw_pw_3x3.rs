@@ -77,7 +77,7 @@ pub struct Int8FusedDwPwParams {
     pub out_h: usize,
     pub out_w: usize,
     /// Apply Relu to the DW i8 output before PW reads it. Equivalent to
-    /// the `(*v).max(0)` fold in [`crate::loader::NodeAction::QuantizedQdq`].
+    /// the `(*v).max(0)` fold in `NodeAction::QuantizedQdq`.
     pub dw_relu: bool,
     /// `(dw_x_scale * dw_w_scale) / dw_y_scale`. DW `y_zp` is 0 (chain
     /// gate).
@@ -530,14 +530,48 @@ fn run_chunk_nhwc(
 
 /// In-place NHWC->NCHW transpose of a `[N, H, W, C]` i8 tensor into a
 /// pre-allocated `[N, C, H, W]` slice.
-fn nhwc_to_nchw_i8(nhwc: &[i8], nchw: &mut [i8], batch: usize, h: usize, w: usize, c: usize) {
+fn nhwc_to_nchw_i8(
+    nhwc: &[i8],
+    nchw: &mut [i8],
+    batch: usize,
+    h: usize,
+    w: usize,
+    c: usize,
+    thread_pool: Option<&ThreadPool>,
+) {
     debug_assert_eq!(nhwc.len(), batch * h * w * c);
     debug_assert_eq!(nchw.len(), batch * c * h * w);
-    for n in 0..batch {
-        for ch in 0..c {
-            for y in 0..h {
-                for x in 0..w {
-                    nchw[((n * c + ch) * h + y) * w + x] = nhwc[((n * h + y) * w + x) * c + ch];
+    let planes = batch * c;
+    let mut work = || {
+        nchw.par_chunks_mut(h * w)
+            .enumerate()
+            .take(planes)
+            .for_each(|(plane, dst)| {
+                let n = plane / c;
+                let ch = plane % c;
+                for y in 0..h {
+                    for x in 0..w {
+                        dst[y * w + x] = nhwc[((n * h + y) * w + x) * c + ch];
+                    }
+                }
+            });
+    };
+    let nthreads = thread_pool
+        .map(|p| p.current_num_threads().max(1))
+        .unwrap_or_else(|| rayon::current_num_threads().max(1));
+    if !cfg!(miri) && planes >= nthreads && h * w >= 16 && nthreads > 1 {
+        if let Some(pool) = thread_pool {
+            pool.install(work);
+        } else {
+            work();
+        }
+    } else {
+        for n in 0..batch {
+            for ch in 0..c {
+                for y in 0..h {
+                    for x in 0..w {
+                        nchw[((n * c + ch) * h + y) * w + x] = nhwc[((n * h + y) * w + x) * c + ch];
+                    }
                 }
             }
         }
@@ -647,7 +681,15 @@ pub fn int8_fused_dw_pw_dispatch(
         }
     }
 
-    nhwc_to_nchw_i8(&nhwc_out, output_nchw, p.batch, p.out_h, p.out_w, p.c_out);
+    nhwc_to_nchw_i8(
+        &nhwc_out,
+        output_nchw,
+        p.batch,
+        p.out_h,
+        p.out_w,
+        p.c_out,
+        thread_pool,
+    );
 }
 
 #[cfg(test)]

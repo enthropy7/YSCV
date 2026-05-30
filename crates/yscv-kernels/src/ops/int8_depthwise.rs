@@ -7,6 +7,10 @@
 
 #![allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 
+use rayon::ThreadPool;
+use rayon::prelude::*;
+
+/// Parameters for the INT8 3x3 depthwise kernels (shapes, strides, zero-points, scales).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Depthwise3x3I8Params {
     pub batch: usize,
@@ -38,6 +42,7 @@ impl Depthwise3x3I8Params {
     }
 }
 
+/// Parameters for the generic INT8 depthwise kernels (kernel size, shapes, quant params).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthwiseI8Params {
     pub batch: usize,
@@ -94,11 +99,6 @@ impl DepthwiseI8Params {
     }
 
     #[inline]
-    fn output_offset(self, n: usize, y: usize, x: usize) -> usize {
-        ((n * self.out_h + y) * self.out_w + x) * self.channels
-    }
-
-    #[inline]
     fn weight_offset(self, ky: usize, kx: usize, c: usize) -> usize {
         (ky * self.kernel + kx) * self.channels + c
     }
@@ -131,6 +131,7 @@ fn validate_depthwise(input: &[i8], weight: &[i8], p: DepthwiseI8Params, out: &[
     debug_assert_eq!(out.len(), p.output_len());
 }
 
+/// Scalar reference INT8 NHWC depthwise convolution accumulating into i32.
 pub fn depthwise_i8_i32_nhwc_scalar(
     input: &[i8],
     weight: &[i8],
@@ -138,10 +139,26 @@ pub fn depthwise_i8_i32_nhwc_scalar(
     out: &mut [i32],
 ) {
     validate_depthwise(input, weight, p, out);
+    depthwise_i8_i32_nhwc_scalar_range(input, weight, p, out, 0);
+}
+
+fn depthwise_i8_i32_nhwc_scalar_range(
+    input: &[i8],
+    weight: &[i8],
+    p: DepthwiseI8Params,
+    out: &mut [i32],
+    pixel_start: usize,
+) {
+    let total_pixels = p.batch * p.out_h * p.out_w;
+    let pixel_end = pixel_start + out.len() / p.channels;
     for n in 0..p.batch {
         for oh in 0..p.out_h {
             for ow in 0..p.out_w {
-                let out_base = p.output_offset(n, oh, ow);
+                let pixel = (n * p.out_h + oh) * p.out_w + ow;
+                if pixel < pixel_start || pixel >= pixel_end || pixel >= total_pixels {
+                    continue;
+                }
+                let out_base = (pixel - pixel_start) * p.channels;
                 scalar_pixel_tail(
                     input,
                     weight,
@@ -198,6 +215,7 @@ pub fn depthwise_i8_i32_nchw_khwc_scalar(
     }
 }
 
+/// INT8 depthwise dispatch for NCHW activations with KHWC-packed weights.
 pub fn depthwise_i8_i32_nchw_khwc_dispatch(
     input: &[i8],
     weight: &[i8],
@@ -207,6 +225,7 @@ pub fn depthwise_i8_i32_nchw_khwc_dispatch(
     depthwise_i8_i32_nchw_khwc_scalar(input, weight, p, out);
 }
 
+/// Scalar INT8 NHWC 3x3 depthwise convolution accumulating into i32.
 pub fn depthwise3x3_i8_i32_nhwc_scalar(
     input: &[i8],
     weight: &[i8],
@@ -253,18 +272,25 @@ fn scalar_pixel_tail(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn depthwise3x3_i8_i32_nhwc_avx2(
+unsafe fn depthwise3x3_i8_i32_nhwc_avx2_range(
     input: &[i8],
     weight: &[i8],
     p: DepthwiseI8Params,
     out: &mut [i32],
+    pixel_start: usize,
 ) {
     use std::arch::x86_64::*;
     let c8 = p.channels & !7;
+    let total_pixels = p.batch * p.out_h * p.out_w;
+    let pixel_end = pixel_start + out.len() / p.channels;
     for n in 0..p.batch {
         for oh in 0..p.out_h {
             for ow in 0..p.out_w {
-                let out_base = p.output_offset(n, oh, ow);
+                let pixel = (n * p.out_h + oh) * p.out_w + ow;
+                if pixel < pixel_start || pixel >= pixel_end || pixel >= total_pixels {
+                    continue;
+                }
+                let out_base = (pixel - pixel_start) * p.channels;
                 for c in (0..c8).step_by(8) {
                     let mut acc = _mm256_setzero_si256();
                     for ky in 0..p.kernel {
@@ -309,18 +335,25 @@ unsafe fn depthwise3x3_i8_i32_nhwc_avx2(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512bw")]
-unsafe fn depthwise3x3_i8_i32_nhwc_avx512(
+unsafe fn depthwise3x3_i8_i32_nhwc_avx512_range(
     input: &[i8],
     weight: &[i8],
     p: DepthwiseI8Params,
     out: &mut [i32],
+    pixel_start: usize,
 ) {
     use std::arch::x86_64::*;
     let c16 = p.channels & !15;
+    let total_pixels = p.batch * p.out_h * p.out_w;
+    let pixel_end = pixel_start + out.len() / p.channels;
     for n in 0..p.batch {
         for oh in 0..p.out_h {
             for ow in 0..p.out_w {
-                let out_base = p.output_offset(n, oh, ow);
+                let pixel = (n * p.out_h + oh) * p.out_w + ow;
+                if pixel < pixel_start || pixel >= pixel_end || pixel >= total_pixels {
+                    continue;
+                }
+                let out_base = (pixel - pixel_start) * p.channels;
                 for c in (0..c16).step_by(16) {
                     let mut acc = _mm512_setzero_si512();
                     for ky in 0..p.kernel {
@@ -363,18 +396,25 @@ unsafe fn depthwise3x3_i8_i32_nhwc_avx512(
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn depthwise3x3_i8_i32_nhwc_neon(
+unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
     input: &[i8],
     weight: &[i8],
     p: DepthwiseI8Params,
     out: &mut [i32],
+    pixel_start: usize,
 ) {
     use std::arch::aarch64::*;
     let c8 = p.channels & !7;
+    let total_pixels = p.batch * p.out_h * p.out_w;
+    let pixel_end = pixel_start + out.len() / p.channels;
     for n in 0..p.batch {
         for oh in 0..p.out_h {
             for ow in 0..p.out_w {
-                let out_base = p.output_offset(n, oh, ow);
+                let pixel = (n * p.out_h + oh) * p.out_w + ow;
+                if pixel < pixel_start || pixel >= pixel_end || pixel >= total_pixels {
+                    continue;
+                }
+                let out_base = (pixel - pixel_start) * p.channels;
                 for c in (0..c8).step_by(8) {
                     let mut acc_lo = vdupq_n_s32(0);
                     let mut acc_hi = vdupq_n_s32(0);
@@ -415,38 +455,84 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon(
     }
 }
 
+/// Runtime-dispatched INT8 NHWC depthwise convolution (AVX-512 / AVX2 / NEON / scalar).
 pub fn depthwise_i8_i32_nhwc_dispatch(
     input: &[i8],
     weight: &[i8],
     p: DepthwiseI8Params,
     out: &mut [i32],
 ) {
+    depthwise_i8_i32_nhwc_dispatch_with_pool(input, weight, p, out, None);
+}
+
+/// INT8 NHWC depthwise dispatch parallelised over a caller-supplied thread pool.
+pub fn depthwise_i8_i32_nhwc_dispatch_with_pool(
+    input: &[i8],
+    weight: &[i8],
+    p: DepthwiseI8Params,
+    out: &mut [i32],
+    thread_pool: Option<&ThreadPool>,
+) {
     validate_depthwise(input, weight, p, out);
 
+    let pixels = p.batch * p.out_h * p.out_w;
+    let nthreads = thread_pool
+        .map(|pool| pool.current_num_threads().max(1))
+        .unwrap_or_else(|| rayon::current_num_threads().max(1));
+    if !cfg!(miri) && pixels >= nthreads * 8 && nthreads > 1 {
+        let pixels_per_chunk = pixels.div_ceil(nthreads * 2).max(8);
+        let elems_per_chunk = pixels_per_chunk * p.channels;
+        let mut work = || {
+            out.par_chunks_mut(elems_per_chunk)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    let pixel_start = chunk_idx * pixels_per_chunk;
+                    depthwise_i8_i32_nhwc_dispatch_range(input, weight, p, chunk, pixel_start);
+                });
+        };
+        if let Some(pool) = thread_pool {
+            pool.install(work);
+        } else {
+            work();
+        }
+        return;
+    }
+
+    depthwise_i8_i32_nhwc_dispatch_range(input, weight, p, out, 0);
+}
+
+fn depthwise_i8_i32_nhwc_dispatch_range(
+    input: &[i8],
+    weight: &[i8],
+    p: DepthwiseI8Params,
+    out: &mut [i32],
+    pixel_start: usize,
+) {
     #[cfg(target_arch = "x86_64")]
     {
         if std::is_x86_feature_detected!("avx512f")
             && std::is_x86_feature_detected!("avx512bw")
             && p.channels >= 16
         {
-            unsafe { depthwise3x3_i8_i32_nhwc_avx512(input, weight, p, out) };
+            unsafe { depthwise3x3_i8_i32_nhwc_avx512_range(input, weight, p, out, pixel_start) };
             return;
         }
         if std::is_x86_feature_detected!("avx2") && p.channels >= 8 {
-            unsafe { depthwise3x3_i8_i32_nhwc_avx2(input, weight, p, out) };
+            unsafe { depthwise3x3_i8_i32_nhwc_avx2_range(input, weight, p, out, pixel_start) };
             return;
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
         if std::arch::is_aarch64_feature_detected!("neon") && p.channels >= 8 {
-            unsafe { depthwise3x3_i8_i32_nhwc_neon(input, weight, p, out) };
+            unsafe { depthwise3x3_i8_i32_nhwc_neon_range(input, weight, p, out, pixel_start) };
             return;
         }
     }
-    depthwise_i8_i32_nhwc_scalar(input, weight, p, out);
+    depthwise_i8_i32_nhwc_scalar_range(input, weight, p, out, pixel_start);
 }
 
+/// Runtime-dispatched INT8 NHWC 3x3 depthwise convolution.
 pub fn depthwise3x3_i8_i32_nhwc_dispatch(
     input: &[i8],
     weight: &[i8],
@@ -541,12 +627,14 @@ mod tests {
         depthwise3x3_i8_i32_nhwc_scalar(&input, &weight, p, &mut expected);
         if std::is_x86_feature_detected!("avx2") {
             let mut got = vec![0_i32; expected.len()];
-            unsafe { depthwise3x3_i8_i32_nhwc_avx2(&input, &weight, p.into(), &mut got) };
+            unsafe { depthwise3x3_i8_i32_nhwc_avx2_range(&input, &weight, p.into(), &mut got, 0) };
             assert_eq!(got, expected);
         }
         if std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512bw") {
             let mut got = vec![0_i32; expected.len()];
-            unsafe { depthwise3x3_i8_i32_nhwc_avx512(&input, &weight, p.into(), &mut got) };
+            unsafe {
+                depthwise3x3_i8_i32_nhwc_avx512_range(&input, &weight, p.into(), &mut got, 0)
+            };
             assert_eq!(got, expected);
         }
     }

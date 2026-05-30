@@ -3,7 +3,7 @@
 
 pub const CRATE_ID: &str = "yscv-kernels";
 
-#[path = "backend.rs"]
+#[path = "backend/mod.rs"]
 mod backend;
 #[path = "error.rs"]
 mod error;
@@ -38,11 +38,12 @@ pub use backend::{
     group_norm_nhwc_with_config, layer_norm_last_dim, layer_norm_last_dim_with_config,
     log_softmax_last_dim, log_softmax_last_dim_with_config, logsumexp_last_dim,
     logsumexp_last_dim_with_config, matmul_2d, matmul_2d_sequential, matmul_2d_slices,
-    matmul_2d_slices_trans_a, matmul_2d_with_config, matmul_2d_with_threads, max_pool2d_nhwc,
-    max_pool2d_nhwc_with_config, mish, mul, mul_with_config, relu, relu_inplace, relu_with_config,
-    rms_norm_last_dim, rms_norm_last_dim_with_config, scaled_dot_product_attention,
-    separable_conv2d_nhwc, separable_conv2d_nhwc_with_config, sigmoid, sigmoid_with_config, silu,
-    silu_inplace, softmax_last_dim, softmax_last_dim_with_config, sub, sub_with_config, tanh_act,
+    matmul_2d_slices_parallel, matmul_2d_slices_trans_a, matmul_2d_with_config,
+    matmul_2d_with_threads, max_pool2d_nhwc, max_pool2d_nhwc_with_config, mish, mul,
+    mul_with_config, relu, relu_inplace, relu_with_config, rms_norm_last_dim,
+    rms_norm_last_dim_with_config, scaled_dot_product_attention, separable_conv2d_nhwc,
+    separable_conv2d_nhwc_with_config, sigmoid, sigmoid_with_config, silu, silu_inplace,
+    softmax_last_dim, softmax_last_dim_with_config, sub, sub_with_config, tanh_act,
     tanh_act_with_config, transpose_conv2d_nhwc,
 };
 pub use error::KernelError;
@@ -61,7 +62,7 @@ pub use ops::Activation;
 #[cfg(all(target_os = "macos", feature = "blas"))]
 pub use ops::bnns_conv;
 pub use ops::conv2d_nhwc_indirect_padded;
-pub use ops::fused_pw_expand_dw_3x3;
+pub use ops::dw_prof;
 #[cfg(target_arch = "aarch64")]
 pub use ops::hgemm_6x16_neon;
 pub use ops::int4_matmul::{
@@ -81,11 +82,13 @@ pub use ops::rope::apply_rotary_embedding;
 pub use ops::{
     BinaryKind, DEFAULT_ELEMENTWISE_MIN_PARALLEL_ELEMENTS,
     DEFAULT_MATMUL_MIN_PARALLEL_OUTPUT_ELEMENTS, DEFAULT_MATMUL_MIN_PARALLEL_SHARED_DIM,
-    Depthwise3x3I8Params, DepthwiseI8Params, GemmEpilogue, PackedB, ParallelElementwiseConfig,
-    ParallelMatmulConfig, add_nchwc, add_reduce_dispatch, add_with_config_and_pool,
-    avg_pool2d_nchw, avg_pool2d_nchwc, avg_pool2d_nhwc_with_config_and_pool, batch_norm2d_nchwc,
+    Depthwise3x3I8Params, DepthwiseI8Params, GemmEpilogue, PackedB, PackedNChwBc,
+    ParallelElementwiseConfig, ParallelMatmulConfig, add_nchwc, add_reduce_dispatch,
+    add_with_config_and_pool, avg_pool2d_nchw, avg_pool2d_nchwc,
+    avg_pool2d_nhwc_with_config_and_pool, batch_norm2d_nchwc,
     batch_norm2d_nhwc_with_config_and_pool, binary_same_shape_dispatch,
     conv2d_nchwc_dw3x3_s1_same_pad, conv2d_nchwc_pointwise_with_activation_prepacked,
+    conv2d_nchwc_pointwise_with_residual_activation_prepacked,
     conv2d_nchwc_with_activation_prepacked, conv2d_nhwc_pointwise_with_residual_relu,
     conv2d_nhwc_with_activation_prepacked, conv2d_nhwc_with_activation_with_config_and_pool,
     conv2d_nhwc_with_config_and_pool, conv3d,
@@ -94,23 +97,36 @@ pub use ops::{
     depthwise_conv2d_nhwc_with_activation_with_config_and_pool,
     depthwise_conv2d_nhwc_with_config_and_pool, depthwise_i8_i32_nchw_khwc_dispatch,
     depthwise_i8_i32_nchw_khwc_scalar, depthwise_i8_i32_nhwc_dispatch,
-    depthwise_i8_i32_nhwc_scalar, depthwise3x3_i8_i32_nhwc_dispatch,
-    depthwise3x3_i8_i32_nhwc_scalar, exp_slice_dispatch, exp_with_config_and_pool,
-    fma_slice_dispatch, fused_dw_pw_nhwc_streaming, group_norm_nhwc_with_config_and_pool,
-    layer_norm_last_dim_with_config_and_pool, log_softmax_last_dim_with_config_and_pool,
-    logsumexp_last_dim_with_config_and_pool, matmul_2d_slices_fused_maybe_packed,
-    matmul_2d_with_config_and_pool, matmul_row_dispatch, max_pool2d_nchw, max_pool2d_nchwc,
-    max_pool2d_nhwc_with_config_and_pool, max_reduce_dispatch, mul_with_config_and_pool,
-    nchw_to_nchwc, nchw_to_nhwc_fast, nchwc_to_nchw, nchwc_to_nhwc, nhwc_to_nchwc,
-    pack_b_for_session, relu_nchwc, relu_out, relu_slice_dispatch, relu_to_slice_dispatch,
-    relu_with_config_and_pool, rms_norm_last_dim_with_config_and_pool,
+    depthwise_i8_i32_nhwc_dispatch_with_pool, depthwise_i8_i32_nhwc_scalar,
+    depthwise3x3_i8_i32_nhwc_dispatch, depthwise3x3_i8_i32_nhwc_scalar, exp_slice_dispatch,
+    exp_with_config_and_pool, fma_slice_dispatch, fused_dw_pw_nhwc_streaming,
+    group_norm_nhwc_with_config_and_pool, layer_norm_last_dim_with_config_and_pool,
+    log_softmax_last_dim_with_config_and_pool, logsumexp_last_dim_with_config_and_pool,
+    matmul_2d_slices_fused_maybe_packed, matmul_2d_with_config_and_pool, matmul_row_dispatch,
+    max_pool2d_nchw, max_pool2d_nchwc, max_pool2d_nhwc_with_config_and_pool, max_reduce_dispatch,
+    mul_with_config_and_pool, nchw_to_nchwc, nchw_to_nhwc_fast, nchwc_pw_compute, nchwc_to_nchw,
+    nchwc_to_nhwc, nhwc_to_nchw_fast, nhwc_to_nchwc, pack_b_for_session, pack_dw_nchwc_for_session,
+    relu_nchwc, relu_out, relu_slice_dispatch, relu_to_slice_dispatch, relu_with_config_and_pool,
+    rms_norm_last_dim_with_config_and_pool, runtime_nchwc_block,
     separable_conv2d_nhwc_with_config_and_pool, sigmoid_nchwc, sigmoid_slice_dispatch,
     sigmoid_with_config_and_pool, silu_nchwc, softmax_last_dim_with_config_and_pool,
     sub_exp_slice_dispatch, sub_with_config_and_pool, tanh_act_with_config_and_pool,
     tanh_slice_dispatch,
 };
+pub use ops::{Dw3RowFn, select_dw3_row_fn};
+pub use ops::{
+    FusedPwDw5x5, FusedPwDwPwReduce, fused_pw_expand_dw_3x3, fused_pw_expand_dw_5x5,
+    fused_pw_expand_dw_pw_reduce_3x3, fused_pw_expand_dw_pw_reduce_5x5,
+    pack_pw_reduce_bias_for_fusion, pack_pw_reduce_weight_for_fusion,
+};
 pub use ops::{
     Int8FusedDwPwParams, Int8FusedPwDwParams, int8_fused_dw_pw_dispatch, int8_fused_pw_dw_dispatch,
+    int8_fused_pw_dw_with_pw_side_dispatch, requant_i32_row_to_i8_dispatch,
+};
+#[cfg(target_arch = "x86_64")]
+pub use ops::{
+    compute_dw_row_nchwc_avx512, compute_pw_reduce_row_nchwc_avx512, compute_pw_row_nchwc_avx512,
+    fused_pw_expand_dw_pw_reduce_3x3_nchwc_streaming, pack_dw_weight_nchwc_blocked,
 };
 
 #[cfg(test)]

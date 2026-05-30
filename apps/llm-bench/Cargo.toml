@@ -34,6 +34,10 @@ path = "src/bin/quantize_tracker.rs"
 name = "bench_tracker"
 path = "src/bin/bench_tracker.rs"
 
+[[bin]]
+name = "nchwc_coverage"
+path = "src/bin/nchwc_coverage.rs"
+
 [dependencies]
 yscv-onnx = { version = "0.1", path = "../../crates/yscv-onnx", default-features = false }
 yscv-tensor = { version = "0.1", path = "../../crates/yscv-tensor" }

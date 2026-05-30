@@ -418,24 +418,20 @@ hurts both engines; 12T is strictly worse than 6T.
 and inverted-bottleneck layers; ORT uses NCHWc layout throughout while
 yscv runs NHWC.
 
-### Landed perf arc (cumulative ~−953 µs @ 6T p50, default-ON)
+### Key kernel optimizations
 
-| step | kernel / change | win @ 6T |
-|---|---|---:|
-| S.3 | AVX 8×8 NCHW↔NHWC block transpose | −99 µs |
-| A2  | AVX-512 depthwise row kernel | −117 µs |
-| A3  | First-layer AVX-512 default-on | −64 µs |
-| R1  | KHWC-weight fast-path fix for Conv+Add fusion | −91 µs |
-| R4  | First-layer 3×3 row-level parallelism | −255 µs |
-| R7  | Streaming FusedPwDw AVX-512 register-blocked | −146 µs |
-| R9  | FusedTransposeMatMul (mirrors ORT `MatmulTransposeFusion`) | −291 µs |
+The custom CPU path layers several fusions and SIMD kernels on top of the
+blocked GEMM:
 
-All landings bitwise-identical or 1-ULP-close to reference. aarch64
-cross-compile clean, no-default-features (non-BLAS) build OK, 610+
-tests green.
+- AVX 8×8 / NEON 4×4 NCHW↔NHWC block transposes for layout conversion.
+- AVX-512 / AVX2 / NEON depthwise row kernels with fused activation.
+- Row-level parallelism for the first 3×3 stride-2 layer.
+- Streaming `FusedPwDw` (PW-expand → DW 3×3) with register-blocked
+  accumulators, so the expanded intermediate never hits DRAM.
+- `FusedTransposeMatMul`, mirroring ORT's `MatmulTransposeFusion`.
 
-Detailed per-op gap report:
-[gap-report-2026-04-20.md](gap-report-2026-04-20.md).
+All landings are bitwise-identical or 1-ULP-close to the reference; the
+suite builds clean on x86_64 + aarch64 and passes with and without BLAS.
 
 ### GPU rerun on the same host (2026-04-25)
 
@@ -522,9 +518,6 @@ at 4 threads.
 Kernel-path notes for this run (streaming fused Conv paths, asm vs
 intrinsics, and runtime A/B toggles):
 [`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
-Latest private Zen4 rerun snapshot (fp32 / QDQ-fast / QLinear, 1T/6T):
-[`onnx-cpu-kernels.md`](onnx-cpu-kernels.md) and
-[`perf-arc-2026-04.md`](perf-arc-2026-04.md).
 
 ## Cross-Platform SIMD Coverage
 

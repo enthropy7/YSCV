@@ -27,9 +27,14 @@ CPU and GPU compute backends with SIMD dispatch and BLAS integration. Powers all
 Two-level tiling with MC=128, NC=256, KC=256. Falls back to row GEMM when
 any dimension < 32 (`BLOCKED_THRESHOLD`).
 
-**Microkernels** (MR×NR):
-- 4×8 — AVX+FMA, AVX, SSE, NEON, scalar
-- 4×16 paired — AVX+FMA only (two 4×8 panels fused), k-loop unrolled ×2
+**Microkernels** (MR×NR), under `src/ops/matmul/`:
+- 4×8 — AVX+FMA, AVX, SSE, NEON, scalar (`microkernels.rs`, `neon.rs`)
+- 4×16 / 4×24 paired — AVX+FMA and NEON (two/three 4×8 panels fused),
+  k-loop unrolled ×2
+- 6×16 AVX2 and MR=12×NR=32 AVX-512 (`avx512_mr12.rs`), opt-in
+- specialized const-K low-k pointwise tile (`low_k.rs`)
+- hand-written `.S` assembly for the hottest SGEMM shapes (`asm.rs` +
+  `src/asm/*.S`)
 
 **k-loop unrolling (4×16 microkernel)**: inner loop processes two
 k-iterations per step with interleaved accumulator writes. On Zen 4
@@ -74,24 +79,20 @@ the entire GEMM call chain. On the last k-block, the microkernel applies
 bias and activation directly on accumulator registers before the single
 store — eliminating a separate read+write pass over the output tensor.
 
-All 7 microkernel variants support the epilogue:
-- 4×16 AVX+FMA, 4×8 AVX+FMA, 4×8 AVX, 4×8 SSE, 4×8 NEON, scalar, scalar_partial
+Every microkernel variant supports the epilogue (4×8 / 4×16 / 4×24 across
+AVX+FMA, AVX, SSE, NEON; the scalar and scalar-partial tiles; and the
+AVX-512 paths).
 
 SiLU uses `fast_exp_bittrick` (Schraudolph bit-trick) per-arch.
 Identity epilogue (no bias, no activation) compiles to zero overhead.
 
 Entry points: `matmul_2d_slices_fused()`, `blas_sgemm_fused()`.
 
-## Recent Performance Arc (April 2026)
+## CPU kernel & fusion catalog
 
-Closed against ONNX Runtime 1.24.4 on a Siamese tracker, Zen 4 6C/12T.
-Cumulative default-ON win **~−953 µs @ 6T p50** (4619 → 3665 µs), gap
-**2.38× → 2.10×**. See [docs/performance-benchmarks.md](../../docs/performance-benchmarks.md)
-for the full thread sweep.
-
-Latest public ARM rerun (Orange Pi Zero 3, 2026-04-21) is tracked in
-the same benchmarks doc and currently shows yscv ahead of ORT CPU on
-that tracker at 1..4 threads.
+The custom (non-BLAS) CPU path is tuned for tracker- and detector-class
+models. Benchmarks across threads and hardware live in
+[docs/performance-benchmarks.md](../../docs/performance-benchmarks.md).
 
 ### Graph-level fusions (landed at loader, dispatched via `NodeAction`)
 
@@ -112,13 +113,22 @@ that tracker at 1..4 threads.
 ### New microkernels
 
 - `yscv_sgemm_12x32_avx512` — MR=12×NR=32 AVX-512F hand-tuned `.S`
-  (opt-in `YSCV_AVX512_SGEMM=1`; reaches ~80% theoretical AVX-512 peak
-  single-thread on Zen 4).
+  (opt-in: `YSCV_AVX512_SGEMM=1`; default OFF — Zen 4 prefers 4×24 AVX2).
+  Full epilogue: bias+residual+relu in asm; SiLU via `silu_zmm` ZMM
+  post-store pass. m-tail via tail_tile copy; n%32≠0 shapes fall through
+  to MR=4×24 AVX2. Session prepack emits NR=32 layout when enabled.
 - `depthwise_conv2d_nhwc_row_avx512` — 128/64/32/16-wide ZMM tiles with
   YMM and scalar tail handling.
 - `depthwise_i8_i32_nhwc_dispatch` — symmetric INT8 NHWC depthwise
   3×3/5×5 accumulator for quantized tracker chains; scalar, AVX2,
   AVX-512BW and NEON paths share bitwise parity tests.
+- `pointwise_16x16_direct` — NHWC 1×1 `K=16,N=16` direct matvec kernel
+  with fused bias, residual and activation epilogue; AVX-512, AVX2/FMA,
+  NEON and scalar paths avoid GEMM packing on the tracker residual stem.
+- `pointwise_nx16_direct` — single-thread NHWC residual pointwise direct
+  kernel for small-`M`, `N % 16 == 0` ConvAdd blocks.  It mirrors ORT's
+  filter-set scheduling by computing one 16-output-channel block at a
+  time while fusing residual and activation.
 - `quantize_linear_f32_to_f32_i8_dispatch` — per-tensor `QuantizeLinear`
   hot path for ONNX QLinear/QDQ boundaries; scalar, AVX2, AVX-512F and NEON
   preserve the runner's rounded-f32 signed-int8 representation.
@@ -155,8 +165,15 @@ Most important ONNX CPU kernel toggles:
 - `YSCV_FUSED_PW_DW_STREAM_OFF=1`
 - `YSCV_FUSED_PW_DW_PW2X_OFF=1`
 - `YSCV_FUSED_PW_DW_W_TILE=<N>`
+- `YSCV_FUSED_PW_DW_DW_INTERIOR=1` (experimental AVX-512 stride-1/2 DW
+  interior fast path)
 - `YSCV_FUSED_DW_PW_STREAM_OFF=1`
 - `YSCV_FUSED_DW_PW_STREAM_PADDED=1`
+- `YSCV_FUSED_DW_PW_STREAM_PADDED_OFF=1`
+- `YSCV_FUSED_DW_PW_ROW_BATCH=<N>`
+- `YSCV_NO_POINTWISE_16X16_DIRECT=1`
+- `YSCV_NO_POINTWISE_NX16_DIRECT=1`
+- `YSCV_NO_X86_LOW_K_BLOCKED=1`
 - `YSCV_DIRECT_CONV_WORK_MAX=<N>`
 
 For full semantics/defaults and tracker reproduction commands, see
@@ -167,12 +184,10 @@ For full semantics/defaults and tracker reproduction commands, see
 Every hot-path kernel ships AVX2 + AVX-512 (x86_64) + NEON (aarch64) +
 scalar fallback, selected via `is_x86_feature_detected!` /
 `std::arch::is_aarch64_feature_detected!` at runtime. Cross-compile for
-`aarch64-unknown-linux-gnu` is in CI; real aarch64 hardware validation
-is pending (AVX-512 DW, fused PW+DW streaming, and 8×8 NCHW↔NHWC
-permute do not yet have NEON-perf-tuned counterparts — they fall back
-to scalar-LLVM-autovec or slower NEON paths). See
-[docs/gap-report-2026-04-20.md](../../docs/gap-report-2026-04-20.md)
-for the full multi-arch status matrix.
+`aarch64-unknown-linux-gnu` is in CI. A few x86-tuned paths (AVX-512 DW,
+fused PW+DW streaming, 8×8 NCHW↔NHWC permute) do not yet have
+NEON-perf-tuned counterparts and fall back to scalar-LLVM-autovec or
+plainer NEON on aarch64.
 
 ### Bias+Activation Dispatch (NHWC post-conv fallback)
 

@@ -11,7 +11,9 @@ use yscv_tensor::{Layout, Tensor};
 use crate::core::ops::Conv2dSpec;
 use crate::{
     Activation, ParallelElementwiseConfig, conv2d_nchwc_pointwise_with_activation_prepacked,
-    conv2d_nchwc_with_activation_prepacked, conv2d_nhwc_with_activation_prepacked, nhwc_to_nchwc,
+    conv2d_nchwc_pointwise_with_residual_activation_prepacked,
+    conv2d_nchwc_with_activation_prepacked, conv2d_nhwc_pointwise_with_residual_relu,
+    conv2d_nhwc_with_activation_prepacked, nhwc_to_nchwc,
 };
 
 fn make_nhwc(n: usize, h: usize, w: usize, c: usize) -> Tensor {
@@ -136,6 +138,50 @@ fn nchwc_pointwise_handles_channel_padding() {
 }
 
 #[test]
+fn nchwc_pointwise_residual_matches_nhwc() {
+    let n = 1;
+    let h = 5;
+    let w = 7;
+    let c_in = 16;
+    let c_out = 13;
+    let block = 8;
+
+    let nhwc_input = make_nhwc(n, h, w, c_in);
+    let residual = make_nhwc(n, h, w, c_out);
+    let kernel = make_pointwise_kernel(c_in, c_out);
+    let bias = make_bias(c_out);
+
+    let nhwc_out = conv2d_nhwc_pointwise_with_residual_relu(
+        &nhwc_input,
+        &kernel,
+        Some(&bias),
+        &residual,
+        Activation::Relu,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let nchwc_input = nhwc_to_nchwc(&nhwc_input, block).unwrap();
+    let residual_nchwc = nhwc_to_nchwc(&residual, block).unwrap();
+    let nchwc_out = conv2d_nchwc_pointwise_with_residual_activation_prepacked(
+        &nchwc_input,
+        &kernel,
+        Some(&bias),
+        &residual_nchwc,
+        c_in,
+        Activation::Relu,
+        ParallelElementwiseConfig::default(),
+        None,
+        None,
+    )
+    .unwrap();
+
+    let nchwc_to_nhwc_out = crate::nchwc_to_nhwc(&nchwc_out, c_out).unwrap();
+    super::assert_slice_close(nchwc_to_nhwc_out.data(), nhwc_out.data(), 1e-5);
+}
+
+#[test]
 fn nchwc_pointwise_with_silu_activation() {
     let n = 2;
     let h = 2;
@@ -177,7 +223,12 @@ fn nchwc_pointwise_with_silu_activation() {
     .unwrap();
 
     let nchwc_to_nhwc_out = crate::nchwc_to_nhwc(&nchwc_out, c_out).unwrap();
-    super::assert_slice_close(nchwc_to_nhwc_out.data(), nhwc_out.data(), 1e-5);
+    // SiLU goes through a fast-exp approximation whose absolute error grows with
+    // the output magnitude and rounds differently between the NHWC and NCHWc
+    // SIMD paths (and across CPUs / FMA contraction). 1e-5/1e-4 are both too
+    // tight cross-platform (CI saw 1.0e-4 at silu(x)=0.74); use 1e-3, still far
+    // tighter than any real layout/channel bug.
+    super::assert_slice_close(nchwc_to_nhwc_out.data(), nhwc_out.data(), 1e-3);
 }
 
 #[test]

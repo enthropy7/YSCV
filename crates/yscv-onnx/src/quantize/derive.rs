@@ -5,7 +5,7 @@
 //! - Activations: per-tensor asymmetric int8 in `[0, 255]` (`u8` storage,
 //!   represented as i32 zero-point so signed int8 schemes share the type).
 //! - Weights: per-channel symmetric int8 in `[-128, 127]` along the
-//!   output-channel axis (axis 0 of OIHW or KHWC[O]).
+//!   output-channel axis (axis 0 of `OIHW` or `KHWC[O]`).
 //! - INT4 weights: per-channel symmetric in `[-8, 7]` (matches the format
 //!   produced by `quantize_weights_int4`).
 //!

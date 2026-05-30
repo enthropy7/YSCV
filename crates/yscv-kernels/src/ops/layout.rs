@@ -83,7 +83,14 @@ pub fn nhwc_to_nchwc(input: &Tensor, block: usize) -> Result<Tensor, KernelError
     let src = input.try_data().map_err(KernelError::from)?;
 
     let out_len = n * co * h * w * block;
-    let mut out = AlignedVec::<f32>::calloc(out_len);
+    // When channels are block-aligned every lane is overwritten below, so skip
+    // the calloc zero-fill (it was ~half the cost of this transpose at c=256).
+    // Only the padded-tail case (c % block != 0) needs zeroed trailing lanes.
+    let mut out = if c.is_multiple_of(block) {
+        AlignedVec::<f32>::uninitialized(out_len)
+    } else {
+        AlignedVec::<f32>::calloc(out_len)
+    };
     let dst = out.as_mut_slice();
 
     let nchwc_row_stride = block; // innermost b
@@ -94,18 +101,24 @@ pub fn nhwc_to_nchwc(input: &Tensor, block: usize) -> Result<Tensor, KernelError
     let nhwc_h_stride = w * c;
     let nhwc_n_stride = h * w * c;
 
+    // Loop order: `(n, co, h, w)` with `co` OUTER keeps writes sequential
+    // within a c-block plane `[ni, coi, :, :, :]` (block-stride contiguous
+    // chunks of `h*w*block` floats). The earlier `(h, w, co)` order scattered
+    // writes across c-block planes — each inner iteration touched a different
+    // far-away cacheline, polluting L1/L2. At c=256 16×16 the new order is
+    // measurably faster.
     for ni in 0..n {
-        for hi in 0..h {
-            for wi in 0..w {
-                let src_base = ni * nhwc_n_stride + hi * nhwc_h_stride + wi * nhwc_w_stride;
-                for coi in 0..co {
-                    let c_start = coi * block;
-                    let c_take = block.min(c - c_start);
-                    let src_off = src_base + c_start;
-                    let dst_off = ni * nchwc_n_stride
-                        + coi * nchwc_co_stride
-                        + hi * nchwc_hw_stride
-                        + wi * nchwc_row_stride;
+        for coi in 0..co {
+            let c_start = coi * block;
+            let c_take = block.min(c - c_start);
+            let dst_co_base = ni * nchwc_n_stride + coi * nchwc_co_stride;
+            let src_n_base = ni * nhwc_n_stride;
+            for hi in 0..h {
+                let dst_h_base = dst_co_base + hi * nchwc_hw_stride;
+                let src_h_base = src_n_base + hi * nhwc_h_stride + c_start;
+                for wi in 0..w {
+                    let src_off = src_h_base + wi * nhwc_w_stride;
+                    let dst_off = dst_h_base + wi * nchwc_row_stride;
                     dst[dst_off..dst_off + c_take].copy_from_slice(&src[src_off..src_off + c_take]);
                     // Trailing lanes are already zero (calloc).
                 }
@@ -147,21 +160,26 @@ pub fn nchwc_to_nhwc(input: &Tensor, channels: usize) -> Result<Tensor, KernelEr
     let nhwc_h_stride = w * channels;
     let nhwc_n_stride = h * w * channels;
 
+    // Loop order `(n, co, h, w)`: reads are sequential within a c-block
+    // plane `[ni, coi, :, :, :]` (contiguous `h*w*block` floats). The
+    // earlier `(h, w, co)` order kept writes sequential within a pixel
+    // but read each c-block plane scattered (jumping by `h*w*block` per
+    // coi). Microbench c=256 16×16 confirms which order wins.
     for ni in 0..n {
-        for hi in 0..h {
-            for wi in 0..w {
-                let dst_base = ni * nhwc_n_stride + hi * nhwc_h_stride + wi * nhwc_w_stride;
-                for coi in 0..co {
-                    let c_start = coi * block;
-                    if c_start >= channels {
-                        break;
-                    }
-                    let c_take = block.min(channels - c_start);
-                    let src_off = ni * nchwc_n_stride
-                        + coi * nchwc_co_stride
-                        + hi * nchwc_hw_stride
-                        + wi * nchwc_row_stride;
-                    let dst_off = dst_base + c_start;
+        for coi in 0..co {
+            let c_start = coi * block;
+            if c_start >= channels {
+                break;
+            }
+            let c_take = block.min(channels - c_start);
+            let src_co_base = ni * nchwc_n_stride + coi * nchwc_co_stride;
+            let dst_n_base = ni * nhwc_n_stride;
+            for hi in 0..h {
+                let src_h_base = src_co_base + hi * nchwc_hw_stride;
+                let dst_h_base = dst_n_base + hi * nhwc_h_stride + c_start;
+                for wi in 0..w {
+                    let src_off = src_h_base + wi * nchwc_row_stride;
+                    let dst_off = dst_h_base + wi * nhwc_w_stride;
                     dst[dst_off..dst_off + c_take].copy_from_slice(&src[src_off..src_off + c_take]);
                 }
             }
@@ -284,11 +302,10 @@ pub fn nchwc_to_nchw(input: &Tensor, channels: usize) -> Result<Tensor, KernelEr
     Ok(out_tensor.with_layout(Layout::NCHW))
 }
 
-/// Step S.3: specialized NCHW→NHWC conversion with AVX2 8×8 block
-/// transpose for the (c, hw) → (hw, c) inner matrix. The generic
-/// `Tensor::permute(&[0, 2, 3, 1])` walks one float at a time in a
-/// 32×32 tile (scalar inner), burning ~58 µs @ 6T in tracker on two
-/// [1, 320, 16, 16] DW Conv inputs.
+/// Specialized NCHW→NHWC conversion with an AVX2 8×8 block transpose for the
+/// (c, hw) → (hw, c) inner matrix. The generic `Tensor::permute(&[0, 2, 3, 1])`
+/// walks one float at a time in a scalar-inner 32×32 tile, which is slow on
+/// the large DW-Conv inputs.
 ///
 /// Fast path fires when `c % 8 == 0 && (h*w) % 8 == 0`. 24 SIMD ops per
 /// 8×8 block (8 loads + 8 stores + 8 transpose instrs) vs 128 scalar
@@ -447,6 +464,223 @@ unsafe fn nchw_to_nhwc_inner_avx(
     }
 }
 
+/// NHWC → NCHW for `[N, H, W, C]` → `[N, C, H, W]`. Fast path when both
+/// `c % 8 == 0` and `h * w % 8 == 0` and AVX is available on the host.
+/// Mirror of `nchw_to_nhwc_fast` for the opposite direction — needed because
+/// `Tensor::permute([0,3,1,2])` otherwise falls back to a slow scalar tiled
+/// loop.
+pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
+    let shape = input.shape();
+    let (n, h, w, c) = nhwc_dims(shape)?;
+    let hw = h * w;
+    let out_count = n
+        .checked_mul(c)
+        .and_then(|v| v.checked_mul(hw))
+        .ok_or_else(|| {
+            KernelError::LayoutConversion(format!("nhwc→nchw overflow for {shape:?}"))
+        })?;
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let x86_fast = c % 8 == 0 && hw % 8 == 0 && std::is_x86_feature_detected!("avx");
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let x86_fast = false;
+    #[cfg(target_arch = "aarch64")]
+    let neon_fast = c % 4 == 0 && hw % 4 == 0 && std::arch::is_aarch64_feature_detected!("neon");
+    #[cfg(not(target_arch = "aarch64"))]
+    let neon_fast = false;
+
+    if !x86_fast && !neon_fast {
+        return input
+            .permute(&[0, 3, 1, 2])
+            .map(|t| t.with_layout(Layout::NCHW))
+            .map_err(KernelError::from);
+    }
+
+    #[allow(unused_mut)]
+    let mut out = AlignedVec::<f32>::uninitialized(out_count);
+    let src = input.try_data().map_err(KernelError::from)?;
+    let dst = out.as_mut_slice();
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[allow(unsafe_code)]
+    if x86_fast {
+        // SAFETY: AVX runtime feature checked above. Slice bounds verified:
+        // src = n*hw*c, dst = n*c*hw. Inner offsets stay within each batch.
+        unsafe {
+            nhwc_to_nchw_inner_avx(src, dst, n, h, w, c);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[allow(unsafe_code)]
+    if neon_fast && !x86_fast {
+        // SAFETY: NEON is part of mandatory ARMv8 ISA on aarch64; the runtime
+        // check above is belt-and-suspenders. Slice bounds verified.
+        unsafe {
+            nhwc_to_nchw_inner_neon(src, dst, n, h, w, c);
+        }
+    }
+
+    let _ = (src, dst); // keep used on archs with no fast path (avoid unused-var warnings)
+    let out_shape = vec![n, c, h, w];
+    let out_tensor = Tensor::from_aligned(out_shape, out).map_err(KernelError::from)?;
+    Ok(out_tensor.with_layout(Layout::NCHW))
+}
+
+/// aarch64 NEON 4×4 block transpose for NHWC → NCHW. Mirror of the x86 AVX
+/// 8×8 path. Requires `c % 4 == 0 && hw % 4 == 0`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, clippy::too_many_arguments)]
+unsafe fn nhwc_to_nchw_inner_neon(
+    src: &[f32],
+    dst: &mut [f32],
+    n: usize,
+    h: usize,
+    w: usize,
+    c: usize,
+) {
+    use std::arch::aarch64::{
+        float32x4_t, vcombine_f32, vget_high_f32, vget_low_f32, vld1q_f32, vst1q_f32, vtrnq_f32,
+    };
+    unsafe {
+        let hw = h * w;
+        let src_ptr = src.as_ptr();
+        let dst_ptr = dst.as_mut_ptr();
+        for batch in 0..n {
+            let s_base = src_ptr.add(batch * hw * c);
+            let d_base = dst_ptr.add(batch * c * hw);
+            let mut hi = 0usize;
+            while hi + 4 <= hw {
+                let mut ci = 0usize;
+                while ci + 4 <= c {
+                    // Load 4 NHWC rows (hi..hi+4) × 4 channels (ci..ci+4).
+                    let r0: float32x4_t = vld1q_f32(s_base.add(hi * c + ci));
+                    let r1: float32x4_t = vld1q_f32(s_base.add((hi + 1) * c + ci));
+                    let r2: float32x4_t = vld1q_f32(s_base.add((hi + 2) * c + ci));
+                    let r3: float32x4_t = vld1q_f32(s_base.add((hi + 3) * c + ci));
+
+                    // Pairwise transpose 2×2 lanes.
+                    let t01 = vtrnq_f32(r0, r1);
+                    let t23 = vtrnq_f32(r2, r3);
+
+                    // Combine low/high halves to produce the 4 transposed cols.
+                    let col0 = vcombine_f32(vget_low_f32(t01.0), vget_low_f32(t23.0));
+                    let col1 = vcombine_f32(vget_low_f32(t01.1), vget_low_f32(t23.1));
+                    let col2 = vcombine_f32(vget_high_f32(t01.0), vget_high_f32(t23.0));
+                    let col3 = vcombine_f32(vget_high_f32(t01.1), vget_high_f32(t23.1));
+
+                    // Store 4 transposed rows in NCHW dst (row stride = hw).
+                    vst1q_f32(d_base.add(ci * hw + hi), col0);
+                    vst1q_f32(d_base.add((ci + 1) * hw + hi), col1);
+                    vst1q_f32(d_base.add((ci + 2) * hw + hi), col2);
+                    vst1q_f32(d_base.add((ci + 3) * hw + hi), col3);
+                    ci += 4;
+                }
+                hi += 4;
+            }
+        }
+    }
+}
+
+/// 8×8 block transpose mirror of `nchw_to_nhwc_inner_avx`. Loads from
+/// NHWC `[hw, c]` source and stores to NCHW `[c, hw]` destination per
+/// batch. Same intra-block transpose intrinsics; only the load/store
+/// stride roles differ.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+#[allow(unsafe_code, clippy::too_many_arguments)]
+unsafe fn nhwc_to_nchw_inner_avx(
+    src: &[f32],
+    dst: &mut [f32],
+    n: usize,
+    h: usize,
+    w: usize,
+    c: usize,
+) {
+    unsafe {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{
+            _mm256_loadu_ps, _mm256_permute2f128_ps, _mm256_shuffle_ps, _mm256_storeu_ps,
+            _mm256_unpackhi_ps, _mm256_unpacklo_ps,
+        };
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{
+            _mm256_loadu_ps, _mm256_permute2f128_ps, _mm256_shuffle_ps, _mm256_storeu_ps,
+            _mm256_unpackhi_ps, _mm256_unpacklo_ps,
+        };
+
+        let hw = h * w;
+        let src_ptr = src.as_ptr();
+        let dst_ptr = dst.as_mut_ptr();
+
+        for batch in 0..n {
+            let s_base = src_ptr.add(batch * hw * c);
+            let d_base = dst_ptr.add(batch * c * hw);
+            // Block over hw (step 8 rows), inner block over c (step 8 cols).
+            let mut hi = 0usize;
+            while hi + 8 <= hw {
+                let mut ci = 0usize;
+                while ci + 8 <= c {
+                    // Load 8 NHWC rows (hi..hi+8) of 8 channels each (ci..ci+8).
+                    // Row stride is c.
+                    let r0 = _mm256_loadu_ps(s_base.add(hi * c + ci));
+                    let r1 = _mm256_loadu_ps(s_base.add((hi + 1) * c + ci));
+                    let r2 = _mm256_loadu_ps(s_base.add((hi + 2) * c + ci));
+                    let r3 = _mm256_loadu_ps(s_base.add((hi + 3) * c + ci));
+                    let r4 = _mm256_loadu_ps(s_base.add((hi + 4) * c + ci));
+                    let r5 = _mm256_loadu_ps(s_base.add((hi + 5) * c + ci));
+                    let r6 = _mm256_loadu_ps(s_base.add((hi + 6) * c + ci));
+                    let r7 = _mm256_loadu_ps(s_base.add((hi + 7) * c + ci));
+
+                    // Stage 1: unpack pairs of rows.
+                    let t0 = _mm256_unpacklo_ps(r0, r1);
+                    let t1 = _mm256_unpackhi_ps(r0, r1);
+                    let t2 = _mm256_unpacklo_ps(r2, r3);
+                    let t3 = _mm256_unpackhi_ps(r2, r3);
+                    let t4 = _mm256_unpacklo_ps(r4, r5);
+                    let t5 = _mm256_unpackhi_ps(r4, r5);
+                    let t6 = _mm256_unpacklo_ps(r6, r7);
+                    let t7 = _mm256_unpackhi_ps(r6, r7);
+
+                    // Stage 2: shuffle 4-element groups.
+                    let u0 = _mm256_shuffle_ps::<0x44>(t0, t2);
+                    let u1 = _mm256_shuffle_ps::<0xee>(t0, t2);
+                    let u2 = _mm256_shuffle_ps::<0x44>(t1, t3);
+                    let u3 = _mm256_shuffle_ps::<0xee>(t1, t3);
+                    let u4 = _mm256_shuffle_ps::<0x44>(t4, t6);
+                    let u5 = _mm256_shuffle_ps::<0xee>(t4, t6);
+                    let u6 = _mm256_shuffle_ps::<0x44>(t5, t7);
+                    let u7 = _mm256_shuffle_ps::<0xee>(t5, t7);
+
+                    // Stage 3: permute 128-bit lanes.
+                    let col0 = _mm256_permute2f128_ps::<0x20>(u0, u4);
+                    let col1 = _mm256_permute2f128_ps::<0x20>(u1, u5);
+                    let col2 = _mm256_permute2f128_ps::<0x20>(u2, u6);
+                    let col3 = _mm256_permute2f128_ps::<0x20>(u3, u7);
+                    let col4 = _mm256_permute2f128_ps::<0x31>(u0, u4);
+                    let col5 = _mm256_permute2f128_ps::<0x31>(u1, u5);
+                    let col6 = _mm256_permute2f128_ps::<0x31>(u2, u6);
+                    let col7 = _mm256_permute2f128_ps::<0x31>(u3, u7);
+
+                    // Store 8 transposed rows in NCHW dst (c rows ci..ci+8 at
+                    // hw cols hi..hi+8). Row stride is hw.
+                    _mm256_storeu_ps(d_base.add(ci * hw + hi), col0);
+                    _mm256_storeu_ps(d_base.add((ci + 1) * hw + hi), col1);
+                    _mm256_storeu_ps(d_base.add((ci + 2) * hw + hi), col2);
+                    _mm256_storeu_ps(d_base.add((ci + 3) * hw + hi), col3);
+                    _mm256_storeu_ps(d_base.add((ci + 4) * hw + hi), col4);
+                    _mm256_storeu_ps(d_base.add((ci + 5) * hw + hi), col5);
+                    _mm256_storeu_ps(d_base.add((ci + 6) * hw + hi), col6);
+                    _mm256_storeu_ps(d_base.add((ci + 7) * hw + hi), col7);
+                    ci += 8;
+                }
+                hi += 8;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,6 +816,39 @@ mod tests {
         assert_eq!(fast.shape(), &[1, 16, 16, 320]);
         assert_eq!(fast.layout(), Layout::NHWC);
         assert_eq!(fast.data(), slow.data(), "nchw_to_nhwc_fast mismatch");
+    }
+
+    #[test]
+    fn nhwc_to_nchw_fast_matches_generic_permute_aligned() {
+        // c % 8 == 0 && hw % 8 == 0 — fast path eligible on x86 AVX.
+        let t = nhwc(1, 16, 16, 256);
+        let fast = nhwc_to_nchw_fast(&t).unwrap();
+        let generic = t.permute(&[0, 3, 1, 2]).unwrap();
+        assert_eq!(fast.shape(), generic.shape());
+        assert_eq!(fast.shape(), &[1, 256, 16, 16]);
+        for (i, (&a, &b)) in fast.data().iter().zip(generic.data().iter()).enumerate() {
+            assert_eq!(a, b, "mismatch at {i}");
+        }
+    }
+
+    #[test]
+    fn nhwc_to_nchw_fast_multi_batch() {
+        let t = nhwc(2, 8, 8, 16);
+        let fast = nhwc_to_nchw_fast(&t).unwrap();
+        let generic = t.permute(&[0, 3, 1, 2]).unwrap();
+        assert_eq!(fast.shape(), &[2, 16, 8, 8]);
+        assert_eq!(fast.data(), generic.data());
+    }
+
+    #[test]
+    fn nhwc_to_nchw_fast_falls_back_when_c_not_aligned() {
+        // c=7 — fast path bails (7 % 8 != 0 on x86, 7 % 4 != 0 on aarch64);
+        // tiled scalar permute runs and produces correct output.
+        let t = nhwc(1, 4, 4, 7);
+        let fast = nhwc_to_nchw_fast(&t).unwrap();
+        let generic = t.permute(&[0, 3, 1, 2]).unwrap();
+        assert_eq!(fast.shape(), &[1, 7, 4, 4]);
+        assert_eq!(fast.data(), generic.data());
     }
 
     #[test]

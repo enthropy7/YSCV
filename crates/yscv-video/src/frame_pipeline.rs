@@ -518,7 +518,7 @@ where
 /// observability and health-check integration.
 ///
 /// `LatencyHistogram` fields are populated only when
-/// [`run_pipeline_with_latency`] is used; the plain [`run_pipeline`]
+/// `run_pipeline_with_latency` is used; the plain [`run_pipeline`]
 /// leaves them empty. Quantile snapshots are available via
 /// [`PipelineStats::latency_snapshot`].
 #[derive(Debug, Default)]
@@ -537,7 +537,7 @@ pub struct PipelineStats {
     /// Number of times the output closure panicked (frame dropped).
     pub panics_output: usize,
     /// Per-stage latency distributions. Empty unless
-    /// [`run_pipeline_with_latency`] was used.
+    /// `run_pipeline_with_latency` was used.
     pub capture_latency: crate::latency_histogram::LatencyHistogram,
     pub process_latency: crate::latency_histogram::LatencyHistogram,
     pub output_latency: crate::latency_histogram::LatencyHistogram,

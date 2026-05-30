@@ -25,8 +25,7 @@ use yscv_kernels::{
     Activation, GemmEpilogue, ParallelMatmulConfig, matmul_2d_slices_fused_maybe_packed,
 };
 
-/// Tracker top-10 (m, k, n) shapes — sourced from
-/// `YSCV_RUNNER_PROFILE=...` output on the Siamese tracker (2026-04-19).
+/// Tracker top-10 (m, k, n) GEMM shapes, sourced from `YSCV_RUNNER_PROFILE`.
 const TRACKER_SHAPES: &[(usize, usize, usize, &str)] = &[
     (256, 672, 112, "xif pw up m256"),
     (64, 672, 112, "xif pw up m64"),

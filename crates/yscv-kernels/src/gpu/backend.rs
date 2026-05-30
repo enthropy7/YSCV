@@ -1481,7 +1481,7 @@ impl GpuBackend {
         })
     }
 
-    /// Conv2D on f16 I/O buffers: input [NHWC] and weight are f16, bias is f32, output is f16.
+    /// Conv2D on f16 I/O buffers: input `[NHWC]` and weight are f16, bias is f32, output is f16.
     pub fn im2col_conv_f16_on_device(
         &self,
         input: &GpuBuffer,
@@ -2076,8 +2076,8 @@ impl GpuBackend {
     }
 
     /// Conv2D NHWC on device with optional padding.
-    /// Input [N,H,W,Cin], kernel [KH,KW,Cin,Cout], bias [Cout].
-    /// `pads`: [pad_top, pad_left, pad_bottom, pad_right]. Use [0;4] for no padding.
+    /// Input `[N,H,W,Cin]`, kernel `[KH,KW,Cin,Cout]`, bias `[Cout]`.
+    /// `pads`: [pad_top, pad_left, pad_bottom, pad_right]. Use `[0;4]` for no padding.
     pub fn conv2d_nhwc_on_device(
         &self,
         input: &GpuBuffer,
@@ -2238,7 +2238,7 @@ impl GpuBackend {
     }
 
     /// Conv2D via im2col + tiled GEMM — faster than direct conv for most sizes.
-    /// Input NHWC [N,H,W,IC], weight KHWC [KH,KW,IC,OC], bias [OC].
+    /// Input NHWC `[N,H,W,IC]`, weight KHWC `[KH,KW,IC,OC]`, bias `[OC]`.
     pub fn im2col_conv_on_device(
         &self,
         input: &GpuBuffer,
@@ -3608,7 +3608,7 @@ impl GpuBackend {
     }
 
     /// General N-dimensional slice on device (step=1 only, up to 6D).
-    /// `starts[d]` is the start index for dimension d. `out_shape[d]` = ends[d] - starts[d].
+    /// `starts[d]` is the start index for dimension d. `out_shape[d] = ends[d] - starts[d]`.
     pub fn slice_on_device(
         &self,
         input: &GpuBuffer,

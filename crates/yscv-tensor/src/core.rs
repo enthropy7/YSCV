@@ -9,7 +9,7 @@ mod aligned;
 mod error;
 #[path = "linalg.rs"]
 mod linalg;
-#[path = "ops.rs"]
+#[path = "ops/mod.rs"]
 mod ops;
 #[path = "shape.rs"]
 mod shape;

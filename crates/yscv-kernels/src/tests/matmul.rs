@@ -688,7 +688,7 @@ fn pointwise_conv_n32_relu_bypasses_avx512_fast_path() {
     assert!(max_diff < 1e-1, "max diff {max_diff}");
 }
 
-/// Phase 3.J: smoke-test for the FEAT_FP16 `hgemm_6x16_neon` kernel. Skips
+/// Smoke-test for the FEAT_FP16 `hgemm_6x16_neon` kernel. Skips
 /// gracefully on hosts without FEAT_FP16 (including every x86_64 host and
 /// older ARMv8.0-A cores). Validates shape handling and that the fp16
 /// kernel produces values within a loose tolerance of the scalar reference.
@@ -744,7 +744,7 @@ fn hgemm_6x16_neon_smoke() {
     assert!(any_nonzero, "hgemm output is all zeros — kernel didn't run");
 }
 
-/// Phase 1 (Conv+Add blocked-GEMM fusion): verify the residual fold in the
+/// Conv+Add blocked-GEMM fusion: verify the residual fold in the
 /// 4×24 and 4×16 AVX2 tiles matches a naive reference across tracker Conv_Add
 /// shape classes. The `fast` shapes (n ∈ {16, 48, 64, 96, 112}) exercise
 /// blocked-GEMM + in-kernel residual; n=32 hits the jr-loop 4×8 tail and
@@ -853,6 +853,11 @@ fn pointwise_with_residual_fast_path_n16() {
     check_pointwise_residual(32, 32, 96, 16);
 }
 
+#[test]
+fn pointwise_with_residual_direct_16x16() {
+    check_pointwise_residual(8, 8, 16, 16);
+}
+
 /// n=32 hits the 4×8 jr tail which does not yet support in-kernel residual;
 /// the `blocked_residual_has_unsupported_tail` guard falls this case back to
 /// the row_gemm path, which has its own fused residual epilogue.
@@ -862,7 +867,7 @@ fn pointwise_with_residual_fallback_path_n32() {
 }
 
 // ============================================================================
-// Phase B.1 pure-.S 4×24 AVX2 kernel — regression against the intrinsics
+// Pure-.S 4×24 AVX2 kernel — regression against the intrinsics
 // microkernel it replaces. The dispatch site falls to intrinsics when
 // `YSCV_ASM_GEMM=0`, so toggling the env gives us A vs B.
 // ============================================================================
@@ -912,7 +917,7 @@ fn run_pointwise_under_gate(
 /// compares the ASM path (cached detector defaults to ON when FMA+AVX) to a
 /// naive `matmul_2d_sequential`-based reference. Add this test to pin the
 /// tracker's exact Conv_Add_Relu shape profile.
-/// Step 1: Verify pointwise Conv parallel-dispatch threshold bypasses the
+/// Verify the pointwise Conv parallel-dispatch threshold bypasses the
 /// rayon fork-join path for tiny shapes while remaining bitwise-identical
 /// to the parallelized path on large shapes. The helper used here exercises
 /// `conv2d_nhwc_pointwise_with_residual_relu` which routes through the

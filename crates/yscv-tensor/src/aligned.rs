@@ -1,17 +1,32 @@
-//! A Vec-like container guaranteeing 32-byte aligned allocation for SIMD operations.
+//! A Vec-like container guaranteeing cacheline-aligned allocation for SIMD operations.
 
 use std::fmt;
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 
-/// Alignment in bytes required for AVX operations.
-// WHY 32: AVX/AVX2 aligned load/store (_mm256_load_ps) requires 32-byte alignment; also satisfies NEON (16B).
-const ALIGN: usize = 32;
-
-/// A Vec-like container that guarantees 32-byte alignment for the data pointer.
+/// Default alignment in bytes for AlignedVec allocations.
 ///
-/// This is required for AVX/AVX2 SIMD instructions which expect 32-byte aligned
-/// memory. Standard `Vec<f32>` only guarantees 4-byte alignment.
+/// **64 bytes = one Zen 4 / Intel cacheline.** Avoids cacheline-split loads
+/// at the start of any allocation. Strict superset of AVX-512 (64B), AVX/AVX2
+/// (32B), and NEON (16B) alignment requirements.
+const ALIGN: usize = 64;
+
+/// Pick the alignment for a given byte size. Returns the cacheline constant
+/// unconditionally (size-tiered page-alignment for large allocations was
+/// tried and regressed). The size parameter stays in the API for forward
+/// compatibility.
+#[inline]
+const fn align_for_size(_size: usize) -> usize {
+    ALIGN
+}
+
+/// A Vec-like container that guarantees 64-byte (cacheline) alignment for the
+/// data pointer.
+///
+/// 64 bytes is one cacheline on Zen 4 / modern Intel; aligned to this avoids
+/// any cacheline-split load at the first element. Strict superset of AVX-512
+/// (64B), AVX/AVX2 (32B), and NEON (16B) requirements. Standard `Vec<f32>`
+/// only guarantees 4-byte alignment.
 pub struct AlignedVec<T> {
     ptr: *mut T,
     len: usize,
@@ -217,8 +232,9 @@ impl<T: Default + Copy> AlignedVec<T> {
             .checked_mul(std::mem::size_of::<T>())
             .expect("allocation size overflow");
         let size = size.max(1);
+        let align = align_for_size(size);
         let layout =
-            std::alloc::Layout::from_size_align(size, ALIGN).expect("invalid allocation layout");
+            std::alloc::Layout::from_size_align(size, align).expect("invalid allocation layout");
         // SAFETY: layout has non-zero size. alloc_zeroed returns zeroed memory.
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
         if ptr.is_null() {
@@ -312,17 +328,18 @@ impl<T> FromIterator<T> for AlignedVec<T> {
 /// Allocates aligned memory for `count` elements of type `T`.
 /// Thread-local cache of freed aligned allocations.
 /// Avoids repeated mmap/munmap for same-size buffers (like PyTorch's CachingAllocator).
-/// Each entry: (pointer, byte_size).
+/// Each entry: `(pointer, byte_size, alignment)`. The alignment is part of the
+/// key so the cache never hands a 64B-aligned pointer back for a request that
+/// needs a larger alignment — that would be undefined behaviour.
 #[allow(unsafe_code)]
 mod alloc_cache {
 
     use std::cell::RefCell;
 
     const MAX_CACHED: usize = 16;
-    const ALIGN: usize = super::ALIGN;
 
     struct AllocCache {
-        entries: Vec<(*mut u8, usize)>,
+        entries: Vec<(*mut u8, usize, usize)>,
     }
 
     impl AllocCache {
@@ -335,9 +352,9 @@ mod alloc_cache {
 
     impl Drop for AllocCache {
         fn drop(&mut self) {
-            for &(ptr, size) in &self.entries {
+            for &(ptr, size, align) in &self.entries {
                 if !ptr.is_null()
-                    && let Ok(layout) = std::alloc::Layout::from_size_align(size, ALIGN)
+                    && let Ok(layout) = std::alloc::Layout::from_size_align(size, align)
                 {
                     unsafe {
                         std::alloc::dealloc(ptr, layout);
@@ -351,7 +368,7 @@ mod alloc_cache {
         static CACHE: RefCell<AllocCache> = const { RefCell::new(AllocCache::new()) };
     }
 
-    pub(super) fn try_alloc(size: usize) -> Option<*mut u8> {
+    pub(super) fn try_alloc(size: usize, align: usize) -> Option<*mut u8> {
         if cfg!(miri) {
             return None;
         }
@@ -359,15 +376,20 @@ mod alloc_cache {
             .try_with(|c| {
                 let mut cache = c.borrow_mut();
                 // Check last entry first (MRU — temporal locality for inference loops)
-                if let Some(&(_, s)) = cache.entries.last()
+                if let Some(&(_, s, a)) = cache.entries.last()
                     && s == size
+                    && a == align
                 {
-                    let (ptr, _) = cache.entries.pop().unwrap();
+                    let (ptr, _, _) = cache.entries.pop().unwrap();
                     return Some(ptr);
                 }
                 // Fallback: linear scan
-                if let Some(pos) = cache.entries.iter().position(|&(_, s)| s == size) {
-                    let (ptr, _) = cache.entries.swap_remove(pos);
+                if let Some(pos) = cache
+                    .entries
+                    .iter()
+                    .position(|&(_, s, a)| s == size && a == align)
+                {
+                    let (ptr, _, _) = cache.entries.swap_remove(pos);
                     Some(ptr)
                 } else {
                     None
@@ -377,7 +399,7 @@ mod alloc_cache {
             .flatten()
     }
 
-    pub(super) fn try_dealloc(ptr: *mut u8, size: usize) -> bool {
+    pub(super) fn try_dealloc(ptr: *mut u8, size: usize, align: usize) -> bool {
         if cfg!(miri) {
             return false;
         }
@@ -385,7 +407,7 @@ mod alloc_cache {
             .try_with(|c| {
                 let mut cache = c.borrow_mut();
                 if cache.entries.len() < MAX_CACHED {
-                    cache.entries.push((ptr, size));
+                    cache.entries.push((ptr, size, align));
                     true
                 } else {
                     false
@@ -402,14 +424,16 @@ fn alloc_aligned<T>(count: usize) -> *mut T {
         .checked_mul(std::mem::size_of::<T>())
         .expect("allocation size overflow");
     let size = size.max(1);
+    let align = align_for_size(size);
 
-    // Try thread-local cache first
-    if let Some(ptr) = alloc_cache::try_alloc(size) {
+    // Try thread-local cache first — cache is keyed by (size, align) so we
+    // only return a pointer that matches BOTH the requested size and align.
+    if let Some(ptr) = alloc_cache::try_alloc(size, align) {
         return ptr as *mut T;
     }
 
     let layout =
-        std::alloc::Layout::from_size_align(size, ALIGN).expect("invalid allocation layout");
+        std::alloc::Layout::from_size_align(size, align).expect("invalid allocation layout");
     // SAFETY: layout has non-zero size.
     let ptr = unsafe { std::alloc::alloc(layout) };
     if ptr.is_null() {
@@ -425,13 +449,14 @@ fn dealloc_aligned<T>(ptr: *mut T, cap: usize) {
         Some(s) => s.max(1),
         None => return, // overflow — cannot reconstruct layout, leak rather than panic in Drop
     };
+    let align = align_for_size(size);
 
     // Try to cache instead of freeing
-    if alloc_cache::try_dealloc(ptr as *mut u8, size) {
+    if alloc_cache::try_dealloc(ptr as *mut u8, size, align) {
         return;
     }
 
-    if let Ok(layout) = std::alloc::Layout::from_size_align(size, ALIGN) {
+    if let Ok(layout) = std::alloc::Layout::from_size_align(size, align) {
         // SAFETY: ptr was allocated with this layout via alloc_aligned.
         unsafe {
             std::alloc::dealloc(ptr as *mut u8, layout);

@@ -1,7 +1,7 @@
 //! Rust callback dispatcher for RKNN custom ops.
 //!
 //! When a user registers a `CustomOp` with an attached `CustomOpHandler`,
-//! we reserve a slot in the static [`SLOTS`] table and hand the matching
+//! we reserve a slot in the static `SLOTS` table and hand the matching
 //! per-slot trampoline function pointers to the SDK. The SDK then calls
 //! those C ABI trampolines from inside `rknn_run`; each trampoline knows
 //! its own slot index at compile time and dispatches to the registered

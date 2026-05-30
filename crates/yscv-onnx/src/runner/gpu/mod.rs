@@ -99,7 +99,7 @@ pub struct GpuExecPlan {
     pub last_use: HashMap<String, usize>,
     /// Precomputed action for every node index.
     pub actions: Vec<GpuExecAction>,
-    /// Precomputed per-node recycle lists: recycle_at[i] = tensor names to
+    /// Precomputed per-node recycle lists: `recycle_at[i]` = tensor names to
     /// return to the buffer pool after executing node i.
     /// Eliminates O(gc_size) scan per node in the hot loop.
     pub recycle_at: Vec<Vec<String>>,

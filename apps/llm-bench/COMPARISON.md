@@ -55,6 +55,24 @@ Fresh desktop recheck on 2026-04-29, median of 3 runs:
 | yscv +`--int4-weights 32 --kv-dtype i8` |       1929 |        4568 |         3.50 |       6.40× |
 | ORT 1.25, fp32, 12 thr                |           69 |         714 |        22.40 |          1× |
 
+Nix ORT recheck on 2026-05-05 used `onnxruntime` 1.24.4 and 8 decode
+tokens. The yscv row includes the load-time constant-Transpose fold for
+`Transpose(initializer) -> MatMul RHS` and the prepacked-B slice GEMM route
+for rank-3 MatMul:
+
+| run | threads | prefill (ms) | decode tok/s |
+|---|---:|---:|---:|
+| yscv fp32 | 1 | 1223.6 | 8.44 |
+| yscv fp32 | 6 | 1176.8 | 8.46 |
+| yscv +`--int4-weights 32` | 1 | 1982.3 | 10.68 |
+| yscv +`--int4-weights 32` | 6 | 1987.0 | 10.84 |
+| ORT 1.24.4 fp32 | 1 | 319.3 | 18.60 |
+| ORT 1.24.4 fp32 | 6 | 64.9 | 25.99 |
+
+Before the fold/prepack fix, the same 8-token yscv fp32 harness was ~2.06
+tok/s and spent hundreds of milliseconds per forward re-transposing
+`model.embed_tokens.weight` for `/lm_head/MatMul`.
+
 The `--int4-weights GS` flag in-process packs every eligible MatMul/Gemm
 weight to symmetric INT4 with the supplied group size and re-runs the
 exact same harness; runtime dispatch routes through

@@ -98,10 +98,10 @@ where
     })
 }
 
-/// Step 3 convenience: run `f` inside a session-scoped parallel region.
+/// Run `f` inside a session-scoped parallel region.
 /// Bridges the dyn-compatible `ParallelScope::install_session` (which
 /// uses `&mut dyn FnMut`) back to the ergonomic `FnOnce` shape callers
-/// actually need. On `YscvPool`, enters a [`PersistentSection`] +
+/// actually need. On `YscvPool`, enters a `PersistentSection` +
 /// installs TLS before invoking `f`. On `rayon::ThreadPool`, invokes
 /// `f` directly (no session support on that backend).
 pub fn with_installed_session<R>(scope: &dyn ParallelScope, f: impl FnOnce() -> R) -> R {
@@ -137,7 +137,7 @@ where
     if chunk_size == 0 || data.is_empty() {
         return;
     }
-    // Step 3: when a `PersistentSection` is installed in TLS (done by
+    // When a `PersistentSection` is installed in TLS (done by
     // `OnnxRunner::run` via `install_session`), route the dispatch through
     // the section's `parallel_for` instead of rayon. This eliminates the
     // per-op rayon fork/join epoch — workers are already spin-polling

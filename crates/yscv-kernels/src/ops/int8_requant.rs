@@ -85,7 +85,7 @@ fn x86_path() -> u8 {
 /// keeping the logic shared guarantees they agree byte-for-byte on the
 /// epilogue and removes the mismatch risk that comes with two near-copies.
 #[inline]
-pub(crate) fn requant_i32_row_to_i8_dispatch(
+pub fn requant_i32_row_to_i8_dispatch(
     acc: &[i32],
     bias: Option<&[i32]>,
     composite: f32,

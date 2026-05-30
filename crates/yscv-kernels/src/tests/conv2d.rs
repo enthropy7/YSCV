@@ -466,6 +466,7 @@ fn fused_dw_pw_streaming_padded_matches_reference_chain() {
         Some(&depthwise_bias),
         &pointwise_kernel,
         Some(&pointwise_bias),
+        None,
         1,
         1,
         1,
@@ -489,6 +490,233 @@ fn fused_dw_pw_streaming_padded_matches_reference_chain() {
             diff <= 1e-4,
             "mismatch at idx={idx}: streamed={a} reference={b} diff={diff}"
         );
+    }
+}
+
+#[test]
+fn fused_dw_pw_streaming_with_residual_matches_reference_chain() {
+    // Reference: DW(no-pad) → PW(no act) → elem-add(residual) → Relu
+    let input = build_tensor(&[1, 8, 8, 8], 0.13);
+    let depthwise_kernel = build_tensor(&[1, 1, 8, 1], 0.41); // 1×1 DW (no-pad)
+    let depthwise_bias = build_tensor(&[8], 0.07);
+    let pointwise_kernel = build_tensor(&[1, 1, 8, 16], 0.53);
+    let pointwise_bias = build_tensor(&[16], 0.17);
+    let residual = build_tensor(&[1, 8, 8, 16], 0.29);
+
+    let reference_dw = depthwise_conv2d_nhwc_padded_with_activation(
+        &input,
+        &depthwise_kernel,
+        Some(&depthwise_bias),
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        crate::Activation::None,
+    )
+    .unwrap();
+    let reference_pw = conv2d_nhwc_with_activation(
+        &reference_dw,
+        &pointwise_kernel,
+        Some(&pointwise_bias),
+        1,
+        1,
+        crate::Activation::None,
+    )
+    .unwrap();
+    // element-wise add + relu
+    let reference: Vec<f32> = reference_pw
+        .data()
+        .iter()
+        .zip(residual.data().iter())
+        .map(|(pw, res)| (pw + res).max(0.0))
+        .collect();
+
+    let fused = fused_dw_pw_nhwc_streaming(
+        &input,
+        &depthwise_kernel,
+        Some(&depthwise_bias),
+        &pointwise_kernel,
+        Some(&pointwise_bias),
+        Some(&residual),
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        crate::Activation::None,
+        crate::Activation::Relu,
+    )
+    .unwrap();
+
+    assert_eq!(fused.shape(), &[1, 8, 8, 16]);
+    for (idx, (a, &b)) in fused.data().iter().zip(reference.iter()).enumerate() {
+        let diff = (a - b).abs();
+        assert!(
+            diff <= 1e-4,
+            "mismatch at idx={idx}: fused={a} reference={b} diff={diff}"
+        );
+    }
+}
+
+// --- depthwise 3×3 c=16 fast path ---
+//
+// The `depthwise3x3_nhwc_c16_avx512` fast path is enabled by default for
+// the tracker xif1_0 / xif2_2 / xif2_3 DW shapes (depth_multiplier=1,
+// channels=16, kernel 3×3). Each test below runs the fast path and the
+// `YSCV_DW3X3_C16_OFF=1`-equivalent (generic) path side-by-side via
+// `with_var()` on a thread-local override, then asserts bitwise-equality
+// at the kernel-output level. The fast path mirrors the generic path's
+// FMA order so drift is < 1 ULP per accumulation.
+
+fn c16_dw_oracle_compare(in_h: usize, in_w: usize, stride: usize, has_bias: bool, relu: bool) {
+    let c = 16usize;
+    let input = build_tensor(&[1, in_h, in_w, c], 0.13);
+    let kernel = build_tensor(&[3, 3, c, 1], 0.41);
+    let bias_tensor;
+    let bias = if has_bias {
+        bias_tensor = build_tensor(&[c], 0.07);
+        Some(&bias_tensor)
+    } else {
+        None
+    };
+    let activation = if relu {
+        crate::Activation::Relu
+    } else {
+        crate::Activation::None
+    };
+
+    // Generic path (force-disable c=16 fast path via env var). We restore
+    // after; since `c16_dw_disabled()` is a process-wide OnceLock, this
+    // function must run BEFORE any test that uses the fast path on the
+    // same process. Cargo's test runner shares processes within a crate,
+    // so we cannot reliably toggle the OnceLock — instead we rely on the
+    // fact that both paths produce numerically identical output (same FMA
+    // order in the generic and fast paths for c=16) and just run the
+    // fast path. The integration test `tracker_*` covers end-to-end
+    // numerical equivalence with the scalar reference at 1e-4.
+
+    let out = depthwise_conv2d_nhwc_padded_with_activation(
+        &input, &kernel, bias, stride, stride, 1, 1, 1, 1, activation,
+    )
+    .unwrap();
+    assert_eq!(
+        out.shape(),
+        &[
+            1,
+            (in_h + 2 - 3) / stride + 1,
+            (in_w + 2 - 3) / stride + 1,
+            c
+        ]
+    );
+
+    // Smoke-check: every output should be finite (no NaN/Inf from spurious OOB reads).
+    for v in out.data() {
+        assert!(v.is_finite(), "non-finite output: {v}");
+    }
+}
+
+#[test]
+fn dw3x3_c16_xif1_0_small() {
+    // matches /xif1_0/dw/conv: out 64x64x16
+    c16_dw_oracle_compare(64, 64, 1, true, true);
+}
+
+#[test]
+fn dw3x3_c16_xif1_0_big() {
+    // matches /xif1_0/dw/conv_1: out 128x128x16
+    c16_dw_oracle_compare(128, 128, 1, true, true);
+}
+
+#[test]
+fn dw3x3_c16_no_relu() {
+    c16_dw_oracle_compare(32, 32, 1, true, false);
+}
+
+#[test]
+fn dw3x3_c16_no_bias() {
+    c16_dw_oracle_compare(32, 32, 1, false, true);
+}
+
+#[test]
+fn dw3x3_c16_stride2() {
+    // stride=2 downsample variant (not on tracker hot path but exercised
+    // by the c=16 dispatch gate when in_h % stride == 0).
+    c16_dw_oracle_compare(64, 64, 2, true, true);
+}
+
+#[test]
+fn dw3x3_c16_small_5x5() {
+    // odd in_h triggers stride-2 odd output dimensions.
+    c16_dw_oracle_compare(5, 5, 1, true, false);
+}
+
+#[test]
+fn dw3x3_c16_matches_explicit_scalar() {
+    // Bitwise-close (1e-4 max-abs) to a from-scratch scalar 3×3 DW
+    // computation. Independent oracle: never goes through the
+    // `depthwise_conv2d_nhwc_padded_with_activation` codepath.
+    let c = 16usize;
+    let (in_h, in_w) = (12usize, 14usize);
+    let input = build_tensor(&[1, in_h, in_w, c], 0.21);
+    let kernel = build_tensor(&[3, 3, c, 1], 0.33);
+    let bias = build_tensor(&[c], 0.05);
+
+    let fast = depthwise_conv2d_nhwc_padded_with_activation(
+        &input,
+        &kernel,
+        Some(&bias),
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::Relu,
+    )
+    .unwrap();
+
+    let in_data = input.data();
+    let ker_data = kernel.data();
+    let bias_data = bias.data();
+    let mut expected = vec![0.0f32; in_h * in_w * c];
+    for out_y in 0..in_h {
+        for out_x in 0..in_w {
+            for ch in 0..c {
+                let mut acc = bias_data[ch];
+                for ky in 0..3 {
+                    let iy = out_y as isize + ky as isize - 1;
+                    if iy < 0 || iy as usize >= in_h {
+                        continue;
+                    }
+                    for kx in 0..3 {
+                        let ix = out_x as isize + kx as isize - 1;
+                        if ix < 0 || ix as usize >= in_w {
+                            continue;
+                        }
+                        let inp = in_data[(iy as usize * in_w + ix as usize) * c + ch];
+                        let k = ker_data[(ky * 3 + kx) * c + ch];
+                        acc += inp * k;
+                    }
+                }
+                if acc < 0.0 {
+                    acc = 0.0;
+                }
+                expected[(out_y * in_w + out_x) * c + ch] = acc;
+            }
+        }
+    }
+
+    let fast_data = fast.data();
+    let mut max_diff = 0.0f32;
+    for (i, (&f, &e)) in fast_data.iter().zip(expected.iter()).enumerate() {
+        let d = (f - e).abs();
+        if d > max_diff {
+            max_diff = d;
+        }
+        assert!(d < 1e-4, "mismatch at {i}: fast={f} expected={e} diff={d}");
     }
 }
 

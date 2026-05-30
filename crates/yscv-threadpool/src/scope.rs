@@ -23,7 +23,7 @@ use crate::YscvPool;
 
 /// Trait abstracting over thread-pool backends for the inference hot path.
 pub trait ParallelScope: Send + Sync {
-    /// Step 3: enter a session-scoped parallel region. On backends that
+    /// enter a session-scoped parallel region. On backends that
     /// support persistent sections (currently [`YscvPool`]), all pool
     /// workers enter a tight-poll loop, and parallel dispatch inside
     /// `f` routes through the section's single-atomic-pointer
@@ -162,8 +162,13 @@ impl ParallelScope for rayon::ThreadPool {
     }
 
     fn par_for_each_index(&self, count: usize, f: &(dyn Fn(usize) + Send + Sync)) {
-        // Run inside `install` so par_iter picks up the correct pool.
-        self.install(|| (0..count).into_par_iter().for_each(f));
+        // Use ambient pool (same as par_chunks_mut_dyn) — avoids nested install.
+        // When called from within pool_A.install(), the ambient pool IS pool_A;
+        // pool_A's workers (idle after join) steal the tasks directly. The nested
+        // `self.install()` would activate a separate pool_B while pool_A workers
+        // spin-idle, causing 12-thread oversubscription on 12-SMT and a measured
+        // ~0× speedup on merge-branch ops. See June 2026 performance investigation.
+        (0..count).into_par_iter().for_each(f);
     }
 
     fn par_chunks_mut_dyn(
@@ -196,6 +201,68 @@ impl ParallelScope for rayon::ThreadPool {
 
     fn num_threads(&self) -> usize {
         self.current_num_threads()
+    }
+}
+
+/// Zero-thread parallel scope for the rayon inference path.
+///
+/// `rayon::ThreadPool`-backed runners already install their pool via
+/// `pool.install(|| run_onnx_model_inner(...))`. Every `par_iter` call
+/// inside that closure automatically uses pool's workers — no separate
+/// scope pool is needed. Maintaining a second static rayon pool (the old
+/// `build_parallel_scope` RAYON_SCOPES approach) added N scope-pool threads
+/// that would spin-idle alongside N pool threads = 2N threads on an N-core
+/// machine: pure oversubscription that regresses multi-thread latency.
+///
+/// `AmbientRayonScope` fixes this by delegating all dispatch to the ambient
+/// rayon pool with zero extra threads. `num_threads` is reported as the
+/// logical count so downstream threshold checks (`blocked_blocks >= nthreads`)
+/// remain accurate.
+pub struct AmbientRayonScope {
+    num_threads: usize,
+}
+
+impl AmbientRayonScope {
+    pub fn new(num_threads: usize) -> Self {
+        Self {
+            num_threads: num_threads.max(1),
+        }
+    }
+}
+
+impl ParallelScope for AmbientRayonScope {
+    fn install_session(&self, f: &mut dyn FnMut()) {
+        f();
+    }
+
+    fn par_for_each_index(&self, count: usize, f: &(dyn Fn(usize) + Send + Sync)) {
+        (0..count).into_par_iter().for_each(f);
+    }
+
+    fn par_chunks_mut_dyn(
+        &self,
+        data: &mut [f32],
+        chunk_size: usize,
+        f: &(dyn Fn(usize, &mut [f32]) + Send + Sync),
+    ) {
+        if chunk_size == 0 || data.is_empty() {
+            return;
+        }
+        data.par_chunks_mut(chunk_size)
+            .enumerate()
+            .for_each(|(i, c)| f(i, c));
+    }
+
+    fn join_dyn(&self, a: &mut (dyn FnMut() + Send), b: &mut (dyn FnMut() + Send)) {
+        rayon::join(a, b);
+    }
+
+    fn current_worker_index(&self) -> Option<usize> {
+        rayon::current_thread_index()
+    }
+
+    fn num_threads(&self) -> usize {
+        self.num_threads
     }
 }
 

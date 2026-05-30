@@ -14,7 +14,7 @@ The workspace has 18 library crates, 3 application binaries (`apps/bench`, `apps
 
 Key crates and what they do:
 
-- **yscv-tensor** — the foundation. 115 tensor ops in `ops.rs`, f32/f16/bf16 dtype, SIMD (AVX/SSE/NEON).
+- **yscv-tensor** — the foundation. 115 tensor ops in `ops/`, f32/f16/bf16 dtype, SIMD (AVX/SSE/NEON).
 - **yscv-kernels** — CPU and GPU compute backends. SIMD dispatch (AVX + SSE + NEON with scalar fallback), 61 WGSL + 4 Metal compute shaders, rayon threading.
 - **yscv-autograd** — dynamic computation graph with 61 `Op` variants and gradient checkpointing.
 - **yscv-optim** — 8 optimizers (SGD/Adam/AdamW/RAdam/RmsProp/Adagrad/Lamb/Lars) all with NEON+AVX+SSE SIMD, Lookahead meta-optimizer, 11 LR schedulers.

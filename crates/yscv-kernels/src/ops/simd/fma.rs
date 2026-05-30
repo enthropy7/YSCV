@@ -526,16 +526,24 @@ pub unsafe fn matmul_row_set_dispatch(
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        // AVX-512 wins on wide shapes (large K or large N) where 16-wide
-        // FMA throughput dominates; loses on K=N≈2048 where the AVX path
-        // already saturates memory BW and AVX-512's frequency tax shows up
-        // (kernel_bench Zen 4: 4-16% AVX-512 win at K≥4096 or N≥4096,
-        // 1.4× AVX win at K=N=2048). Gate by shape; honour kill-switch.
+        // AVX-512 gate: the AVX-512 row-set kernel only wins at very wide
+        // shapes (k>=4096 || n>=4096). At smaller shapes the AVX FMA 6×8 tile
+        // beats the AVX-512 4×16 — more accumulator chains hide latency better
+        // at small K, and the AVX FMA path has SW prefetch the row-set kernel
+        // lacks. Threshold tunable via `YSCV_AVX512_ROWGEMM_MIN_DIM`; kill via
+        // `YSCV_AVX512_ROWGEMM_OFF=1`.
         static AVX512_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let avx512_off =
             *AVX512_OFF.get_or_init(|| std::env::var_os("YSCV_AVX512_ROWGEMM_OFF").is_some());
+        static AVX512_MIN_DIM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let min_dim = *AVX512_MIN_DIM.get_or_init(|| {
+            std::env::var("YSCV_AVX512_ROWGEMM_MIN_DIM")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(4096)
+        });
         if !avx512_off
-            && (n >= 4096 || k >= 4096)
+            && (n >= min_dim || k >= min_dim)
             && std::is_x86_feature_detected!("avx512f")
             && std::is_x86_feature_detected!("fma")
         {

@@ -219,6 +219,7 @@ fn dequantize_int4_to_f32_scalar(packed: &[u8], scale: f32, zero_point: i8, outp
     });
 }
 
+/// Scalar per-tensor QuantizeLinear keeping yscv's rounded-f32 signed-int8 representation.
 #[inline]
 pub fn quantize_linear_f32_to_f32_i8_scalar(
     data: &[f32],
@@ -232,6 +233,7 @@ pub fn quantize_linear_f32_to_f32_i8_scalar(
     }
 }
 
+/// Scalar per-tensor QuantizeLinear writing true i8 storage.
 #[inline]
 pub fn quantize_linear_f32_to_i8_scalar(
     data: &[f32],

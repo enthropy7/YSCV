@@ -1121,7 +1121,7 @@ impl RknnBackend {
         self.reset_with_flags(model_data, 0)
     }
 
-    /// Like [`reset`], but lets the caller preserve `RKNN_FLAG_ASYNC_MASK`
+    /// Like `reset`, but lets the caller preserve `RKNN_FLAG_ASYNC_MASK`
     /// (or any other init flag) the context was originally loaded with.
     /// `RknnPipelinedPool` uses this to recover an async context without
     /// silently falling back to synchronous mode.
@@ -1521,7 +1521,7 @@ impl ContextPool {
 
     /// Run inference on a specific context index, with auto-recovery on
     /// repeated transient errors. Same input contract as
-    /// [`dispatch_roundrobin`].
+    /// `dispatch_roundrobin`.
     pub fn dispatch_on(
         &self,
         idx: usize,

@@ -6,6 +6,7 @@ use super::config::{
     ParallelElementwiseConfig, Pool2dKind, Pool2dPlan, Pool2dSpec, should_parallelize_len,
 };
 
+/// NHWC 2-D max pooling with an explicit parallel config and thread pool.
 pub fn max_pool2d_nhwc_with_config_and_pool(
     input: &Tensor,
     spec: Pool2dSpec,
@@ -15,6 +16,7 @@ pub fn max_pool2d_nhwc_with_config_and_pool(
     pool2d_nhwc_with_config_and_pool(input, spec, config, thread_pool, Pool2dKind::Max)
 }
 
+/// NHWC 2-D average pooling with an explicit parallel config and thread pool.
 pub fn avg_pool2d_nhwc_with_config_and_pool(
     input: &Tensor,
     spec: Pool2dSpec,

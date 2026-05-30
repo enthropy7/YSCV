@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Internal refactor: split the largest perf-arc source files (`matmul`,
+  `conv`, `fused_pw_dw_3x3`, `backend`, tensor `ops`, the ONNX `runner`,
+  and `loader`) into focused directory submodules. No public API or
+  behavior change — tracker output stays bitwise-identical and 1T/6T
+  latency is unchanged within noise.
+- Documentation and code comments cleaned of session-specific
+  optimization-arc notes and refreshed to the current module layout.
+
 ## [0.1.9] — 2026-05-02
 
 ### Changed

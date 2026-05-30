@@ -484,16 +484,24 @@ impl Tensor {
     ///
     /// # Panics
     /// Panics if the tensor dtype is not F32. Use `try_data()` for a fallible version.
+    #[inline]
     pub fn data(&self) -> &[f32] {
-        self.try_data().expect("tensor is not F32")
+        match self.try_data() {
+            Ok(s) => s,
+            Err(_) => panic_not_f32(),
+        }
     }
 
     /// Returns a mutable view over contiguous f32 storage.
     ///
     /// # Panics
     /// Panics if the tensor dtype is not F32. Use `try_data_mut()` for a fallible version.
+    #[inline]
     pub fn data_mut(&mut self) -> &mut [f32] {
-        self.try_data_mut().expect("tensor is not F32")
+        match self.try_data_mut() {
+            Ok(s) => s,
+            Err(_) => panic_not_f32(),
+        }
     }
 
     /// Alias for `try_data()` for backward compatibility.
@@ -662,6 +670,17 @@ impl Tensor {
         }
         Ok(offset)
     }
+}
+
+/// Outlined panic for `Tensor::data()` / `data_mut()` non-F32 path. Marked
+/// `#[cold]` so LLVM moves it out of the hot path's I-cache footprint;
+/// `#[inline(never)]` so the panic-format code is emitted ONCE rather than
+/// duplicated into every caller. The fast path stays inline.
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn panic_not_f32() -> ! {
+    panic!("tensor is not F32");
 }
 
 // ── FP16/BF16 bit conversion primitives ────────────────────────────

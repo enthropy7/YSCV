@@ -9,7 +9,7 @@ mod error;
 #[path = "exporter.rs"]
 mod exporter;
 pub mod generate;
-#[path = "loader.rs"]
+#[path = "loader/mod.rs"]
 mod loader;
 #[path = "optimizer.rs"]
 mod optimizer;

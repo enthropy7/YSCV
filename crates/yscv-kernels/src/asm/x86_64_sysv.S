@@ -559,6 +559,7 @@ CNAME(yscv_sgemm_4x24_avx2_acc_fused):
 //   r9  = bias_ptr       (NULL → no bias)
 //   [rsp + 8]  = activation (0=None, 1=Relu; SiLU routed elsewhere)
 //   [rsp + 16] = is_last_k   (0/1)
+//   [rsp + 24] = residual_ptr (NULL → no residual; same row-stride as C)
 //
 // `_set` zeros accumulators; `_acc` loads existing C into accumulators.
 
@@ -741,6 +742,49 @@ CNAME(yscv_sgemm_12x32_avx512_acc):
     vaddps zmm23, zmm23, zmm28
 
 .Lsgemm_12x32_avx512_skip_bias:
+    // Residual add: out += residual[row][col] for each of 12 rows × 32 cols.
+    // r10 = residual_ptr (row 0 of tile); r11 = ldc in bytes (= rcx * 4).
+    mov r10, qword ptr [rsp + 24]
+    test r10, r10
+    jz .Lsgemm_12x32_avx512_skip_residual
+    mov r11, rcx
+    shl r11, 2
+    vaddps zmm0,  zmm0,  [r10]
+    vaddps zmm1,  zmm1,  [r10 + 64]
+    add r10, r11
+    vaddps zmm2,  zmm2,  [r10]
+    vaddps zmm3,  zmm3,  [r10 + 64]
+    add r10, r11
+    vaddps zmm4,  zmm4,  [r10]
+    vaddps zmm5,  zmm5,  [r10 + 64]
+    add r10, r11
+    vaddps zmm6,  zmm6,  [r10]
+    vaddps zmm7,  zmm7,  [r10 + 64]
+    add r10, r11
+    vaddps zmm8,  zmm8,  [r10]
+    vaddps zmm9,  zmm9,  [r10 + 64]
+    add r10, r11
+    vaddps zmm10, zmm10, [r10]
+    vaddps zmm11, zmm11, [r10 + 64]
+    add r10, r11
+    vaddps zmm12, zmm12, [r10]
+    vaddps zmm13, zmm13, [r10 + 64]
+    add r10, r11
+    vaddps zmm14, zmm14, [r10]
+    vaddps zmm15, zmm15, [r10 + 64]
+    add r10, r11
+    vaddps zmm16, zmm16, [r10]
+    vaddps zmm17, zmm17, [r10 + 64]
+    add r10, r11
+    vaddps zmm18, zmm18, [r10]
+    vaddps zmm19, zmm19, [r10 + 64]
+    add r10, r11
+    vaddps zmm20, zmm20, [r10]
+    vaddps zmm21, zmm21, [r10 + 64]
+    add r10, r11
+    vaddps zmm22, zmm22, [r10]
+    vaddps zmm23, zmm23, [r10 + 64]
+.Lsgemm_12x32_avx512_skip_residual:
     // Activation (1 = Relu; 0 = None; SiLU never reaches here).
     mov r8, qword ptr [rsp + 8]
     cmp r8, 1

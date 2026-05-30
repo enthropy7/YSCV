@@ -33,9 +33,9 @@ EXPECTED_BACKEND_METHODS=27          # required methods on `pub trait Backend`
 # ── Actual counts (greps) ────────────────────────────────────────────
 actual_crates=$(find crates -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
 actual_version=$(awk -F\" '/^version = "/{print $2; exit}' Cargo.toml)
-actual_onnx_ops=$(awk '/match node.op_type/,/^}$/' crates/yscv-onnx/src/runner/mod.rs \
+actual_onnx_ops=$(awk '/match node.op_type/,/^}$/' crates/yscv-onnx/src/runner/dispatch.rs \
     | grep -cE '^[[:space:]]+"[A-Z]')
-tensor_ops=$(grep -c '^    pub fn' crates/yscv-tensor/src/ops.rs)
+tensor_ops=$(grep -h '^    pub fn' crates/yscv-tensor/src/ops/*.rs | wc -l | tr -d ' ')
 tensor_main=$(grep -c '^    pub fn' crates/yscv-tensor/src/tensor.rs)
 tensor_linalg=$(grep -c '^    pub fn' crates/yscv-tensor/src/linalg.rs)
 actual_tensor_methods=$((tensor_ops + tensor_main + tensor_linalg))
@@ -52,7 +52,7 @@ actual_model_zoo=$(awk '/enum ModelArchitecture/,/^}/' crates/yscv-model/src/zoo
     | grep -cE '^    [A-Z]')
 actual_wgsl=$(find crates/yscv-kernels/src/shaders -name '*.wgsl' | wc -l | tr -d ' ')
 actual_metal=$(find crates/yscv-kernels/src/shaders -name '*.metal' | wc -l | tr -d ' ')
-actual_backend_methods=$(awk '/pub trait Backend/,/^}/' crates/yscv-kernels/src/backend.rs \
+actual_backend_methods=$(awk '/pub trait Backend/,/^}/' crates/yscv-kernels/src/backend/mod.rs \
     | grep -cE '^    fn ')
 
 # ── Comparison harness ───────────────────────────────────────────────

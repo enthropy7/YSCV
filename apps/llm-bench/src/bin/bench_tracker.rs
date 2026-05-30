@@ -143,7 +143,11 @@ fn qlinear_boundary_after(nodes: &[OnnxNode], start: usize, input: &str) -> Opti
 fn quant_chain_candidates(model: &OnnxModel) -> usize {
     let nodes = &model.nodes;
     let mut count = 0usize;
+    let mut skip = vec![false; nodes.len()];
     for i in 0..nodes.len() {
+        if skip[i] {
+            continue;
+        }
         let Some(kind) = qlinear_conv_kind(model, &nodes[i]) else {
             continue;
         };
@@ -157,22 +161,40 @@ fn quant_chain_candidates(model: &OnnxModel) -> usize {
             && ((kind == "pw" && next_kind == "dw") || (kind == "dw" && next_kind == "pw"))
         {
             count += 1;
+            for idx in i + 1..=q_idx + 1 {
+                skip[idx] = true;
+            }
             continue;
         }
-        if let Some((dq_idx, q_idx)) = qlinear_boundary_after(nodes, i + 1, qconv_out) {
-            let relu_offset = if nodes.get(dq_idx + 1).is_some_and(|n| n.op_type == "Relu") {
-                1
-            } else {
-                0
-            };
-            let add_idx = dq_idx + 1 + relu_offset;
-            if nodes.get(add_idx).is_some_and(|n| n.op_type == "Add")
-                && nodes
-                    .get(q_idx)
-                    .is_some_and(|n| n.op_type == "QuantizeLinear")
-            {
-                count += 1;
+
+        let dq_idx = i + 1;
+        let relu_idx = i + 2;
+        let conv_idx = i + 3;
+        let add_idx = i + 4;
+        let q_idx = i + 5;
+        if nodes
+            .get(dq_idx)
+            .is_some_and(|n| n.op_type == "DequantizeLinear" && n.inputs.first() == Some(qconv_out))
+            && nodes.get(relu_idx).is_some_and(|n| n.op_type == "Relu")
+            && nodes.get(conv_idx).is_some_and(|n| n.op_type == "Conv")
+            && nodes.get(add_idx).is_some_and(|n| n.op_type == "Add")
+            && nodes
+                .get(q_idx)
+                .is_some_and(|n| n.op_type == "QuantizeLinear")
+        {
+            count += 1;
+            for idx in dq_idx..=q_idx {
+                skip[idx] = true;
             }
+            continue;
+        }
+
+        if nodes
+            .get(dq_idx)
+            .is_some_and(|n| n.op_type == "DequantizeLinear" && n.inputs.first() == Some(qconv_out))
+        {
+            count += 1;
+            skip[dq_idx] = true;
         }
     }
     count

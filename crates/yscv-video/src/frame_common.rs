@@ -33,7 +33,7 @@ use std::fmt;
 /// - [`FramePayload::bytes`] — returns `Some(&[u8])` for the `Owned`
 ///   variant and `None` for DMA-BUF (the fd itself is opaque to the
 ///   CPU until the caller explicitly maps it or passes it to a
-///   zero-copy consumer like [`yscv_kernels::RknnBackend::wrap_fd`]).
+///   zero-copy consumer like `RknnBackend::wrap_fd`).
 /// - [`FramePayload::dma_buf_fd`] / [`FramePayload::dma_buf_len`] —
 ///   primitive accessors for the DMA-BUF variant, for consumers that
 ///   need to re-export the fd to a downstream API.

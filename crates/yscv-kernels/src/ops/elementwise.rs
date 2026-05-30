@@ -338,6 +338,7 @@ pub fn add_with_config(
     add_with_config_and_pool(lhs, rhs, config, None)
 }
 
+/// Elementwise add with an explicit parallel config and thread pool.
 pub fn add_with_config_and_pool(
     lhs: &Tensor,
     rhs: &Tensor,
@@ -356,6 +357,7 @@ pub fn sub_with_config(
     sub_with_config_and_pool(lhs, rhs, config, None)
 }
 
+/// Elementwise subtract with an explicit parallel config and thread pool.
 pub fn sub_with_config_and_pool(
     lhs: &Tensor,
     rhs: &Tensor,
@@ -374,6 +376,7 @@ pub fn mul_with_config(
     mul_with_config_and_pool(lhs, rhs, config, None)
 }
 
+/// Elementwise multiply with an explicit parallel config and thread pool.
 pub fn mul_with_config_and_pool(
     lhs: &Tensor,
     rhs: &Tensor,
