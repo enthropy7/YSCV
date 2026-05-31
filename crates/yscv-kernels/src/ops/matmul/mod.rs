@@ -1,7 +1,7 @@
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{
-    float32x4_t, vaddq_f32, vdivq_f32, vdupq_n_f32, vfmaq_f32, vld1q_f32, vmaxq_f32, vnegq_f32,
-    vst1q_f32,
+    float32x4_t, vaddq_f32, vdivq_f32, vdupq_n_f32, vfmaq_f32, vfmaq_laneq_f32, vld1q_f32,
+    vmaxq_f32, vnegq_f32, vst1q_f32,
 };
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{

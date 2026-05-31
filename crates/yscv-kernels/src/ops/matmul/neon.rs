@@ -36,22 +36,22 @@ pub(super) unsafe fn microkernel_4x8_neon(
         let a_off = p * MR;
         let b_off = p * NR;
 
-        let a0 = vdupq_n_f32(*a_panel.add(a_off));
-        let a1 = vdupq_n_f32(*a_panel.add(a_off + 1));
-        let a2 = vdupq_n_f32(*a_panel.add(a_off + 2));
-        let a3 = vdupq_n_f32(*a_panel.add(a_off + 3));
+        // Load the 4 A values as one vector and use lane-indexed FMA
+        // (FMLA by A[lane]) instead of 4 scalar broadcasts — fewer loads and
+        // less register pressure, which the in-order Cortex-A53 cares about.
+        let a = vld1q_f32(a_panel.add(a_off));
 
         let b0 = vld1q_f32(b_panel.add(b_off));
         let b1 = vld1q_f32(b_panel.add(b_off + 4));
 
-        c00 = vfmaq_f32(c00, a0, b0);
-        c01 = vfmaq_f32(c01, a0, b1);
-        c10 = vfmaq_f32(c10, a1, b0);
-        c11 = vfmaq_f32(c11, a1, b1);
-        c20 = vfmaq_f32(c20, a2, b0);
-        c21 = vfmaq_f32(c21, a2, b1);
-        c30 = vfmaq_f32(c30, a3, b0);
-        c31 = vfmaq_f32(c31, a3, b1);
+        c00 = vfmaq_laneq_f32::<0>(c00, b0, a);
+        c01 = vfmaq_laneq_f32::<0>(c01, b1, a);
+        c10 = vfmaq_laneq_f32::<1>(c10, b0, a);
+        c11 = vfmaq_laneq_f32::<1>(c11, b1, a);
+        c20 = vfmaq_laneq_f32::<2>(c20, b0, a);
+        c21 = vfmaq_laneq_f32::<2>(c21, b1, a);
+        c30 = vfmaq_laneq_f32::<3>(c30, b0, a);
+        c31 = vfmaq_laneq_f32::<3>(c31, b1, a);
     }
 
     let cp0 = c;
@@ -177,32 +177,29 @@ pub(super) unsafe fn microkernel_4x16_neon(
         let a_off = p * MR;
         let b_off = p * NR;
 
-        let a0 = vdupq_n_f32(*a_panel.add(a_off));
-        let a1 = vdupq_n_f32(*a_panel.add(a_off + 1));
-        let a2 = vdupq_n_f32(*a_panel.add(a_off + 2));
-        let a3 = vdupq_n_f32(*a_panel.add(a_off + 3));
+        let a = vld1q_f32(a_panel.add(a_off));
 
         let b0 = vld1q_f32(b_panel_0.add(b_off));
         let b1 = vld1q_f32(b_panel_0.add(b_off + 4));
         let b2 = vld1q_f32(b_panel_1.add(b_off));
         let b3 = vld1q_f32(b_panel_1.add(b_off + 4));
 
-        c00 = vfmaq_f32(c00, a0, b0);
-        c01 = vfmaq_f32(c01, a0, b1);
-        c02 = vfmaq_f32(c02, a0, b2);
-        c03 = vfmaq_f32(c03, a0, b3);
-        c10 = vfmaq_f32(c10, a1, b0);
-        c11 = vfmaq_f32(c11, a1, b1);
-        c12 = vfmaq_f32(c12, a1, b2);
-        c13 = vfmaq_f32(c13, a1, b3);
-        c20 = vfmaq_f32(c20, a2, b0);
-        c21 = vfmaq_f32(c21, a2, b1);
-        c22 = vfmaq_f32(c22, a2, b2);
-        c23 = vfmaq_f32(c23, a2, b3);
-        c30 = vfmaq_f32(c30, a3, b0);
-        c31 = vfmaq_f32(c31, a3, b1);
-        c32 = vfmaq_f32(c32, a3, b2);
-        c33 = vfmaq_f32(c33, a3, b3);
+        c00 = vfmaq_laneq_f32::<0>(c00, b0, a);
+        c01 = vfmaq_laneq_f32::<0>(c01, b1, a);
+        c02 = vfmaq_laneq_f32::<0>(c02, b2, a);
+        c03 = vfmaq_laneq_f32::<0>(c03, b3, a);
+        c10 = vfmaq_laneq_f32::<1>(c10, b0, a);
+        c11 = vfmaq_laneq_f32::<1>(c11, b1, a);
+        c12 = vfmaq_laneq_f32::<1>(c12, b2, a);
+        c13 = vfmaq_laneq_f32::<1>(c13, b3, a);
+        c20 = vfmaq_laneq_f32::<2>(c20, b0, a);
+        c21 = vfmaq_laneq_f32::<2>(c21, b1, a);
+        c22 = vfmaq_laneq_f32::<2>(c22, b2, a);
+        c23 = vfmaq_laneq_f32::<2>(c23, b3, a);
+        c30 = vfmaq_laneq_f32::<3>(c30, b0, a);
+        c31 = vfmaq_laneq_f32::<3>(c31, b1, a);
+        c32 = vfmaq_laneq_f32::<3>(c32, b2, a);
+        c33 = vfmaq_laneq_f32::<3>(c33, b3, a);
     }
 
     let cp0 = c;
@@ -390,10 +387,7 @@ pub(super) unsafe fn microkernel_4x24_neon(
         let a_off = p * MR;
         let b_off = p * NR;
 
-        let a0 = vdupq_n_f32(*a_panel.add(a_off));
-        let a1 = vdupq_n_f32(*a_panel.add(a_off + 1));
-        let a2 = vdupq_n_f32(*a_panel.add(a_off + 2));
-        let a3 = vdupq_n_f32(*a_panel.add(a_off + 3));
+        let a = vld1q_f32(a_panel.add(a_off));
 
         let b0 = vld1q_f32(b_panel_0.add(b_off));
         let b1 = vld1q_f32(b_panel_0.add(b_off + 4));
@@ -402,30 +396,30 @@ pub(super) unsafe fn microkernel_4x24_neon(
         let b4 = vld1q_f32(b_panel_2.add(b_off));
         let b5 = vld1q_f32(b_panel_2.add(b_off + 4));
 
-        c00 = vfmaq_f32(c00, a0, b0);
-        c01 = vfmaq_f32(c01, a0, b1);
-        c02 = vfmaq_f32(c02, a0, b2);
-        c03 = vfmaq_f32(c03, a0, b3);
-        c04 = vfmaq_f32(c04, a0, b4);
-        c05 = vfmaq_f32(c05, a0, b5);
-        c10 = vfmaq_f32(c10, a1, b0);
-        c11 = vfmaq_f32(c11, a1, b1);
-        c12 = vfmaq_f32(c12, a1, b2);
-        c13 = vfmaq_f32(c13, a1, b3);
-        c14 = vfmaq_f32(c14, a1, b4);
-        c15 = vfmaq_f32(c15, a1, b5);
-        c20 = vfmaq_f32(c20, a2, b0);
-        c21 = vfmaq_f32(c21, a2, b1);
-        c22 = vfmaq_f32(c22, a2, b2);
-        c23 = vfmaq_f32(c23, a2, b3);
-        c24 = vfmaq_f32(c24, a2, b4);
-        c25 = vfmaq_f32(c25, a2, b5);
-        c30 = vfmaq_f32(c30, a3, b0);
-        c31 = vfmaq_f32(c31, a3, b1);
-        c32 = vfmaq_f32(c32, a3, b2);
-        c33 = vfmaq_f32(c33, a3, b3);
-        c34 = vfmaq_f32(c34, a3, b4);
-        c35 = vfmaq_f32(c35, a3, b5);
+        c00 = vfmaq_laneq_f32::<0>(c00, b0, a);
+        c01 = vfmaq_laneq_f32::<0>(c01, b1, a);
+        c02 = vfmaq_laneq_f32::<0>(c02, b2, a);
+        c03 = vfmaq_laneq_f32::<0>(c03, b3, a);
+        c04 = vfmaq_laneq_f32::<0>(c04, b4, a);
+        c05 = vfmaq_laneq_f32::<0>(c05, b5, a);
+        c10 = vfmaq_laneq_f32::<1>(c10, b0, a);
+        c11 = vfmaq_laneq_f32::<1>(c11, b1, a);
+        c12 = vfmaq_laneq_f32::<1>(c12, b2, a);
+        c13 = vfmaq_laneq_f32::<1>(c13, b3, a);
+        c14 = vfmaq_laneq_f32::<1>(c14, b4, a);
+        c15 = vfmaq_laneq_f32::<1>(c15, b5, a);
+        c20 = vfmaq_laneq_f32::<2>(c20, b0, a);
+        c21 = vfmaq_laneq_f32::<2>(c21, b1, a);
+        c22 = vfmaq_laneq_f32::<2>(c22, b2, a);
+        c23 = vfmaq_laneq_f32::<2>(c23, b3, a);
+        c24 = vfmaq_laneq_f32::<2>(c24, b4, a);
+        c25 = vfmaq_laneq_f32::<2>(c25, b5, a);
+        c30 = vfmaq_laneq_f32::<3>(c30, b0, a);
+        c31 = vfmaq_laneq_f32::<3>(c31, b1, a);
+        c32 = vfmaq_laneq_f32::<3>(c32, b2, a);
+        c33 = vfmaq_laneq_f32::<3>(c33, b3, a);
+        c34 = vfmaq_laneq_f32::<3>(c34, b4, a);
+        c35 = vfmaq_laneq_f32::<3>(c35, b5, a);
     }
 
     let cp0 = c;
