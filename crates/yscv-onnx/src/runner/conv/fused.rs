@@ -88,7 +88,11 @@ pub(crate) fn exec_fused_dw_pw(
     let stream_disabled = {
         use std::sync::OnceLock;
         static CACHED: OnceLock<bool> = OnceLock::new();
-        *CACHED.get_or_init(|| std::env::var_os("YSCV_FUSED_DW_PW_STREAM_OFF").is_some())
+        *CACHED.get_or_init(|| {
+            std::env::var_os("YSCV_FUSED_DW_PW_STREAM_OFF").is_some()
+                || (cfg!(target_arch = "aarch64")
+                    && std::env::var_os("YSCV_FUSED_DW_PW_STREAM_ON").is_none())
+        })
     };
     let stream_padded_enabled = {
         use std::sync::OnceLock;
@@ -556,7 +560,11 @@ pub(crate) fn exec_fused_pw_dw(
     let stream_disabled = {
         use std::sync::OnceLock;
         static CACHED: OnceLock<bool> = OnceLock::new();
-        *CACHED.get_or_init(|| std::env::var_os("YSCV_FUSED_PW_DW_STREAM_OFF").is_some())
+        *CACHED.get_or_init(|| {
+            std::env::var_os("YSCV_FUSED_PW_DW_STREAM_OFF").is_some()
+                || (cfg!(target_arch = "aarch64")
+                    && std::env::var_os("YSCV_FUSED_PW_DW_STREAM_ON").is_none())
+        })
     };
     let stream_5x5_disabled = {
         use std::sync::OnceLock;
@@ -1190,7 +1198,9 @@ pub(crate) fn exec_fused_pw_dw_pw_reduce(
         None
     };
 
-    let stream_disabled = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some();
+    let stream_disabled = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some()
+        || (cfg!(target_arch = "aarch64")
+            && std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_ON").is_none());
     let pw_expand_ok = env.is_khwc_weight(&pw_expand_node.inputs[1])
         && pw_expand_weight.shape().len() == 4
         && pw_expand_weight.shape()[0] == 1

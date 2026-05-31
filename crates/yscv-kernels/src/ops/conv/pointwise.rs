@@ -11,7 +11,24 @@ pub(super) fn pointwise_16x16_direct_disabled() -> bool {
 
 pub(super) fn pointwise_nx16_direct_disabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var_os("YSCV_NO_POINTWISE_NX16_DIRECT").is_some())
+    *CACHED.get_or_init(|| {
+        if std::env::var_os("YSCV_NO_POINTWISE_NX16_DIRECT").is_some() {
+            return true;
+        }
+        // The direct (unpacked) pointwise kernel trades weight-pack cost for a
+        // streaming dot product — a win on out-of-order x86 with large caches,
+        // a loss on in-order aarch64 cores with small caches (Cortex-A53 tracker
+        // measured ~+190 ms/inf vs the packed blocked-GEMM path). Default it off
+        // on aarch64; opt back in with YSCV_POINTWISE_NX16_DIRECT_ON for A/B.
+        #[cfg(target_arch = "aarch64")]
+        {
+            std::env::var_os("YSCV_POINTWISE_NX16_DIRECT_ON").is_none()
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            false
+        }
+    })
 }
 
 #[allow(unsafe_code)]
