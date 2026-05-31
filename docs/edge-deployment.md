@@ -66,6 +66,27 @@ negligible relative to frame data.
 | 256 MB RAM class  | 640x480    | 3     |     1.4 MB |
 | Multi-core NPU SoC (RK3588 etc.) | 1920x1080 | 4 | 12.2 MB |
 
+## CPU build tuning for ARM SBCs
+
+The CPU kernels already pick aarch64-appropriate defaults at compile time
+(lane-indexed NEON FMA, a 4x16 register tile that fits the 32-register file, and
+half-size 128x128 GEMM cache blocks sized for the small shared L2 on
+single-cluster cores). One thing is **not** automatic and is worth doing on a
+fixed target: build with the microarchitecture's instruction scheduler.
+
+```bash
+# Build for the board you're running on (in-order cores benefit the most):
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+# Or name the core explicitly for cross-compiles, e.g.:
+RUSTFLAGS="-C target-cpu=cortex-a53" cargo build --release --target aarch64-unknown-linux-gnu
+```
+
+In-order cores (Cortex-A53/A55, common on Allwinner/Rockchip SBCs) are very
+sensitive to instruction ordering, and the generic `aarch64` schedule leaves
+performance on the table. On an Orange Pi Zero 3 (Cortex-A53) this alone is
+~4-5% on a Siamese-tracker workload. Leave it off for portable release binaries
+(an A53 schedule is suboptimal on A72/A76); set it when you control the target.
+
 ## Rockchip NPU acceleration (`rknn` feature)
 
 Enable with `--features rknn` on `yscv-kernels`. Binary runs everywhere: on
