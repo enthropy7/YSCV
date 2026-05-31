@@ -40,6 +40,16 @@ pub(super) unsafe fn gebp_kernel_raw(
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     let use_4x16 = false;
 
+    // The 4×24 tile needs 24 acc + 6 B + 4 A = 34 vector registers. x86 AVX has
+    // them; aarch64 has only 32, so on NEON it spills every k-iteration. Cap
+    // aarch64 at the 4×16 tile (24 regs, fits) unless opted back in for A/B.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let use_4x24 = use_4x16;
+    #[cfg(target_arch = "aarch64")]
+    let use_4x24 = std::env::var_os("YSCV_NEON_4X24_ON").is_some();
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    let use_4x24 = false;
+
     // AVX-512 detection — cached (CPUID once, then atomic-load hot path).
     // Env override `YSCV_NO_AVX512=1` disables for A/B benchmarking.
     #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
@@ -138,7 +148,7 @@ pub(super) unsafe fn gebp_kernel_raw(
 
         // Try tripled 4×24 when three full NR=8 tiles are available.
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-        if use_4x16 && nr == NR && jr + 3 * NR <= nc {
+        if use_4x24 && nr == NR && jr + 3 * NR <= nc {
             let b_off_1 = ((jr + NR) / NR) * kc * NR;
             let b_off_2 = ((jr + 2 * NR) / NR) * kc * NR;
             for ir in (0..mc).step_by(MR) {
