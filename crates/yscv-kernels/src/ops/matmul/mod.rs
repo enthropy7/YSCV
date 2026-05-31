@@ -106,11 +106,25 @@ pub(super) const MR6: usize = 6;
 /// constant for all archs — ARM L1D is as large or larger (Cortex-A76 64 KB,
 /// Apple M 192 KB), so 256 is comfortable everywhere.
 // WHY 256: 256 floats × 4 bytes = 1 KB panel — fits in L1D on all targets.
+#[cfg(not(target_arch = "aarch64"))]
 pub(super) const KC: usize = 256;
 // WHY 128: 128 rows × KC columns = 128KB packed panel fits in L2 cache (typically 256KB-1MB).
+#[cfg(not(target_arch = "aarch64"))]
 pub(super) const MC: usize = 128;
 // WHY 256: balances work per thread with cache reuse across micro-kernel calls.
+#[cfg(not(target_arch = "aarch64"))]
 pub(super) const NC: usize = 256;
+
+// aarch64 SBCs (Cortex-A53/A55) are a single cluster sharing a small L2 (e.g.
+// 512 KB across 4 cores = 128 KB/core under load). The x86 256×256 packed-B
+// panel (256 KB) thrashes that at multi-thread, so use half-size blocks so the
+// KC×NC panel (64 KB) fits per-core L2.
+#[cfg(target_arch = "aarch64")]
+pub(super) const KC: usize = 128;
+#[cfg(target_arch = "aarch64")]
+pub(super) const MC: usize = 128;
+#[cfg(target_arch = "aarch64")]
+pub(super) const NC: usize = 128;
 
 /// Round `a` up to the next multiple of `b`.
 pub(super) fn div_ceil(a: usize, b: usize) -> usize {
