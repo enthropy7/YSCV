@@ -464,6 +464,15 @@ unsafe fn nchw_to_nhwc_inner_avx(
     }
 }
 
+/// Default ON: parallelize the NHWC→NCHW transpose over output-channel blocks
+/// across the active pool. `YSCV_LAYOUT_PAR_OFF` forces the serial per-batch
+/// path for A/B measurement.
+fn layout_par_enabled() -> bool {
+    use std::sync::OnceLock;
+    static C: OnceLock<bool> = OnceLock::new();
+    *C.get_or_init(|| std::env::var_os("YSCV_LAYOUT_PAR_OFF").is_none())
+}
+
 /// NHWC → NCHW for `[N, H, W, C]` → `[N, C, H, W]`. Fast path when both
 /// `c % 8 == 0` and `h * w % 8 == 0` and AVX is available on the host.
 /// Mirror of `nchw_to_nhwc_fast` for the opposite direction — needed because
@@ -501,23 +510,75 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
     let src = input.try_data().map_err(KernelError::from)?;
     let dst = out.as_mut_slice();
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[allow(unsafe_code)]
-    if x86_fast {
-        // SAFETY: AVX runtime feature checked above. Slice bounds verified:
-        // src = n*hw*c, dst = n*c*hw. Inner offsets stay within each batch.
-        unsafe {
-            nhwc_to_nchw_inner_avx(src, dst, n, h, w, c);
-        }
-    }
+    // Parallelize the transpose over output-channel blocks when there's enough
+    // work and a single batch (so per-thread chunk boundaries align to NCHW
+    // channel rows). Each thread reads overlapping read-only source columns and
+    // writes a disjoint span of destination channel rows. The serial fast path
+    // keeps the original per-batch loop for the small/multi-batch case.
+    let block = if x86_fast { 8usize } else { 4usize };
+    let par = layout_par_enabled()
+        && rayon::current_num_threads() > 1
+        && n == 1
+        && c >= block * 2
+        && (hw as u64).saturating_mul(c as u64) >= 8192;
 
-    #[cfg(target_arch = "aarch64")]
-    #[allow(unsafe_code)]
-    if neon_fast && !x86_fast {
-        // SAFETY: NEON is part of mandatory ARMv8 ISA on aarch64; the runtime
-        // check above is belt-and-suspenders. Slice bounds verified.
-        unsafe {
-            nhwc_to_nchw_inner_neon(src, dst, n, h, w, c);
+    if par {
+        let blocks_per_chunk = (c / block).div_ceil(rayon::current_num_threads()).max(1);
+        let g = blocks_per_chunk * block; // channels per chunk (multiple of block)
+        crate::core::scope_ctx::par_chunks_mut_dispatch(dst, g * hw, move |chunk_idx, dchunk| {
+            let ci_start = chunk_idx * g;
+            let this_g = dchunk.len() / hw;
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            #[allow(unsafe_code)]
+            if x86_fast {
+                // SAFETY: AVX checked above; `src` is read-only and shared
+                // across threads, `dchunk` is this thread's disjoint block.
+                unsafe {
+                    nhwc_to_nchw_block_avx(
+                        src.as_ptr(),
+                        dchunk.as_mut_ptr(),
+                        hw,
+                        c,
+                        ci_start,
+                        this_g,
+                    );
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            #[allow(unsafe_code)]
+            if neon_fast {
+                // SAFETY: NEON is mandatory on aarch64; `src` read-only/shared,
+                // `dchunk` is this thread's disjoint channel block.
+                unsafe {
+                    nhwc_to_nchw_block_neon(
+                        src.as_ptr(),
+                        dchunk.as_mut_ptr(),
+                        hw,
+                        c,
+                        ci_start,
+                        this_g,
+                    );
+                }
+            }
+        });
+    } else {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[allow(unsafe_code)]
+        if x86_fast {
+            // SAFETY: AVX runtime feature checked above. Slice bounds verified:
+            // src = n*hw*c, dst = n*c*hw. Inner offsets stay within each batch.
+            unsafe {
+                nhwc_to_nchw_inner_avx(src, dst, n, h, w, c);
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        #[allow(unsafe_code)]
+        if neon_fast && !x86_fast {
+            // SAFETY: NEON is part of mandatory ARMv8 ISA on aarch64; the
+            // runtime check above is belt-and-suspenders. Bounds verified.
+            unsafe {
+                nhwc_to_nchw_inner_neon(src, dst, n, h, w, c);
+            }
         }
     }
 
@@ -528,7 +589,8 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
 }
 
 /// aarch64 NEON 4×4 block transpose for NHWC → NCHW. Mirror of the x86 AVX
-/// 8×8 path. Requires `c % 4 == 0 && hw % 4 == 0`.
+/// 8×8 path. Requires `c % 4 == 0 && hw % 4 == 0`. Loops batches and delegates
+/// the per-batch transpose to [`nhwc_to_nchw_block_neon`].
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, clippy::too_many_arguments)]
@@ -540,45 +602,74 @@ unsafe fn nhwc_to_nchw_inner_neon(
     w: usize,
     c: usize,
 ) {
-    use std::arch::aarch64::{
-        float32x4_t, vcombine_f32, vget_high_f32, vget_low_f32, vld1q_f32, vst1q_f32, vtrnq_f32,
-    };
     unsafe {
         let hw = h * w;
         let src_ptr = src.as_ptr();
         let dst_ptr = dst.as_mut_ptr();
         for batch in 0..n {
-            let s_base = src_ptr.add(batch * hw * c);
-            let d_base = dst_ptr.add(batch * c * hw);
-            let mut hi = 0usize;
-            while hi + 4 <= hw {
-                let mut ci = 0usize;
-                while ci + 4 <= c {
-                    // Load 4 NHWC rows (hi..hi+4) × 4 channels (ci..ci+4).
-                    let r0: float32x4_t = vld1q_f32(s_base.add(hi * c + ci));
-                    let r1: float32x4_t = vld1q_f32(s_base.add((hi + 1) * c + ci));
-                    let r2: float32x4_t = vld1q_f32(s_base.add((hi + 2) * c + ci));
-                    let r3: float32x4_t = vld1q_f32(s_base.add((hi + 3) * c + ci));
+            nhwc_to_nchw_block_neon(
+                src_ptr.add(batch * hw * c),
+                dst_ptr.add(batch * c * hw),
+                hw,
+                c,
+                0,
+                c,
+            );
+        }
+    }
+}
 
-                    // Pairwise transpose 2×2 lanes.
-                    let t01 = vtrnq_f32(r0, r1);
-                    let t23 = vtrnq_f32(r2, r3);
+/// Transposes a contiguous block of `g` channels (`ci_start..ci_start + g`,
+/// `g % 4 == 0`) of one NHWC batch into a destination slice holding those
+/// channels' NCHW rows (local channel `0..g`, each `hw` long). `s_base` points
+/// at the batch's NHWC data (`[hw, c_full]`); `d_chunk` at the channel block's
+/// NCHW rows. Shared read-only source columns let this run per-thread over
+/// disjoint channel blocks.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+#[allow(unsafe_code)]
+unsafe fn nhwc_to_nchw_block_neon(
+    s_base: *const f32,
+    d_chunk: *mut f32,
+    hw: usize,
+    c_full: usize,
+    ci_start: usize,
+    g: usize,
+) {
+    use std::arch::aarch64::{
+        float32x4_t, vcombine_f32, vget_high_f32, vget_low_f32, vld1q_f32, vst1q_f32, vtrnq_f32,
+    };
+    unsafe {
+        let mut hi = 0usize;
+        while hi + 4 <= hw {
+            let mut lc = 0usize;
+            while lc + 4 <= g {
+                let ci = ci_start + lc;
+                // Load 4 NHWC rows (hi..hi+4) × 4 channels (ci..ci+4).
+                let r0: float32x4_t = vld1q_f32(s_base.add(hi * c_full + ci));
+                let r1: float32x4_t = vld1q_f32(s_base.add((hi + 1) * c_full + ci));
+                let r2: float32x4_t = vld1q_f32(s_base.add((hi + 2) * c_full + ci));
+                let r3: float32x4_t = vld1q_f32(s_base.add((hi + 3) * c_full + ci));
 
-                    // Combine low/high halves to produce the 4 transposed cols.
-                    let col0 = vcombine_f32(vget_low_f32(t01.0), vget_low_f32(t23.0));
-                    let col1 = vcombine_f32(vget_low_f32(t01.1), vget_low_f32(t23.1));
-                    let col2 = vcombine_f32(vget_high_f32(t01.0), vget_high_f32(t23.0));
-                    let col3 = vcombine_f32(vget_high_f32(t01.1), vget_high_f32(t23.1));
+                // Pairwise transpose 2×2 lanes.
+                let t01 = vtrnq_f32(r0, r1);
+                let t23 = vtrnq_f32(r2, r3);
 
-                    // Store 4 transposed rows in NCHW dst (row stride = hw).
-                    vst1q_f32(d_base.add(ci * hw + hi), col0);
-                    vst1q_f32(d_base.add((ci + 1) * hw + hi), col1);
-                    vst1q_f32(d_base.add((ci + 2) * hw + hi), col2);
-                    vst1q_f32(d_base.add((ci + 3) * hw + hi), col3);
-                    ci += 4;
-                }
-                hi += 4;
+                // Combine low/high halves to produce the 4 transposed cols.
+                let col0 = vcombine_f32(vget_low_f32(t01.0), vget_low_f32(t23.0));
+                let col1 = vcombine_f32(vget_low_f32(t01.1), vget_low_f32(t23.1));
+                let col2 = vcombine_f32(vget_high_f32(t01.0), vget_high_f32(t23.0));
+                let col3 = vcombine_f32(vget_high_f32(t01.1), vget_high_f32(t23.1));
+
+                // Store 4 transposed rows in NCHW dst (row stride = hw).
+                vst1q_f32(d_chunk.add(lc * hw + hi), col0);
+                vst1q_f32(d_chunk.add((lc + 1) * hw + hi), col1);
+                vst1q_f32(d_chunk.add((lc + 2) * hw + hi), col2);
+                vst1q_f32(d_chunk.add((lc + 3) * hw + hi), col3);
+                lc += 4;
             }
+            hi += 4;
         }
     }
 }
@@ -599,6 +690,39 @@ unsafe fn nhwc_to_nchw_inner_avx(
     c: usize,
 ) {
     unsafe {
+        let hw = h * w;
+        let src_ptr = src.as_ptr();
+        let dst_ptr = dst.as_mut_ptr();
+        for batch in 0..n {
+            nhwc_to_nchw_block_avx(
+                src_ptr.add(batch * hw * c),
+                dst_ptr.add(batch * c * hw),
+                hw,
+                c,
+                0,
+                c,
+            );
+        }
+    }
+}
+
+/// Transposes a contiguous block of `g` channels (`ci_start..ci_start + g`,
+/// `g % 8 == 0`) of one NHWC batch into a destination slice holding those
+/// channels' NCHW rows (local channel `0..g`, each `hw` long). Mirror of
+/// [`nhwc_to_nchw_block_neon`]; runs per-thread over disjoint channel blocks.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+#[inline]
+#[allow(unsafe_code)]
+unsafe fn nhwc_to_nchw_block_avx(
+    s_base: *const f32,
+    d_chunk: *mut f32,
+    hw: usize,
+    c_full: usize,
+    ci_start: usize,
+    g: usize,
+) {
+    unsafe {
         #[cfg(target_arch = "x86")]
         use std::arch::x86::{
             _mm256_loadu_ps, _mm256_permute2f128_ps, _mm256_shuffle_ps, _mm256_storeu_ps,
@@ -610,73 +734,66 @@ unsafe fn nhwc_to_nchw_inner_avx(
             _mm256_unpackhi_ps, _mm256_unpacklo_ps,
         };
 
-        let hw = h * w;
-        let src_ptr = src.as_ptr();
-        let dst_ptr = dst.as_mut_ptr();
+        // Block over hw (step 8 rows), inner block over channels (step 8 cols).
+        let mut hi = 0usize;
+        while hi + 8 <= hw {
+            let mut lc = 0usize;
+            while lc + 8 <= g {
+                let ci = ci_start + lc;
+                // Load 8 NHWC rows (hi..hi+8) of 8 channels each (ci..ci+8).
+                // Row stride is c_full.
+                let r0 = _mm256_loadu_ps(s_base.add(hi * c_full + ci));
+                let r1 = _mm256_loadu_ps(s_base.add((hi + 1) * c_full + ci));
+                let r2 = _mm256_loadu_ps(s_base.add((hi + 2) * c_full + ci));
+                let r3 = _mm256_loadu_ps(s_base.add((hi + 3) * c_full + ci));
+                let r4 = _mm256_loadu_ps(s_base.add((hi + 4) * c_full + ci));
+                let r5 = _mm256_loadu_ps(s_base.add((hi + 5) * c_full + ci));
+                let r6 = _mm256_loadu_ps(s_base.add((hi + 6) * c_full + ci));
+                let r7 = _mm256_loadu_ps(s_base.add((hi + 7) * c_full + ci));
 
-        for batch in 0..n {
-            let s_base = src_ptr.add(batch * hw * c);
-            let d_base = dst_ptr.add(batch * c * hw);
-            // Block over hw (step 8 rows), inner block over c (step 8 cols).
-            let mut hi = 0usize;
-            while hi + 8 <= hw {
-                let mut ci = 0usize;
-                while ci + 8 <= c {
-                    // Load 8 NHWC rows (hi..hi+8) of 8 channels each (ci..ci+8).
-                    // Row stride is c.
-                    let r0 = _mm256_loadu_ps(s_base.add(hi * c + ci));
-                    let r1 = _mm256_loadu_ps(s_base.add((hi + 1) * c + ci));
-                    let r2 = _mm256_loadu_ps(s_base.add((hi + 2) * c + ci));
-                    let r3 = _mm256_loadu_ps(s_base.add((hi + 3) * c + ci));
-                    let r4 = _mm256_loadu_ps(s_base.add((hi + 4) * c + ci));
-                    let r5 = _mm256_loadu_ps(s_base.add((hi + 5) * c + ci));
-                    let r6 = _mm256_loadu_ps(s_base.add((hi + 6) * c + ci));
-                    let r7 = _mm256_loadu_ps(s_base.add((hi + 7) * c + ci));
+                // Stage 1: unpack pairs of rows.
+                let t0 = _mm256_unpacklo_ps(r0, r1);
+                let t1 = _mm256_unpackhi_ps(r0, r1);
+                let t2 = _mm256_unpacklo_ps(r2, r3);
+                let t3 = _mm256_unpackhi_ps(r2, r3);
+                let t4 = _mm256_unpacklo_ps(r4, r5);
+                let t5 = _mm256_unpackhi_ps(r4, r5);
+                let t6 = _mm256_unpacklo_ps(r6, r7);
+                let t7 = _mm256_unpackhi_ps(r6, r7);
 
-                    // Stage 1: unpack pairs of rows.
-                    let t0 = _mm256_unpacklo_ps(r0, r1);
-                    let t1 = _mm256_unpackhi_ps(r0, r1);
-                    let t2 = _mm256_unpacklo_ps(r2, r3);
-                    let t3 = _mm256_unpackhi_ps(r2, r3);
-                    let t4 = _mm256_unpacklo_ps(r4, r5);
-                    let t5 = _mm256_unpackhi_ps(r4, r5);
-                    let t6 = _mm256_unpacklo_ps(r6, r7);
-                    let t7 = _mm256_unpackhi_ps(r6, r7);
+                // Stage 2: shuffle 4-element groups.
+                let u0 = _mm256_shuffle_ps::<0x44>(t0, t2);
+                let u1 = _mm256_shuffle_ps::<0xee>(t0, t2);
+                let u2 = _mm256_shuffle_ps::<0x44>(t1, t3);
+                let u3 = _mm256_shuffle_ps::<0xee>(t1, t3);
+                let u4 = _mm256_shuffle_ps::<0x44>(t4, t6);
+                let u5 = _mm256_shuffle_ps::<0xee>(t4, t6);
+                let u6 = _mm256_shuffle_ps::<0x44>(t5, t7);
+                let u7 = _mm256_shuffle_ps::<0xee>(t5, t7);
 
-                    // Stage 2: shuffle 4-element groups.
-                    let u0 = _mm256_shuffle_ps::<0x44>(t0, t2);
-                    let u1 = _mm256_shuffle_ps::<0xee>(t0, t2);
-                    let u2 = _mm256_shuffle_ps::<0x44>(t1, t3);
-                    let u3 = _mm256_shuffle_ps::<0xee>(t1, t3);
-                    let u4 = _mm256_shuffle_ps::<0x44>(t4, t6);
-                    let u5 = _mm256_shuffle_ps::<0xee>(t4, t6);
-                    let u6 = _mm256_shuffle_ps::<0x44>(t5, t7);
-                    let u7 = _mm256_shuffle_ps::<0xee>(t5, t7);
+                // Stage 3: permute 128-bit lanes.
+                let col0 = _mm256_permute2f128_ps::<0x20>(u0, u4);
+                let col1 = _mm256_permute2f128_ps::<0x20>(u1, u5);
+                let col2 = _mm256_permute2f128_ps::<0x20>(u2, u6);
+                let col3 = _mm256_permute2f128_ps::<0x20>(u3, u7);
+                let col4 = _mm256_permute2f128_ps::<0x31>(u0, u4);
+                let col5 = _mm256_permute2f128_ps::<0x31>(u1, u5);
+                let col6 = _mm256_permute2f128_ps::<0x31>(u2, u6);
+                let col7 = _mm256_permute2f128_ps::<0x31>(u3, u7);
 
-                    // Stage 3: permute 128-bit lanes.
-                    let col0 = _mm256_permute2f128_ps::<0x20>(u0, u4);
-                    let col1 = _mm256_permute2f128_ps::<0x20>(u1, u5);
-                    let col2 = _mm256_permute2f128_ps::<0x20>(u2, u6);
-                    let col3 = _mm256_permute2f128_ps::<0x20>(u3, u7);
-                    let col4 = _mm256_permute2f128_ps::<0x31>(u0, u4);
-                    let col5 = _mm256_permute2f128_ps::<0x31>(u1, u5);
-                    let col6 = _mm256_permute2f128_ps::<0x31>(u2, u6);
-                    let col7 = _mm256_permute2f128_ps::<0x31>(u3, u7);
-
-                    // Store 8 transposed rows in NCHW dst (c rows ci..ci+8 at
-                    // hw cols hi..hi+8). Row stride is hw.
-                    _mm256_storeu_ps(d_base.add(ci * hw + hi), col0);
-                    _mm256_storeu_ps(d_base.add((ci + 1) * hw + hi), col1);
-                    _mm256_storeu_ps(d_base.add((ci + 2) * hw + hi), col2);
-                    _mm256_storeu_ps(d_base.add((ci + 3) * hw + hi), col3);
-                    _mm256_storeu_ps(d_base.add((ci + 4) * hw + hi), col4);
-                    _mm256_storeu_ps(d_base.add((ci + 5) * hw + hi), col5);
-                    _mm256_storeu_ps(d_base.add((ci + 6) * hw + hi), col6);
-                    _mm256_storeu_ps(d_base.add((ci + 7) * hw + hi), col7);
-                    ci += 8;
-                }
-                hi += 8;
+                // Store 8 transposed rows in NCHW dst (local rows lc..lc+8 at
+                // hw cols hi..hi+8). Row stride is hw.
+                _mm256_storeu_ps(d_chunk.add(lc * hw + hi), col0);
+                _mm256_storeu_ps(d_chunk.add((lc + 1) * hw + hi), col1);
+                _mm256_storeu_ps(d_chunk.add((lc + 2) * hw + hi), col2);
+                _mm256_storeu_ps(d_chunk.add((lc + 3) * hw + hi), col3);
+                _mm256_storeu_ps(d_chunk.add((lc + 4) * hw + hi), col4);
+                _mm256_storeu_ps(d_chunk.add((lc + 5) * hw + hi), col5);
+                _mm256_storeu_ps(d_chunk.add((lc + 6) * hw + hi), col6);
+                _mm256_storeu_ps(d_chunk.add((lc + 7) * hw + hi), col7);
+                lc += 8;
             }
+            hi += 8;
         }
     }
 }

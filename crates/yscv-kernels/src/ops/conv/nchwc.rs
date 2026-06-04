@@ -91,7 +91,7 @@ fn nchwc_pointwise_full_block_dispatch(
     activation: Activation,
 ) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if block == 8 && std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+    if block == 8 && crate::host_cpu().features.avx && crate::host_cpu().features.fma {
         #[allow(unsafe_code)]
         unsafe {
             nchwc_pointwise_block8_avx_fma(
@@ -114,7 +114,7 @@ fn nchwc_pointwise_full_block_dispatch(
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if block == 8 && std::arch::is_aarch64_feature_detected!("neon") {
+    if block == 8 && crate::host_cpu().features.neon {
         #[allow(unsafe_code)]
         unsafe {
             nchwc_pointwise_block8_neon(
@@ -174,7 +174,7 @@ fn nchwc_pointwise_full_block4_dispatch(
     activation: Activation,
 ) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+    if crate::host_cpu().features.avx && crate::host_cpu().features.fma {
         #[allow(unsafe_code)]
         unsafe {
             nchwc_pointwise_block8x4_avx_fma(
@@ -197,7 +197,7 @@ fn nchwc_pointwise_full_block4_dispatch(
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    if crate::host_cpu().features.neon {
         #[allow(unsafe_code)]
         unsafe {
             nchwc_pointwise_block8x4_neon(
@@ -939,7 +939,7 @@ fn conv2d_nchwc_pointwise_with_activation_impl(
     if !cfg!(miri)
         && block == 16
         && out_channels.is_multiple_of(block)
-        && std::is_x86_feature_detected!("avx512f")
+        && crate::host_cpu().features.avx512f
         && !nchwc_pw_direct_disabled()
     {
         let out_slice = output.as_mut_slice();

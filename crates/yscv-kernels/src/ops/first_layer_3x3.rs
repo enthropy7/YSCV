@@ -77,6 +77,16 @@ fn first_layer_par_disabled() -> bool {
     *CACHED.get_or_init(|| std::env::var_os("YSCV_FIRST_LAYER_PAR_OFF").is_some())
 }
 
+/// Default ON: the 4-pixel NEON tile broadcasts each RGB channel with vdupq_n
+/// (an ld1r on the NEON pipe, competing with the FMAs). The by-lane path loads
+/// a pixel's 3 channels per vld1q and feeds fmla-by-lane, off the NEON pipe.
+/// `YSCV_FIRST_BYLANE_OFF` reverts. (aarch64 only; mirrors the reduce kernel.)
+#[cfg(target_arch = "aarch64")]
+fn first_bylane() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var_os("YSCV_FIRST_BYLANE_OFF").is_none())
+}
+
 /// Entry point. Dispatches to the fastest available SIMD implementation
 /// at runtime. Falls back to the scalar reference when no SIMD feature
 /// matches or when `miri` is detected (intrinsics don't run under Miri).
@@ -273,22 +283,21 @@ fn select_variant(
         if !cfg!(miri)
             && !first_layer_avx512_disabled()
             && c_out.is_multiple_of(16)
-            && is_x86_feature_detected!("avx512f")
+            && crate::host_cpu().features.avx512f
         {
             return avx512_run_rows_entry;
         }
         if !cfg!(miri)
             && c_out.is_multiple_of(8)
-            && is_x86_feature_detected!("avx2")
-            && is_x86_feature_detected!("fma")
+            && crate::host_cpu().features.avx2
+            && crate::host_cpu().features.fma
         {
             return avx2_run_rows_entry;
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if !cfg!(miri) && c_out.is_multiple_of(4) && std::arch::is_aarch64_feature_detected!("neon")
-        {
+        if !cfg!(miri) && c_out.is_multiple_of(4) && crate::host_cpu().features.neon {
             return neon_run_rows_entry;
         }
     }
@@ -1332,6 +1341,239 @@ mod neon {
 
             let zero = vdupq_n_f32(0.0);
             let relu = matches!(activation, Activation::Relu);
+
+            // c_out == 16 fast path: hold all four output-channel quads across
+            // the tap loop and broadcast each input value once, instead of the
+            // generic chunked loop which re-broadcasts (and recomputes the input
+            // address) once per 4-channel chunk. The 3-channel RGB input makes
+            // this kernel load-bound on the in-order Cortex-A53, so cutting the
+            // input broadcasts 4× directly cuts the load-issue bottleneck. FMA
+            // order per accumulator is unchanged, so the result is bit-identical
+            // to the generic path.
+            if c_out == 16 {
+                for oh in oh_start..oh_end {
+                    let ih0 = (oh as isize) * 2 - pad_top as isize;
+                    let oh_is_interior = oh >= oh_interior_lo && oh < oh_interior_hi;
+                    let mut ow = 0;
+                    while ow < out_w {
+                        // 4-pixel interior tile: all 16 outputs of 4 adjacent
+                        // pixels live in 16 acc quads → 16-way ILP hides the
+                        // input-load latency the 1-pixel (4-acc) path stalled on,
+                        // and each weight quad load feeds 4 pixels.
+                        if oh_is_interior && ow >= ow_interior_lo && ow + 4 <= ow_interior_hi {
+                            let iw0 = ((ow as isize) * 2 - pad_left as isize) as usize;
+                            let (b0, b1, b2, b3) = match bias {
+                                Some(b) => (
+                                    vld1q_f32(b.as_ptr()),
+                                    vld1q_f32(b.as_ptr().add(4)),
+                                    vld1q_f32(b.as_ptr().add(8)),
+                                    vld1q_f32(b.as_ptr().add(12)),
+                                ),
+                                None => (zero, zero, zero, zero),
+                            };
+                            let (mut a00, mut a01, mut a02, mut a03) = (b0, b1, b2, b3);
+                            let (mut a10, mut a11, mut a12, mut a13) = (b0, b1, b2, b3);
+                            let (mut a20, mut a21, mut a22, mut a23) = (b0, b1, b2, b3);
+                            let (mut a30, mut a31, mut a32, mut a33) = (b0, b1, b2, b3);
+                            // by-lane needs a `vld1q` of each pixel's 3 RGB
+                            // channels (reads 1 slop float); gate it to the
+                            // OOB-safe interior so the last column stays scalar.
+                            let bylane_ok = first_bylane() && iw0 + 9 < in_w;
+                            if bylane_ok {
+                                for ky in 0..3 {
+                                    let ih = (ih0 + ky as isize) as usize;
+                                    let row_base = ni * in_batch_stride + ih * in_row_stride;
+                                    for kx in 0..3 {
+                                        let w_off = ky * w_ky_stride + kx * w_kx_stride;
+                                        let ipb = input.as_ptr().add(row_base + (iw0 + kx) * c_in);
+                                        let av0 = vld1q_f32(ipb);
+                                        let av1 = vld1q_f32(ipb.add(2 * c_in));
+                                        let av2 = vld1q_f32(ipb.add(4 * c_in));
+                                        let av3 = vld1q_f32(ipb.add(6 * c_in));
+                                        macro_rules! fma16_c {
+                                            ($coff:expr, $lane:literal) => {{
+                                                let wb = weight.as_ptr().add(w_off + $coff);
+                                                let w0 = vld1q_f32(wb);
+                                                let w1 = vld1q_f32(wb.add(4));
+                                                let w2 = vld1q_f32(wb.add(8));
+                                                let w3 = vld1q_f32(wb.add(12));
+                                                a00 = vfmaq_laneq_f32::<$lane>(a00, w0, av0);
+                                                a01 = vfmaq_laneq_f32::<$lane>(a01, w1, av0);
+                                                a02 = vfmaq_laneq_f32::<$lane>(a02, w2, av0);
+                                                a03 = vfmaq_laneq_f32::<$lane>(a03, w3, av0);
+                                                a10 = vfmaq_laneq_f32::<$lane>(a10, w0, av1);
+                                                a11 = vfmaq_laneq_f32::<$lane>(a11, w1, av1);
+                                                a12 = vfmaq_laneq_f32::<$lane>(a12, w2, av1);
+                                                a13 = vfmaq_laneq_f32::<$lane>(a13, w3, av1);
+                                                a20 = vfmaq_laneq_f32::<$lane>(a20, w0, av2);
+                                                a21 = vfmaq_laneq_f32::<$lane>(a21, w1, av2);
+                                                a22 = vfmaq_laneq_f32::<$lane>(a22, w2, av2);
+                                                a23 = vfmaq_laneq_f32::<$lane>(a23, w3, av2);
+                                                a30 = vfmaq_laneq_f32::<$lane>(a30, w0, av3);
+                                                a31 = vfmaq_laneq_f32::<$lane>(a31, w1, av3);
+                                                a32 = vfmaq_laneq_f32::<$lane>(a32, w2, av3);
+                                                a33 = vfmaq_laneq_f32::<$lane>(a33, w3, av3);
+                                            }};
+                                        }
+                                        fma16_c!(0, 0);
+                                        fma16_c!(w_c_stride, 1);
+                                        fma16_c!(2 * w_c_stride, 2);
+                                    }
+                                }
+                            } else {
+                                for ky in 0..3 {
+                                    let ih = (ih0 + ky as isize) as usize;
+                                    let row_base = ni * in_batch_stride + ih * in_row_stride;
+                                    for kx in 0..3 {
+                                        let w_off = ky * w_ky_stride + kx * w_kx_stride;
+                                        let p0 = (iw0 + kx) * c_in;
+                                        for c in 0..c_in {
+                                            let wb = weight.as_ptr().add(w_off + c * w_c_stride);
+                                            let w0 = vld1q_f32(wb);
+                                            let w1 = vld1q_f32(wb.add(4));
+                                            let w2 = vld1q_f32(wb.add(8));
+                                            let w3 = vld1q_f32(wb.add(12));
+                                            let ip = input.as_ptr().add(row_base + p0 + c);
+                                            let x0 = vdupq_n_f32(*ip);
+                                            let x1 = vdupq_n_f32(*ip.add(2 * c_in));
+                                            let x2 = vdupq_n_f32(*ip.add(4 * c_in));
+                                            let x3 = vdupq_n_f32(*ip.add(6 * c_in));
+                                            a00 = vfmaq_f32(a00, x0, w0);
+                                            a01 = vfmaq_f32(a01, x0, w1);
+                                            a02 = vfmaq_f32(a02, x0, w2);
+                                            a03 = vfmaq_f32(a03, x0, w3);
+                                            a10 = vfmaq_f32(a10, x1, w0);
+                                            a11 = vfmaq_f32(a11, x1, w1);
+                                            a12 = vfmaq_f32(a12, x1, w2);
+                                            a13 = vfmaq_f32(a13, x1, w3);
+                                            a20 = vfmaq_f32(a20, x2, w0);
+                                            a21 = vfmaq_f32(a21, x2, w1);
+                                            a22 = vfmaq_f32(a22, x2, w2);
+                                            a23 = vfmaq_f32(a23, x2, w3);
+                                            a30 = vfmaq_f32(a30, x3, w0);
+                                            a31 = vfmaq_f32(a31, x3, w1);
+                                            a32 = vfmaq_f32(a32, x3, w2);
+                                            a33 = vfmaq_f32(a33, x3, w3);
+                                        }
+                                    }
+                                }
+                            }
+                            if relu {
+                                a00 = vmaxq_f32(a00, zero);
+                                a01 = vmaxq_f32(a01, zero);
+                                a02 = vmaxq_f32(a02, zero);
+                                a03 = vmaxq_f32(a03, zero);
+                                a10 = vmaxq_f32(a10, zero);
+                                a11 = vmaxq_f32(a11, zero);
+                                a12 = vmaxq_f32(a12, zero);
+                                a13 = vmaxq_f32(a13, zero);
+                                a20 = vmaxq_f32(a20, zero);
+                                a21 = vmaxq_f32(a21, zero);
+                                a22 = vmaxq_f32(a22, zero);
+                                a23 = vmaxq_f32(a23, zero);
+                                a30 = vmaxq_f32(a30, zero);
+                                a31 = vmaxq_f32(a31, zero);
+                                a32 = vmaxq_f32(a32, zero);
+                                a33 = vmaxq_f32(a33, zero);
+                            }
+                            let ob = (oh - oh_start) * out_row_stride + ow * c_out;
+                            let op = output_chunk.as_mut_ptr().add(ob);
+                            vst1q_f32(op, a00);
+                            vst1q_f32(op.add(4), a01);
+                            vst1q_f32(op.add(8), a02);
+                            vst1q_f32(op.add(12), a03);
+                            vst1q_f32(op.add(16), a10);
+                            vst1q_f32(op.add(20), a11);
+                            vst1q_f32(op.add(24), a12);
+                            vst1q_f32(op.add(28), a13);
+                            vst1q_f32(op.add(32), a20);
+                            vst1q_f32(op.add(36), a21);
+                            vst1q_f32(op.add(40), a22);
+                            vst1q_f32(op.add(44), a23);
+                            vst1q_f32(op.add(48), a30);
+                            vst1q_f32(op.add(52), a31);
+                            vst1q_f32(op.add(56), a32);
+                            vst1q_f32(op.add(60), a33);
+                            ow += 4;
+                            continue;
+                        }
+                        let iw0 = (ow as isize) * 2 - pad_left as isize;
+                        let ow_is_interior = ow >= ow_interior_lo && ow < ow_interior_hi;
+                        let out_off = (oh - oh_start) * out_row_stride + ow * c_out;
+
+                        let (mut a0, mut a1, mut a2, mut a3) = match bias {
+                            Some(b) => (
+                                vld1q_f32(b.as_ptr()),
+                                vld1q_f32(b.as_ptr().add(4)),
+                                vld1q_f32(b.as_ptr().add(8)),
+                                vld1q_f32(b.as_ptr().add(12)),
+                            ),
+                            None => (zero, zero, zero, zero),
+                        };
+
+                        if oh_is_interior && ow_is_interior {
+                            for ky in 0..3 {
+                                let ih = (ih0 + ky as isize) as usize;
+                                for kx in 0..3 {
+                                    let iw = (iw0 + kx as isize) as usize;
+                                    let in_off =
+                                        ni * in_batch_stride + ih * in_row_stride + iw * c_in;
+                                    let w_off = ky * w_ky_stride + kx * w_kx_stride;
+                                    for c in 0..c_in {
+                                        let x = vdupq_n_f32(*input.as_ptr().add(in_off + c));
+                                        let wb = weight.as_ptr().add(w_off + c * w_c_stride);
+                                        a0 = vfmaq_f32(a0, x, vld1q_f32(wb));
+                                        a1 = vfmaq_f32(a1, x, vld1q_f32(wb.add(4)));
+                                        a2 = vfmaq_f32(a2, x, vld1q_f32(wb.add(8)));
+                                        a3 = vfmaq_f32(a3, x, vld1q_f32(wb.add(12)));
+                                    }
+                                }
+                            }
+                        } else {
+                            for ky in 0..3isize {
+                                let ih = ih0 + ky;
+                                if ih < 0 || (ih as usize) >= in_h {
+                                    continue;
+                                }
+                                let ih = ih as usize;
+                                for kx in 0..3isize {
+                                    let iw = iw0 + kx;
+                                    if iw < 0 || (iw as usize) >= in_w {
+                                        continue;
+                                    }
+                                    let iw = iw as usize;
+                                    let in_off =
+                                        ni * in_batch_stride + ih * in_row_stride + iw * c_in;
+                                    let w_off =
+                                        ky as usize * w_ky_stride + kx as usize * w_kx_stride;
+                                    for c in 0..c_in {
+                                        let x = vdupq_n_f32(*input.as_ptr().add(in_off + c));
+                                        let wb = weight.as_ptr().add(w_off + c * w_c_stride);
+                                        a0 = vfmaq_f32(a0, x, vld1q_f32(wb));
+                                        a1 = vfmaq_f32(a1, x, vld1q_f32(wb.add(4)));
+                                        a2 = vfmaq_f32(a2, x, vld1q_f32(wb.add(8)));
+                                        a3 = vfmaq_f32(a3, x, vld1q_f32(wb.add(12)));
+                                    }
+                                }
+                            }
+                        }
+
+                        if relu {
+                            a0 = vmaxq_f32(a0, zero);
+                            a1 = vmaxq_f32(a1, zero);
+                            a2 = vmaxq_f32(a2, zero);
+                            a3 = vmaxq_f32(a3, zero);
+                        }
+                        let op = output_chunk.as_mut_ptr().add(out_off);
+                        vst1q_f32(op, a0);
+                        vst1q_f32(op.add(4), a1);
+                        vst1q_f32(op.add(8), a2);
+                        vst1q_f32(op.add(12), a3);
+                        ow += 1;
+                    }
+                }
+                return;
+            }
 
             for oh in oh_start..oh_end {
                 let ih0 = (oh as isize) * 2 - pad_top as isize;

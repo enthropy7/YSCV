@@ -1485,9 +1485,7 @@ pub(super) fn build_runtime_index(
         usize,
         std::sync::Arc<FusedPwDwPwReduceWeights>,
     > = HashMap::new();
-    let fusion_off = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some()
-        || (cfg!(target_arch = "aarch64")
-            && std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_ON").is_none());
+    let fusion_off = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some();
     let fusion_debug = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_DEBUG").is_some();
     if !fusion_off {
         // Walk the execution plan; replace FusedPwDw actions in-place when

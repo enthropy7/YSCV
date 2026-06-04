@@ -148,7 +148,7 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
     {
         if block == 16
             && !cfg!(miri)
-            && std::is_x86_feature_detected!("avx512f")
+            && crate::host_cpu().features.avx512f
             && !nchwc_dw3x3_nopad_disabled()
         {
             let mut out = AlignedVec::<f32>::uninitialized(out_total);
@@ -316,7 +316,7 @@ fn dw3x3_dispatch(
 ) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if block == 16 && std::is_x86_feature_detected!("avx512f") {
+        if block == 16 && crate::host_cpu().features.avx512f {
             #[allow(unsafe_code)]
             unsafe {
                 dw3x3_inner_avx512_block16(
@@ -334,10 +334,7 @@ fn dw3x3_dispatch(
             }
             return;
         }
-        if block == 8
-            && std::is_x86_feature_detected!("avx")
-            && std::is_x86_feature_detected!("fma")
-        {
+        if block == 8 && crate::host_cpu().features.avx && crate::host_cpu().features.fma {
             // SAFETY: AVX+FMA feature-gated at runtime above. Slice
             // bounds verified by caller layout (padded = (h+2)*(w+2)*8,
             // output = h*w*8, kernel covers all 9 (ky,kx) positions
@@ -362,7 +359,7 @@ fn dw3x3_dispatch(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if block == 8 && std::arch::is_aarch64_feature_detected!("neon") {
+        if block == 8 && crate::host_cpu().features.neon {
             // SAFETY: NEON feature-gated above; bounds identical to
             // the scalar path below.
             #[allow(unsafe_code)]

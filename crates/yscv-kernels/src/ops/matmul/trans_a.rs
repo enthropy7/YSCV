@@ -20,7 +20,7 @@ pub(super) fn non_trans_a_4row_dispatch(
     debug_assert_eq!(out_4rows.len(), 4 * n);
     #[cfg(target_arch = "x86_64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(16) && std::is_x86_feature_detected!("avx512f") {
+        if !cfg!(miri) && n.is_multiple_of(16) && crate::host_cpu().features.avx512f {
             #[allow(unsafe_code)]
             unsafe {
                 non_trans_a_4row_avx512(a, mi_base, k, b, n, out_4rows);
@@ -32,8 +32,8 @@ pub(super) fn non_trans_a_4row_dispatch(
     {
         if !cfg!(miri)
             && n.is_multiple_of(8)
-            && std::is_x86_feature_detected!("avx")
-            && std::is_x86_feature_detected!("fma")
+            && crate::host_cpu().features.avx
+            && crate::host_cpu().features.fma
         {
             #[allow(unsafe_code)]
             unsafe {
@@ -44,7 +44,7 @@ pub(super) fn non_trans_a_4row_dispatch(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(4) && std::arch::is_aarch64_feature_detected!("neon") {
+        if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             #[allow(unsafe_code)]
             unsafe {
                 non_trans_a_4row_neon(a, mi_base, k, b, n, out_4rows);
@@ -526,13 +526,13 @@ fn matmul_2d_slices_trans_a_direct(
 pub(super) fn trans_a_4row_supported(n: usize) -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(16) && std::is_x86_feature_detected!("avx512f") {
+        if !cfg!(miri) && n.is_multiple_of(16) && crate::host_cpu().features.avx512f {
             return true;
         }
         if !cfg!(miri)
             && n.is_multiple_of(8)
-            && std::is_x86_feature_detected!("avx")
-            && std::is_x86_feature_detected!("fma")
+            && crate::host_cpu().features.avx
+            && crate::host_cpu().features.fma
         {
             return true;
         }
@@ -541,15 +541,15 @@ pub(super) fn trans_a_4row_supported(n: usize) -> bool {
     {
         if !cfg!(miri)
             && n.is_multiple_of(8)
-            && std::is_x86_feature_detected!("avx")
-            && std::is_x86_feature_detected!("fma")
+            && crate::host_cpu().features.avx
+            && crate::host_cpu().features.fma
         {
             return true;
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(4) && std::arch::is_aarch64_feature_detected!("neon") {
+        if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             return true;
         }
     }
@@ -569,7 +569,7 @@ fn trans_a_4row_dispatch(
     debug_assert_eq!(out_4rows.len(), 4 * n);
     #[cfg(target_arch = "x86_64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(16) && std::is_x86_feature_detected!("avx512f") {
+        if !cfg!(miri) && n.is_multiple_of(16) && crate::host_cpu().features.avx512f {
             #[allow(unsafe_code)]
             unsafe {
                 trans_a_4row_avx512(a_kt, mi_base, m, k, b, n, out_4rows);
@@ -581,8 +581,8 @@ fn trans_a_4row_dispatch(
     {
         if !cfg!(miri)
             && n.is_multiple_of(8)
-            && std::is_x86_feature_detected!("avx")
-            && std::is_x86_feature_detected!("fma")
+            && crate::host_cpu().features.avx
+            && crate::host_cpu().features.fma
         {
             #[allow(unsafe_code)]
             unsafe {
@@ -593,7 +593,7 @@ fn trans_a_4row_dispatch(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(4) && std::arch::is_aarch64_feature_detected!("neon") {
+        if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             #[allow(unsafe_code)]
             unsafe {
                 trans_a_4row_neon(a_kt, mi_base, m, k, b, n, out_4rows);
@@ -618,7 +618,7 @@ fn trans_a_row_set_dispatch(
 ) {
     #[cfg(target_arch = "x86_64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(16) && std::is_x86_feature_detected!("avx512f") {
+        if !cfg!(miri) && n.is_multiple_of(16) && crate::host_cpu().features.avx512f {
             #[allow(unsafe_code)]
             unsafe {
                 trans_a_row_set_avx512(a_kt, mi, m, k, b, n, out_row);
@@ -630,8 +630,8 @@ fn trans_a_row_set_dispatch(
     {
         if !cfg!(miri)
             && n.is_multiple_of(8)
-            && std::is_x86_feature_detected!("avx")
-            && std::is_x86_feature_detected!("fma")
+            && crate::host_cpu().features.avx
+            && crate::host_cpu().features.fma
         {
             #[allow(unsafe_code)]
             unsafe {
@@ -642,7 +642,7 @@ fn trans_a_row_set_dispatch(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if !cfg!(miri) && n.is_multiple_of(4) && std::arch::is_aarch64_feature_detected!("neon") {
+        if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             #[allow(unsafe_code)]
             unsafe {
                 trans_a_row_set_neon(a_kt, mi, m, k, b, n, out_row);

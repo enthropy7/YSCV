@@ -152,8 +152,11 @@ fn case(
 
     for (i, (a, b)) in fused_out.iter().zip(ref_out.iter()).enumerate() {
         let delta = (a - b).abs();
+        // 3e-4: the GEMM expand path folds bias at the end of the FMA chain
+        // (like the 8×12/4×16 kernels), vs the scalar reference's bias-in-sum;
+        // on the deep c_exp=672 reduction this drifts ~1e-4 from the reference.
         assert!(
-            delta < 1e-4,
+            delta < 3e-4,
             "mismatch at {i}: fused={a} ref={b} delta={delta}"
         );
     }
@@ -304,8 +307,9 @@ fn case_5x5(
 
     for (i, (a, b)) in fused_out.iter().zip(ref_out.iter()).enumerate() {
         let delta = (a - b).abs();
+        // 3e-4: see case() — GEMM expand folds bias at the FMA-chain end.
         assert!(
-            delta < 1e-4,
+            delta < 3e-4,
             "5x5 mismatch at {i}: fused={a} ref={b} delta={delta}"
         );
     }
@@ -319,4 +323,334 @@ fn tracker_5x5_stride2_c24_c144_relu() {
 #[test]
 fn tracker_5x5_stride1_c112_c672_relu() {
     case_5x5(1, 8, 8, 112, 672, 1, true);
+}
+
+// in_w=16 unit stride exercises the column-reuse asm interior fast path
+// (in_w=8 above is too small to enter it) end-to-end against the reference.
+#[test]
+fn tracker_5x5_stride1_inw16_c112_c672_relu() {
+    case_5x5(1, 16, 16, 112, 672, 1, true);
+}
+
+#[test]
+fn tracker_5x5_stride1_inw16_c24_c144_norelu() {
+    case_5x5(1, 16, 16, 24, 144, 1, false);
+}
+
+// Hand-asm column-reuse 3×3 stride-2 DW microkernel (aarch64). Bit-parity vs a
+// fused-FMA reference on the xif2_0 interior shape (in_w=128, c_exp=96) + GFLOPS
+// against the NEON intrinsic.
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+#[test]
+fn dw3s2_creuse_asm_parity_and_timing() {
+    use super::super::matmul::dw3s2_creuse_neon;
+
+    let c_exp = 96usize;
+    let in_w = 128usize;
+    let pad = 1usize;
+    let stride = 2usize;
+
+    let rows_data: Vec<Vec<f32>> = (0..3)
+        .map(|r| seeded(in_w * c_exp, r as f32 * 11.0))
+        .collect();
+    let weight = seeded(9 * c_exp, 101.0);
+    let bias = seeded(c_exp, 3.0);
+
+    // correctness: interior tile at owi=2, ch block 0..8
+    let owi = 2usize;
+    let ch = 0usize;
+    let mut out = vec![0.0f32; ((in_w + 2 * pad - 3) / stride + 1) * c_exp];
+    let base_col = 2 * owi - pad; // input col for (p=0, kx=0)
+    let rows_off: [*const f32; 3] =
+        std::array::from_fn(|ky| unsafe { rows_data[ky].as_ptr().add(base_col * c_exp + ch) });
+    unsafe {
+        dw3s2_creuse_neon(
+            rows_off.as_ptr(),
+            weight.as_ptr().add(ch),
+            out.as_mut_ptr().add(owi * c_exp + ch),
+            c_exp,
+            bias.as_ptr().add(ch),
+            1,
+            c_exp * 4,
+        );
+    }
+    for p in 0..4 {
+        for c in 0..8 {
+            let mut acc = bias[ch + c];
+            for ky in 0..3 {
+                for kx in 0..3 {
+                    let icol = 2 * (owi + p) - pad + kx;
+                    acc = rows_data[ky][icol * c_exp + ch + c]
+                        .mul_add(weight[(ky * 3 + kx) * c_exp + ch + c], acc);
+                }
+            }
+            let acc = acc.max(0.0);
+            let got = out[(owi + p) * c_exp + ch + c];
+            assert_eq!(got, acc, "dw3s2 mismatch p={p} c={c}: got={got} ref={acc}");
+        }
+    }
+
+    // timing: interior tiles of one output row
+    let out_w = (in_w + 2 * pad - 3) / stride + 1;
+    let lo = 1usize; // 2*1-1=1 >= 0
+    let hi = (in_w - 9 + pad) / 2; // 2*owi-pad+8 <= in_w-1
+    let n_tiles = (hi.saturating_sub(lo)) / 4;
+    let n_chblk = c_exp / 8;
+    let iters = 3000usize;
+    let row_bases: [*const f32; 3] = std::array::from_fn(|ky| rows_data[ky].as_ptr());
+    let calls = (iters * n_tiles * n_chblk) as f64;
+    let flops = calls * 4.0 * 8.0 * 9.0 * 2.0;
+
+    let t0 = std::time::Instant::now();
+    for _ in 0..iters {
+        for t in 0..n_tiles {
+            let owt = lo + t * 4;
+            for cb in 0..n_chblk {
+                let chb = cb * 8;
+                let roff: [*const f32; 3] = std::array::from_fn(|ky| unsafe {
+                    row_bases[ky].add((2 * owt - pad) * c_exp + chb)
+                });
+                unsafe {
+                    dw3s2_creuse_neon(
+                        roff.as_ptr(),
+                        weight.as_ptr().add(chb),
+                        out.as_mut_ptr().add(owt * c_exp + chb),
+                        c_exp,
+                        bias.as_ptr().add(chb),
+                        1,
+                        c_exp * 4,
+                    );
+                }
+            }
+        }
+    }
+    let dt = t0.elapsed().as_secs_f64();
+    eprintln!(
+        "dw3s2_creuse asm:  {:.2} GF/s  ({:.3} ms, {:.1} ns/call)",
+        flops / dt / 1e9,
+        dt * 1e3,
+        dt / calls * 1e9
+    );
+
+    let interior_cols = (n_tiles * 4) as f64;
+    let t1 = std::time::Instant::now();
+    for _ in 0..iters {
+        super::neon::compute_dw_row_neon(
+            Some(&rows_data[0]),
+            Some(&rows_data[1]),
+            Some(&rows_data[2]),
+            &weight,
+            Some(&bias),
+            &mut out,
+            in_w,
+            lo,
+            lo + n_tiles * 4,
+            c_exp,
+            stride,
+            pad,
+            true,
+        );
+    }
+    let dt1 = t1.elapsed().as_secs_f64();
+    let flops1 = iters as f64 * interior_cols * c_exp as f64 * 9.0 * 2.0;
+    eprintln!(
+        "dw3s2 intrinsic:   {:.2} GF/s  ({:.3} ms)",
+        flops1 / dt1 / 1e9,
+        dt1 * 1e3
+    );
+    let _ = out_w;
+}
+
+// Hand-asm column-reuse 5×5 DW microkernel (aarch64). Validates bit-parity
+// against a scalar reference on the xif4_5 interior shape and reports GFLOPS.
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+#[test]
+fn dw5_creuse_asm_parity_and_timing() {
+    use super::super::matmul::dw5_creuse_neon;
+
+    let c_exp = 672usize;
+    let in_w = 16usize;
+    let pad = 2usize;
+    let ksz = 5usize;
+
+    // 5 ring input rows, weights (25 taps), bias.
+    let rows_data: Vec<Vec<f32>> = (0..ksz)
+        .map(|r| seeded(in_w * c_exp, r as f32 * 7.0))
+        .collect();
+    let weight = seeded(ksz * ksz * c_exp, 101.0);
+    let bias = seeded(c_exp, 3.0);
+
+    // ---- correctness: one interior tile (cols 2..6) × ch block 0..8 ----
+    let ow_tile = pad; // first interior column → input col (ow_tile - pad) = 0
+    let ch = 0usize;
+    let mut out = vec![0.0f32; in_w * c_exp];
+    let rows_off: [*const f32; 5] = std::array::from_fn(|ky| unsafe {
+        rows_data[ky].as_ptr().add((ow_tile - pad) * c_exp + ch)
+    });
+    unsafe {
+        dw5_creuse_neon(
+            rows_off.as_ptr(),
+            weight.as_ptr().add(ch),
+            out.as_mut_ptr().add(ow_tile * c_exp + ch),
+            c_exp,
+            bias.as_ptr().add(ch),
+            1,
+            c_exp * 4, // natural KH·KW·C tap stride (bytes)
+        );
+    }
+    // Reference uses the SAME fused-FMA accumulation order as the kernel
+    // (ky-outer, kx-inner, one mul_add per tap) → bit-exact, not approximate.
+    for p in 0..4 {
+        for c in 0..8 {
+            let mut acc = bias[ch + c];
+            for ky in 0..ksz {
+                for kx in 0..ksz {
+                    let icol = ow_tile - pad + kx + p;
+                    acc = rows_data[ky][icol * c_exp + ch + c]
+                        .mul_add(weight[(ky * ksz + kx) * c_exp + ch + c], acc);
+                }
+            }
+            let acc = acc.max(0.0);
+            let got = out[(ow_tile + p) * c_exp + ch + c];
+            assert_eq!(got, acc, "creuse mismatch p={p} c={c}: got={got} ref={acc}");
+        }
+    }
+
+    // ---- timing: full interior of one output row, GFLOPS ----
+    let interior_lo = pad;
+    let interior_hi = in_w - pad; // exclusive; cols [pad, in_w-pad)
+    let n_tiles = (interior_hi - interior_lo) / 4;
+    let n_chblk = c_exp / 8;
+    let iters = 3000usize;
+    let row_bases: [*const f32; 5] = std::array::from_fn(|ky| rows_data[ky].as_ptr());
+
+    let calls = (iters * n_tiles * n_chblk) as f64;
+    let flops = calls * 4.0 * 8.0 * 25.0 * 2.0;
+
+    // (a) natural KH·KW·C weight layout — each tap is c_exp floats apart.
+    let t0 = std::time::Instant::now();
+    for _ in 0..iters {
+        for t in 0..n_tiles {
+            let owt = interior_lo + t * 4;
+            for cb in 0..n_chblk {
+                let chb = cb * 8;
+                let roff: [*const f32; 5] = std::array::from_fn(|ky| unsafe {
+                    row_bases[ky].add((owt - pad) * c_exp + chb)
+                });
+                unsafe {
+                    dw5_creuse_neon(
+                        roff.as_ptr(),
+                        weight.as_ptr().add(chb),
+                        out.as_mut_ptr().add(owt * c_exp + chb),
+                        c_exp,
+                        bias.as_ptr().add(chb),
+                        1,
+                        c_exp * 4,
+                    );
+                }
+            }
+        }
+    }
+    let dt = t0.elapsed().as_secs_f64();
+    eprintln!(
+        "dw5_creuse strided: {:.2} GF/s  ({:.3} ms, {:.1} ns/call)",
+        flops / dt / 1e9,
+        dt * 1e3,
+        dt / calls * 1e9
+    );
+
+    // (b) pre-packed [c_exp/8][25][8] weight tiles — taps contiguous (32 B),
+    //     so the per-channel-block 800 B weight stays L1-resident across tiles.
+    let mut wpack = vec![0.0f32; n_chblk * 25 * 8];
+    for cb in 0..n_chblk {
+        for tap in 0..25 {
+            for c in 0..8 {
+                wpack[cb * 200 + tap * 8 + c] = weight[tap * c_exp + cb * 8 + c];
+            }
+        }
+    }
+    // packed-path correctness: same tile/block as the natural-layout check.
+    let mut out_p = vec![0.0f32; in_w * c_exp];
+    unsafe {
+        dw5_creuse_neon(
+            rows_off.as_ptr(),
+            wpack.as_ptr(), // cb=0
+            out_p.as_mut_ptr().add(ow_tile * c_exp + ch),
+            c_exp,
+            bias.as_ptr().add(ch),
+            1,
+            32,
+        );
+    }
+    for p in 0..4 {
+        for c in 0..8 {
+            let a = out[(ow_tile + p) * c_exp + ch + c];
+            let b = out_p[(ow_tile + p) * c_exp + ch + c];
+            assert!(
+                (a - b).abs() < 1e-4,
+                "packed mismatch p={p} c={c}: {a} vs {b}"
+            );
+        }
+    }
+    let t2 = std::time::Instant::now();
+    for _ in 0..iters {
+        for t in 0..n_tiles {
+            let owt = interior_lo + t * 4;
+            for cb in 0..n_chblk {
+                let chb = cb * 8;
+                let roff: [*const f32; 5] = std::array::from_fn(|ky| unsafe {
+                    row_bases[ky].add((owt - pad) * c_exp + chb)
+                });
+                unsafe {
+                    dw5_creuse_neon(
+                        roff.as_ptr(),
+                        wpack.as_ptr().add(cb * 200),
+                        out.as_mut_ptr().add(owt * c_exp + chb),
+                        c_exp,
+                        bias.as_ptr().add(chb),
+                        1,
+                        32,
+                    );
+                }
+            }
+        }
+    }
+    let dt2 = t2.elapsed().as_secs_f64();
+    eprintln!(
+        "dw5_creuse packed:  {:.2} GF/s  ({:.3} ms, {:.1} ns/call)",
+        flops / dt2 / 1e9,
+        dt2 * 1e3,
+        dt2 / calls * 1e9
+    );
+
+    // ---- baseline: existing NEON intrinsic over the same interior row ----
+    let rows_ref: [Option<&[f32]>; 5] = std::array::from_fn(|ky| Some(rows_data[ky].as_slice()));
+    let t1 = std::time::Instant::now();
+    for _ in 0..iters {
+        let ctx = super::Dw5RowCtx {
+            rows: rows_ref,
+            dw_weight: &weight,
+            dw_bias: Some(&bias),
+            out_row: &mut out,
+            in_w,
+            ow_start: interior_lo,
+            ow_end: interior_hi,
+            c_exp,
+            stride: 1,
+            pad,
+            relu: true,
+        };
+        super::neon::compute_dw5_row_neon(ctx);
+    }
+    let dt1 = t1.elapsed().as_secs_f64();
+    let cols = (interior_hi - interior_lo) as f64;
+    let flops1 = iters as f64 * cols * c_exp as f64 * 25.0 * 2.0;
+    eprintln!(
+        "dw5 intrinsic:    {:.2} GF/s  ({:.3} ms, {:.1} ns/col-row)",
+        flops1 / dt1 / 1e9,
+        dt1 * 1e3,
+        dt1 / iters as f64 / cols * 1e9
+    );
 }

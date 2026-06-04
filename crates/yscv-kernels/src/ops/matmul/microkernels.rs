@@ -34,9 +34,9 @@ pub(super) unsafe fn gebp_kernel_raw(
     is_last_k: bool,
 ) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    let use_4x16 = std::is_x86_feature_detected!("fma") && std::is_x86_feature_detected!("avx");
+    let use_4x16 = crate::host_cpu().features.fma && crate::host_cpu().features.avx;
     #[cfg(target_arch = "aarch64")]
-    let use_4x16 = std::arch::is_aarch64_feature_detected!("neon");
+    let use_4x16 = crate::host_cpu().features.neon;
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     let use_4x16 = false;
 
@@ -500,8 +500,8 @@ unsafe fn microkernel_4x8_dispatch(
     if !needs_scalar_for_residual
         && epilogue.bias.is_none()
         && matches!(epilogue.activation, Activation::None)
-        && std::is_x86_feature_detected!("fma")
-        && std::is_x86_feature_detected!("avx")
+        && crate::host_cpu().features.fma
+        && crate::host_cpu().features.avx
     {
         if accumulate {
             sgemm_asm::yscv_sgemm_4x8_acc(a_panel, b_panel, c, ldc, kc);
@@ -513,19 +513,19 @@ unsafe fn microkernel_4x8_dispatch(
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if !needs_scalar_for_residual {
-        if std::is_x86_feature_detected!("fma") && std::is_x86_feature_detected!("avx") {
+        if crate::host_cpu().features.fma && crate::host_cpu().features.avx {
             microkernel_4x8_avx_fma(
                 a_panel, b_panel, c, ldc, kc, accumulate, epilogue, is_last_k, col_offset,
             );
             return;
         }
-        if std::is_x86_feature_detected!("avx") {
+        if crate::host_cpu().features.avx {
             microkernel_4x8_avx(
                 a_panel, b_panel, c, ldc, kc, accumulate, epilogue, is_last_k, col_offset,
             );
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if crate::host_cpu().features.sse {
             microkernel_4x8_sse(
                 a_panel, b_panel, c, ldc, kc, accumulate, epilogue, is_last_k, col_offset,
             );
@@ -535,7 +535,7 @@ unsafe fn microkernel_4x8_dispatch(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if crate::host_cpu().features.neon {
             microkernel_4x8_neon(
                 a_panel,
                 b_panel,

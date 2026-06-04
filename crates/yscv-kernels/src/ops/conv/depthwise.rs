@@ -12,14 +12,14 @@ pub(super) fn depthwise_tap_fma(out: &mut [f32], inp: &[f32], ker: &[f32]) {
     debug_assert_eq!(out.len(), ker.len());
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("avx512f") {
+        if crate::host_cpu().features.avx512f {
             #[allow(unsafe_code)]
             unsafe {
                 depthwise_tap_fma_avx512(out, inp, ker);
             }
             return;
         }
-        if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
+        if crate::host_cpu().features.avx && crate::host_cpu().features.fma {
             #[allow(unsafe_code)]
             unsafe {
                 depthwise_tap_fma_avx_fma(out, inp, ker);
@@ -255,17 +255,17 @@ fn conv_fma_impl() -> ConvFmaFn {
     *IMPL.get_or_init(|| {
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if crate::host_cpu().features.neon {
                 return conv_fma_neon_dispatch;
             }
         }
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            if std::is_x86_feature_detected!("avx") {
+            if crate::host_cpu().features.avx {
                 return conv_fma_avx_dispatch;
             }
-            if std::is_x86_feature_detected!("sse") {
+            if crate::host_cpu().features.sse {
                 return conv_fma_sse_dispatch;
             }
         }
@@ -593,10 +593,120 @@ unsafe fn depthwise_conv2d_nhwc_row_neon(
     let do_relu = matches!(activation, Activation::Relu);
     let zero = vdupq_n_f32(0.0);
 
+    let stride_w = plan.stride_w;
+    let ch16_end = (channels / 16) * 16;
+    let tile_end = (plan.out_w / 4) * 4;
+
+    // Spatial register blocking: process 4 output columns per pass over the
+    // kernel taps. The depthwise weight is independent of output position, so
+    // one weight quad feeds all 4 pixels (4× fewer weight loads), and the 16
+    // independent accumulators give the in-order core the ILP to hide per-tap
+    // input-load latency — the dominant cost when the DW input is L2/DRAM
+    // resident. Channels below the 16-multiple and columns below the 4-multiple
+    // fall through to the per-pixel loop, which starts at `ch_start`.
+    let mut tx = 0;
+    while tx < tile_end {
+        let in_x0 = tx * stride_w;
+        let out_base = tx * channels;
+        let mut ch = 0;
+        while ch < ch16_end {
+            unsafe {
+                let (b0, b1, b2, b3) = if let Some(bp) = bias_ptr {
+                    (
+                        vld1q_f32(bp.add(ch)),
+                        vld1q_f32(bp.add(ch + 4)),
+                        vld1q_f32(bp.add(ch + 8)),
+                        vld1q_f32(bp.add(ch + 12)),
+                    )
+                } else {
+                    (zero, zero, zero, zero)
+                };
+                let (mut a00, mut a01, mut a02, mut a03) = (b0, b1, b2, b3);
+                let (mut a10, mut a11, mut a12, mut a13) = (b0, b1, b2, b3);
+                let (mut a20, mut a21, mut a22, mut a23) = (b0, b1, b2, b3);
+                let (mut a30, mut a31, mut a32, mut a33) = (b0, b1, b2, b3);
+                let col = stride_w * channels;
+                for ky in 0..kh {
+                    let in_y = in_y0 + ky;
+                    let input_row_base = batch_input_base + (in_y * plan.in_w + in_x0) * channels;
+                    let kernel_row_base = (ky * kw) * channels;
+                    for kx in 0..kw {
+                        let kb = kernel_row_base + kx * channels + ch;
+                        let w0 = vld1q_f32(ker_ptr.add(kb));
+                        let w1 = vld1q_f32(ker_ptr.add(kb + 4));
+                        let w2 = vld1q_f32(ker_ptr.add(kb + 8));
+                        let w3 = vld1q_f32(ker_ptr.add(kb + 12));
+                        let q0 = input_row_base + kx * channels + ch;
+                        a00 = vfmaq_f32(a00, vld1q_f32(inp_ptr.add(q0)), w0);
+                        a01 = vfmaq_f32(a01, vld1q_f32(inp_ptr.add(q0 + 4)), w1);
+                        a02 = vfmaq_f32(a02, vld1q_f32(inp_ptr.add(q0 + 8)), w2);
+                        a03 = vfmaq_f32(a03, vld1q_f32(inp_ptr.add(q0 + 12)), w3);
+                        let q1 = q0 + col;
+                        a10 = vfmaq_f32(a10, vld1q_f32(inp_ptr.add(q1)), w0);
+                        a11 = vfmaq_f32(a11, vld1q_f32(inp_ptr.add(q1 + 4)), w1);
+                        a12 = vfmaq_f32(a12, vld1q_f32(inp_ptr.add(q1 + 8)), w2);
+                        a13 = vfmaq_f32(a13, vld1q_f32(inp_ptr.add(q1 + 12)), w3);
+                        let q2 = q1 + col;
+                        a20 = vfmaq_f32(a20, vld1q_f32(inp_ptr.add(q2)), w0);
+                        a21 = vfmaq_f32(a21, vld1q_f32(inp_ptr.add(q2 + 4)), w1);
+                        a22 = vfmaq_f32(a22, vld1q_f32(inp_ptr.add(q2 + 8)), w2);
+                        a23 = vfmaq_f32(a23, vld1q_f32(inp_ptr.add(q2 + 12)), w3);
+                        let q3 = q2 + col;
+                        a30 = vfmaq_f32(a30, vld1q_f32(inp_ptr.add(q3)), w0);
+                        a31 = vfmaq_f32(a31, vld1q_f32(inp_ptr.add(q3 + 4)), w1);
+                        a32 = vfmaq_f32(a32, vld1q_f32(inp_ptr.add(q3 + 8)), w2);
+                        a33 = vfmaq_f32(a33, vld1q_f32(inp_ptr.add(q3 + 12)), w3);
+                    }
+                }
+                if do_relu {
+                    a00 = vmaxq_f32(a00, zero);
+                    a01 = vmaxq_f32(a01, zero);
+                    a02 = vmaxq_f32(a02, zero);
+                    a03 = vmaxq_f32(a03, zero);
+                    a10 = vmaxq_f32(a10, zero);
+                    a11 = vmaxq_f32(a11, zero);
+                    a12 = vmaxq_f32(a12, zero);
+                    a13 = vmaxq_f32(a13, zero);
+                    a20 = vmaxq_f32(a20, zero);
+                    a21 = vmaxq_f32(a21, zero);
+                    a22 = vmaxq_f32(a22, zero);
+                    a23 = vmaxq_f32(a23, zero);
+                    a30 = vmaxq_f32(a30, zero);
+                    a31 = vmaxq_f32(a31, zero);
+                    a32 = vmaxq_f32(a32, zero);
+                    a33 = vmaxq_f32(a33, zero);
+                }
+                let o0 = out_base + ch;
+                vst1q_f32(out_ptr.add(o0), a00);
+                vst1q_f32(out_ptr.add(o0 + 4), a01);
+                vst1q_f32(out_ptr.add(o0 + 8), a02);
+                vst1q_f32(out_ptr.add(o0 + 12), a03);
+                let o1 = o0 + channels;
+                vst1q_f32(out_ptr.add(o1), a10);
+                vst1q_f32(out_ptr.add(o1 + 4), a11);
+                vst1q_f32(out_ptr.add(o1 + 8), a12);
+                vst1q_f32(out_ptr.add(o1 + 12), a13);
+                let o2 = o1 + channels;
+                vst1q_f32(out_ptr.add(o2), a20);
+                vst1q_f32(out_ptr.add(o2 + 4), a21);
+                vst1q_f32(out_ptr.add(o2 + 8), a22);
+                vst1q_f32(out_ptr.add(o2 + 12), a23);
+                let o3 = o2 + channels;
+                vst1q_f32(out_ptr.add(o3), a30);
+                vst1q_f32(out_ptr.add(o3 + 4), a31);
+                vst1q_f32(out_ptr.add(o3 + 8), a32);
+                vst1q_f32(out_ptr.add(o3 + 12), a33);
+            }
+            ch += 16;
+        }
+        tx += 4;
+    }
+
     for out_x in 0..plan.out_w {
         let in_x0 = out_x * plan.stride_w;
         let out_base = out_x * channels;
-        let mut ch = 0;
+        // Tiled columns already wrote their 16-aligned channels above.
+        let mut ch = if out_x < tile_end { ch16_end } else { 0 };
 
         while ch + 16 <= channels {
             unsafe {
@@ -1791,7 +1901,7 @@ pub(super) fn depthwise_conv2d_nhwc_row(
     // [KH, KW, C] — contiguous channel data enables vectorization.
     if plan.depth_multiplier == 1 && plan.out_channels >= 4 && !cfg!(miri) {
         #[cfg(target_arch = "aarch64")]
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if crate::host_cpu().features.neon {
             // SAFETY: NEON detected, pointers bounded by plan dimensions validated at
             // function entry. Each output element written exactly once.
             #[allow(unsafe_code)]
@@ -1807,7 +1917,7 @@ pub(super) fn depthwise_conv2d_nhwc_row(
             // AVX-512 DW row kernel when available. Kill-switch
             // `YSCV_AVX512_DW_OFF=1`, cached via OnceLock so the env read
             // doesn't repeat per DW row.
-            if is_x86_feature_detected!("avx512f") && !avx512_dw_disabled() {
+            if crate::host_cpu().features.avx512f && !avx512_dw_disabled() {
                 // SAFETY: AVX-512F detected, bounds guaranteed.
                 #[allow(unsafe_code)]
                 unsafe {
@@ -1817,7 +1927,7 @@ pub(super) fn depthwise_conv2d_nhwc_row(
                 }
                 return;
             }
-            if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
+            if crate::host_cpu().features.avx && crate::host_cpu().features.fma {
                 // SAFETY: AVX+FMA detected, same bounds guarantees.
                 #[allow(unsafe_code)]
                 unsafe {
@@ -1827,7 +1937,7 @@ pub(super) fn depthwise_conv2d_nhwc_row(
                 }
                 return;
             }
-            if is_x86_feature_detected!("avx") {
+            if crate::host_cpu().features.avx {
                 // SAFETY: AVX detected (no FMA), same bounds guarantees.
                 #[allow(unsafe_code)]
                 unsafe {
@@ -1837,7 +1947,7 @@ pub(super) fn depthwise_conv2d_nhwc_row(
                 }
                 return;
             }
-            if is_x86_feature_detected!("sse") {
+            if crate::host_cpu().features.sse {
                 // SAFETY: SSE detected, same bounds guarantees.
                 #[allow(unsafe_code)]
                 unsafe {

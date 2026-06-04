@@ -1841,8 +1841,13 @@ struct TileVariant {
 pub(super) const AVX512_REG_MAX_CHUNKS: usize = 16;
 
 fn select_variant(c_exp: usize) -> Variant {
+    // Dispatch reads the unified host CPU identity (`arch::host_cpu`) — the
+    // single source of truth for ISA features (and, in later phases, microarch).
+    // Selection is capability-first: features gate correctness, so the chosen
+    // kernels are unchanged from the prior ad-hoc `is_*_feature_detected!` checks.
     #[cfg(target_arch = "x86_64")]
     {
+        let cpu = crate::host_cpu();
         // Register-blocked AVX-512: keeps all `c_exp / 16` accumulators
         // in ZMM across the inner loop. Only eligible while the chunks
         // fit in the ZMM file with room for `x`/`w` temps — capped at
@@ -1851,7 +1856,7 @@ fn select_variant(c_exp: usize) -> Variant {
         if c_exp.is_multiple_of(16)
             && c_exp / 16 <= AVX512_REG_MAX_CHUNKS
             && !cfg!(miri)
-            && is_x86_feature_detected!("avx512f")
+            && cpu.features.avx512f
         {
             return Variant {
                 compute_pw_row: avx512::compute_pw_row_avx512,
@@ -1862,17 +1867,13 @@ fn select_variant(c_exp: usize) -> Variant {
         // variant, so fall through to the tiled kernel (fixed 8-chunk
         // tile + residual). Covers tracker's `c_exp=672` pairs in the
         // `/xif4_*` stage.
-        if c_exp.is_multiple_of(16) && !cfg!(miri) && is_x86_feature_detected!("avx512f") {
+        if c_exp.is_multiple_of(16) && !cfg!(miri) && cpu.features.avx512f {
             return Variant {
                 compute_pw_row: avx512::compute_pw_row_avx512_tiled,
                 compute_dw_row: avx512::compute_dw_row_avx512_tiled,
             };
         }
-        if c_exp.is_multiple_of(8)
-            && !cfg!(miri)
-            && is_x86_feature_detected!("avx2")
-            && is_x86_feature_detected!("fma")
-        {
+        if c_exp.is_multiple_of(8) && !cfg!(miri) && cpu.features.avx2 && cpu.features.fma {
             return Variant {
                 compute_pw_row: avx2::compute_pw_row_avx2,
                 compute_dw_row: avx2::compute_dw_row_avx2,
@@ -1881,8 +1882,14 @@ fn select_variant(c_exp: usize) -> Variant {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if c_exp.is_multiple_of(4) && !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon")
-        {
+        let cpu = crate::host_cpu();
+        // Microarch refinement hook (later phase): the column-reuse DW asm
+        // inside `compute_dw_row_neon` is an in-order optimisation, so
+        // `cpu.uarch.is_in_order()` (Cortex-A53/A55) is where a future split
+        // selects it vs a plain-NEON variant for out-of-order cores. For now
+        // every NEON core takes the same kernel — the asm stays env-gated
+        // inside it — so this is behaviourally identical to before.
+        if c_exp.is_multiple_of(4) && !cfg!(miri) && cpu.features.neon {
             return Variant {
                 compute_pw_row: neon::compute_pw_row_neon,
                 compute_dw_row: neon::compute_dw_row_neon,
@@ -2344,16 +2351,13 @@ pub fn select_dw3_row_fn(c: usize) -> Dw3RowFn {
 fn select_dw5_variant(c_exp: usize) -> Dw5Variant {
     #[cfg(target_arch = "x86_64")]
     {
-        if c_exp.is_multiple_of(16) && !cfg!(miri) && is_x86_feature_detected!("avx512f") {
+        let cpu = crate::host_cpu();
+        if c_exp.is_multiple_of(16) && !cfg!(miri) && cpu.features.avx512f {
             return Dw5Variant {
                 compute_dw_row: avx512::compute_dw5_row_avx512,
             };
         }
-        if c_exp.is_multiple_of(8)
-            && !cfg!(miri)
-            && is_x86_feature_detected!("avx2")
-            && is_x86_feature_detected!("fma")
-        {
+        if c_exp.is_multiple_of(8) && !cfg!(miri) && cpu.features.avx2 && cpu.features.fma {
             return Dw5Variant {
                 compute_dw_row: avx2::compute_dw5_row_avx2,
             };
@@ -2361,8 +2365,11 @@ fn select_dw5_variant(c_exp: usize) -> Dw5Variant {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if c_exp.is_multiple_of(4) && !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon")
-        {
+        let cpu = crate::host_cpu();
+        // In-order cores (cpu.uarch.is_in_order()) drive the column-reuse DW5
+        // asm inside `compute_dw5_row_neon`; the per-uarch split lands here in a
+        // later phase. Same kernel for every NEON core today.
+        if c_exp.is_multiple_of(4) && !cfg!(miri) && cpu.features.neon {
             return Dw5Variant {
                 compute_dw_row: neon::compute_dw5_row_neon,
             };
@@ -2376,17 +2383,14 @@ fn select_dw5_variant(c_exp: usize) -> Dw5Variant {
 fn select_tile_variant(c_exp: usize) -> TileVariant {
     #[cfg(target_arch = "x86_64")]
     {
-        if c_exp.is_multiple_of(16) && !cfg!(miri) && is_x86_feature_detected!("avx512f") {
+        let cpu = crate::host_cpu();
+        if c_exp.is_multiple_of(16) && !cfg!(miri) && cpu.features.avx512f {
             return TileVariant {
                 compute_pw_tile: avx512::compute_pw_tile_avx512,
                 compute_dw5_tile: avx512::compute_dw5_tile_avx512,
             };
         }
-        if c_exp.is_multiple_of(8)
-            && !cfg!(miri)
-            && is_x86_feature_detected!("avx2")
-            && is_x86_feature_detected!("fma")
-        {
+        if c_exp.is_multiple_of(8) && !cfg!(miri) && cpu.features.avx2 && cpu.features.fma {
             return TileVariant {
                 compute_pw_tile: avx2::compute_pw_tile_avx2,
                 compute_dw5_tile: avx2::compute_dw5_tile_avx2,
@@ -2395,8 +2399,8 @@ fn select_tile_variant(c_exp: usize) -> TileVariant {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if c_exp.is_multiple_of(4) && !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon")
-        {
+        let cpu = crate::host_cpu();
+        if c_exp.is_multiple_of(4) && !cfg!(miri) && cpu.features.neon {
             return TileVariant {
                 compute_pw_tile: neon::compute_pw_tile_neon,
                 compute_dw5_tile: neon::compute_dw5_tile_neon,

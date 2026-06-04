@@ -255,7 +255,7 @@ pub(super) fn use_avx512_mr12(m: usize, k: usize, n: usize) -> bool {
         && k >= 16
         && n > 0
         && n.is_multiple_of(NR32)
-        && std::is_x86_feature_detected!("avx512f")
+        && crate::host_cpu().features.avx512f
 }
 
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
@@ -625,7 +625,7 @@ mod avx512_12x32_tests {
     /// Direct call into microkernel_12x32_avx512_set. Covers bias, residual,
     /// and activation combinations. ldc = N (square tile, no padding).
     fn run_set_case(k: usize, with_bias: bool, with_residual: bool, act: Activation) {
-        if !std::is_x86_feature_detected!("avx512f") {
+        if !crate::host_cpu().features.avx512f {
             return;
         }
         const M: usize = 12;
@@ -783,7 +783,7 @@ mod avx512_12x32_tests {
         with_residual: bool,
         act: Activation,
     ) {
-        if !std::is_x86_feature_detected!("avx512f") {
+        if !crate::host_cpu().features.avx512f {
             return;
         }
         // Safety of env mutation in tests: this test runs single-threaded in
@@ -904,7 +904,7 @@ mod avx512_12x32_tests {
 
     #[test]
     fn mr12_acc_path() {
-        if !std::is_x86_feature_detected!("avx512f") {
+        if !crate::host_cpu().features.avx512f {
             return;
         }
         const M: usize = 12;
@@ -961,7 +961,7 @@ mod avx512_12x32_tests {
         if std::env::var("YSCV_AVX512_BENCH").is_err() {
             return;
         }
-        if !std::is_x86_feature_detected!("avx512f") {
+        if !crate::host_cpu().features.avx512f {
             println!("(AVX-512F not detected, skipping)");
             return;
         }

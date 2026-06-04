@@ -64,6 +64,105 @@ pub(super) fn blocked_gemm_sequential(
     }
 }
 
+/// Software-pipelined 8×8 GEMM with fused bias+Relu, for the streaming PW-expand.
+/// Packs MR=8 / NR=8 panels and drives `yscv_sgemm_8x8_neon_{set,acc}`, whose
+/// full A+B double-buffer hides the load-to-use latency the 8×12/4×16 kernels
+/// can't (no spare registers). Requires `n % 8 == 0` and no residual; the M tail
+/// (<8 rows) runs into an 8×8 scratch and copies the valid rows out.
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(super) fn blocked_gemm_8x8(
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    epilogue: GemmEpilogue,
+) {
+    debug_assert_eq!(n % 8, 0);
+    debug_assert!(epilogue.residual.is_none());
+    let nt = n / 8;
+    let relu = matches!(epilogue.activation, Activation::Relu) as usize;
+    let bias = epilogue.bias;
+
+    // Constant weight → pack [jt][k][8] once per thread, cached by pointer.
+    // (The streaming PW-expand calls this per output row; a per-call pack
+    // would erase the kernel win.)
+    let bpack = get_or_pack_b_8x8(b, k, n);
+
+    let run_tile = |apack: &[f32], jt: usize, cptr: *mut f32, ldc: usize| {
+        let mut pc = 0usize;
+        let mut first = true;
+        while pc < k {
+            let kcb = KC.min(k - pc);
+            let is_last = (pc + kcb >= k) as usize;
+            let biasp = if is_last == 1 {
+                bias.map(|x| unsafe { x.add(jt * 8) })
+                    .unwrap_or(core::ptr::null())
+            } else {
+                core::ptr::null()
+            };
+            let aptr = unsafe { apack.as_ptr().add(pc * 8) };
+            let bptr = unsafe { bpack.as_ptr().add(jt * k * 8 + pc * 8) };
+            unsafe {
+                if first {
+                    sgemm_asm_aarch64::yscv_sgemm_8x8_neon_set(
+                        aptr, bptr, cptr, ldc, kcb, biasp, relu, is_last,
+                    );
+                } else {
+                    sgemm_asm_aarch64::yscv_sgemm_8x8_neon_acc(
+                        aptr, bptr, cptr, ldc, kcb, biasp, relu, is_last,
+                    );
+                }
+            }
+            pc += kcb;
+            first = false;
+        }
+    };
+
+    let mut apack = vec![0.0f32; k * 8];
+    let out_ptr = out.as_mut_ptr();
+    let full_m = (m / 8) * 8;
+    let mut it = 0;
+    while it < full_m {
+        for kk in 0..k {
+            let dst = kk * 8;
+            for r in 0..8 {
+                apack[dst + r] = a[(it + r) * k + kk];
+            }
+        }
+        for jt in 0..nt {
+            let cptr = unsafe { out_ptr.add(it * n + jt * 8) };
+            run_tile(&apack, jt, cptr, n);
+        }
+        it += 8;
+    }
+
+    // M tail (<8 rows): compute into an 8×8 scratch, copy the valid rows.
+    let mt = m - full_m;
+    if mt > 0 {
+        for kk in 0..k {
+            let dst = kk * 8;
+            for r in 0..8 {
+                apack[dst + r] = if r < mt {
+                    a[(full_m + r) * k + kk]
+                } else {
+                    0.0
+                };
+            }
+        }
+        let mut ctile = [0.0f32; 64];
+        for jt in 0..nt {
+            run_tile(&apack, jt, ctile.as_mut_ptr(), 8);
+            for r in 0..mt {
+                let dst = (full_m + r) * n + jt * 8;
+                out[dst..dst + 8].copy_from_slice(&ctile[r * 8..r * 8 + 8]);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MR=6 blocked-GEMM path (x86_64 Linux/macOS, AVX+FMA only) — INLINE EPILOGUE.
 // ---------------------------------------------------------------------------
@@ -925,5 +1024,74 @@ pub(crate) fn blocked_gemm_nchwc_a_parallel(
         pool.install(work);
     } else {
         work();
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod pipe8x8_tests {
+    use super::*;
+
+    fn naive(
+        a: &[f32],
+        b: &[f32],
+        m: usize,
+        k: usize,
+        n: usize,
+        bias: Option<&[f32]>,
+        relu: bool,
+    ) -> Vec<f32> {
+        let mut c = vec![0.0f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = bias.map(|bb| bb[j]).unwrap_or(0.0);
+                for kk in 0..k {
+                    acc += a[i * k + kk] * b[kk * n + j];
+                }
+                c[i * n + j] = if relu { acc.max(0.0) } else { acc };
+            }
+        }
+        c
+    }
+
+    fn check(m: usize, k: usize, n: usize, use_bias: bool, relu: bool) {
+        let a: Vec<f32> = (0..m * k)
+            .map(|i| ((i as f32 + 1.0) * 0.013).sin())
+            .collect();
+        let b: Vec<f32> = (0..k * n)
+            .map(|i| ((i as f32 + 1.0) * 0.017).cos())
+            .collect();
+        let bias: Vec<f32> = (0..n).map(|i| 0.01 * (i as f32 - 3.0)).collect();
+        let bias_opt = if use_bias {
+            Some(bias.as_slice())
+        } else {
+            None
+        };
+        let act = if relu {
+            Activation::Relu
+        } else {
+            Activation::None
+        };
+        let ep = GemmEpilogue::new(bias_opt.map(|x| x.as_ptr()), act);
+        let mut out = vec![0.0f32; m * n];
+        blocked_gemm_8x8(&a, &b, &mut out, m, k, n, ep);
+        let refc = naive(&a, &b, m, k, n, bias_opt, relu);
+        for i in 0..m * n {
+            assert!(
+                (out[i] - refc[i]).abs() < 2e-3,
+                "mismatch m={m} k={k} n={n} bias={use_bias} relu={relu} at {i}: {} vs {}",
+                out[i],
+                refc[i]
+            );
+        }
+    }
+
+    #[test]
+    fn pipe8x8_shapes() {
+        check(16, 16, 96, true, true); // xif2_0 expand: low-K, M%8==0
+        check(20, 112, 672, true, true); // xif4_5 expand: M tail (20%8=4)
+        check(13, 24, 144, true, false); // M tail, no relu
+        check(256, 256, 256, true, true); // K>KC (256>128) → 2 K-blocks, accumulate
+        check(8, 16, 8, false, false); // minimal, no bias
+        check(5, 64, 16, true, true); // all-tail (m<8)
     }
 }

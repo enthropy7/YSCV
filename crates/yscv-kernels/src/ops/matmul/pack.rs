@@ -386,7 +386,7 @@ pub fn pack_b_for_session(b: &[f32], k: usize, n: usize) -> std::sync::Arc<Packe
 /// FEAT_FP16 half-precision 6×16 GEMM for a single tile (6 rows × 16 cols).
 /// `a_panel`, `b_panel_{0,1}` are packed fp16 bit-patterns (u16); `c` is
 /// fp16 output. Requires aarch64 + FEAT_FP16 — caller verifies via
-/// `std::arch::is_aarch64_feature_detected!("fp16")` and routes scalar
+/// `crate::host_cpu().features.fp16` and routes scalar
 /// otherwise. Each matmul invocation tiles at the caller layer; this
 /// function is the microkernel.
 ///
@@ -477,7 +477,7 @@ pub(super) fn full_pack_b(b: &[f32], k: usize, n: usize) -> PackedB {
         if n.is_multiple_of(NR32)
             && k >= 16
             && avx512_mr12_enabled()
-            && std::is_x86_feature_detected!("avx512f")
+            && crate::host_cpu().features.avx512f
         {
             let mut d = vec![0.0f32; total];
             for pc_idx in 0..num_pc {
@@ -675,6 +675,42 @@ pub(super) fn get_or_pack_b(b: &[f32], k: usize, n: usize) -> std::rc::Rc<Packed
             return rc.clone();
         }
         let packed = std::rc::Rc::new(full_pack_b(b, k, n));
+        cache.borrow_mut().insert(key, packed.clone());
+        packed
+    })
+}
+
+// NR=8 tile-major B-pack for the pipelined 8×8 kernel: [n/8][k][8] (k-major,
+// 8 cols per k). Cached by pointer+fingerprint so the per-row streaming PW-
+// expand packs the constant weight once per thread (not once per call).
+#[cfg(target_arch = "aarch64")]
+thread_local! {
+    static PACKED_B_8X8_CACHE: std::cell::RefCell<
+        std::collections::HashMap<(usize, usize, usize, u32, u32, u32), std::rc::Rc<Vec<f32>>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(super) fn get_or_pack_b_8x8(b: &[f32], k: usize, n: usize) -> std::rc::Rc<Vec<f32>> {
+    let key_ptr = b.as_ptr() as usize;
+    let s0 = b.first().copied().unwrap_or(0.0).to_bits();
+    let s1 = b.get(b.len() / 2).copied().unwrap_or(0.0).to_bits();
+    let s2 = b.last().copied().unwrap_or(0.0).to_bits();
+    let key = (key_ptr, k, n, s0, s1, s2);
+    PACKED_B_8X8_CACHE.with(|cache| {
+        if let Some(rc) = cache.borrow().get(&key) {
+            return rc.clone();
+        }
+        let nt = n / 8;
+        let mut bpack = vec![0.0f32; n * k];
+        for jt in 0..nt {
+            let base = jt * k * 8;
+            for kk in 0..k {
+                let src = kk * n + jt * 8;
+                bpack[base + kk * 8..base + kk * 8 + 8].copy_from_slice(&b[src..src + 8]);
+            }
+        }
+        let packed = std::rc::Rc::new(bpack);
         cache.borrow_mut().insert(key, packed.clone());
         packed
     })

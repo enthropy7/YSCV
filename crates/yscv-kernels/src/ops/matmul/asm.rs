@@ -222,5 +222,55 @@ pub(super) mod sgemm_asm_aarch64 {
             ldc: usize,
             kc: usize,
         );
+        // 5×5 depthwise, 4 output columns × 8 channels, interior (no bounds),
+        // stride 1, column-reuse: loads the 8 input columns a tile touches once
+        // per kernel row and reuses them across all 25 taps. `rows` points at a
+        // `[*const f32; 5]` of ring-row bases (pre-offset to col ow_tile-pad and
+        // channel ch); `weight`/`out`/`bias` are at the channel offset.
+        pub(crate) fn yscv_dw5_creuse_neon(
+            rows: *const *const f32,
+            weight: *const f32,
+            out: *mut f32,
+            c_exp: usize,
+            bias: *const f32,
+            relu: usize,
+            wstride: usize,
+        );
+        // 3×3 STRIDE-2 sibling of yscv_dw5_creuse_neon: 4 output columns × 8
+        // channels, interior, column-reuse (loads the 9 input columns a tile
+        // touches once per row). `rows` is a `[*const f32; 3]` of ring-row
+        // bases pre-offset to col (2*ow_tile - pad) and channel ch.
+        pub(crate) fn yscv_dw3s2_creuse_neon(
+            rows: *const *const f32,
+            weight: *const f32,
+            out: *mut f32,
+            c_exp: usize,
+            bias: *const f32,
+            relu: usize,
+            wstride: usize,
+        );
+        // Software-pipelined 8×8 microkernel (full A+B double-buffer). set zeroes
+        // C, acc loads it; both apply bias+Relu in-store when is_last_k=1.
+        // a_panel/b_panel are kc×8 packed; bias is 8 floats (0 = none).
+        pub(crate) fn yscv_sgemm_8x8_neon_set(
+            a_panel: *const f32,
+            b_panel: *const f32,
+            c: *mut f32,
+            ldc: usize,
+            kc: usize,
+            bias: *const f32,
+            relu: usize,
+            is_last_k: usize,
+        );
+        pub(crate) fn yscv_sgemm_8x8_neon_acc(
+            a_panel: *const f32,
+            b_panel: *const f32,
+            c: *mut f32,
+            ldc: usize,
+            kc: usize,
+            bias: *const f32,
+            relu: usize,
+            is_last_k: usize,
+        );
     }
 } // mod sgemm_asm_aarch64

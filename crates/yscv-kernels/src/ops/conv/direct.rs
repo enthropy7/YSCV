@@ -18,8 +18,8 @@ pub(super) fn conv2d_nhwc_row(
         && plan.out_channels <= 32
         && plan.out_channels.is_multiple_of(8)
         && !cfg!(miri)
-        && std::is_x86_feature_detected!("avx")
-        && std::is_x86_feature_detected!("fma")
+        && crate::host_cpu().features.avx
+        && crate::host_cpu().features.fma
     {
         #[allow(unsafe_code)]
         unsafe {

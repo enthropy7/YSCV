@@ -13,13 +13,13 @@
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
-> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, profiled and CI-gated against a baseline. On bare-metal ARM SBCs we currently beat ONNX Runtime CPU on a public Siamese tracker; benchmarks across threads and hardware are in [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, Intel/AMD BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On edge ARM SBCs we are competitive with ORT-CPU on a public Siamese tracker; **the published benchmarks are being re-measured on current hardware and tooling** — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 >
 > Agent-friendly documentation. YSCV is structured so that an AI coding agent can wire it into a downstream project end-to-end without prior context: every crate has a focused `README.md` describing its surface, [`docs/cookbook.md`](docs/cookbook.md) has recipes per task, [`docs/feature-flags.md`](docs/feature-flags.md) is exhaustive on Cargo features and runtime env knobs, [`AGENTS.md`](AGENTS.md) has the workflow + style rules verbatim, and per-op profile labels (`YSCV_RUNNER_PROFILE=path` dumps fused-path JSON) make hot-path issues self-diagnosing. The benefit is downstream: agents can build working code on top of yscv quickly, not the other way around. Responsibility for any PR — including patches drafted by an agent — rests with the human author submitting it.
 
 > **First time here?** → **[QUICKSTART](QUICKSTART.md)** (5 minutes to a running program) · **[Tutorial](docs/getting-started.md)** (full walkthrough) · **[Cookbook](docs/cookbook.md)** (recipes by task) · **[Feature flags](docs/feature-flags.md)** (what to enable for your target) · **[Edge / Rockchip](docs/edge-deployment.md)** (NPU deployment) · **[Examples](examples/README.md)** (worked code) · **[Troubleshooting](docs/troubleshooting.md)** (when things break) · **[Docs hub](docs/README.md)** (everything else)
 
-We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 315 `#[target_feature]`-gated functions with runtime dispatch. It's faster than NumPy, PyTorch, OpenCV, and ffmpeg on every operation we benchmarked (85 wins, 0 losses).
+We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 315 `#[target_feature]`-gated functions selected by runtime CPU detection, so one binary picks the best path for the host it lands on.
 
 ## Quick Start
 
@@ -105,39 +105,26 @@ The detect → track → recognize pipeline runs in 67µs per frame end-to-end. 
 
 ## Performance
 
-We benchmark every hot path against NumPy, PyTorch, OpenCV, onnxruntime, ffmpeg, and CoreML. Current score: **85 wins, ~4 parity, 1 close, 0 losses.** H.264 decode is **4.5× faster than ffmpeg**, HEVC is **1.4× faster** (full color). MPSGraph GPU inference is **3.4× faster than Apple CoreML** on YOLOv8n. 1,861 default tests / 1,897 with all features, across 18 crates.
+YSCV is profiled and tuned on real edge hardware — the hot paths (Conv, MatMul,
+depthwise, pointwise, the fused streaming kernels) are hand-written SIMD with
+runtime dispatch, benchmarked per thread count against ONNX Runtime / XNNPACK on
+the target board, and against NumPy / PyTorch / OpenCV / ffmpeg for the
+standalone ops. The kernel work is mapped in
+[docs/onnx-cpu-kernels.md](docs/onnx-cpu-kernels.md) (per-op hot-path map,
+asm-vs-intrinsics coverage, A/B env toggles); the direction for broadening
+per-hardware performance is in
+[docs/microarch-dispatch.md](docs/microarch-dispatch.md).
 
-Every operation has hand-tuned SIMD on all platforms — NEON on ARM, AVX/SSE on x86, with optional Intel MKL and ARM Performance Libraries for the last few percent.
+> **Benchmarks are being re-measured.** The previous headline numbers were taken
+> across mixed hardware, dates, and tooling versions — not a fair
+> apples-to-apples set — so they have been pulled rather than left to mislead. A
+> clean, reproducible suite (fixed hardware, pinned competitor versions,
+> interleaved A/B, reported in both ms and FPS, regenerable from a script in the
+> repo) is being rebuilt in
+> [docs/performance-benchmarks.md](docs/performance-benchmarks.md). Until it
+> lands, treat any performance claim as provisional.
 
-| vs PyTorch (CPU, 1 thread) | yscv | PyTorch | Speedup |
-|-----------|------|---------|---------|
-| sigmoid 921K | 0.217ms | 1.296ms | **6.0×** |
-| softmax 512×256 | 0.098ms | 0.216ms | **2.2×** |
-| layer_norm 512×256 | 0.065ms | 0.117ms | **1.8×** |
-| batch_norm 64² | 0.028ms | 0.045ms | **1.6×** |
-| relu 921K | 0.069ms | 0.105ms | **1.5×** |
-
-| vs OpenCV (u8, 640×480) | yscv | OpenCV | Speedup |
-|------------------------|------|--------|---------|
-| resize nearest | 0.048ms | 0.157ms | **3.3×** |
-| resize bilinear | 0.068ms | 0.201ms | **3.0×** |
-| sobel 3×3 | 0.074ms | 0.169ms | **2.3×** |
-| dilate 3×3 | 0.031ms | 0.047ms | **1.5×** |
-
-| ONNX Inference | yscv | Competitor | Result |
-|----------------------------------|------|-----------|---------|
-| YOLOv8n CPU | 32.7ms | onnxruntime 103.4ms | **3.2× faster** |
-| YOLOv8n MPSGraph | **4.8ms** | CoreML 16.1ms | **3.4× faster** (CoreML uses ANE hw) |
-| VballNet CPU | 124.1ms | onnxruntime 196.7ms | **1.6× faster** |
-| VballNet MPSGraph | **7.8ms** | CoreML 8.6ms | **1.1× faster** (CoreML uses AMX hw) |
-| YOLO11n CPU | 36.4ms | all competitors FAIL | **WIN** |
-| YOLO11n MPSGraph | **5.9ms** | all competitors FAIL | **WIN** |
-| Siamese tracker 1T (Orange Pi Zero 3, 2026-04-21) | **461.6ms** | onnxruntime 499.3ms | **1.08× faster** |
-| Siamese tracker 4T (Orange Pi Zero 3, 2026-04-21) | **150.2ms** | onnxruntime 164.6ms | **1.10× faster** |
-| Siamese tracker 1T (Zen 4 7500F, 2026-05-30) | 8.66ms | onnxruntime 1.24.4 8.10ms | 1.07× slower |
-| Siamese tracker 6T (Zen 4 7500F, 2026-05-30) | 2.48ms | onnxruntime 1.24.4 1.75ms | 1.42× slower |
-
-Full benchmark results in [docs/performance-benchmarks.md](docs/performance-benchmarks.md).
+1,861 default tests / 1,897 with all features, across 18 crates.
 
 ## What's inside
 
@@ -226,10 +213,10 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **f32 tensor ops** | NEON 4× unroll | AVX 4× unroll → SSE fallback | NEON 4× unroll |
 | **u8 image ops** | NEON 16B/iter | AVX2 32B/iter → SSE2/SSSE3 16B/iter | NEON 16B/iter |
 | **Activations** | NEON 3-term poly | AVX/SSE poly | NEON 3-term poly |
-| **MatMul / Conv** | Accelerate BLAS | OpenBLAS (or MKL with `--features mkl`) | OpenBLAS (or ARMPL with `--features armpl`) |
+| **MatMul / Conv** | Hand-tuned NEON kernels (opt-in Accelerate) | Hand-tuned AVX/SSE kernels (opt-in OpenBLAS / MKL) | Hand-tuned NEON kernels (opt-in OpenBLAS / ARMPL) |
 | **Vectorized math** | vDSP (Accelerate) | MKL VML (opt-in) | ARMPL (opt-in) |
 | **Threading** | GCD dispatch_apply (~0.3µs) | std::thread::scope (~1µs) | std::thread::scope (~1µs) |
-| **GPU inference** | MPSGraph (4.8ms YOLOv8n) | wgpu/Vulkan | wgpu/Vulkan |
+| **GPU inference** | MPSGraph | wgpu/Vulkan | wgpu/Vulkan |
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |
 | **Allocator** | mimalloc | mimalloc | mimalloc |
 
@@ -288,7 +275,7 @@ See [docs/cookbook.md](docs/cookbook.md) for practical recipes: image processing
 
 **Don't use YSCV when** you need the Python ML ecosystem — Hugging Face model hub, thousands of community architectures, Jupyter notebook prototyping, dynamic graph debugging with breakpoints. When you're training foundation models across thousands of GPUs with NCCL. For that, use PyTorch.
 
-YSCV is faster than PyTorch on individual operations (85 benchmark wins across all competitors, with 0 losses), but PyTorch has a decade-old ecosystem with millions of pretrained models and research tooling. Different tools for different jobs. Train in PyTorch, export to ONNX, deploy with YSCV — or train directly in YSCV if your model fits within our 39 layer types and you don't need the Python ecosystem.
+YSCV is faster than PyTorch on many individual operations, but PyTorch has a decade-old ecosystem with millions of pretrained models and research tooling. Different tools for different jobs. Train in PyTorch, export to ONNX, deploy with YSCV — or train directly in YSCV if your model fits within our 39 layer types and you don't need the Python ecosystem.
 
 ## License
 

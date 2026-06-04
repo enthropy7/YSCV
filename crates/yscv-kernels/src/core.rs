@@ -3,6 +3,8 @@
 
 pub const CRATE_ID: &str = "yscv-kernels";
 
+#[path = "arch/mod.rs"]
+mod arch;
 #[path = "backend/mod.rs"]
 mod backend;
 #[path = "error.rs"]
@@ -22,6 +24,8 @@ mod ops;
 mod scope_ctx;
 
 pub use scope_ctx::{ScopeGuard, install_scope, with_installed_session, with_scope};
+
+pub use arch::{Cpu, CpuFeatures, Microarch, host_cpu};
 
 pub use backend::conv2d_nhwc_padded;
 pub use backend::conv2d_nhwc_with_activation_prepacked_default;

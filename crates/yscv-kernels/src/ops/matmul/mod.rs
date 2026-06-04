@@ -176,6 +176,91 @@ pub fn matmul_2d_slices(a: &[f32], m: usize, k: usize, b: &[f32], n: usize, out:
     }
 }
 
+/// Hand-asm 5×5 depthwise microkernel: 4 output columns × 8 channels, interior
+/// (no bounds), stride 1, column-reuse. See `src/asm/aarch64.S`.
+///
+/// # Safety
+/// `rows` must point at 5 valid `*const f32`, each with at least 8 readable
+/// columns from the tile's first input column; `weight`/`out`/`bias` valid for
+/// the channel block; the 4 output columns must be interior (all taps in bounds).
+/// `wstride` is the weight tap stride in BYTES (`c_exp*4` for the natural
+/// KH·KW·C layout, `32` for a pre-packed `[25][8]` tile).
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+#[inline]
+pub(crate) unsafe fn dw5_creuse_neon(
+    rows: *const *const f32,
+    weight: *const f32,
+    out: *mut f32,
+    c_exp: usize,
+    bias: *const f32,
+    relu: usize,
+    wstride: usize,
+) {
+    unsafe {
+        asm::sgemm_asm_aarch64::yscv_dw5_creuse_neon(rows, weight, out, c_exp, bias, relu, wstride)
+    }
+}
+
+/// Hand-asm 3×3 stride-2 depthwise microkernel: 4 output columns × 8 channels,
+/// interior, column-reuse. See `src/asm/aarch64.S`.
+///
+/// # Safety
+/// `rows` must point at 3 valid `*const f32`, each readable for the 9 input
+/// columns a stride-2 tile spans from its first; `weight`/`out`/`bias` valid
+/// for the channel block; the 4 output columns must be interior. `wstride` is
+/// the weight tap stride in BYTES (`c_exp*4` natural KH·KW·C layout).
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+#[inline]
+pub(crate) unsafe fn dw3s2_creuse_neon(
+    rows: *const *const f32,
+    weight: *const f32,
+    out: *mut f32,
+    c_exp: usize,
+    bias: *const f32,
+    relu: usize,
+    wstride: usize,
+) {
+    unsafe {
+        asm::sgemm_asm_aarch64::yscv_dw3s2_creuse_neon(
+            rows, weight, out, c_exp, bias, relu, wstride,
+        )
+    }
+}
+
+/// Sequential blocked GEMM with a bias/activation epilogue, routed straight to
+/// `blocked_gemm_sequential` (8×12 NEON asm microkernel + cached B-pack). The
+/// streaming PW-expand uses this — the broadcast kernel runs ~2.4× slower on
+/// the same `[in_w, c_in] × [c_in, c_exp]` shape. B-pack is cached by pointer
+/// via `get_or_pack_b`, so the per-row calls share one packed weight.
+#[cfg(target_arch = "aarch64")]
+pub fn matmul_2d_slices_blocked_fused(
+    a: &[f32],
+    m: usize,
+    k: usize,
+    b: &[f32],
+    n: usize,
+    out: &mut [f32],
+    epilogue: GemmEpilogue,
+) {
+    // The pipelined 8×8 microkernel (full A+B double-buffer) runs ~10% over the
+    // 8×12/4×16 kernels on these PW shapes by hiding the load-to-use latency.
+    // Gated to no-residual, n%8==0 (the M tail falls back inside the driver).
+    if !blocked_8x8_disabled() && n.is_multiple_of(8) && epilogue.residual.is_none() && m >= 1 {
+        blocked::blocked_gemm_8x8(a, b, out, m, k, n, epilogue);
+        return;
+    }
+    blocked_gemm_sequential(a, b, out, m, k, n, epilogue, None);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn blocked_8x8_disabled() -> bool {
+    static C: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *C.get_or_init(|| std::env::var_os("YSCV_GEMM_8X8_OFF").is_some())
+}
+
 /// Parallel variant of [`matmul_2d_slices`]: parallelises over output
 /// rows when a [`ParallelScope`] is installed, falls back to the
 /// sequential blocked path otherwise. Used by the Stream A1 FTMM
@@ -421,8 +506,8 @@ pub fn matmul_2d_slices_fused_maybe_packed(
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if use_low_k_tile_avx_fma(m, k, n)
         && low_k_tile_enabled()
-        && std::is_x86_feature_detected!("avx")
-        && std::is_x86_feature_detected!("fma")
+        && crate::host_cpu().features.avx
+        && crate::host_cpu().features.fma
     {
         // SAFETY: caller guarantees `a` has ≥ m*k floats, `b` has ≥ k*n,
         // `out` has ≥ m*n. `use_low_k_tile_avx_fma` already verified the

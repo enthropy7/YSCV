@@ -45,6 +45,11 @@ Pick your starting point.
 - **[onnx-cpu-kernels.md](onnx-cpu-kernels.md)** — CPU hot-path map
   for ONNX Conv/MatMul: fused kernels, asm vs intrinsics coverage,
   Orange Pi tracker numbers, and A/B env toggles.
+- **[microarch-dispatch.md](microarch-dispatch.md)** — north-star
+  vision (drop-in ORT-CPU replacement, one crate, runtime auto-detect)
+  and the per-microarchitecture kernel dispatch architecture: the
+  `Cpu`/`Microarch` identity layer, capability-first selection table,
+  per-core kernel files, and the zero-regression phased roadmap.
 - **[mpsgraph-guide.md](mpsgraph-guide.md)** — standalone guide for
   the Apple Silicon MPSGraph path: when to use, full API reference,
   sync vs pipelined, multi-input models, fallback, troubleshooting.

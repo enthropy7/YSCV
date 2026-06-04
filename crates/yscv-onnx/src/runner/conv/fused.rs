@@ -1198,9 +1198,11 @@ pub(crate) fn exec_fused_pw_dw_pw_reduce(
         None
     };
 
-    let stream_disabled = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some()
-        || (cfg!(target_arch = "aarch64")
-            && std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_ON").is_none());
+    // Full-block PW-expand → DW → PW-reduce fusion keeps the expanded
+    // intermediate in cache instead of spilling it to DRAM between ops — a win
+    // on both x86 and the in-order aarch64 cores. (The plainer DW→PW / PW→DW
+    // streaming fusions stay aarch64-gated; they regress the small-L2 A53.)
+    let stream_disabled = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some();
     let pw_expand_ok = env.is_khwc_weight(&pw_expand_node.inputs[1])
         && pw_expand_weight.shape().len() == 4
         && pw_expand_weight.shape()[0] == 1

@@ -58,9 +58,10 @@ fn mr16_enabled() -> bool {
 /// Software-prefetch of the weight cacheline 8 K-iters ahead inside
 /// `pointwise_nx16_direct_rows_avx512`. The HW prefetcher misses the weight
 /// load pattern (stride = `n*4` bytes, 448-1280 B for tracker shapes), so a
-/// manual `_mm_prefetch(_MM_HINT_T0)` hides the load latency behind the FMA
-/// pipe. Default ON; kill switch `YSCV_PW_PREFETCH_OFF=1`.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+/// manual prefetch hint hides the load latency behind the FMA pipe — a bigger
+/// win on the in-order A53 NEON reduce kernel. Default ON; kill switch
+/// `YSCV_PW_PREFETCH_OFF=1`.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
 fn pw_prefetch_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| std::env::var_os("YSCV_PW_PREFETCH_OFF").is_none())
@@ -584,7 +585,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
         && plan.kernel_w == 3
         && plan.batch == 1
         && !cfg!(miri)
-        && std::arch::is_aarch64_feature_detected!("neon")
+        && crate::host_cpu().features.neon
         && (plan.out_h * plan.out_w)
             .saturating_mul(plan.in_channels)
             .saturating_mul(plan.out_channels)
@@ -632,8 +633,8 @@ pub fn conv2d_nhwc_with_activation_prepacked(
         && plan.kernel_w == 3
         && plan.batch == 1
         && !cfg!(miri)
-        && is_x86_feature_detected!("avx")
-        && is_x86_feature_detected!("fma")
+        && crate::host_cpu().features.avx
+        && crate::host_cpu().features.fma
         && (plan.out_h * plan.out_w)
             .saturating_mul(plan.in_channels)
             .saturating_mul(plan.out_channels)
@@ -681,7 +682,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
         && plan.kernel_w == 3
         && plan.batch == 1
         && !cfg!(miri)
-        && is_x86_feature_detected!("fma")
+        && crate::host_cpu().features.fma
         && (plan.out_h * plan.out_w)
             .saturating_mul(plan.in_channels)
             .saturating_mul(plan.out_channels)
@@ -1035,7 +1036,7 @@ pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
         && kernel_h == 3
         && kernel_w == 3
         && !cfg!(miri)
-        && is_x86_feature_detected!("avx512f")
+        && crate::host_cpu().features.avx512f
     {
         let mut output = AlignedVec::<f32>::uninitialized(output_len);
         depthwise3x3_nhwc_c16_avx512(

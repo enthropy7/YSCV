@@ -472,7 +472,14 @@ fn conv_compute_nhwc(
         // simple strided indexing.
         #[cfg(target_arch = "aarch64")]
         {
-            if kh == 3 && kw == 3 && group == 1 && !cfg!(miri) {
+            // The first-layer 3-channel 3×3 stride-2 Conv routes to its
+            // dedicated microkernel (via conv2d_nhwc_padded below), which holds
+            // the c_out accumulators in registers across the 27 taps. The
+            // generic indirect path round-trips the accumulator through memory
+            // once per (tap, in-channel) — fine when c_in is wide enough to
+            // amortise it, but ~27× off peak at c_in = 3.
+            let is_first_layer_3ch = input_nhwc.shape()[3] == 3 && sh == 2 && sw == 2;
+            if kh == 3 && kw == 3 && group == 1 && !cfg!(miri) && !is_first_layer_3ch {
                 let t = yscv_kernels::conv2d_nhwc_indirect_padded(
                     input_nhwc, w_nhwc, bias, sh, sw, pt, pl, pb, pr, activation,
                 )

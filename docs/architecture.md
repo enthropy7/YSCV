@@ -46,6 +46,8 @@ pub fn relu_slice_dispatch(data: &mut [f32]) {
 
 Each implementation is marked with `#[target_feature(enable = "...")]` so the compiler generates appropriate instructions. The feature detection call is cached after the first invocation (atomic load, ~1ns).
 
+This three-tier *ISA* dispatch is being extended with a *microarchitecture* layer (Cortex-A53 vs A55 vs A72, Zen vs Intel within an ISA) — a runtime `Cpu { uarch, features }` identity plus a capability-first kernel-selection table, resolved once at session start. See [microarch-dispatch.md](microarch-dispatch.md) for the vision and the zero-regression phased roadmap.
+
 ### u8 image operations (yscv-imgproc)
 
 These use a three-tier dispatch: NEON or AVX2 or SSSE3/SSE2 → scalar. The operations are more specialized than f32 kernels and use architecture-specific tricks:

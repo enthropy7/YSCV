@@ -88,7 +88,7 @@ fn pointwise_16x16_direct_rows(
 ) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx512f") {
+        if crate::host_cpu().features.avx512f {
             #[allow(unsafe_code)]
             unsafe {
                 pointwise_16x16_direct_rows_avx512(
@@ -97,7 +97,7 @@ fn pointwise_16x16_direct_rows(
             }
             return;
         }
-        if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+        if crate::host_cpu().features.avx && crate::host_cpu().features.fma {
             #[allow(unsafe_code)]
             unsafe {
                 pointwise_16x16_direct_rows_avx2(
@@ -108,7 +108,7 @@ fn pointwise_16x16_direct_rows(
         }
     }
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    if crate::host_cpu().features.neon {
         #[allow(unsafe_code)]
         unsafe {
             pointwise_16x16_direct_rows_neon(
@@ -194,6 +194,28 @@ pub(super) fn pointwise_nx16_direct(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn reduce_gemm_enabled() -> bool {
+    // Default OFF: the reduce/standalone-PW shapes are low-N (c_out 24-112), and
+    // routing them through the blocked GEMM (now the 8×8) loses to the
+    // weight-stationary nx16 direct kernel — disabling it is −2 ms/1T, −4.5 ms/2T.
+    // `YSCV_REDUCE_GEMM_ON` re-enables for A/B.
+    static C: OnceLock<bool> = OnceLock::new();
+    *C.get_or_init(|| std::env::var_os("YSCV_REDUCE_GEMM_ON").is_some())
+}
+
+/// Default ON: the NEON reduce broadcasts each activation (`vdupq_n` = `ld1r`,
+/// a NEON-pipe op that competes with the FMAs); the `fmla`-by-lane path loads
+/// 4 activations per `vld1q` and reads lanes directly, freeing the NEON pipe.
+/// `YSCV_REDUCE_BYLANE_OFF` reverts to the broadcast path for A/B.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn reduce_bylane() -> bool {
+    static C: OnceLock<bool> = OnceLock::new();
+    *C.get_or_init(|| std::env::var_os("YSCV_REDUCE_BYLANE_OFF").is_none())
+}
+
 /// Per-row 1×1 pointwise dispatcher (AVX-512 → AVX2 → NEON → scalar). Used
 /// internally by Conv 1×1 and by the full-block streaming kernel
 /// [`super::fused_pw_dw_3x3::fused_pw_expand_dw_pw_reduce_3x3`] which calls
@@ -216,7 +238,7 @@ pub(crate) fn pointwise_nx16_direct_rows(
 ) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx512f") {
+        if crate::host_cpu().features.avx512f {
             // K-cache-blocked variant for K-heavy shapes. Microbench-faster
             // but tracker-flat, so opt-in via `YSCV_KCBLOCK=1`, default OFF.
             if k > 512 && kcblock_enabled() {
@@ -247,7 +269,7 @@ pub(crate) fn pointwise_nx16_direct_rows(
             }
             return;
         }
-        if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+        if crate::host_cpu().features.avx && crate::host_cpu().features.fma {
             #[allow(unsafe_code)]
             unsafe {
                 pointwise_nx16_direct_rows_avx2(
@@ -258,7 +280,22 @@ pub(crate) fn pointwise_nx16_direct_rows(
         }
     }
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    if crate::host_cpu().features.neon {
+        // The PW-reduce is a [rows, k]×[k, n] GEMM (weight already [c_exp, c_out]
+        // = B); the blocked 8×12 asm beats the broadcast kernel. bias/residual/
+        // activation fold into the GEMM epilogue (residual is n-strided here, so
+        // it matches the output). ≤2-thread gate mirrors the PW-expand path.
+        if reduce_gemm_enabled() && rows > 0 && rayon::current_num_threads() <= 2 {
+            let ep = super::super::matmul::GemmEpilogue {
+                bias: bias.map(|b| b.as_ptr()),
+                activation,
+                residual: residual.map(|r| r.as_ptr()),
+            };
+            super::super::matmul::matmul_2d_slices_blocked_fused(
+                input, rows, k, kernel, n, output, ep,
+            );
+            return;
+        }
         #[allow(unsafe_code)]
         unsafe {
             pointwise_nx16_direct_rows_neon(
@@ -1184,6 +1221,17 @@ unsafe fn pointwise_nx16_direct_rows_avx2(
     }
 }
 
+/// L1 prefetch hint (`prfm pldl1keep`) for the strided PW-reduce weight stream.
+/// The weight stride is `n*4` bytes (96-448 B for tracker reduce shapes) — too
+/// large for the in-order A53's HW prefetcher stride detector, so a manual hint
+/// several K-iters ahead hides the load latency behind the FMA pipe.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn prefetch_l1_keep(p: *const f32) {
+    core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
@@ -1284,7 +1332,203 @@ unsafe fn pointwise_nx16_direct_rows_neon(
         } else {
             (zero, zero, zero, zero)
         };
-        for row in 0..rows {
+        // 4-row weight-stationary tile: the PW-reduce weight is independent of
+        // the output row, so loading each weight quad once and feeding 4 rows
+        // (16 accumulators in flight) cuts the weight stream 4× and hides the
+        // in-order load latency — the same register-blocking the DW kernel uses.
+        const PREFETCH_AHEAD: usize = 8;
+        let pf = pw_prefetch_enabled();
+        let mut row = 0;
+        while row + 4 <= rows {
+            let mut a00 = bias0;
+            let mut a01 = bias1;
+            let mut a02 = bias2;
+            let mut a03 = bias3;
+            let mut a10 = bias0;
+            let mut a11 = bias1;
+            let mut a12 = bias2;
+            let mut a13 = bias3;
+            let mut a20 = bias0;
+            let mut a21 = bias1;
+            let mut a22 = bias2;
+            let mut a23 = bias3;
+            let mut a30 = bias0;
+            let mut a31 = bias1;
+            let mut a32 = bias2;
+            let mut a33 = bias3;
+            if let Some(res) = residual {
+                let rp = res.as_ptr().add(row * n + oc_base);
+                a00 = vaddq_f32(a00, vld1q_f32(rp));
+                a01 = vaddq_f32(a01, vld1q_f32(rp.add(4)));
+                a02 = vaddq_f32(a02, vld1q_f32(rp.add(8)));
+                a03 = vaddq_f32(a03, vld1q_f32(rp.add(12)));
+                let rp = rp.add(n);
+                a10 = vaddq_f32(a10, vld1q_f32(rp));
+                a11 = vaddq_f32(a11, vld1q_f32(rp.add(4)));
+                a12 = vaddq_f32(a12, vld1q_f32(rp.add(8)));
+                a13 = vaddq_f32(a13, vld1q_f32(rp.add(12)));
+                let rp = rp.add(n);
+                a20 = vaddq_f32(a20, vld1q_f32(rp));
+                a21 = vaddq_f32(a21, vld1q_f32(rp.add(4)));
+                a22 = vaddq_f32(a22, vld1q_f32(rp.add(8)));
+                a23 = vaddq_f32(a23, vld1q_f32(rp.add(12)));
+                let rp = rp.add(n);
+                a30 = vaddq_f32(a30, vld1q_f32(rp));
+                a31 = vaddq_f32(a31, vld1q_f32(rp.add(4)));
+                a32 = vaddq_f32(a32, vld1q_f32(rp.add(8)));
+                a33 = vaddq_f32(a33, vld1q_f32(rp.add(12)));
+            }
+            let ip0 = input.as_ptr().add(row * k);
+            let ip1 = ip0.add(k);
+            let ip2 = ip1.add(k);
+            let ip3 = ip2.add(k);
+            macro_rules! fma16 {
+                ($ic:expr) => {{
+                    let kp = kernel.as_ptr().add($ic * n + oc_base);
+                    let w0 = vld1q_f32(kp);
+                    let w1 = vld1q_f32(kp.add(4));
+                    let w2 = vld1q_f32(kp.add(8));
+                    let w3 = vld1q_f32(kp.add(12));
+                    let x0 = vdupq_n_f32(*ip0.add($ic));
+                    a00 = vfmaq_f32(a00, x0, w0);
+                    a01 = vfmaq_f32(a01, x0, w1);
+                    a02 = vfmaq_f32(a02, x0, w2);
+                    a03 = vfmaq_f32(a03, x0, w3);
+                    let x1 = vdupq_n_f32(*ip1.add($ic));
+                    a10 = vfmaq_f32(a10, x1, w0);
+                    a11 = vfmaq_f32(a11, x1, w1);
+                    a12 = vfmaq_f32(a12, x1, w2);
+                    a13 = vfmaq_f32(a13, x1, w3);
+                    let x2 = vdupq_n_f32(*ip2.add($ic));
+                    a20 = vfmaq_f32(a20, x2, w0);
+                    a21 = vfmaq_f32(a21, x2, w1);
+                    a22 = vfmaq_f32(a22, x2, w2);
+                    a23 = vfmaq_f32(a23, x2, w3);
+                    let x3 = vdupq_n_f32(*ip3.add($ic));
+                    a30 = vfmaq_f32(a30, x3, w0);
+                    a31 = vfmaq_f32(a31, x3, w1);
+                    a32 = vfmaq_f32(a32, x3, w2);
+                    a33 = vfmaq_f32(a33, x3, w3);
+                }};
+            }
+            // fmla-by-lane: one weight-quad set, 16 FMAs reading activation
+            // lanes directly (no per-k `vdupq_n` broadcast on the NEON pipe).
+            macro_rules! ko_block {
+                ($kk:expr, $av0:expr, $av1:expr, $av2:expr, $av3:expr, $lane:literal) => {{
+                    let kp = kernel.as_ptr().add($kk * n + oc_base);
+                    let w0 = vld1q_f32(kp);
+                    let w1 = vld1q_f32(kp.add(4));
+                    let w2 = vld1q_f32(kp.add(8));
+                    let w3 = vld1q_f32(kp.add(12));
+                    a00 = vfmaq_laneq_f32::<$lane>(a00, w0, $av0);
+                    a01 = vfmaq_laneq_f32::<$lane>(a01, w1, $av0);
+                    a02 = vfmaq_laneq_f32::<$lane>(a02, w2, $av0);
+                    a03 = vfmaq_laneq_f32::<$lane>(a03, w3, $av0);
+                    a10 = vfmaq_laneq_f32::<$lane>(a10, w0, $av1);
+                    a11 = vfmaq_laneq_f32::<$lane>(a11, w1, $av1);
+                    a12 = vfmaq_laneq_f32::<$lane>(a12, w2, $av1);
+                    a13 = vfmaq_laneq_f32::<$lane>(a13, w3, $av1);
+                    a20 = vfmaq_laneq_f32::<$lane>(a20, w0, $av2);
+                    a21 = vfmaq_laneq_f32::<$lane>(a21, w1, $av2);
+                    a22 = vfmaq_laneq_f32::<$lane>(a22, w2, $av2);
+                    a23 = vfmaq_laneq_f32::<$lane>(a23, w3, $av2);
+                    a30 = vfmaq_laneq_f32::<$lane>(a30, w0, $av3);
+                    a31 = vfmaq_laneq_f32::<$lane>(a31, w1, $av3);
+                    a32 = vfmaq_laneq_f32::<$lane>(a32, w2, $av3);
+                    a33 = vfmaq_laneq_f32::<$lane>(a33, w3, $av3);
+                }};
+            }
+            macro_rules! fma16_lane {
+                ($ic:expr) => {{
+                    let av0 = vld1q_f32(ip0.add($ic));
+                    let av1 = vld1q_f32(ip1.add($ic));
+                    let av2 = vld1q_f32(ip2.add($ic));
+                    let av3 = vld1q_f32(ip3.add($ic));
+                    ko_block!($ic, av0, av1, av2, av3, 0);
+                    ko_block!($ic + 1, av0, av1, av2, av3, 1);
+                    ko_block!($ic + 2, av0, av1, av2, av3, 2);
+                    ko_block!($ic + 3, av0, av1, av2, av3, 3);
+                }};
+            }
+            if reduce_bylane() {
+                let kb = (k / 4) * 4;
+                let mut ic = 0;
+                while ic < kb {
+                    if pf && ic + PREFETCH_AHEAD + 4 <= k {
+                        prefetch_l1_keep(kernel.as_ptr().add((ic + PREFETCH_AHEAD) * n + oc_base));
+                        prefetch_l1_keep(
+                            kernel.as_ptr().add((ic + PREFETCH_AHEAD + 2) * n + oc_base),
+                        );
+                    }
+                    fma16_lane!(ic);
+                    ic += 4;
+                }
+                for ic in kb..k {
+                    fma16!(ic);
+                }
+            } else {
+                let sp = if pf {
+                    k.saturating_sub(PREFETCH_AHEAD)
+                } else {
+                    0
+                };
+                for ic in 0..sp {
+                    prefetch_l1_keep(kernel.as_ptr().add((ic + PREFETCH_AHEAD) * n + oc_base));
+                    fma16!(ic);
+                }
+                for ic in sp..k {
+                    fma16!(ic);
+                }
+            }
+            if do_relu {
+                a00 = vmaxq_f32(a00, zero);
+                a01 = vmaxq_f32(a01, zero);
+                a02 = vmaxq_f32(a02, zero);
+                a03 = vmaxq_f32(a03, zero);
+                a10 = vmaxq_f32(a10, zero);
+                a11 = vmaxq_f32(a11, zero);
+                a12 = vmaxq_f32(a12, zero);
+                a13 = vmaxq_f32(a13, zero);
+                a20 = vmaxq_f32(a20, zero);
+                a21 = vmaxq_f32(a21, zero);
+                a22 = vmaxq_f32(a22, zero);
+                a23 = vmaxq_f32(a23, zero);
+                a30 = vmaxq_f32(a30, zero);
+                a31 = vmaxq_f32(a31, zero);
+                a32 = vmaxq_f32(a32, zero);
+                a33 = vmaxq_f32(a33, zero);
+            }
+            let op = output.as_mut_ptr().add(row * n + oc_base);
+            vst1q_f32(op, a00);
+            vst1q_f32(op.add(4), a01);
+            vst1q_f32(op.add(8), a02);
+            vst1q_f32(op.add(12), a03);
+            let op = op.add(n);
+            vst1q_f32(op, a10);
+            vst1q_f32(op.add(4), a11);
+            vst1q_f32(op.add(8), a12);
+            vst1q_f32(op.add(12), a13);
+            let op = op.add(n);
+            vst1q_f32(op, a20);
+            vst1q_f32(op.add(4), a21);
+            vst1q_f32(op.add(8), a22);
+            vst1q_f32(op.add(12), a23);
+            let op = op.add(n);
+            vst1q_f32(op, a30);
+            vst1q_f32(op.add(4), a31);
+            vst1q_f32(op.add(8), a32);
+            vst1q_f32(op.add(12), a33);
+            if do_silu {
+                for r in 0..4 {
+                    let base = (row + r) * n + oc_base;
+                    for v in &mut output[base..base + 16] {
+                        *v = apply_conv_activation_scalar(*v, Activation::Silu);
+                    }
+                }
+            }
+            row += 4;
+        }
+        for row in row..rows {
             let mut a0 = bias0;
             let mut a1 = bias1;
             let mut a2 = bias2;
@@ -1297,13 +1541,27 @@ unsafe fn pointwise_nx16_direct_rows_neon(
                 a3 = vaddq_f32(a3, vld1q_f32(rp.add(12)));
             }
             let ip = input.as_ptr().add(row * k);
-            for ic in 0..k {
-                let x = vdupq_n_f32(*ip.add(ic));
-                let kp = kernel.as_ptr().add(ic * n + oc_base);
-                a0 = vfmaq_f32(a0, x, vld1q_f32(kp));
-                a1 = vfmaq_f32(a1, x, vld1q_f32(kp.add(4)));
-                a2 = vfmaq_f32(a2, x, vld1q_f32(kp.add(8)));
-                a3 = vfmaq_f32(a3, x, vld1q_f32(kp.add(12)));
+            macro_rules! fma4 {
+                ($ic:expr) => {{
+                    let x = vdupq_n_f32(*ip.add($ic));
+                    let kp = kernel.as_ptr().add($ic * n + oc_base);
+                    a0 = vfmaq_f32(a0, x, vld1q_f32(kp));
+                    a1 = vfmaq_f32(a1, x, vld1q_f32(kp.add(4)));
+                    a2 = vfmaq_f32(a2, x, vld1q_f32(kp.add(8)));
+                    a3 = vfmaq_f32(a3, x, vld1q_f32(kp.add(12)));
+                }};
+            }
+            let sp = if pf {
+                k.saturating_sub(PREFETCH_AHEAD)
+            } else {
+                0
+            };
+            for ic in 0..sp {
+                prefetch_l1_keep(kernel.as_ptr().add((ic + PREFETCH_AHEAD) * n + oc_base));
+                fma4!(ic);
+            }
+            for ic in sp..k {
+                fma4!(ic);
             }
             if do_relu {
                 a0 = vmaxq_f32(a0, zero);

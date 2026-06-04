@@ -122,7 +122,7 @@ pub(super) fn mr8_enabled() -> bool {
         if std::env::var_os("YSCV_NO_MR8").is_some() {
             return false;
         }
-        std::arch::is_aarch64_feature_detected!("neon")
+        crate::host_cpu().features.neon
     })
 }
 
@@ -169,7 +169,7 @@ pub(super) fn mr6_enabled() -> bool {
             std::env::var_os("YSCV_MR6").as_deref(),
             Some(v) if v == "1"
         );
-        opt_in && std::is_x86_feature_detected!("fma") && std::is_x86_feature_detected!("avx")
+        opt_in && crate::host_cpu().features.fma && crate::host_cpu().features.avx
     })
 }
 
@@ -205,7 +205,7 @@ pub(super) fn asm_4x24_enabled() -> bool {
             std::env::var_os("YSCV_ASM_GEMM").as_deref(),
             Some(v) if v == "1"
         );
-        opt_in && std::is_x86_feature_detected!("fma") && std::is_x86_feature_detected!("avx")
+        opt_in && crate::host_cpu().features.fma && crate::host_cpu().features.avx
     })
 }
 
@@ -220,6 +220,6 @@ pub(super) fn avx512_enabled() -> bool {
         if std::env::var_os("YSCV_NO_AVX512").is_some() {
             return false;
         }
-        std::is_x86_feature_detected!("avx512f")
+        crate::host_cpu().features.avx512f
     })
 }
