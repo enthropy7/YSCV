@@ -32,13 +32,13 @@ fn main() {
     let (m, k, n) = (128usize, 16usize, 96usize); // xif2_0 expand: in_w × cin × cexp
     let src: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.013).sin()).collect();
     let w: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.017).cos()).collect();
-    let mut dst = vec![0.0f32; m * n];
     let flop = (m * k * n * 2) as f64;
     let iters = 5000;
 
-    // Warm + time broadcast
+    // Warm + time broadcast (aarch64-only kernel).
     #[cfg(target_arch = "aarch64")]
     {
+        let mut dst = vec![0.0f32; m * n];
         unsafe { broadcast_pw(&src, &w, &mut dst, m, k, n) };
         let t = Instant::now();
         for _ in 0..iters {
