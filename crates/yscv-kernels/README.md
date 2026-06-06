@@ -185,12 +185,20 @@ For full semantics/defaults and tracker reproduction commands, see
 ### Multi-architecture coverage
 
 Every hot-path kernel ships AVX2 + AVX-512 (x86_64) + NEON (aarch64) +
-scalar fallback, selected via `is_x86_feature_detected!` /
-`std::arch::is_aarch64_feature_detected!` at runtime. Cross-compile for
-`aarch64-unknown-linux-gnu` is in CI. A few x86-tuned paths (AVX-512 DW,
-fused PW+DW streaming, 8×8 NCHW↔NHWC permute) do not yet have
-NEON-perf-tuned counterparts and fall back to scalar-LLVM-autovec or
-plainer NEON on aarch64.
+scalar fallback, selected through the cached `host_cpu().features`
+dispatch layer at runtime. Cross-compile for `aarch64-unknown-linux-gnu`
+is in CI. A few x86-tuned paths (AVX-512 DW, fused PW+DW streaming, 8×8
+NCHW↔NHWC permute) do not yet have NEON-perf-tuned counterparts and fall
+back to scalar-LLVM-autovec or plainer NEON on aarch64.
+
+For benchmark logs and bug reports, print the active CPU dispatch snapshot:
+
+```rust
+println!("{}", yscv_kernels::dispatch_report());
+```
+
+The report includes the cached host CPU identity, standalone SIMD choices,
+and INT8 matmul/prepacked paths.
 
 ### Bias+Activation Dispatch (NHWC post-conv fallback)
 

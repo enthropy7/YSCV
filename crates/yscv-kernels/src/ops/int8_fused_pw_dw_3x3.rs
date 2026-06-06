@@ -412,11 +412,9 @@ fn dw_row_dispatch(
 ) {
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && p.c_exp >= 16
-        {
-            // SAFETY: `is_x86_feature_detected!` confirmed avx512f+avx512bw
+        let features = crate::host_cpu().features;
+        if features.x86_avx512_bw() && p.c_exp >= 16 {
+            // SAFETY: `host_cpu().features` confirmed avx512f+avx512bw
             // at runtime; `p.c_exp >= 16` satisfies the kernel's 16-lane gate.
             // Slice length contracts on `pw_ring`, `dw_weight`, and
             // `dw_acc_row` are upheld by `run_chunk_nhwc` (see `pw_ring`
@@ -435,8 +433,8 @@ fn dw_row_dispatch(
             }
             return;
         }
-        if std::is_x86_feature_detected!("avx2") && p.c_exp >= 8 {
-            // SAFETY: `is_x86_feature_detected!` confirmed avx2 at runtime;
+        if features.avx2 && p.c_exp >= 8 {
+            // SAFETY: `host_cpu().features` confirmed avx2 at runtime;
             // `p.c_exp >= 8` satisfies the kernel's 8-lane gate. Slice
             // contracts upheld as in the avx512 branch above.
             unsafe {
@@ -455,8 +453,8 @@ fn dw_row_dispatch(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") && p.c_exp >= 8 {
-            // SAFETY: `is_aarch64_feature_detected!` confirmed neon at
+        if crate::host_cpu().features.neon && p.c_exp >= 8 {
+            // SAFETY: `host_cpu().features` confirmed neon at
             // runtime; `p.c_exp >= 8` satisfies the kernel's 8-lane gate.
             // Slice contracts upheld as in the x86 branches above.
             unsafe {

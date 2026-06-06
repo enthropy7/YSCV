@@ -53,6 +53,16 @@ fn cpu_dispatch_report_matches_host_features() {
 }
 
 #[test]
+fn public_dispatch_report_is_populated() {
+    let report = crate::dispatch_report();
+    let text = report.to_string();
+    assert!(!report.int8_matmul.is_empty());
+    assert!(!report.int8_prepacked.is_empty());
+    assert!(text.contains("single_ops="));
+    assert!(text.contains("int8_matmul="));
+}
+
+#[test]
 fn exp_matches_scalar() {
     let input: Vec<f32> = (-20..=20).map(|i| i as f32 * 0.5).collect();
     let mut simd_out = vec![0.0f32; input.len()];

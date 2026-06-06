@@ -1,8 +1,7 @@
 // # Safety contract
 //
 // All `unsafe` blocks use SIMD intrinsics gated on target-feature
-// detection (`is_aarch64_feature_detected!("neon")` /
-// `is_x86_feature_detected!("sse2")`).
+// detection via `crate::host_cpu().features`.
 
 #![allow(unsafe_code)]
 
@@ -67,9 +66,10 @@ pub fn apply_rotary_embedding(
 #[inline]
 fn rotate_half_inplace(data: &mut [f32], inv_freq: &[f32], pos: f32) {
     let half = inv_freq.len();
+    let features = crate::host_cpu().features;
 
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    if features.neon {
         // SAFETY: NEON is available (feature detection guard).
         let done = unsafe { rotate_half_neon(data, inv_freq, pos, half) };
         if done >= half {
@@ -88,7 +88,7 @@ fn rotate_half_inplace(data: &mut [f32], inv_freq: &[f32], pos: f32) {
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if is_x86_feature_detected!("sse2") {
+    if features.sse2 {
         // SAFETY: SSE2 is available (feature detection guard).
         let done = unsafe { rotate_half_sse2(data, inv_freq, pos, half) };
         if done >= half {

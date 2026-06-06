@@ -65,14 +65,14 @@ fn x86_path() -> u8 {
     if cached != PATH_UNCHECKED {
         return cached;
     }
-    let path =
-        if std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512bw") {
-            PATH_AVX512
-        } else if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("sse4.1") {
-            PATH_AVX2
-        } else {
-            PATH_SCALAR
-        };
+    let features = crate::host_cpu().features;
+    let path = if features.x86_avx512_bw() {
+        PATH_AVX512
+    } else if features.x86_avx2_sse41() {
+        PATH_AVX2
+    } else {
+        PATH_SCALAR
+    };
     X86_PATH.store(path, Ordering::Relaxed);
     path
 }
@@ -130,7 +130,7 @@ pub fn requant_i32_row_to_i8_dispatch(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if crate::host_cpu().features.neon {
             // SAFETY: NEON is feature-detected at runtime; the inner
             // function is annotated `target_feature(enable = "neon")`.
             #[allow(unsafe_code)]

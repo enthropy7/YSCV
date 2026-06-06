@@ -510,21 +510,19 @@ fn depthwise_i8_i32_nhwc_dispatch_range(
 ) {
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && p.channels >= 16
-        {
+        let features = crate::host_cpu().features;
+        if features.x86_avx512_bw() && p.channels >= 16 {
             unsafe { depthwise3x3_i8_i32_nhwc_avx512_range(input, weight, p, out, pixel_start) };
             return;
         }
-        if std::is_x86_feature_detected!("avx2") && p.channels >= 8 {
+        if features.avx2 && p.channels >= 8 {
             unsafe { depthwise3x3_i8_i32_nhwc_avx2_range(input, weight, p, out, pixel_start) };
             return;
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") && p.channels >= 8 {
+        if crate::host_cpu().features.neon && p.channels >= 8 {
             unsafe { depthwise3x3_i8_i32_nhwc_neon_range(input, weight, p, out, pixel_start) };
             return;
         }
@@ -625,12 +623,13 @@ mod tests {
         let weight = pseudo_i8(0xD, p.weight_len());
         let mut expected = vec![0_i32; p.output_len()];
         depthwise3x3_i8_i32_nhwc_scalar(&input, &weight, p, &mut expected);
-        if std::is_x86_feature_detected!("avx2") {
+        let features = crate::host_cpu().features;
+        if features.avx2 {
             let mut got = vec![0_i32; expected.len()];
             unsafe { depthwise3x3_i8_i32_nhwc_avx2_range(&input, &weight, p.into(), &mut got, 0) };
             assert_eq!(got, expected);
         }
-        if std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512bw") {
+        if features.x86_avx512_bw() {
             let mut got = vec![0_i32; expected.len()];
             unsafe {
                 depthwise3x3_i8_i32_nhwc_avx512_range(&input, &weight, p.into(), &mut got, 0)

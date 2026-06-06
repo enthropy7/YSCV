@@ -83,8 +83,53 @@ pub struct CpuFeatures {
     pub avx: bool,
     pub avx2: bool,
     pub fma: bool,
+    pub sse41: bool,
+    pub avxvnni: bool,
     pub avx512f: bool,
+    pub avx512bw: bool,
     pub avx512vnni: bool,
+}
+
+impl CpuFeatures {
+    #[inline]
+    pub fn x86_avx_fma(self) -> bool {
+        self.avx && self.fma
+    }
+
+    #[inline]
+    pub fn x86_avx2_fma(self) -> bool {
+        self.avx2 && self.fma
+    }
+
+    #[inline]
+    pub fn x86_avx2_sse41(self) -> bool {
+        self.avx2 && self.sse41
+    }
+
+    #[inline]
+    pub fn x86_avx_vnni(self) -> bool {
+        self.avx2 && self.avxvnni
+    }
+
+    #[inline]
+    pub fn x86_avx512_bw(self) -> bool {
+        self.avx512f && self.avx512bw
+    }
+
+    #[inline]
+    pub fn x86_avx512_vnni(self) -> bool {
+        self.x86_avx512_bw() && self.avx512vnni
+    }
+
+    #[inline]
+    pub fn aarch64_neon_dotprod(self) -> bool {
+        self.neon && self.dotprod
+    }
+
+    #[inline]
+    pub fn aarch64_neon_i8mm(self) -> bool {
+        self.neon && self.i8mm
+    }
 }
 
 /// The detected host CPU. Single source of truth for dispatch; obtain via

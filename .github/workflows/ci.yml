@@ -231,6 +231,9 @@ jobs:
       - name: SAFETY comments gate
         run: bash scripts/check-safety-comments.sh
 
+      - name: Runtime dispatch gate
+        run: bash scripts/check-runtime-dispatch.sh
+
       - name: Verify Camera Listing UX (No Native Feature)
         run: |
           cargo run -p yscv-cli --bin yscv-cli -- --list-cameras

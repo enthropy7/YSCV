@@ -14,18 +14,19 @@ use super::norm::softmax_last_dim_with_config_and_pool;
 #[allow(unused_variables, unsafe_code)]
 fn dot_product_simd(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
+    let features = crate::host_cpu().features;
 
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    if features.neon {
         return unsafe { dot_product_neon(a, b) };
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+        if features.x86_avx_fma() {
             return unsafe { dot_product_avx(a, b) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if features.sse {
             return unsafe { dot_product_sse(a, b) };
         }
     }
@@ -170,19 +171,21 @@ unsafe fn dot_product_sse(a: &[f32], b: &[f32]) -> f32 {
 
 #[allow(unused_variables, unsafe_code)]
 fn scale_slice_simd(data: &mut [f32], scalar: f32) {
+    let features = crate::host_cpu().features;
+
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    if features.neon {
         unsafe { scale_slice_neon(data, scalar) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if features.avx {
             unsafe { scale_slice_avx(data, scalar) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if features.sse {
             unsafe { scale_slice_sse(data, scalar) };
             return;
         }
@@ -266,20 +269,21 @@ unsafe fn scale_slice_sse(data: &mut [f32], scalar: f32) {
 #[allow(unused_variables, unsafe_code)]
 fn fma_slice_simd(out: &mut [f32], v: &[f32], w: f32) {
     debug_assert_eq!(out.len(), v.len());
+    let features = crate::host_cpu().features;
 
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    if features.neon {
         unsafe { fma_slice_neon(out, v, w) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+        if features.x86_avx_fma() {
             unsafe { fma_slice_avx(out, v, w) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if features.sse {
             unsafe { fma_slice_sse(out, v, w) };
             return;
         }

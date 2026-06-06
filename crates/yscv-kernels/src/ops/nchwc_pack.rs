@@ -147,7 +147,7 @@ pub fn pack_dw_nchwc_for_session(
 /// Runtime block-size selection: 16 on x86_64 with AVX-512F, 8 otherwise.
 pub fn runtime_nchwc_block() -> usize {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::is_x86_feature_detected!("avx512f") {
+    if crate::host_cpu().features.avx512f {
         return 16;
     }
     8

@@ -146,8 +146,8 @@ fn assemble_sgemm_asm() {
     // `fmla v.8h` (FEAT_FP16 — ARMv8.2-A+fp16). Any CPU supporting FP16
     // fp16 FMA also supports the baseline armv8.2-a, so this flag is safe
     // as a global setting for the aarch64 build (runtime dispatch still
-    // checks `is_aarch64_feature_detected!("fp16")` before issuing fp16
-    // instructions, so scalar paths remain correct on older ARMv8.0-A).
+    // checks `host_cpu().features.fp16` before issuing fp16 instructions,
+    // so scalar paths remain correct on older ARMv8.0-A).
     if arch == "aarch64" {
         build.flag_if_supported("-march=armv8.2-a+fp16");
     }

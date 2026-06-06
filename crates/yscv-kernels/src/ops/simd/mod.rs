@@ -17,6 +17,8 @@ mod fma;
 mod reduce;
 mod softmax;
 
+use std::fmt;
+
 #[cfg(test)]
 mod tests;
 
@@ -34,6 +36,23 @@ pub enum SimdDispatchPath {
     Scalar,
 }
 
+impl fmt::Display for SimdDispatchPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            SimdDispatchPath::Accelerate => "accelerate",
+            SimdDispatchPath::Mkl => "mkl",
+            SimdDispatchPath::Armpl => "armpl",
+            SimdDispatchPath::Avx512 => "avx512",
+            SimdDispatchPath::Avx => "avx",
+            SimdDispatchPath::Sse2 => "sse2",
+            SimdDispatchPath::Sse => "sse",
+            SimdDispatchPath::Neon => "neon",
+            SimdDispatchPath::Scalar => "scalar",
+        };
+        f.write_str(name)
+    }
+}
+
 /// Snapshot of the single-op dispatch choices for the current host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuDispatchReport {
@@ -47,6 +66,25 @@ pub struct CpuDispatchReport {
     pub softmax: SimdDispatchPath,
     pub batch_norm: SimdDispatchPath,
     pub layer_norm: SimdDispatchPath,
+}
+
+impl fmt::Display for CpuDispatchReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cpu={:?}; relu={}; sigmoid={}; exp={}; binary={}; fma={}; reduce={}; softmax={}; batch_norm={}; layer_norm={}",
+            self.cpu.uarch,
+            self.relu,
+            self.sigmoid,
+            self.exp,
+            self.binary,
+            self.fma,
+            self.reduce,
+            self.softmax,
+            self.batch_norm,
+            self.layer_norm
+        )
+    }
 }
 
 /// Returns the current host CPU and the ISA/backend paths selected by the

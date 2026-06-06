@@ -24,7 +24,10 @@ fn detect_features() -> CpuFeatures {
         avx: std::is_x86_feature_detected!("avx"),
         avx2: std::is_x86_feature_detected!("avx2"),
         fma: std::is_x86_feature_detected!("fma"),
+        sse41: std::is_x86_feature_detected!("sse4.1"),
+        avxvnni: std::is_x86_feature_detected!("avxvnni"),
         avx512f: std::is_x86_feature_detected!("avx512f"),
+        avx512bw: std::is_x86_feature_detected!("avx512bw"),
         avx512vnni: std::is_x86_feature_detected!("avx512vnni"),
         ..CpuFeatures::default()
     }

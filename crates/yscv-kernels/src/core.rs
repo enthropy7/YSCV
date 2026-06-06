@@ -27,6 +27,35 @@ pub use scope_ctx::{ScopeGuard, install_scope, with_installed_session, with_scop
 
 pub use arch::{Cpu, CpuFeatures, Microarch, host_cpu};
 
+/// Human-readable snapshot of the CPU dispatch choices used by hot kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DispatchReport {
+    pub cpu: Cpu,
+    pub single_ops: ops::simd::CpuDispatchReport,
+    pub int8_matmul: &'static str,
+    pub int8_prepacked: &'static str,
+}
+
+impl std::fmt::Display for DispatchReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cpu={:?}; single_ops=[{}]; int8_matmul={}; int8_prepacked={}",
+            self.cpu.uarch, self.single_ops, self.int8_matmul, self.int8_prepacked
+        )
+    }
+}
+
+/// Returns the cached host CPU plus the selected standalone and INT8 paths.
+pub fn dispatch_report() -> DispatchReport {
+    DispatchReport {
+        cpu: *host_cpu(),
+        single_ops: ops::simd::cpu_dispatch_report(),
+        int8_matmul: ops::int8_matmul::int8_matmul_dispatch_path(),
+        int8_prepacked: ops::int8_matmul::int8_prepacked_dispatch_path(),
+    }
+}
+
 pub use backend::conv2d_nhwc_padded;
 pub use backend::conv2d_nhwc_with_activation_prepacked_default;
 pub use backend::{

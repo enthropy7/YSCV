@@ -172,7 +172,7 @@ pub fn fused_pw_expand_dw_3x3(
             if c_exp > AVX512_REG_MAX_CHUNKS * 16
                 && c_exp.is_multiple_of(16)
                 && !cfg!(miri)
-                && is_x86_feature_detected!("avx512f")
+                && crate::host_cpu().features.avx512f
             {
                 avx512::pack_pw_weight_tiled(pw_weight, c_in, c_exp, &mut _pw_pack_buf);
                 (
@@ -574,7 +574,7 @@ pub fn fused_pw_expand_dw_pw_reduce_3x3(args: FusedPwDwPwReduce<'_>) {
             if c_exp > AVX512_REG_MAX_CHUNKS * 16
                 && c_exp.is_multiple_of(16)
                 && !cfg!(miri)
-                && is_x86_feature_detected!("avx512f")
+                && crate::host_cpu().features.avx512f
             {
                 avx512::pack_pw_weight_tiled(pw_expand_weight, c_in, c_exp, &mut _pw_pack_buf);
                 (

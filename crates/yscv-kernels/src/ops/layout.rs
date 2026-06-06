@@ -314,7 +314,7 @@ pub fn nchwc_to_nchw(input: &Tensor, channels: usize) -> Result<Tensor, KernelEr
 /// Tail case (c%8 != 0 or hw%8 != 0) falls back to the generic
 /// `Tensor::permute`. First-layer Conv [1, 3, ...] hits this tail.
 ///
-/// Caller should feature-gate on `is_x86_feature_detected!("avx")`.
+/// The AVX path is gated through `crate::host_cpu().features`.
 pub fn nchw_to_nhwc_fast(input: &Tensor) -> Result<Tensor, KernelError> {
     let shape = input.shape();
     let (n, c, h, w) = nchw_dims(shape)?;
@@ -328,7 +328,7 @@ pub fn nchw_to_nhwc_fast(input: &Tensor) -> Result<Tensor, KernelError> {
 
     // Fast path requires both dims multiple of 8 AND x86 AVX runtime.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    let fast_path_ok = c % 8 == 0 && hw % 8 == 0 && std::is_x86_feature_detected!("avx");
+    let fast_path_ok = c % 8 == 0 && hw % 8 == 0 && crate::host_cpu().features.avx;
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let fast_path_ok = false;
 
@@ -490,11 +490,11 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
         })?;
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    let x86_fast = c % 8 == 0 && hw % 8 == 0 && std::is_x86_feature_detected!("avx");
+    let x86_fast = c % 8 == 0 && hw % 8 == 0 && crate::host_cpu().features.avx;
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let x86_fast = false;
     #[cfg(target_arch = "aarch64")]
-    let neon_fast = c % 4 == 0 && hw % 4 == 0 && std::arch::is_aarch64_feature_detected!("neon");
+    let neon_fast = c % 4 == 0 && hw % 4 == 0 && crate::host_cpu().features.neon;
     #[cfg(not(target_arch = "aarch64"))]
     let neon_fast = false;
 

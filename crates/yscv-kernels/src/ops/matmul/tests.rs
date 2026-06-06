@@ -56,7 +56,8 @@ mod mr6_tests {
     /// 6×K × K×16 multiply. Verify bitwise-close match vs reference scalar.
     #[test]
     fn microkernel_6x16_matches_reference_no_epilogue() {
-        if !std::is_x86_feature_detected!("fma") || !std::is_x86_feature_detected!("avx") {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx_fma() {
             return;
         }
         const M: usize = 6;
@@ -115,7 +116,8 @@ mod mr6_tests {
     /// Same as above but with bias + Relu activation.
     #[test]
     fn microkernel_6x16_matches_reference_bias_relu() {
-        if !std::is_x86_feature_detected!("fma") || !std::is_x86_feature_detected!("avx") {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx_fma() {
             return;
         }
         const M: usize = 6;
@@ -238,7 +240,8 @@ mod low_k_tile_tests {
         with_residual: bool,
         act: Activation,
     ) {
-        if !std::is_x86_feature_detected!("fma") || !std::is_x86_feature_detected!("avx") {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx_fma() {
             return;
         }
         assert_eq!(m % 4, 0);

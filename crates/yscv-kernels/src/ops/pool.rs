@@ -207,6 +207,7 @@ fn pool2d_2x2s2_max_row_mc(
     let in_w_c = plan.in_w * c;
     let row0_base = batch_input_base + in_y0 * in_w_c;
     let row1_base = row0_base + in_w_c;
+    let features = crate::host_cpu().features;
 
     for out_x in 0..plan.out_w {
         let in_x0 = out_x * 2;
@@ -221,14 +222,14 @@ fn pool2d_2x2s2_max_row_mc(
         let mut i = 0usize;
 
         #[cfg(target_arch = "aarch64")]
-        if !cfg!(miri) && c >= 4 && std::arch::is_aarch64_feature_detected!("neon") {
+        if !cfg!(miri) && c >= 4 && features.neon {
             unsafe {
                 pool2d_2x2s2_max_mc_neon(input, p00, p01, p10, p11, out_slice, &mut i);
             }
         }
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        if !cfg!(miri) && c >= 4 && std::is_x86_feature_detected!("sse") {
+        if !cfg!(miri) && c >= 4 && features.sse {
             unsafe {
                 pool2d_2x2s2_max_mc_sse(input, p00, p01, p10, p11, out_slice, &mut i);
             }
@@ -318,17 +319,18 @@ fn pool2d_2x2s2_max_row(
     let row1_base = batch_input_base + (in_y0 + 1) * in_w;
 
     let mut out_x = 0usize;
+    let features = crate::host_cpu().features;
 
     // SIMD batch: process 4 output pixels (= 8 input pixels per row) at a time.
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && features.neon {
         unsafe {
             pool2d_2x2s2_max_row_neon(input, row0_base, row1_base, out_row, plan.out_w, &mut out_x);
         }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && features.sse {
         unsafe {
             pool2d_2x2s2_max_row_sse(input, row0_base, row1_base, out_row, plan.out_w, &mut out_x);
         }
@@ -437,9 +439,11 @@ fn pool_accumulate(out: &mut [f32], input: &[f32], kind: Pool2dKind) {
         return;
     }
 
+    let features = crate::host_cpu().features;
+
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if features.neon {
             unsafe { pool_accumulate_neon(out, input, kind) };
             return;
         }
@@ -447,7 +451,7 @@ fn pool_accumulate(out: &mut [f32], input: &[f32], kind: Pool2dKind) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if features.sse {
             unsafe { pool_accumulate_sse(out, input, kind) };
             return;
         }

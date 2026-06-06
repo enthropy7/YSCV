@@ -142,6 +142,7 @@ run cargo clippy -p yscv-onnx --all-targets --features "gpu profile" -- -D warni
 run cargo test --workspace
 run bash scripts/check-doc-counts.sh
 run bash scripts/check-safety-comments.sh
+run bash scripts/check-runtime-dispatch.sh
 
 run cargo check -p yscv-kernels --features gpu
 run cargo check --workspace --features gpu

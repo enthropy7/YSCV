@@ -26,6 +26,53 @@
 
 #![allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 
+use std::sync::OnceLock;
+
+type Int8MatmulKernel = fn(&[i8], &[i8], usize, usize, usize, &mut [i32]);
+type Int8PrepackedKernel = fn(&[i8], &PackedI8B, usize, &mut [i32]);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Int8MatmulPath {
+    #[cfg(target_arch = "x86_64")]
+    Avx512Vnni,
+    #[cfg(target_arch = "x86_64")]
+    AvxVnni,
+    #[cfg(target_arch = "x86_64")]
+    Avx2,
+    #[cfg(target_arch = "aarch64")]
+    NeonI8mm,
+    #[cfg(target_arch = "aarch64")]
+    NeonDotprod,
+    Scalar,
+}
+
+impl Int8MatmulPath {
+    #[inline]
+    fn name(self) -> &'static str {
+        match self {
+            #[cfg(target_arch = "x86_64")]
+            Int8MatmulPath::Avx512Vnni => "avx512-vnni",
+            #[cfg(target_arch = "x86_64")]
+            Int8MatmulPath::AvxVnni => "avx-vnni",
+            #[cfg(target_arch = "x86_64")]
+            Int8MatmulPath::Avx2 => "avx2",
+            #[cfg(target_arch = "aarch64")]
+            Int8MatmulPath::NeonI8mm => "neon-i8mm",
+            #[cfg(target_arch = "aarch64")]
+            Int8MatmulPath::NeonDotprod => "neon-dotprod",
+            Int8MatmulPath::Scalar => "scalar",
+        }
+    }
+}
+
+pub(crate) fn int8_matmul_dispatch_path() -> &'static str {
+    select_int8_matmul_path().name()
+}
+
+pub(crate) fn int8_prepacked_dispatch_path() -> &'static str {
+    select_int8_prepacked_path().name()
+}
+
 /// Transpose `b` from row-major `[K × N]` into row-major `[N × K]` so
 /// the inner kernel can issue a contiguous K-vector load per output
 /// column instead of a strided per-element gather. The transpose itself
@@ -224,7 +271,8 @@ unsafe fn int8_matmul_neon_i8mm(a: &[i8], b: &[i8], m: usize, k: usize, n: usize
     use std::arch::aarch64::*;
     // SMMLA: acc[0..4] += [A0·B0, A0·B1, A1·B0, A1·B1] where Ai is an
     // 8-byte row slice and Bj is an 8-byte column slice. Tile 2×2 in
-    // (M, N); fall back to sdot for odd-edge rows/cols.
+    // (M, N); odd-edge rows/cols stay scalar so this kernel only requires
+    // NEON+i8mm, not dotprod.
     let m2 = m & !1;
     let n2 = n & !1;
     let k8 = k & !7;
@@ -269,24 +317,70 @@ unsafe fn int8_matmul_neon_i8mm(a: &[i8], b: &[i8], m: usize, k: usize, n: usize
                 if i < m2 && j < n2 {
                     continue;
                 }
-                let mut acc = vdupq_n_s32(0);
-                let mut kk = 0;
-                while kk + 16 <= k {
-                    let av = vld1q_s8(a.as_ptr().add(i * k + kk));
-                    let mut bbuf = [0_i8; 16];
-                    for r in 0..16 {
-                        bbuf[r] = b[(kk + r) * n + j];
+                let mut acc = 0_i32;
+                for kk in 0..k {
+                    acc += (a[i * k + kk] as i32) * (b[kk * n + j] as i32);
+                }
+                out[i * n + j] = acc;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,i8mm")]
+unsafe fn int8_matmul_prepacked_neon_i8mm(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    use std::arch::aarch64::*;
+    let k = b.k;
+    let n = b.n;
+    let bt = b.transposed();
+    let m2 = m & !1;
+    let n2 = n & !1;
+    let k8 = k & !7;
+    for i in (0..m2).step_by(2) {
+        for j in (0..n2).step_by(2) {
+            let mut acc = vdupq_n_s32(0);
+            let mut kk = 0;
+            while kk + 8 <= k8 {
+                let mut abuf = [0_i8; 16];
+                for r in 0..8 {
+                    abuf[r] = a[i * k + kk + r];
+                    abuf[8 + r] = a[(i + 1) * k + kk + r];
+                }
+                let av = vld1q_s8(abuf.as_ptr());
+                let mut bbuf = [0_i8; 16];
+                bbuf[..8].copy_from_slice(&bt[j * k + kk..j * k + kk + 8]);
+                bbuf[8..].copy_from_slice(&bt[(j + 1) * k + kk..(j + 1) * k + kk + 8]);
+                let bv = vld1q_s8(bbuf.as_ptr());
+                acc = smmla_inline(acc, av, bv);
+                kk += 8;
+            }
+            let mut buf = [0_i32; 4];
+            vst1q_s32(buf.as_mut_ptr(), acc);
+            for di in 0..2 {
+                for dj in 0..2 {
+                    let mut tail = buf[di * 2 + dj];
+                    let mut kt = kk;
+                    while kt < k {
+                        tail += (a[(i + di) * k + kt] as i32) * (bt[(j + dj) * k + kt] as i32);
+                        kt += 1;
                     }
-                    let bv = vld1q_s8(bbuf.as_ptr());
-                    acc = sdot_inline(acc, av, bv);
-                    kk += 16;
+                    out[(i + di) * n + j + dj] = tail;
                 }
-                let mut tail = vaddvq_s32(acc);
-                while kk < k {
-                    tail += (a[i * k + kk] as i32) * (b[kk * n + j] as i32);
-                    kk += 1;
+            }
+        }
+    }
+    if m2 < m || n2 < n {
+        for i in 0..m {
+            for j in 0..n {
+                if i < m2 && j < n2 {
+                    continue;
                 }
-                out[i * n + j] = tail;
+                let mut acc = 0_i32;
+                for kk in 0..k {
+                    acc += (a[i * k + kk] as i32) * (bt[j * k + kk] as i32);
+                }
+                out[i * n + j] = acc;
             }
         }
     }
@@ -917,6 +1011,172 @@ unsafe fn int8_matmul_prepacked_avx512_vnni(a: &[i8], b: &PackedI8B, m: usize, o
     }
 }
 
+fn select_int8_matmul_path() -> Int8MatmulPath {
+    if cfg!(miri) {
+        return Int8MatmulPath::Scalar;
+    }
+    let features = crate::host_cpu().features;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if features.x86_avx512_vnni() {
+            return Int8MatmulPath::Avx512Vnni;
+        }
+        if features.x86_avx_vnni() {
+            return Int8MatmulPath::AvxVnni;
+        }
+        if features.avx2 {
+            return Int8MatmulPath::Avx2;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if features.aarch64_neon_i8mm() {
+            return Int8MatmulPath::NeonI8mm;
+        }
+        if features.aarch64_neon_dotprod() {
+            return Int8MatmulPath::NeonDotprod;
+        }
+    }
+    Int8MatmulPath::Scalar
+}
+
+fn select_int8_prepacked_path() -> Int8MatmulPath {
+    if cfg!(miri) {
+        return Int8MatmulPath::Scalar;
+    }
+    let features = crate::host_cpu().features;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if features.x86_avx512_vnni() {
+            return Int8MatmulPath::Avx512Vnni;
+        }
+        if features.x86_avx_vnni() {
+            return Int8MatmulPath::AvxVnni;
+        }
+        if features.avx2 {
+            return Int8MatmulPath::Avx2;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if features.aarch64_neon_i8mm() {
+            return Int8MatmulPath::NeonI8mm;
+        }
+        if features.aarch64_neon_dotprod() {
+            return Int8MatmulPath::NeonDotprod;
+        }
+    }
+    Int8MatmulPath::Scalar
+}
+
+fn selected_int8_matmul_kernel() -> Int8MatmulKernel {
+    static KERNEL: OnceLock<Int8MatmulKernel> = OnceLock::new();
+    *KERNEL.get_or_init(|| match select_int8_matmul_path() {
+        #[cfg(target_arch = "x86_64")]
+        Int8MatmulPath::Avx512Vnni => int8_matmul_avx512_vnni_kernel,
+        #[cfg(target_arch = "x86_64")]
+        Int8MatmulPath::AvxVnni => int8_matmul_avx_vnni_kernel,
+        #[cfg(target_arch = "x86_64")]
+        Int8MatmulPath::Avx2 => int8_matmul_avx2_widen_kernel,
+        #[cfg(target_arch = "aarch64")]
+        Int8MatmulPath::NeonI8mm => int8_matmul_neon_i8mm_kernel,
+        #[cfg(target_arch = "aarch64")]
+        Int8MatmulPath::NeonDotprod => int8_matmul_neon_sdot_kernel,
+        _ => int8_matmul_scalar,
+    })
+}
+
+fn selected_int8_prepacked_kernel() -> Int8PrepackedKernel {
+    static KERNEL: OnceLock<Int8PrepackedKernel> = OnceLock::new();
+    *KERNEL.get_or_init(|| match select_int8_prepacked_path() {
+        #[cfg(target_arch = "x86_64")]
+        Int8MatmulPath::Avx512Vnni => int8_matmul_prepacked_avx512_vnni_kernel,
+        #[cfg(target_arch = "x86_64")]
+        Int8MatmulPath::AvxVnni => int8_matmul_prepacked_avx_vnni_kernel,
+        #[cfg(target_arch = "x86_64")]
+        Int8MatmulPath::Avx2 => int8_matmul_prepacked_avx2_widen_kernel,
+        #[cfg(target_arch = "aarch64")]
+        Int8MatmulPath::NeonI8mm => int8_matmul_prepacked_neon_i8mm_kernel,
+        #[cfg(target_arch = "aarch64")]
+        Int8MatmulPath::NeonDotprod => int8_matmul_prepacked_neon_sdot_kernel,
+        _ => int8_matmul_prepacked_scalar,
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn int8_matmul_avx512_vnni_kernel(
+    a: &[i8],
+    b: &[i8],
+    m: usize,
+    k: usize,
+    n: usize,
+    out: &mut [i32],
+) {
+    // SAFETY: selected only after `host_cpu().features.x86_avx512_vnni()`.
+    unsafe { int8_matmul_avx512_vnni(a, b, m, k, n, out) };
+}
+
+#[cfg(target_arch = "x86_64")]
+fn int8_matmul_avx_vnni_kernel(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.x86_avx_vnni()`.
+    unsafe { int8_matmul_avx_vnni(a, b, m, k, n, out) };
+}
+
+#[cfg(target_arch = "x86_64")]
+fn int8_matmul_avx2_widen_kernel(
+    a: &[i8],
+    b: &[i8],
+    m: usize,
+    k: usize,
+    n: usize,
+    out: &mut [i32],
+) {
+    // SAFETY: selected only after `host_cpu().features.avx2`.
+    unsafe { int8_matmul_avx2_widen(a, b, m, k, n, out) };
+}
+
+#[cfg(target_arch = "aarch64")]
+fn int8_matmul_neon_i8mm_kernel(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.aarch64_neon_i8mm()`.
+    unsafe { int8_matmul_neon_i8mm(a, b, m, k, n, out) };
+}
+
+#[cfg(target_arch = "aarch64")]
+fn int8_matmul_neon_sdot_kernel(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.aarch64_neon_dotprod()`.
+    unsafe { int8_matmul_neon_sdot(a, b, m, k, n, out) };
+}
+
+#[cfg(target_arch = "x86_64")]
+fn int8_matmul_prepacked_avx512_vnni_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.x86_avx512_vnni()`.
+    unsafe { int8_matmul_prepacked_avx512_vnni(a, b, m, out) };
+}
+
+#[cfg(target_arch = "x86_64")]
+fn int8_matmul_prepacked_avx_vnni_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.x86_avx_vnni()`.
+    unsafe { int8_matmul_prepacked_avx_vnni(a, b, m, out) };
+}
+
+#[cfg(target_arch = "x86_64")]
+fn int8_matmul_prepacked_avx2_widen_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.avx2`.
+    unsafe { int8_matmul_prepacked_avx2_widen(a, b, m, out) };
+}
+
+#[cfg(target_arch = "aarch64")]
+fn int8_matmul_prepacked_neon_i8mm_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.aarch64_neon_i8mm()`.
+    unsafe { int8_matmul_prepacked_neon_i8mm(a, b, m, out) };
+}
+
+#[cfg(target_arch = "aarch64")]
+fn int8_matmul_prepacked_neon_sdot_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    // SAFETY: selected only after `host_cpu().features.aarch64_neon_dotprod()`.
+    unsafe { int8_matmul_prepacked_neon_sdot(a, b, m, out) };
+}
+
 /// Runtime-dispatched int8 GEMM. Picks the best variant available on the
 /// host CPU; falls back to scalar when no SIMD path matches.
 pub fn int8_matmul_dispatch(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
@@ -924,40 +1184,7 @@ pub fn int8_matmul_dispatch(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, ou
     debug_assert_eq!(b.len(), k * n);
     debug_assert_eq!(out.len(), m * n);
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && std::is_x86_feature_detected!("avx512vnni")
-        {
-            unsafe { int8_matmul_avx512_vnni(a, b, m, k, n, out) };
-            return;
-        }
-        if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("avxvnni") {
-            unsafe { int8_matmul_avx_vnni(a, b, m, k, n, out) };
-            return;
-        }
-        if std::is_x86_feature_detected!("avx2") {
-            unsafe { int8_matmul_avx2_widen(a, b, m, k, n, out) };
-            return;
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon")
-            && std::arch::is_aarch64_feature_detected!("i8mm")
-        {
-            unsafe { int8_matmul_neon_i8mm(a, b, m, k, n, out) };
-            return;
-        }
-        if std::arch::is_aarch64_feature_detected!("neon")
-            && std::arch::is_aarch64_feature_detected!("dotprod")
-        {
-            unsafe { int8_matmul_neon_sdot(a, b, m, k, n, out) };
-            return;
-        }
-    }
-    int8_matmul_scalar(a, b, m, k, n, out);
+    selected_int8_matmul_kernel()(a, b, m, k, n, out);
 }
 
 /// Runtime-dispatched INT8 GEMM for a load-time packed RHS.
@@ -969,34 +1196,7 @@ pub fn int8_matmul_prepacked_dispatch(a: &[i8], b: &PackedI8B, m: usize, out: &m
     debug_assert_eq!(a.len(), m * b.k);
     debug_assert_eq!(out.len(), m * b.n);
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && std::is_x86_feature_detected!("avx512vnni")
-        {
-            unsafe { int8_matmul_prepacked_avx512_vnni(a, b, m, out) };
-            return;
-        }
-        if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("avxvnni") {
-            unsafe { int8_matmul_prepacked_avx_vnni(a, b, m, out) };
-            return;
-        }
-        if std::is_x86_feature_detected!("avx2") {
-            unsafe { int8_matmul_prepacked_avx2_widen(a, b, m, out) };
-            return;
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon")
-            && std::arch::is_aarch64_feature_detected!("dotprod")
-        {
-            unsafe { int8_matmul_prepacked_neon_sdot(a, b, m, out) };
-            return;
-        }
-    }
-    int8_matmul_prepacked_scalar(a, b, m, out);
+    selected_int8_prepacked_kernel()(a, b, m, out);
 }
 
 #[cfg(test)]
@@ -1086,7 +1286,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn neon_sdot_matches_scalar_when_available() {
-        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+        if !crate::host_cpu().features.aarch64_neon_dotprod() {
             return;
         }
         let a = pseudo_random(0x1234, 32 * 32);
@@ -1100,9 +1300,8 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn neon_i8mm_matches_scalar_when_available() {
-        if !(std::arch::is_aarch64_feature_detected!("dotprod")
-            && std::arch::is_aarch64_feature_detected!("i8mm"))
-        {
+        let features = crate::host_cpu().features;
+        if !features.aarch64_neon_i8mm() {
             return;
         }
         for &(m, k, n) in &[(8, 64, 16), (5, 32, 7), (4, 24, 4)] {
@@ -1112,13 +1311,18 @@ mod tests {
             let mut got = vec![0_i32; m * n];
             unsafe { int8_matmul_neon_i8mm(&a, &b, m, k, n, &mut got) };
             assert_eq!(got, expected, "shape m={m} k={k} n={n}");
+
+            let packed = pack_i8_b_for_matmul(&b, k, n);
+            let mut got_prepacked = vec![0_i32; m * n];
+            unsafe { int8_matmul_prepacked_neon_i8mm(&a, &packed, m, &mut got_prepacked) };
+            assert_eq!(got_prepacked, expected, "prepacked shape m={m} k={k} n={n}");
         }
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx2_widen_matches_scalar_when_available() {
-        if !std::is_x86_feature_detected!("avx2") {
+        if !crate::host_cpu().features.avx2 {
             return;
         }
         let a = pseudo_random(0x1234, 32 * 32);
@@ -1132,7 +1336,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx_vnni_matches_scalar_when_available() {
-        if !(std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("avxvnni")) {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx_vnni() {
             return;
         }
         let a = pseudo_random(0x1234, 8 * 96);
@@ -1146,10 +1351,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx512_vnni_matches_scalar_when_available() {
-        if !(std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && std::is_x86_feature_detected!("avx512vnni"))
-        {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx512_vnni() {
             return;
         }
         let a = pseudo_random(0xC0FFEE, 8 * 128);
@@ -1163,10 +1366,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx512_vnni_blocked_mr8_path_matches_scalar() {
-        if !(std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && std::is_x86_feature_detected!("avx512vnni"))
-        {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx512_vnni() {
             return;
         }
         for &(m, k, n) in &[
@@ -1188,10 +1389,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx512_vnni_blocked_path_matches_scalar() {
-        if !(std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && std::is_x86_feature_detected!("avx512vnni"))
-        {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx512_vnni() {
             return;
         }
         // Shapes that hit the MR=4 NR=16 register-blocked path. Cover

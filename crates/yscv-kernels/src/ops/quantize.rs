@@ -30,7 +30,7 @@ pub fn dequantize_int4_to_f32(packed: &[u8], scale: f32, zero_point: i8, output:
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if crate::host_cpu().features.neon {
             // SAFETY: guarded by runtime feature detection. All pointer
             // accesses stay within the bounds enforced by chunk iteration.
             unsafe {
@@ -42,7 +42,7 @@ pub fn dequantize_int4_to_f32(packed: &[u8], scale: f32, zero_point: i8, output:
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("sse2") {
+        if crate::host_cpu().features.sse2 {
             // SAFETY: guarded by runtime feature detection. Pointer
             // accesses bounded by chunk iteration.
             unsafe {
@@ -116,13 +116,14 @@ pub fn quantize_linear_f32_to_f32_i8_dispatch(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx512f") {
+        let features = crate::host_cpu().features;
+        if features.avx512f {
             unsafe {
                 quantize_linear_f32_to_f32_i8_avx512(data, scale, zero_point, output);
             }
             return;
         }
-        if std::is_x86_feature_detected!("avx2") {
+        if features.avx2 {
             unsafe {
                 quantize_linear_f32_to_f32_i8_avx2(data, scale, zero_point, output);
             }
@@ -132,7 +133,7 @@ pub fn quantize_linear_f32_to_f32_i8_dispatch(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if crate::host_cpu().features.neon {
             unsafe {
                 quantize_linear_f32_to_f32_i8_neon(data, scale, zero_point, output);
             }
@@ -165,13 +166,14 @@ pub fn quantize_linear_f32_to_i8_dispatch(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx512f") {
+        let features = crate::host_cpu().features;
+        if features.avx512f {
             unsafe {
                 quantize_linear_f32_to_i8_avx512(data, scale, zero_point, output);
             }
             return;
         }
-        if std::is_x86_feature_detected!("avx2") {
+        if features.avx2 {
             unsafe {
                 quantize_linear_f32_to_i8_avx2(data, scale, zero_point, output);
             }
@@ -181,7 +183,7 @@ pub fn quantize_linear_f32_to_i8_dispatch(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if crate::host_cpu().features.neon {
             unsafe {
                 quantize_linear_f32_to_i8_neon(data, scale, zero_point, output);
             }
@@ -535,7 +537,7 @@ unsafe fn dequantize_int4_to_f32_neon(
     };
 
     // SAFETY: all intrinsics below require NEON, which is guaranteed
-    // by the caller's `is_aarch64_feature_detected!("neon")` check.
+    // by the caller's `host_cpu().features.neon` check.
     // Pointer arithmetic stays within bounds: chunk loop processes
     // 8 packed bytes → 16 f32 outputs at a time; tail handles remainder.
     unsafe {
@@ -615,7 +617,7 @@ unsafe fn dequantize_int4_to_f32_sse2(
     };
 
     // SAFETY: all intrinsics below require SSE2, which is guaranteed
-    // by the caller's `is_x86_feature_detected!("sse2")` check.
+    // by the caller's `host_cpu().features.sse2` check.
     unsafe {
         let scale_vec = _mm_set1_ps(scale);
         let zp_vec = _mm_set1_epi16(zero_point as i16);

@@ -318,10 +318,8 @@ pub fn packed_int4_gemv_dispatch(
 ) {
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && group_size.is_multiple_of(32)
-        {
+        let features = crate::host_cpu().features;
+        if features.x86_avx512_bw() && group_size.is_multiple_of(32) {
             unsafe {
                 packed_int4_gemv_avx512(
                     weight_packed,
@@ -335,10 +333,7 @@ pub fn packed_int4_gemv_dispatch(
             };
             return;
         }
-        if std::is_x86_feature_detected!("avx2")
-            && std::is_x86_feature_detected!("fma")
-            && group_size.is_multiple_of(16)
-        {
+        if features.x86_avx2_fma() && group_size.is_multiple_of(16) {
             unsafe {
                 packed_int4_gemv_avx2(
                     weight_packed,
@@ -355,7 +350,7 @@ pub fn packed_int4_gemv_dispatch(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") && group_size.is_multiple_of(16) {
+        if crate::host_cpu().features.neon && group_size.is_multiple_of(16) {
             unsafe {
                 packed_int4_gemv_neon(
                     weight_packed,
@@ -562,11 +557,8 @@ pub fn packed_int4_gemm_dispatch(
 ) {
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx2")
-            && std::is_x86_feature_detected!("fma")
-            && group_size.is_multiple_of(8)
-            && group_size <= 256
-        {
+        let features = crate::host_cpu().features;
+        if features.x86_avx2_fma() && group_size.is_multiple_of(8) && group_size <= 256 {
             unsafe {
                 packed_int4_gemm_avx2(
                     weight_packed,
@@ -584,10 +576,7 @@ pub fn packed_int4_gemm_dispatch(
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon")
-            && group_size.is_multiple_of(4)
-            && group_size <= 256
-        {
+        if crate::host_cpu().features.neon && group_size.is_multiple_of(4) && group_size <= 256 {
             unsafe {
                 packed_int4_gemm_neon(
                     weight_packed,
@@ -868,7 +857,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx2_matches_scalar_when_available() {
-        if !(std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")) {
+        let features = crate::host_cpu().features;
+        if !features.x86_avx2_fma() {
             return;
         }
         let m_w = 8;
@@ -912,7 +902,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn neon_matches_scalar_when_available() {
-        if !std::arch::is_aarch64_feature_detected!("neon") {
+        if !crate::host_cpu().features.neon {
             return;
         }
         let m_w = 8;

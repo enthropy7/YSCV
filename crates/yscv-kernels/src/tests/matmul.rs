@@ -698,7 +698,7 @@ fn pointwise_conv_n32_relu_bypasses_avx512_fast_path() {
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn hgemm_6x16_neon_smoke() {
-    if !std::arch::is_aarch64_feature_detected!("fp16") {
+    if !crate::host_cpu().features.fp16 {
         return; // older ARM — kernel not callable, nothing to verify.
     }
 
