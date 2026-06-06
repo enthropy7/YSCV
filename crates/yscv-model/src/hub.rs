@@ -2,7 +2,7 @@
 //!
 //! Uses `curl` via `std::process::Command` to avoid adding heavy HTTP
 //! dependencies.  Downloaded `.safetensors` files are cached under
-//! `$RUSTCV_CACHE_DIR` (or `~/.yscv/models/` by default) and validated
+//! `$YSCV_CACHE_DIR` (or `~/.yscv/models/` by default) and validated
 //! by expected file size.
 
 use std::collections::HashMap;
@@ -40,9 +40,9 @@ pub struct ModelHub {
 
 /// Returns the default cache directory for downloaded model weights.
 ///
-/// Uses `$RUSTCV_CACHE_DIR` if set, otherwise `~/.yscv/models/`.
+/// Uses `$YSCV_CACHE_DIR` if set, otherwise `~/.yscv/models/`.
 pub fn default_cache_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("RUSTCV_CACHE_DIR") {
+    if let Ok(dir) = std::env::var("YSCV_CACHE_DIR") {
         return PathBuf::from(dir);
     }
     // Fall back to ~/.yscv/models/

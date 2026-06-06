@@ -1,9 +1,9 @@
-use yscv_tensor::Tensor;
+use yscv_tensor::{Tensor, TensorError};
 
 use crate::{
-    KernelError, ParallelElementwiseConfig, log_softmax_last_dim, log_softmax_last_dim_with_config,
-    logsumexp_last_dim, logsumexp_last_dim_with_config, softmax_last_dim,
-    softmax_last_dim_with_config,
+    KernelError, ParallelElementwiseConfig, log_softmax_last_dim, log_softmax_last_dim_out,
+    log_softmax_last_dim_with_config, logsumexp_last_dim, logsumexp_last_dim_with_config,
+    softmax_last_dim, softmax_last_dim_out, softmax_last_dim_with_config,
 };
 
 use super::{assert_slice_close, build_tensor};
@@ -44,6 +44,26 @@ fn softmax_last_dim_with_config_disabled_matches_default() {
     let disabled =
         softmax_last_dim_with_config(&input, ParallelElementwiseConfig::disabled()).unwrap();
     assert_eq!(baseline, disabled);
+}
+
+#[test]
+fn softmax_last_dim_out_matches_allocating_path() {
+    let input = build_tensor(&[64, 32], 0.52);
+    let baseline = softmax_last_dim(&input).unwrap();
+    let mut output = Tensor::zeros(input.shape().to_vec()).unwrap();
+    softmax_last_dim_out(&input, &mut output).unwrap();
+    assert_eq!(baseline, output);
+}
+
+#[test]
+fn softmax_last_dim_out_rejects_shape_mismatch() {
+    let input = build_tensor(&[2, 3], 0.52);
+    let mut output = Tensor::zeros(vec![3, 2]).unwrap();
+    let err = softmax_last_dim_out(&input, &mut output).unwrap_err();
+    assert!(matches!(
+        err,
+        KernelError::Tensor(TensorError::ShapeMismatch { .. })
+    ));
 }
 
 #[test]
@@ -92,6 +112,15 @@ fn log_softmax_last_dim_with_config_disabled_matches_default() {
     let disabled =
         log_softmax_last_dim_with_config(&input, ParallelElementwiseConfig::disabled()).unwrap();
     assert_eq!(baseline, disabled);
+}
+
+#[test]
+fn log_softmax_last_dim_out_matches_allocating_path() {
+    let input = build_tensor(&[64, 32], 0.66);
+    let baseline = log_softmax_last_dim(&input).unwrap();
+    let mut output = Tensor::zeros(input.shape().to_vec()).unwrap();
+    log_softmax_last_dim_out(&input, &mut output).unwrap();
+    assert_eq!(baseline, output);
 }
 
 #[test]

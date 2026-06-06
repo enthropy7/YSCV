@@ -541,6 +541,17 @@ Most used knobs:
   `K=16,N=16` pointwise kernel with fused bias/residual/activation epilogue.
 - `YSCV_NO_POINTWISE_NX16_DIRECT=1` — disable the single-thread direct
   NHWC residual pointwise kernel for small-`M`, `N % 16 == 0` ConvAdd blocks.
+- `YSCV_POOL=yscv` — route standalone `par_chunks_mut_dispatch` kernels
+  through the pinned yscv thread pool instead of Rayon. This is useful for
+  single-op CPU benches and lowers the softmax parallel threshold for the
+  low-overhead pool; the default remains Rayon unless this env var is set.
+- `YSCV_POOL_SPIN_US=<N>` — keep yscv-pool workers in a short idle spin before
+  parking. Default is `0`, which is tuned for normal inference graphs. For
+  tight standalone single-op microbench loops with `YSCV_POOL=yscv`, values
+  around `200` can remove the last park/unpark overhead on Zen 4.
+- `YSCV_X86_MEMORY_SIMD=avx2` — on x86/x86_64 with AVX-512 available,
+  route memory-bound standalone elementwise/ReLU dispatch through the
+  256-bit AVX path for A/B measurement. Default keeps AVX-512 enabled.
 - `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` and
   `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` — low-k blocked matmul route.
 - `YSCV_NO_X86_LOW_K_BLOCKED=1` — disable the x86 low-k pointwise route

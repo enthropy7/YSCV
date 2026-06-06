@@ -33,9 +33,11 @@ pub use config::{
     ParallelElementwiseConfig, ParallelMatmulConfig,
 };
 pub use elementwise::{
-    add_inplace, add_relu_inplace, add_with_config, exp, exp_with_config, gelu, mish,
-    mul_with_config, relu, relu_inplace, relu_out, relu_with_config, sigmoid, sigmoid_with_config,
-    silu, silu_inplace, sub_with_config, tanh_act, tanh_act_with_config,
+    add_inplace, add_out, add_out_with_config, add_relu_inplace, add_with_config, exp,
+    exp_with_config, gelu, mish, mul_out, mul_out_with_config, mul_with_config, relu, relu_inplace,
+    relu_out, relu_out_with_config, relu_with_config, sigmoid, sigmoid_with_config, silu_inplace,
+    silu_with_config, sub_out, sub_out_with_config, sub_with_config, tanh_act,
+    tanh_act_with_config,
 };
 #[cfg(target_arch = "aarch64")]
 pub use matmul::hgemm_6x16_neon;
@@ -115,8 +117,9 @@ pub use nchwc_pack::{PackedNChwBc, pack_dw_nchwc_for_session, runtime_nchwc_bloc
 pub use nchwc_pointwise::nchwc_pw_compute;
 pub use norm::{
     batch_norm2d_nhwc_with_config_and_pool, group_norm_nhwc_with_config_and_pool,
-    layer_norm_last_dim_with_config_and_pool, log_softmax_last_dim_with_config_and_pool,
-    logsumexp_last_dim_with_config_and_pool, rms_norm_last_dim_with_config_and_pool,
+    layer_norm_last_dim_with_config_and_pool, log_softmax_last_dim_out_with_config_and_pool,
+    log_softmax_last_dim_with_config_and_pool, logsumexp_last_dim_with_config_and_pool,
+    rms_norm_last_dim_with_config_and_pool, softmax_last_dim_out_with_config_and_pool,
     softmax_last_dim_with_config_and_pool,
 };
 pub use pool::{

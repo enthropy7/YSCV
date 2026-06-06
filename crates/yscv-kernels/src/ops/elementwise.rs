@@ -1,53 +1,24 @@
 use rayon::ThreadPool;
-use yscv_tensor::{AlignedVec, Tensor};
+use yscv_tensor::{AlignedVec, Tensor, TensorError};
 
 use super::super::error::KernelError;
 use super::config::{
     BinaryKind, PARALLEL_SLICE_CHUNK_ELEMENTS, ParallelElementwiseConfig, should_parallelize_len,
 };
 use super::simd::{
-    binary_same_shape_dispatch, exp_slice_dispatch, relu_slice_dispatch, relu_to_slice_dispatch,
-    sigmoid_slice_dispatch, silu_slice_dispatch, tanh_slice_dispatch,
+    binary_same_shape_dispatch, exp_slice_dispatch, gelu_sigmoid_slice_dispatch,
+    relu_slice_dispatch, relu_to_slice_dispatch, sigmoid_slice_dispatch, silu_slice_dispatch,
+    tanh_slice_dispatch,
 };
+
+// 48K floats gives exp enough rows per task to amortize rayon wake-up while
+// still feeding all cores on 1M-element activation workloads.
+const EXP_PARALLEL_CHUNK_ELEMENTS: usize = 49_152;
 
 /// Elementwise ReLU activation.
 #[inline]
-#[allow(unsafe_code)]
 pub fn relu(input: &Tensor) -> Tensor {
-    let input_data = input.data();
-    let len = input_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
-
-    const PAR_THRESH: usize = 100_000;
-    if len >= PAR_THRESH {
-        let n_chunks = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(4);
-        let chunk = len.div_ceil(n_chunks);
-        // SAFETY: Each chunk accesses disjoint, non-overlapping index ranges.
-        // input_data lives for the duration of this function. output is owned.
-        let in_base = input_data.as_ptr();
-        let out_base = output.as_mut_ptr();
-        std::thread::scope(|s| {
-            for t in 0..n_chunks {
-                let start = t * chunk;
-                let end = (start + chunk).min(len);
-                if start >= end {
-                    break;
-                }
-                let inp = unsafe { std::slice::from_raw_parts(in_base.add(start), end - start) };
-                let out =
-                    unsafe { std::slice::from_raw_parts_mut(out_base.add(start), end - start) };
-                s.spawn(move || {
-                    relu_to_slice_dispatch(inp, out);
-                });
-            }
-        });
-    } else {
-        relu_to_slice_dispatch(input_data, &mut output);
-    }
-
-    Tensor::from_raw_parts(input.shape(), input.strides(), output)
+    relu_with_config(input, ParallelElementwiseConfig::default())
 }
 
 /// In-place element-wise add: `lhs += rhs`. Same-shape only.
@@ -75,6 +46,43 @@ pub fn relu_inplace(tensor: &mut Tensor) {
 pub fn relu_out(input: &Tensor, output: &mut Tensor) {
     debug_assert_eq!(input.shape(), output.shape());
     relu_to_slice_dispatch(input.data(), output.data_mut());
+}
+
+/// ReLU writing into a pre-allocated output tensor with explicit parallelization.
+pub fn relu_out_with_config(
+    input: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    relu_out_with_config_and_pool(input, output, config, None)
+}
+
+/// ReLU writing into a pre-allocated output tensor with explicit pool routing.
+pub fn relu_out_with_config_and_pool(
+    input: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
+) -> Result<(), KernelError> {
+    ensure_same_shape(input, output)?;
+    let input_data = input.data();
+    let len = input_data.len();
+    let output_data = output.data_mut();
+    if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
+        let chunk_elements = parallel_chunk_elements_for_threads(len, thread_pool);
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output_data,
+            chunk_elements,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * chunk_elements;
+                let end = start + out_chunk.len();
+                relu_to_slice_dispatch(&input_data[start..end], out_chunk);
+            },
+        );
+    } else {
+        relu_to_slice_dispatch(input_data, output_data);
+    }
+    Ok(())
 }
 
 /// Elementwise sigmoid activation.
@@ -105,11 +113,12 @@ pub fn relu_with_config_and_pool(
     let len = input_data.len();
     let mut output = AlignedVec::<f32>::uninitialized(len);
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
+        let chunk_elements = parallel_chunk_elements_for_threads(len, thread_pool);
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
-            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            chunk_elements,
             |chunk_idx, out_chunk| {
-                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let start = chunk_idx * chunk_elements;
                 let end = start + out_chunk.len();
                 relu_to_slice_dispatch(&input_data[start..end], out_chunk);
             },
@@ -126,16 +135,25 @@ pub fn relu_with_config_and_pool(
 #[allow(unsafe_code)]
 pub fn sigmoid_with_config_and_pool(
     input: &Tensor,
-    _config: ParallelElementwiseConfig,
-    _thread_pool: Option<&ThreadPool>,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    // Sigmoid uses a heavy polynomial exp + divide per element.
-    // Single-threaded SIMD is faster than rayon chunking for ≤4M elements
-    // due to dispatch overhead (62 tasks × 50µs > compute savings).
     let mut output = AlignedVec::<f32>::uninitialized(len);
-    sigmoid_slice_dispatch(input_data, &mut output);
+    if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let end = start + out_chunk.len();
+                sigmoid_slice_dispatch(&input_data[start..end], out_chunk);
+            },
+        );
+    } else {
+        sigmoid_slice_dispatch(input_data, &mut output);
+    }
     Tensor::from_raw_parts(input.shape(), input.strides(), output)
 }
 
@@ -164,9 +182,9 @@ pub fn exp_with_config_and_pool(
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
-            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            EXP_PARALLEL_CHUNK_ELEMENTS,
             |chunk_idx, out_chunk| {
-                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let start = chunk_idx * EXP_PARALLEL_CHUNK_ELEMENTS;
                 let end = start + out_chunk.len();
                 exp_slice_dispatch(&input_data[start..end], out_chunk);
             },
@@ -193,15 +211,25 @@ pub fn tanh_act_with_config(input: &Tensor, config: ParallelElementwiseConfig) -
 #[allow(unsafe_code)]
 pub fn tanh_act_with_config_and_pool(
     input: &Tensor,
-    _config: ParallelElementwiseConfig,
-    _thread_pool: Option<&ThreadPool>,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    // Tanh uses a heavy polynomial exp + divide per element.
-    // Single-threaded SIMD is faster than rayon chunking for typical sizes.
     let mut output = AlignedVec::<f32>::uninitialized(len);
-    tanh_slice_dispatch(input_data, &mut output);
+    if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let end = start + out_chunk.len();
+                tanh_slice_dispatch(&input_data[start..end], out_chunk);
+            },
+        );
+    } else {
+        tanh_slice_dispatch(input_data, &mut output);
+    }
     Tensor::from_raw_parts(input.shape(), input.strides(), output)
 }
 
@@ -211,7 +239,7 @@ const ACTIVATION_CHUNK_SIZE: usize = 8192;
 /// Elementwise GELU activation (fast approximation): `x * sigmoid(1.702 * x)`.
 ///
 /// # Safety
-/// `AlignedVec::uninitialized` allocates without zeroing. `gelu_slice_out`
+/// `AlignedVec::uninitialized` allocates without zeroing. `gelu_sigmoid_slice_dispatch`
 /// writes every element before anything reads from the buffer.
 #[allow(unsafe_code)]
 pub fn gelu(input: &Tensor) -> Tensor {
@@ -224,20 +252,13 @@ pub fn gelu(input: &Tensor) -> Tensor {
             ACTIVATION_CHUNK_SIZE,
             |ci, out_chunk| {
                 let start = ci * ACTIVATION_CHUNK_SIZE;
-                gelu_slice_out(&src[start..start + out_chunk.len()], out_chunk);
+                gelu_sigmoid_slice_dispatch(&src[start..start + out_chunk.len()], out_chunk);
             },
         );
     } else {
-        gelu_slice_out(src, &mut output);
+        gelu_sigmoid_slice_dispatch(src, &mut output);
     }
     Tensor::from_raw_parts(input.shape(), input.strides(), output)
-}
-
-/// Elementwise SiLU (Swish) activation: `x * sigmoid(x)`.
-///
-/// Uses fused SIMD kernel (sigmoid + multiply in one pass) to halve memory bandwidth.
-pub fn silu(input: &Tensor) -> Tensor {
-    silu_with_config(input, ParallelElementwiseConfig::disabled())
 }
 
 /// Elementwise SiLU activation with explicit parallelization heuristics.
@@ -251,15 +272,25 @@ pub fn silu_with_config(input: &Tensor, config: ParallelElementwiseConfig) -> Te
 #[allow(unsafe_code)]
 pub fn silu_with_config_and_pool(
     input: &Tensor,
-    _config: ParallelElementwiseConfig,
-    _thread_pool: Option<&ThreadPool>,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    // SiLU uses a heavy polynomial exp + divide + multiply per element.
-    // Single-threaded SIMD is faster than rayon chunking for typical sizes.
     let mut output = AlignedVec::<f32>::uninitialized(len);
-    silu_slice_dispatch(input_data, &mut output);
+    if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let end = start + out_chunk.len();
+                silu_slice_dispatch(&input_data[start..end], out_chunk);
+            },
+        );
+    } else {
+        silu_slice_dispatch(input_data, &mut output);
+    }
     Tensor::from_raw_parts(input.shape(), input.strides(), output)
 }
 
@@ -311,16 +342,6 @@ pub fn mish(input: &Tensor) -> Tensor {
     output
 }
 
-fn gelu_slice_out(src: &[f32], dst: &mut [f32]) {
-    for i in 0..src.len() {
-        let x = src[i];
-        let a = 1.702 * x;
-        let ea = (-a).exp();
-        let s = 1.0 / (1.0 + ea);
-        dst[i] = x * s;
-    }
-}
-
 fn mish_slice(data: &mut [f32]) {
     for i in 0..data.len() {
         let x = data[i];
@@ -348,6 +369,21 @@ pub fn add_with_config_and_pool(
     binary_with_config_and_pool(lhs, rhs, config, thread_pool, BinaryKind::Add)
 }
 
+/// Elementwise add writing into a pre-allocated output tensor.
+pub fn add_out(lhs: &Tensor, rhs: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    add_out_with_config(lhs, rhs, output, ParallelElementwiseConfig::default())
+}
+
+/// Elementwise add writing into a pre-allocated output tensor with explicit config.
+pub fn add_out_with_config(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    binary_out_with_config_and_pool(lhs, rhs, output, config, None, BinaryKind::Add)
+}
+
 /// Elementwise subtract with optional parallel same-shape execution.
 pub fn sub_with_config(
     lhs: &Tensor,
@@ -365,6 +401,21 @@ pub fn sub_with_config_and_pool(
     thread_pool: Option<&ThreadPool>,
 ) -> Result<Tensor, KernelError> {
     binary_with_config_and_pool(lhs, rhs, config, thread_pool, BinaryKind::Sub)
+}
+
+/// Elementwise subtract writing into a pre-allocated output tensor.
+pub fn sub_out(lhs: &Tensor, rhs: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    sub_out_with_config(lhs, rhs, output, ParallelElementwiseConfig::default())
+}
+
+/// Elementwise subtract writing into a pre-allocated output tensor with explicit config.
+pub fn sub_out_with_config(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    binary_out_with_config_and_pool(lhs, rhs, output, config, None, BinaryKind::Sub)
 }
 
 /// Elementwise multiply with optional parallel same-shape execution.
@@ -386,6 +437,21 @@ pub fn mul_with_config_and_pool(
     binary_with_config_and_pool(lhs, rhs, config, thread_pool, BinaryKind::Mul)
 }
 
+/// Elementwise multiply writing into a pre-allocated output tensor.
+pub fn mul_out(lhs: &Tensor, rhs: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    mul_out_with_config(lhs, rhs, output, ParallelElementwiseConfig::default())
+}
+
+/// Elementwise multiply writing into a pre-allocated output tensor with explicit config.
+pub fn mul_out_with_config(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    binary_out_with_config_and_pool(lhs, rhs, output, config, None, BinaryKind::Mul)
+}
+
 fn binary_with_config_and_pool(
     lhs: &Tensor,
     rhs: &Tensor,
@@ -399,15 +465,15 @@ fn binary_with_config_and_pool(
 
     let left = lhs.data();
     let right = rhs.data();
-    let shape = lhs.shape().to_vec();
     let mut output = AlignedVec::<f32>::uninitialized(left.len());
 
     if should_parallelize_len(left.len(), config.min_parallel_elements, thread_pool) {
+        let chunk_elements = binary_parallel_chunk_elements(left.len(), thread_pool);
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
-            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            chunk_elements,
             |chunk_idx, out_chunk| {
-                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let start = chunk_idx * chunk_elements;
                 let end = start + out_chunk.len();
                 binary_same_shape_dispatch(&left[start..end], &right[start..end], out_chunk, kind);
             },
@@ -416,7 +482,64 @@ fn binary_with_config_and_pool(
         binary_same_shape_dispatch(left, right, &mut output, kind);
     }
 
-    Tensor::from_aligned(shape, output).map_err(Into::into)
+    Ok(Tensor::from_raw_parts(lhs.shape(), lhs.strides(), output))
+}
+
+fn binary_out_with_config_and_pool(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
+    kind: BinaryKind,
+) -> Result<(), KernelError> {
+    ensure_same_shape(lhs, rhs)?;
+    ensure_same_shape(lhs, output)?;
+
+    let left = lhs.data();
+    let right = rhs.data();
+    let len = left.len();
+    let output_data = output.data_mut();
+
+    if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
+        let chunk_elements = binary_parallel_chunk_elements(len, thread_pool);
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output_data,
+            chunk_elements,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * chunk_elements;
+                let end = start + out_chunk.len();
+                binary_same_shape_dispatch(&left[start..end], &right[start..end], out_chunk, kind);
+            },
+        );
+    } else {
+        binary_same_shape_dispatch(left, right, output_data, kind);
+    }
+
+    Ok(())
+}
+
+fn ensure_same_shape(lhs: &Tensor, rhs: &Tensor) -> Result<(), KernelError> {
+    if lhs.shape() == rhs.shape() {
+        return Ok(());
+    }
+    Err(TensorError::ShapeMismatch {
+        left: lhs.shape().to_vec(),
+        right: rhs.shape().to_vec(),
+    }
+    .into())
+}
+
+fn binary_parallel_chunk_elements(len: usize, thread_pool: Option<&ThreadPool>) -> usize {
+    parallel_chunk_elements_for_threads(len, thread_pool)
+}
+
+fn parallel_chunk_elements_for_threads(len: usize, thread_pool: Option<&ThreadPool>) -> usize {
+    let threads = thread_pool
+        .map(ThreadPool::current_num_threads)
+        .unwrap_or_else(rayon::current_num_threads)
+        .max(1);
+    len.div_ceil(threads).max(PARALLEL_SLICE_CHUNK_ELEMENTS)
 }
 
 fn binary_fallback(lhs: &Tensor, rhs: &Tensor, kind: BinaryKind) -> Result<Tensor, KernelError> {

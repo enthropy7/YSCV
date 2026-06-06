@@ -950,7 +950,7 @@ pub mod videotoolbox {
 #[allow(unsafe_code, non_camel_case_types)]
 pub mod vaapi {
     use super::*;
-    use std::ffi::c_void;
+    use std::ffi::{c_char, c_void};
     use std::ptr;
 
     // --- Raw FFI to libva ---
@@ -1066,7 +1066,7 @@ pub mod vaapi {
     }
 
     const VA_RT_FORMAT_YUV420: u32 = 0x00000001;
-    const VASliceDataBufferType: i32 = 5;
+    const VA_SLICE_DATA_BUFFER_TYPE: i32 = 5;
 
     #[link(name = "va-drm")]
     unsafe extern "C" {
@@ -1091,7 +1091,7 @@ pub mod vaapi {
         pub fn new(codec: VideoCodec) -> Result<Self, VideoError> {
             // Try to open DRM render node
             // SAFETY: (category 1) path is a null-terminated static byte string.
-            let fd = unsafe { libc_open(b"/dev/dri/renderD128\0".as_ptr() as *const _, 2) };
+            let fd = unsafe { libc_open(c"/dev/dri/renderD128".as_ptr(), 2) };
             if fd < 0 {
                 // No DRM device — fall back to software
                 let sw: Box<dyn VideoDecoder> = match codec {
@@ -1199,32 +1199,40 @@ pub mod vaapi {
             self.height = height;
             let num_surfaces: u32 = 4;
             self.surfaces = vec![0u32; num_surfaces as usize];
-            let status = vaCreateSurfaces(
-                self.display,
-                VA_RT_FORMAT_YUV420,
-                width,
-                height,
-                self.surfaces.as_mut_ptr(),
-                num_surfaces,
-                ptr::null(),
-                0,
-            );
+            // SAFETY: display/config were created by `new`, the surfaces buffer
+            // has `num_surfaces` slots, and VA status is checked below.
+            let status = unsafe {
+                vaCreateSurfaces(
+                    self.display,
+                    VA_RT_FORMAT_YUV420,
+                    width,
+                    height,
+                    self.surfaces.as_mut_ptr(),
+                    num_surfaces,
+                    ptr::null(),
+                    0,
+                )
+            };
             if status != VA_STATUS_SUCCESS {
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaCreateSurfaces failed: {status}"
                 )));
             }
             let mut ctx: VAContextID = 0;
-            let status = vaCreateContext(
-                self.display,
-                self.config,
-                width as i32,
-                height as i32,
-                0,
-                self.surfaces.as_mut_ptr(),
-                num_surfaces as i32,
-                &mut ctx,
-            );
+            // SAFETY: display/config and surfaces are valid VA handles from the
+            // successful calls above; context creation status is checked below.
+            let status = unsafe {
+                vaCreateContext(
+                    self.display,
+                    self.config,
+                    width as i32,
+                    height as i32,
+                    0,
+                    self.surfaces.as_mut_ptr(),
+                    num_surfaces as i32,
+                    &mut ctx,
+                )
+            };
             if status != VA_STATUS_SUCCESS {
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaCreateContext failed: {status}"
@@ -1244,7 +1252,9 @@ pub mod vaapi {
             let surface = self.surfaces[surface_idx % self.surfaces.len()];
 
             // Begin picture
-            let status = vaBeginPicture(self.display, self.context, surface);
+            // SAFETY: display/context/surface are live VA handles owned by self;
+            // the returned status is checked before any dependent call.
+            let status = unsafe { vaBeginPicture(self.display, self.context, surface) };
             if status != VA_STATUS_SUCCESS {
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaBeginPicture failed: {status}"
@@ -1253,64 +1263,99 @@ pub mod vaapi {
 
             // Create and render slice data buffer
             let mut slice_buf: VABufferID = 0;
-            let status = vaCreateBuffer(
-                self.display,
-                self.context,
-                VASliceDataBufferType,
-                slice_data.len() as u32,
-                1,
-                slice_data.as_ptr() as *const c_void,
-                &mut slice_buf,
-            );
+            // SAFETY: slice_data is a live contiguous byte slice for the duration
+            // of the call, and VA returns a buffer handle checked via status.
+            let status = unsafe {
+                vaCreateBuffer(
+                    self.display,
+                    self.context,
+                    VA_SLICE_DATA_BUFFER_TYPE,
+                    slice_data.len() as u32,
+                    1,
+                    slice_data.as_ptr() as *const c_void,
+                    &mut slice_buf,
+                )
+            };
             if status != VA_STATUS_SUCCESS {
-                vaEndPicture(self.display, self.context);
+                // SAFETY: a picture was begun successfully above, so it must be
+                // ended before returning from this error path.
+                unsafe {
+                    vaEndPicture(self.display, self.context);
+                }
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaCreateBuffer(SliceData) failed: {status}"
                 )));
             }
 
-            let status = vaRenderPicture(self.display, self.context, &mut slice_buf, 1);
+            // SAFETY: slice_buf is a VA buffer handle produced by vaCreateBuffer,
+            // and the one-element handle array lives for the duration of the call.
+            let status = unsafe { vaRenderPicture(self.display, self.context, &mut slice_buf, 1) };
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
-                vaEndPicture(self.display, self.context);
+                // SAFETY: slice_buf is live on this path and the picture was
+                // begun successfully, so both resources are valid to release/end.
+                unsafe {
+                    vaDestroyBuffer(self.display, slice_buf);
+                    vaEndPicture(self.display, self.context);
+                }
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaRenderPicture failed: {status}"
                 )));
             }
 
             // End picture
-            let status = vaEndPicture(self.display, self.context);
+            // SAFETY: the picture was begun successfully and all render calls
+            // completed, so ending the picture is the next VAAPI state transition.
+            let status = unsafe { vaEndPicture(self.display, self.context) };
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
+                // SAFETY: slice_buf remains live until destroyed on every exit path.
+                unsafe {
+                    vaDestroyBuffer(self.display, slice_buf);
+                }
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaEndPicture failed: {status}"
                 )));
             }
 
             // Sync
-            let status = vaSyncSurface(self.display, surface);
+            // SAFETY: surface is one of self.surfaces and remains owned by this
+            // decoder while the sync operation completes.
+            let status = unsafe { vaSyncSurface(self.display, surface) };
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
+                // SAFETY: slice_buf remains live until destroyed on every exit path.
+                unsafe {
+                    vaDestroyBuffer(self.display, slice_buf);
+                }
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaSyncSurface failed: {status}"
                 )));
             }
 
             // Derive image and readback NV12
-            let mut image: VAImage = std::mem::zeroed();
-            let status = vaDeriveImage(self.display, surface, &mut image);
+            // SAFETY: VAImage is a plain C output struct that VA fills before use.
+            let mut image: VAImage = unsafe { std::mem::zeroed() };
+            // SAFETY: surface is synchronized and live; image points to writable
+            // stack storage and the returned status is checked before reading it.
+            let status = unsafe { vaDeriveImage(self.display, surface, &mut image) };
             if status != VA_STATUS_SUCCESS {
-                vaDestroyBuffer(self.display, slice_buf);
+                // SAFETY: slice_buf remains live until destroyed on every exit path.
+                unsafe {
+                    vaDestroyBuffer(self.display, slice_buf);
+                }
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaDeriveImage failed: {status}"
                 )));
             }
 
             let mut buf_ptr: *mut c_void = ptr::null_mut();
-            let status = vaMapBuffer(self.display, image.buf, &mut buf_ptr);
+            // SAFETY: image.buf is owned by the derived VAImage on this path and
+            // buf_ptr points to writable stack storage for the mapped pointer.
+            let status = unsafe { vaMapBuffer(self.display, image.buf, &mut buf_ptr) };
             if status != VA_STATUS_SUCCESS {
-                vaDestroyImage(self.display, image.image_id);
-                vaDestroyBuffer(self.display, slice_buf);
+                // SAFETY: image was derived successfully and slice_buf is live.
+                unsafe {
+                    vaDestroyImage(self.display, image.image_id);
+                    vaDestroyBuffer(self.display, slice_buf);
+                }
                 return Err(VideoError::Codec(format!(
                     "VA-API: vaMapBuffer failed: {status}"
                 )));
@@ -1323,19 +1368,24 @@ pub mod vaapi {
             let uv_offset = image.offsets[1] as usize;
 
             let mut rgb = vec![0u8; w * h * 3];
-            super::nv12_to_rgb8(
-                buf_ptr as *const u8,
-                y_pitch,
-                (buf_ptr as *const u8).add(uv_offset),
-                uv_pitch,
-                w,
-                h,
-                &mut rgb,
-            );
+            // SAFETY: vaMapBuffer returned a mapped NV12 image; pitches/offsets
+            // come from that VAImage, rgb has exactly w*h*3 bytes, and all VA
+            // resources are unmapped/destroyed after conversion.
+            unsafe {
+                super::nv12_to_rgb8(
+                    buf_ptr as *const u8,
+                    y_pitch,
+                    (buf_ptr as *const u8).add(uv_offset),
+                    uv_pitch,
+                    w,
+                    h,
+                    &mut rgb,
+                );
 
-            vaUnmapBuffer(self.display, image.buf);
-            vaDestroyImage(self.display, image.image_id);
-            vaDestroyBuffer(self.display, slice_buf);
+                vaUnmapBuffer(self.display, image.buf);
+                vaDestroyImage(self.display, image.image_id);
+                vaDestroyBuffer(self.display, slice_buf);
+            }
 
             Ok(Some(DecodedFrame {
                 width: w,
@@ -1351,7 +1401,7 @@ pub mod vaapi {
 
     unsafe extern "C" {
         #[link_name = "open"]
-        fn libc_open(path: *const u8, flags: i32) -> i32;
+        fn libc_open(path: *const c_char, flags: i32) -> i32;
     }
 
     impl VideoDecoder for VaapiDecoder {

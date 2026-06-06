@@ -531,6 +531,7 @@ pub fn apply_telemetry_update(td: &mut TelemetryData, update: &TelemetryUpdate) 
 mod serial {
     use super::{MavlinkMessage, MavlinkParser};
     use crate::VideoError;
+    use std::ffi::{CString, c_char};
 
     // termios constants (Linux aarch64 / x86_64)
     const TCGETS2: u64 = 0x802C_542A;
@@ -594,7 +595,7 @@ mod serial {
     unsafe extern "C" {
         fn ioctl(fd: i32, request: u64, ...) -> i32;
         fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-        fn open(path: *const u8, flags: i32) -> i32;
+        fn open(path: *const c_char, flags: i32) -> i32;
         fn close(fd: i32) -> i32;
     }
 
@@ -618,13 +619,12 @@ mod serial {
         /// Uses `extern "C"` FFI to call `open`, `ioctl` (TCGETS2/TCSETS2).
         /// All pointers are to stack-local structs owned by this function.
         pub fn open(device: &str, baud: u32) -> Result<Self, VideoError> {
-            let mut path_buf = Vec::with_capacity(device.len() + 1);
-            path_buf.extend_from_slice(device.as_bytes());
-            path_buf.push(0); // NUL terminator
+            let path = CString::new(device)
+                .map_err(|_| VideoError::Source("serial device path contains NUL".into()))?;
 
-            // SAFETY: path_buf is a valid NUL-terminated C string on the stack.
+            // SAFETY: path is a valid NUL-terminated C string.
             // open() returns a file descriptor or -1 on error.
-            let fd = unsafe { open(path_buf.as_ptr(), O_RDWR | O_NOCTTY | O_NONBLOCK) };
+            let fd = unsafe { open(path.as_ptr(), O_RDWR | O_NOCTTY | O_NONBLOCK) };
             if fd < 0 {
                 return Err(VideoError::Source(format!(
                     "cannot open serial device {device}"

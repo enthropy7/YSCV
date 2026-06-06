@@ -3,11 +3,20 @@
 //! Usage:
 //!   cargo run --release --example bench_mpsgraph_only --features metal-backend -- model.onnx [iters]
 
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
+fn main() {
+    eprintln!("bench_mpsgraph_only requires macOS with the metal-backend feature");
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::time::Instant;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_onnx::{compile_mpsgraph_plan, load_onnx_model_from_file, run_mpsgraph_plan};
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let model_path = args

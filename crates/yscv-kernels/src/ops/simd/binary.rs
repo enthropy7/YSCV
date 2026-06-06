@@ -17,8 +17,26 @@ use std::arch::x86_64::{
     _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps, _mm256_setzero_ps, _mm256_storeu_ps,
     _mm256_sub_ps,
 };
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{
+    _mm512_add_ps, _mm512_loadu_ps, _mm512_mul_ps, _mm512_storeu_ps, _mm512_sub_ps,
+};
 
 use super::super::config::BinaryKind;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn x86_memory_simd_forces_avx2() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("YSCV_X86_MEMORY_SIMD")
+            .map(|value| {
+                let value = value.to_ascii_lowercase();
+                matches!(value.as_str(), "avx2" | "ymm" | "256")
+            })
+            .unwrap_or(false)
+    })
+}
 
 #[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
 #[allow(unsafe_code, dead_code)]
@@ -141,6 +159,14 @@ pub fn binary_same_shape_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kin
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if !x86_memory_simd_forces_avx2() && std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime feature detection.
+            unsafe {
+                binary_same_shape_avx512(lhs, rhs, out, kind);
+            }
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             // SAFETY: guarded by runtime feature detection.
             unsafe {
@@ -284,6 +310,66 @@ unsafe fn binary_same_shape_scalar(lhs: &[f32], rhs: &[f32], out: &mut [f32], ki
 // ===========================================================================
 // Binary SIMD implementations
 // ===========================================================================
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn binary_same_shape_avx512(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind: BinaryKind) {
+    let len = lhs.len();
+    let left_ptr = lhs.as_ptr();
+    let right_ptr = rhs.as_ptr();
+    let out_ptr = out.as_mut_ptr();
+    let mut index = 0usize;
+
+    while index + 64 <= len {
+        let a0 = _mm512_loadu_ps(left_ptr.add(index));
+        let b0 = _mm512_loadu_ps(right_ptr.add(index));
+        let a1 = _mm512_loadu_ps(left_ptr.add(index + 16));
+        let b1 = _mm512_loadu_ps(right_ptr.add(index + 16));
+        let a2 = _mm512_loadu_ps(left_ptr.add(index + 32));
+        let b2 = _mm512_loadu_ps(right_ptr.add(index + 32));
+        let a3 = _mm512_loadu_ps(left_ptr.add(index + 48));
+        let b3 = _mm512_loadu_ps(right_ptr.add(index + 48));
+        match kind {
+            BinaryKind::Add => {
+                _mm512_storeu_ps(out_ptr.add(index), _mm512_add_ps(a0, b0));
+                _mm512_storeu_ps(out_ptr.add(index + 16), _mm512_add_ps(a1, b1));
+                _mm512_storeu_ps(out_ptr.add(index + 32), _mm512_add_ps(a2, b2));
+                _mm512_storeu_ps(out_ptr.add(index + 48), _mm512_add_ps(a3, b3));
+            }
+            BinaryKind::Sub => {
+                _mm512_storeu_ps(out_ptr.add(index), _mm512_sub_ps(a0, b0));
+                _mm512_storeu_ps(out_ptr.add(index + 16), _mm512_sub_ps(a1, b1));
+                _mm512_storeu_ps(out_ptr.add(index + 32), _mm512_sub_ps(a2, b2));
+                _mm512_storeu_ps(out_ptr.add(index + 48), _mm512_sub_ps(a3, b3));
+            }
+            BinaryKind::Mul => {
+                _mm512_storeu_ps(out_ptr.add(index), _mm512_mul_ps(a0, b0));
+                _mm512_storeu_ps(out_ptr.add(index + 16), _mm512_mul_ps(a1, b1));
+                _mm512_storeu_ps(out_ptr.add(index + 32), _mm512_mul_ps(a2, b2));
+                _mm512_storeu_ps(out_ptr.add(index + 48), _mm512_mul_ps(a3, b3));
+            }
+        }
+        index += 64;
+    }
+
+    while index + 16 <= len {
+        let left = _mm512_loadu_ps(left_ptr.add(index));
+        let right = _mm512_loadu_ps(right_ptr.add(index));
+        let result = match kind {
+            BinaryKind::Add => _mm512_add_ps(left, right),
+            BinaryKind::Sub => _mm512_sub_ps(left, right),
+            BinaryKind::Mul => _mm512_mul_ps(left, right),
+        };
+        _mm512_storeu_ps(out_ptr.add(index), result);
+        index += 16;
+    }
+
+    if index < len {
+        binary_same_shape_avx(&lhs[index..], &rhs[index..], &mut out[index..], kind);
+    }
+}
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unsafe_code)]

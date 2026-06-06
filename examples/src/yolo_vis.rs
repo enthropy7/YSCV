@@ -3,13 +3,22 @@
 //! Usage:
 //!   cargo run --example yolo_vis --features metal-backend -- <model.onnx> <image> <out_dir>
 
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
+fn main() {
+    eprintln!("yolo_vis requires macOS with the metal-backend feature");
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_detect::{
     Detection, coco_labels, decode_yolov8_output, decode_yolov11_output, letterbox_preprocess,
     yolov8_coco_config,
 };
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_imgproc::{DrawDetection, draw_detections, draw_text_scaled, imread, imwrite};
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_onnx::load_onnx_model_from_file;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn decode(
     output: &yscv_tensor::Tensor,
     config: &yscv_detect::YoloConfig,
@@ -24,6 +33,7 @@ fn decode(
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn to_draw(dets: &[Detection]) -> Vec<DrawDetection> {
     dets.iter()
         .map(|d| DrawDetection {
@@ -37,6 +47,7 @@ fn to_draw(dets: &[Detection]) -> Vec<DrawDetection> {
         .collect()
 }
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn annotate_and_save(
     img: &yscv_tensor::Tensor,
     dets: &[Detection],
@@ -58,6 +69,7 @@ fn annotate_and_save(
     println!("  Saved: {out_path}");
 }
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {

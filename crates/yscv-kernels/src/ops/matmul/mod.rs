@@ -27,6 +27,17 @@ use super::conv::Activation;
 use super::simd::matmul_row_set_dispatch;
 
 mod asm;
+#[cfg(any(
+    target_arch = "aarch64",
+    all(
+        target_arch = "x86_64",
+        any(
+            target_os = "linux",
+            target_os = "macos",
+            all(target_os = "windows", not(target_env = "msvc"))
+        )
+    )
+))]
 use asm::*;
 
 // ---------------------------------------------------------------------------
@@ -851,7 +862,38 @@ fn blocked_residual_has_unsupported_tail(_nc: usize) -> bool {
 /// Use BLAS when available and not under miri.
 #[cfg(feature = "blas")]
 fn use_blas() -> bool {
-    !cfg!(miri) && cfg!(feature = "blas") && std::env::var_os("YSCV_FORCE_NO_BLAS").is_none()
+    !cfg!(miri)
+        && cfg!(feature = "blas")
+        && std::env::var_os("YSCV_FORCE_NO_BLAS").is_none()
+        && !openblas_uses_64bit_int()
+}
+
+#[cfg(all(feature = "blas", any(target_os = "linux", target_os = "windows")))]
+#[allow(unsafe_code)]
+fn openblas_uses_64bit_int() -> bool {
+    use std::{ffi::CStr, os::raw::c_char, sync::OnceLock};
+
+    unsafe extern "C" {
+        fn openblas_get_config() -> *const c_char;
+    }
+
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        // SAFETY: OpenBLAS returns a process-static NUL-terminated string.
+        let config_ptr = unsafe { openblas_get_config() };
+        if config_ptr.is_null() {
+            return false;
+        }
+        // SAFETY: `config_ptr` is non-null and owned by OpenBLAS for the
+        // process lifetime.
+        let config = unsafe { CStr::from_ptr(config_ptr) }.to_string_lossy();
+        config.contains("USE64BITINT") || config.contains("INTERFACE64")
+    })
+}
+
+#[cfg(all(feature = "blas", not(any(target_os = "linux", target_os = "windows"))))]
+fn openblas_uses_64bit_int() -> bool {
+    false
 }
 
 #[inline]

@@ -349,7 +349,7 @@ jobs:
 
       - name: Compare Runtime Trend Snapshot
         env:
-          RUSTCV_TREND_MAX_REGRESSION_PCT_RUNTIME: ${{ vars.RUSTCV_TREND_MAX_REGRESSION_PCT_RUNTIME }}
+          YSCV_TREND_MAX_REGRESSION_PCT_RUNTIME: ${{ vars.YSCV_TREND_MAX_REGRESSION_PCT_RUNTIME }}
         run: |
           bash benchmarks/compare-trend-snapshots.sh \
             runtime \
@@ -472,7 +472,7 @@ jobs:
 
       - name: Compare Microbench Trend Snapshot
         env:
-          RUSTCV_TREND_MAX_REGRESSION_PCT_MICRO: ${{ vars.RUSTCV_TREND_MAX_REGRESSION_PCT_MICRO }}
+          YSCV_TREND_MAX_REGRESSION_PCT_MICRO: ${{ vars.YSCV_TREND_MAX_REGRESSION_PCT_MICRO }}
         run: |
           bash benchmarks/compare-trend-snapshots.sh \
             micro \
@@ -482,15 +482,15 @@ jobs:
 
       - name: Check Trend Baseline Freshness
         env:
-          RUSTCV_TREND_BASELINE_MAX_AGE_DAYS: ${{ vars.RUSTCV_TREND_BASELINE_MAX_AGE_DAYS }}
-          RUSTCV_TREND_BASELINE_ENFORCE: ${{ vars.RUSTCV_TREND_BASELINE_ENFORCE }}
+          YSCV_TREND_BASELINE_MAX_AGE_DAYS: ${{ vars.YSCV_TREND_BASELINE_MAX_AGE_DAYS }}
+          YSCV_TREND_BASELINE_ENFORCE: ${{ vars.YSCV_TREND_BASELINE_ENFORCE }}
         run: |
           bash benchmarks/check-trend-baseline-freshness.sh \
             benchmarks/trend-baseline-micro.tsv \
-            "${RUSTCV_TREND_BASELINE_MAX_AGE_DAYS:-14}"
+            "${YSCV_TREND_BASELINE_MAX_AGE_DAYS:-14}"
           bash benchmarks/check-trend-baseline-freshness.sh \
             benchmarks/trend-baseline-runtime.tsv \
-            "${RUSTCV_TREND_BASELINE_MAX_AGE_DAYS:-14}"
+            "${YSCV_TREND_BASELINE_MAX_AGE_DAYS:-14}"
 
       - name: Upload Benchmark Artifact
         uses: actions/upload-artifact@v4
@@ -536,4 +536,3 @@ jobs:
       # validated separately via ThreadSanitizer (nightly
       # -Zsanitizer=thread build-std) and Valgrind helgrind in the
       # section-race-fix work — both more useful here than Miri.
-

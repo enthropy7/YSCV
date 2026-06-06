@@ -22,6 +22,33 @@ python benchmarks/python/bench_kernels.py   # PyTorch
 python benchmarks/python/bench_opencv.py    # OpenCV
 ```
 
+## x86 Single-Compute Snapshot (Zen 4, June 2026)
+
+Current CPU single-op measurements live in
+[`benchmarks/single-compute-zen4-2026-06-05.md`](../benchmarks/single-compute-zen4-2026-06-05.md).
+They compare yscv against PyTorch CPU and ONNX Runtime CPU EP with per-op
+isolated processes, reporting min / p50 / avg in microseconds.
+
+Generate a fresh markdown snapshot:
+
+```bash
+RAYON_NUM_THREADS=12 YSCV_POOL_SPIN_US=200 ITERS=2000 WARMUP=250 \
+  OUT=benchmarks/single-compute-$(date -u +%F).md \
+  bash benchmarks/run-single-compute.sh
+```
+
+The generated report includes git commit / dirty state, toolchain versions,
+Python runtime versions, raw per-backend logs under `artifacts/`, p50 ratios,
+and raw min / p50 / avg rows for yscv, PyTorch, and ONNX Runtime.
+
+Methodology notes:
+- yscv uses `YSCV_POOL=yscv` and `YSCV_POOL_SPIN_US=200` for this tight
+  standalone microbench loop. The normal inference default remains unchanged.
+- Each operation is measured in a fresh process. PyTorch full-suite
+  single-process runs showed allocator/cache contamination on later
+  memory-bound ops, so isolated per-op p50 is the source of truth.
+- Status is based on p50; deltas within 1 µs are recorded as parity.
+
 ## Scorecard Summary
 
 | Category | Wins | Parity | Close | Loss |
@@ -595,6 +622,15 @@ intrinsics, and runtime A/B toggles):
 ### How to Run
 
 ```bash
+# Linux-local CI subset before pushing
+bash scripts/check-ci-local.sh
+
+# Broader local pass: release tests, extended proptests, UX, benchmark gates
+bash scripts/check-ci-local.sh --full
+
+# Add local cross-target smoke where toolchains are available
+bash scripts/check-ci-local.sh --cross --all-features
+
 # Full workspace test (1693 tests)
 cargo test
 

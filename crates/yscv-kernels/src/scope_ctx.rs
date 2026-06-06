@@ -39,7 +39,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use yscv_threadpool::ParallelScope;
+use yscv_threadpool::{ParallelScope, YscvPool};
 
 thread_local! {
     /// The scope installed by the current inference, if any. `None` means
@@ -194,6 +194,14 @@ where
         // Fallback: rayon's global pool. Preserved for standalone uses
         // (benches, kernel unit tests) where no runner has installed
         // a scope.
+        if let Some(pool) = standalone_yscv_pool() {
+            if scope_seq_fastpath_enabled() && pool.num_threads() <= 1 {
+                run_seq(data);
+                return;
+            }
+            pool.par_chunks_mut_dyn(data, chunk_size, &f);
+            return;
+        }
         use rayon::prelude::*;
         if scope_seq_fastpath_enabled() && rayon::current_num_threads() <= 1 {
             run_seq(data);
@@ -203,6 +211,24 @@ where
             .enumerate()
             .for_each(|(i, c)| f(i, c));
     });
+}
+
+fn standalone_yscv_pool() -> Option<&'static YscvPool> {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Option<YscvPool>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            if std::env::var("YSCV_POOL").as_deref() != Ok("yscv") {
+                return None;
+            }
+            let nthreads = std::env::var("RAYON_NUM_THREADS")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or_else(|| rayon::current_num_threads().max(1));
+            YscvPool::new(nthreads).ok()
+        })
+        .as_ref()
 }
 
 #[inline]

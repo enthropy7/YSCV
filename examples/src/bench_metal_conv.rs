@@ -1,6 +1,12 @@
 //! Benchmark: Metal simdgroup_matrix vs Metal basic (=same algo as WGSL) vs CPU.
 //! Isolates: (1) naga overhead, (2) simdgroup_matrix benefit.
 
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
+fn main() {
+    eprintln!("bench_metal_conv requires macOS with the metal-backend feature");
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn main() {
     let metal = yscv_kernels::MetalConv::new().expect("Metal init failed (see error above)");
     println!("Metal device: {}", metal.device_name());

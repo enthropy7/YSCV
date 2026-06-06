@@ -86,7 +86,7 @@ if [[ "$age_days" -gt "$max_age_days" ]]; then
 
   enforce="${YSCV_TREND_BASELINE_ENFORCE:-0}"
   if [[ "$enforce" == "1" ]]; then
-    echo "failing due to YSCV_TREND_BASELINE_ENFORCE=1" >&2
+    echo "failing due to trend baseline freshness enforcement" >&2
     exit 1
   fi
 fi

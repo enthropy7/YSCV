@@ -162,7 +162,7 @@ fn main() {
     }
 
     // ── Metal per-op inference ──
-    #[cfg(feature = "metal-backend")]
+    #[cfg(all(target_os = "macos", feature = "metal-backend"))]
     if use_metal {
         println!("\n=== Metal per-op ===");
         let plan = yscv_onnx::compile_metal_plan(&model, "images", &input_tensor)
@@ -176,7 +176,7 @@ fn main() {
     }
 
     // ── MPSGraph inference ──
-    #[cfg(feature = "metal-backend")]
+    #[cfg(all(target_os = "macos", feature = "metal-backend"))]
     if use_mpsgraph {
         println!("\n=== MPSGraph ===");
         let plan = yscv_onnx::compile_mpsgraph_plan(&model, &[("images", &input_tensor)])
@@ -190,13 +190,13 @@ fn main() {
         }
     }
 
-    #[cfg(not(feature = "metal-backend"))]
+    #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
     {
         if use_metal {
-            eprintln!("Metal per-op requires --features metal-backend");
+            eprintln!("Metal per-op requires macOS with --features metal-backend");
         }
         if use_mpsgraph {
-            eprintln!("MPSGraph requires --features metal-backend");
+            eprintln!("MPSGraph requires macOS with --features metal-backend");
         }
     }
 

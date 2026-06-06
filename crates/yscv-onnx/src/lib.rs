@@ -65,12 +65,12 @@ pub use runner::run_onnx_model_borrowed;
 pub use runner::run_onnx_model_borrowed_slice;
 pub use runner::{QuantRuntimeStats, quant_runtime_stats, reset_quant_runtime_stats};
 
-#[cfg(feature = "metal-backend")]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 pub use runner::metal_runner::{
     InferenceHandle, MpsGraphPlan, compile_mpsgraph_plan, run_mpsgraph_plan, submit_mpsgraph_plan,
     wait_mpsgraph_plan,
 };
-#[cfg(feature = "metal-backend")]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 pub use runner::metal_runner::{MetalPlan, compile_metal_plan, run_metal_plan};
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ unsafe extern "C" {
     pub(super) fn armpl_svsqrt_f32(n: i32, x: *const f32, y: *mut f32);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 unsafe extern "C" {
     pub(super) fn vvexpf(result: *mut f32, input: *const f32, count: *const i32);
     pub(super) fn vDSP_vadd(

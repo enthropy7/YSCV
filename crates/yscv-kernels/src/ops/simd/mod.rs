@@ -8,7 +8,7 @@
 //   - reduce:     max_reduce, add_reduce dispatchers + impls
 //   - binary:     binary_same_shape_dispatch + impls, mul_scalar_inplace + impls
 //   - fma:        fma_slice_dispatch + impls, matmul_row_dispatch + impls
-//   - softmax:    softmax_row_fused_dispatch + impls, log_softmax_row_fused_dispatch + impls
+//   - softmax:    row/batched softmax + log-softmax dispatchers + impls
 
 mod activation;
 mod binary;
@@ -25,8 +25,8 @@ mod tests;
 // From activation
 pub use activation::{
     bias_add_nhwc_dispatch, bias_relu_nhwc_dispatch, bias_silu_nhwc_dispatch,
-    fused_row_epilogue_dispatch, relu_slice_dispatch, relu_to_slice_dispatch,
-    sigmoid_slice_dispatch, silu_inplace, silu_slice_dispatch,
+    fused_row_epilogue_dispatch, gelu_sigmoid_slice_dispatch, relu_slice_dispatch,
+    relu_to_slice_dispatch, sigmoid_slice_dispatch, silu_inplace, silu_slice_dispatch,
 };
 #[allow(unused_imports)]
 pub(crate) use activation::{sigmoid_scalar, sigmoid_slice};
@@ -48,4 +48,4 @@ pub use binary::{
 pub use fma::{fma_slice_dispatch, matmul_row_dispatch, matmul_row_set_dispatch};
 
 // From softmax
-pub use softmax::{log_softmax_row_fused_dispatch, softmax_row_fused_dispatch};
+pub use softmax::{log_softmax_rows_fused_dispatch, softmax_rows_fused_dispatch};

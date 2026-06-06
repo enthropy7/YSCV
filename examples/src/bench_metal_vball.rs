@@ -3,12 +3,22 @@
 //! Usage:
 //!   cargo run --release --example bench_metal_vball --features metal-backend -- /path/to/model.onnx
 
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
+fn main() {
+    eprintln!("bench_metal_vball requires macOS with the metal-backend feature");
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::collections::HashMap;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::time::Instant;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_onnx::{compile_metal_plan, load_onnx_model_from_file, run_metal_plan, run_onnx_model};
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {

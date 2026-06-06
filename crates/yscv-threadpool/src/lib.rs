@@ -11,7 +11,7 @@
 //!   A.2 — per-worker Chase-Lev deques (via `crossbeam-deque`) with
 //!     random-victim work-stealing, still parks on empty.
 //!   **A.3 (current)** — cold-idle spin before park. Workers spin for
-//!     `YSCV_POOL_SPIN_US` microseconds (default 300) watching for new
+//!     `YSCV_POOL_SPIN_US` microseconds (default 0) watching for new
 //!     work before blocking on the condvar. Back-to-back inferences
 //!     arriving within the spin window skip the park/unpark round-trip.
 //!   A.4 — priority-aware scheduling + big/physical-core affinity.

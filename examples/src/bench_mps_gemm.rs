@@ -1,6 +1,12 @@
 //! Benchmark: MPS GEMM vs custom Metal matmul/conv kernel on representative YOLOv8n sizes.
 //! Tests pure GEMM (1x1 conv equivalent) performance.
 
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
+fn main() {
+    eprintln!("bench_mps_gemm requires macOS with the metal-backend feature");
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn main() {
     use yscv_kernels::metal_backend::metal_conv::{ConvParams, MetalInference, mps_gemm_f16};
 

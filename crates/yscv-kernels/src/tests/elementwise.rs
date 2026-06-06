@@ -1,9 +1,10 @@
-use yscv_tensor::Tensor;
+use yscv_tensor::{Tensor, TensorError};
 
 use crate::{
-    Backend, CpuBackend, ParallelElementwiseConfig, add, add_with_config, exp, exp_with_config,
-    gelu, mish, mul, mul_with_config, relu, relu_with_config, sigmoid, sigmoid_with_config, silu,
-    sub, sub_with_config, tanh_act, tanh_act_with_config,
+    Backend, CpuBackend, KernelError, ParallelElementwiseConfig, add, add_out, add_with_config,
+    exp, exp_with_config, gelu, mish, mul, mul_out, mul_with_config, relu, relu_out_with_config,
+    relu_with_config, sigmoid, sigmoid_with_config, silu, silu_with_config, sub, sub_out,
+    sub_with_config, tanh_act, tanh_act_with_config,
 };
 
 use super::{assert_slice_close, build_tensor};
@@ -66,6 +67,42 @@ fn elementwise_with_config_matches_fallback_math() {
     let mul_reference = mul(&lhs, &rhs).unwrap();
     let mul_config = mul_with_config(&lhs, &rhs, ParallelElementwiseConfig::disabled()).unwrap();
     assert_eq!(mul_reference, mul_config);
+}
+
+#[test]
+fn binary_out_matches_allocating_path() {
+    let lhs = build_tensor(&[64, 32], 0.11);
+    let rhs = build_tensor(&[64, 32], 0.52);
+    let mut output = Tensor::zeros(vec![64, 32]).unwrap();
+
+    add_out(&lhs, &rhs, &mut output).unwrap();
+    assert_eq!(output, add(&lhs, &rhs).unwrap());
+
+    sub_out(&lhs, &rhs, &mut output).unwrap();
+    assert_eq!(output, sub(&lhs, &rhs).unwrap());
+
+    mul_out(&lhs, &rhs, &mut output).unwrap();
+    assert_eq!(output, mul(&lhs, &rhs).unwrap());
+}
+
+#[test]
+fn binary_out_rejects_shape_mismatch() {
+    let lhs = build_tensor(&[2, 3], 0.11);
+    let rhs = build_tensor(&[2, 3], 0.52);
+    let mut output = Tensor::zeros(vec![3, 2]).unwrap();
+    let err = add_out(&lhs, &rhs, &mut output).unwrap_err();
+    assert!(matches!(
+        err,
+        KernelError::Tensor(TensorError::ShapeMismatch { .. })
+    ));
+}
+
+#[test]
+fn relu_out_with_config_matches_allocating_path() {
+    let input = build_tensor(&[128, 64, 3], 0.41);
+    let mut output = Tensor::zeros(input.shape().to_vec()).unwrap();
+    relu_out_with_config(&input, &mut output, ParallelElementwiseConfig::default()).unwrap();
+    assert_eq!(output, relu(&input));
 }
 
 #[test]
@@ -195,6 +232,27 @@ fn tanh_with_config_disabled_matches_tanh() {
     let baseline = tanh_act(&input);
     let disabled = tanh_act_with_config(&input, ParallelElementwiseConfig::disabled());
     assert_eq!(baseline, disabled);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn parallel_activation_configs_match_disabled() {
+    let input = build_tensor(&[1024, 1024], 0.23);
+    let parallel = ParallelElementwiseConfig {
+        min_parallel_elements: 1,
+    };
+
+    let sigmoid_parallel = sigmoid_with_config(&input, parallel);
+    let sigmoid_disabled = sigmoid_with_config(&input, ParallelElementwiseConfig::disabled());
+    assert_eq!(sigmoid_parallel, sigmoid_disabled);
+
+    let tanh_parallel = tanh_act_with_config(&input, parallel);
+    let tanh_disabled = tanh_act_with_config(&input, ParallelElementwiseConfig::disabled());
+    assert_eq!(tanh_parallel, tanh_disabled);
+
+    let silu_parallel = silu_with_config(&input, parallel);
+    let silu_disabled = silu_with_config(&input, ParallelElementwiseConfig::disabled());
+    assert_eq!(silu_parallel, silu_disabled);
 }
 
 #[test]

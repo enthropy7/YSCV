@@ -1,9 +1,17 @@
 //! Diagnostic: find where Metal per-op diverges from CPU for YOLO11n.
 //! Compare intermediate DFL head values.
 
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
+fn main() {
+    eprintln!("debug_metal_yolo requires macOS with the metal-backend feature");
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_onnx::load_onnx_model_from_file;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn main() {
     // Use uniform input for simplicity
     let model_path = "examples/src/slowwork/yolov8n.onnx";

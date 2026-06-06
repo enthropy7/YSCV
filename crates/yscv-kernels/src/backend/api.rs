@@ -25,6 +25,21 @@ pub fn add_with_config(
     ops::add_with_config(lhs, rhs, config)
 }
 
+/// Backend-agnostic add writing into a pre-allocated output tensor.
+pub fn add_out(lhs: &Tensor, rhs: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    ops::add_out(lhs, rhs, output)
+}
+
+/// Backend-agnostic add-out with explicit elementwise parallelization heuristics.
+pub fn add_out_with_config(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    ops::add_out_with_config(lhs, rhs, output, config)
+}
+
 /// Backend-agnostic convenience call for sub (parallel by default).
 pub fn sub(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor, KernelError> {
     ops::sub_with_config(lhs, rhs, ParallelElementwiseConfig::default())
@@ -39,6 +54,21 @@ pub fn sub_with_config(
     ops::sub_with_config(lhs, rhs, config)
 }
 
+/// Backend-agnostic subtract writing into a pre-allocated output tensor.
+pub fn sub_out(lhs: &Tensor, rhs: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    ops::sub_out(lhs, rhs, output)
+}
+
+/// Backend-agnostic sub-out with explicit elementwise parallelization heuristics.
+pub fn sub_out_with_config(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    ops::sub_out_with_config(lhs, rhs, output, config)
+}
+
 /// Backend-agnostic convenience call for mul (parallel by default).
 pub fn mul(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor, KernelError> {
     ops::mul_with_config(lhs, rhs, ParallelElementwiseConfig::default())
@@ -51,6 +81,21 @@ pub fn mul_with_config(
     config: ParallelElementwiseConfig,
 ) -> Result<Tensor, KernelError> {
     ops::mul_with_config(lhs, rhs, config)
+}
+
+/// Backend-agnostic multiply writing into a pre-allocated output tensor.
+pub fn mul_out(lhs: &Tensor, rhs: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    ops::mul_out(lhs, rhs, output)
+}
+
+/// Backend-agnostic mul-out with explicit elementwise parallelization heuristics.
+pub fn mul_out_with_config(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    ops::mul_out_with_config(lhs, rhs, output, config)
 }
 
 /// Elementwise ReLU activation (parallel by default).
@@ -76,6 +121,20 @@ pub fn add_relu_inplace(lhs: &mut Tensor, rhs: &Tensor) {
 /// Elementwise ReLU with explicit elementwise parallelization heuristics.
 pub fn relu_with_config(input: &Tensor, config: ParallelElementwiseConfig) -> Tensor {
     ops::relu_with_config(input, config)
+}
+
+/// Elementwise ReLU writing into a pre-allocated output tensor.
+pub fn relu_out(input: &Tensor, output: &mut Tensor) {
+    ops::relu_out(input, output);
+}
+
+/// Elementwise ReLU-out with explicit elementwise parallelization heuristics.
+pub fn relu_out_with_config(
+    input: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    ops::relu_out_with_config(input, output, config)
 }
 
 /// Elementwise sigmoid activation (parallel by default).
@@ -115,7 +174,12 @@ pub fn gelu(input: &Tensor) -> Tensor {
 
 /// Elementwise SiLU (Swish) activation: `x * sigmoid(x)`.
 pub fn silu(input: &Tensor) -> Tensor {
-    ops::silu(input)
+    ops::silu_with_config(input, ParallelElementwiseConfig::default())
+}
+
+/// Elementwise SiLU with explicit elementwise parallelization heuristics.
+pub fn silu_with_config(input: &Tensor, config: ParallelElementwiseConfig) -> Tensor {
+    ops::silu_with_config(input, config)
 }
 
 /// In-place SiLU: applies SiLU to a mutable tensor, avoiding allocation.
@@ -141,6 +205,20 @@ pub fn softmax_last_dim_with_config(
     ops::softmax_last_dim_with_config_and_pool(input, config, None)
 }
 
+/// Softmax along the last dimension writing into a pre-allocated output tensor.
+pub fn softmax_last_dim_out(input: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    softmax_last_dim_out_with_config(input, output, ParallelElementwiseConfig::default())
+}
+
+/// Softmax-out with explicit elementwise parallelization heuristics.
+pub fn softmax_last_dim_out_with_config(
+    input: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    ops::softmax_last_dim_out_with_config_and_pool(input, output, config, None)
+}
+
 /// Log-softmax along the last tensor dimension (parallel by default).
 pub fn log_softmax_last_dim(input: &Tensor) -> Result<Tensor, KernelError> {
     ops::log_softmax_last_dim_with_config_and_pool(
@@ -156,6 +234,20 @@ pub fn log_softmax_last_dim_with_config(
     config: ParallelElementwiseConfig,
 ) -> Result<Tensor, KernelError> {
     ops::log_softmax_last_dim_with_config_and_pool(input, config, None)
+}
+
+/// Log-softmax along the last dimension writing into a pre-allocated output tensor.
+pub fn log_softmax_last_dim_out(input: &Tensor, output: &mut Tensor) -> Result<(), KernelError> {
+    log_softmax_last_dim_out_with_config(input, output, ParallelElementwiseConfig::default())
+}
+
+/// Log-softmax-out with explicit elementwise parallelization heuristics.
+pub fn log_softmax_last_dim_out_with_config(
+    input: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+) -> Result<(), KernelError> {
+    ops::log_softmax_last_dim_out_with_config_and_pool(input, output, config, None)
 }
 
 /// Log-sum-exp reduction along the last tensor dimension.

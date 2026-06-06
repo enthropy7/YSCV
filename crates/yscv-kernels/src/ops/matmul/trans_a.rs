@@ -390,14 +390,9 @@ unsafe fn non_trans_a_4row_neon(
 /// `out[m, n] = sum_k a_kt[k, m] * b[k, n]` — equivalent to
 /// `(a_kt^T) @ b` — without materialising the transpose.
 ///
-/// When the `blas` feature is enabled this routes through BLAS's
-/// `cblas_sgemm` with `TransA=CblasTrans`, which handles the
-/// transposed-access pattern inside the library's tuned microkernels
-/// (Accelerate/OpenBLAS/MKL all do this efficiently). The non-BLAS
-/// fallback materialises the transpose into a stack scratch buffer
-/// and calls the standard path — correct but less tuned; will pick
-/// up a dedicated `transA` variant of `blocked_gemm_sequential` in a
-/// follow-up if tracker shapes land there.
+/// The native direct path handles the transposed-access pattern without
+/// materialising the transpose. If it is disabled via env, the fallback
+/// materialises the transpose and calls the standard matmul path.
 ///
 /// Used by the Transpose-perm[0,2,1] → MatMul fusion in the runner.
 pub fn matmul_2d_slices_trans_a(
@@ -412,47 +407,12 @@ pub fn matmul_2d_slices_trans_a(
     debug_assert!(b.len() >= k * n);
     debug_assert!(out.len() >= m * n);
 
-    if !trans_a_direct_disabled() && n.is_multiple_of(4) {
+    if !trans_a_direct_disabled() {
         matmul_2d_slices_trans_a_direct(a_kt, m, k, b, n, out);
         return;
     }
 
-    #[cfg(feature = "blas")]
-    if use_blas() {
-        // SAFETY: bounds asserted above. `cblas_sgemm` is pure compute,
-        // beta=0 so no aliasing concerns between output and inputs.
-        use cblas_sys::{CBLAS_LAYOUT, CBLAS_TRANSPOSE, cblas_sgemm};
-        #[allow(unsafe_code)]
-        unsafe {
-            cblas_sgemm(
-                CBLAS_LAYOUT::CblasRowMajor,
-                CBLAS_TRANSPOSE::CblasTrans,
-                CBLAS_TRANSPOSE::CblasNoTrans,
-                m as i32,
-                n as i32,
-                k as i32,
-                1.0,
-                a_kt.as_ptr(),
-                // Physical leading dimension of A (row stride in row-major
-                // memory). With layout (K, M), lda = M.
-                m as i32,
-                b.as_ptr(),
-                n as i32,
-                0.0,
-                out.as_mut_ptr(),
-                n as i32,
-            );
-        }
-        return;
-    }
-
-    // Non-BLAS fallback: materialise the transposed view and call the
-    // standard path. For a shape where BLAS would win we'd land here
-    // only on builds with `--no-default-features` (no blas), which is
-    // also the build tracker benchmarks exercise on NixOS — the
-    // fallback is correct, just slower than it could be. TODO(r9): add
-    // a `transA` variant of `blocked_gemm_sequential` that packs A
-    // directly from the (K, M) layout to avoid this scratch pass.
+    // Fallback: materialise the transposed view and call the standard path.
     // zero-init + transpose in one pass. The zero-fill cost is a single
     // linear memset; caller is the BLAS-transA fallback path, not a hot
     // loop, so the extra write is negligible. Replaces a prior

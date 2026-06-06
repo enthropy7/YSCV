@@ -7,13 +7,14 @@
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use crate::VideoError;
+    use std::ffi::{CString, c_char};
 
     // -----------------------------------------------------------------------
     // C FFI — minimal declarations, zero deps
     // -----------------------------------------------------------------------
 
     unsafe extern "C" {
-        fn open(path: *const u8, flags: i32) -> i32;
+        fn open(path: *const c_char, flags: i32) -> i32;
         fn close(fd: i32) -> i32;
         fn ioctl(fd: i32, request: u64, ...) -> i32;
         fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
@@ -124,11 +125,10 @@ mod linux_impl {
     impl LinuxFramebuffer {
         /// Open a framebuffer device (e.g., `/dev/fb0`).
         pub fn open(device: &str) -> Result<Self, VideoError> {
-            let mut path_buf = Vec::with_capacity(device.len() + 1);
-            path_buf.extend_from_slice(device.as_bytes());
-            path_buf.push(0); // null terminator
+            let path = CString::new(device)
+                .map_err(|_| VideoError::Codec("framebuffer path contains NUL".into()))?;
 
-            let fd = unsafe { open(path_buf.as_ptr(), O_RDWR) };
+            let fd = unsafe { open(path.as_ptr(), O_RDWR) };
             if fd < 0 {
                 return Err(VideoError::Codec(format!(
                     "failed to open framebuffer device: {device}"

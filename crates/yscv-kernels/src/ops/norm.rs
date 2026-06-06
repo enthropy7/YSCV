@@ -7,7 +7,11 @@ use super::config::{
     LayerNormLastDimTensors, LayerNormPlan, LogSumExpPlan, ParallelElementwiseConfig,
     RmsNormLastDimTensors, RmsNormPlan, SoftmaxPlan, should_parallelize_len,
 };
-use super::simd::{log_softmax_row_fused_dispatch, softmax_row_fused_dispatch};
+use super::simd::{log_softmax_rows_fused_dispatch, softmax_rows_fused_dispatch};
+
+const SOFTMAX_MIN_PARALLEL_ELEMENTS: usize = 65_536;
+const SOFTMAX_YSCV_POOL_MIN_PARALLEL_ELEMENTS: usize = 16_384;
+const SOFTMAX_PARALLEL_CHUNK_ELEMENTS: usize = 12_288;
 
 /// NHWC batch-norm with an explicit parallel config and thread pool.
 pub fn batch_norm2d_nhwc_with_config_and_pool(
@@ -90,21 +94,59 @@ pub fn softmax_last_dim_with_config_and_pool(
     let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
 
     let input_data = input.data();
-    if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
+    if should_parallelize_softmax(plan, config, thread_pool) {
+        let rows_per_chunk = softmax_rows_per_parallel_chunk(plan.row_len);
+        let chunk_len = plan.row_len * rows_per_chunk;
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
-            plan.row_len,
-            |row_idx, out_row| {
-                softmax_last_dim_row(input_data, row_idx, out_row);
+            chunk_len,
+            |chunk_idx, out_chunk| {
+                let row_start = chunk_idx * rows_per_chunk;
+                let input_start = row_start * plan.row_len;
+                let input_chunk = &input_data[input_start..input_start + out_chunk.len()];
+                softmax_rows_fused_dispatch(input_chunk, out_chunk, plan.row_len);
             },
         );
     } else {
-        for (row_idx, out_row) in output.chunks_mut(plan.row_len).enumerate() {
-            softmax_last_dim_row(input_data, row_idx, out_row);
-        }
+        softmax_rows_fused_dispatch(input_data, output.as_mut_slice(), plan.row_len);
     }
 
     Tensor::from_aligned(input.shape().to_vec(), output).map_err(Into::into)
+}
+
+/// Softmax over the last dimension into a pre-allocated output tensor.
+pub fn softmax_last_dim_out_with_config_and_pool(
+    input: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
+) -> Result<(), KernelError> {
+    let plan = build_softmax_plan(input)?;
+    validate_same_output_shape(input, output)?;
+    if plan.output_len == 0 || plan.row_len == 0 {
+        return Ok(());
+    }
+
+    let input_data = input.data();
+    let output_data = output.data_mut();
+    if should_parallelize_softmax(plan, config, thread_pool) {
+        let rows_per_chunk = softmax_rows_per_parallel_chunk(plan.row_len);
+        let chunk_len = plan.row_len * rows_per_chunk;
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output_data,
+            chunk_len,
+            |chunk_idx, out_chunk| {
+                let row_start = chunk_idx * rows_per_chunk;
+                let input_start = row_start * plan.row_len;
+                let input_chunk = &input_data[input_start..input_start + out_chunk.len()];
+                softmax_rows_fused_dispatch(input_chunk, out_chunk, plan.row_len);
+            },
+        );
+    } else {
+        softmax_rows_fused_dispatch(input_data, output_data, plan.row_len);
+    }
+
+    Ok(())
 }
 
 /// # Safety
@@ -126,21 +168,59 @@ pub fn log_softmax_last_dim_with_config_and_pool(
     let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
 
     let input_data = input.data();
-    if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
+    if should_parallelize_softmax(plan, config, thread_pool) {
+        let rows_per_chunk = softmax_rows_per_parallel_chunk(plan.row_len);
+        let chunk_len = plan.row_len * rows_per_chunk;
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
-            plan.row_len,
-            |row_idx, out_row| {
-                log_softmax_last_dim_row(input_data, row_idx, out_row);
+            chunk_len,
+            |chunk_idx, out_chunk| {
+                let row_start = chunk_idx * rows_per_chunk;
+                let input_start = row_start * plan.row_len;
+                let input_chunk = &input_data[input_start..input_start + out_chunk.len()];
+                log_softmax_rows_fused_dispatch(input_chunk, out_chunk, plan.row_len);
             },
         );
     } else {
-        for (row_idx, out_row) in output.chunks_mut(plan.row_len).enumerate() {
-            log_softmax_last_dim_row(input_data, row_idx, out_row);
-        }
+        log_softmax_rows_fused_dispatch(input_data, output.as_mut_slice(), plan.row_len);
     }
 
     Tensor::from_aligned(input.shape().to_vec(), output).map_err(Into::into)
+}
+
+/// Log-softmax over the last dimension into a pre-allocated output tensor.
+pub fn log_softmax_last_dim_out_with_config_and_pool(
+    input: &Tensor,
+    output: &mut Tensor,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
+) -> Result<(), KernelError> {
+    let plan = build_log_softmax_plan(input)?;
+    validate_same_output_shape(input, output)?;
+    if plan.output_len == 0 || plan.row_len == 0 {
+        return Ok(());
+    }
+
+    let input_data = input.data();
+    let output_data = output.data_mut();
+    if should_parallelize_softmax(plan, config, thread_pool) {
+        let rows_per_chunk = softmax_rows_per_parallel_chunk(plan.row_len);
+        let chunk_len = plan.row_len * rows_per_chunk;
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output_data,
+            chunk_len,
+            |chunk_idx, out_chunk| {
+                let row_start = chunk_idx * rows_per_chunk;
+                let input_start = row_start * plan.row_len;
+                let input_chunk = &input_data[input_start..input_start + out_chunk.len()];
+                log_softmax_rows_fused_dispatch(input_chunk, out_chunk, plan.row_len);
+            },
+        );
+    } else {
+        log_softmax_rows_fused_dispatch(input_data, output_data, plan.row_len);
+    }
+
+    Ok(())
 }
 
 /// Log-sum-exp over the last dimension with explicit config and thread pool.
@@ -202,12 +282,28 @@ pub fn layer_norm_last_dim_with_config_and_pool(
     let input_data = input.data();
     let gamma_data = params.gamma.data();
     let beta_data = params.beta.data();
+    let affine_identity = layer_norm_affine_is_identity(gamma_data, beta_data);
 
     // For small inputs (< 16K elements), skip threading — rayon overhead dominates.
     let use_parallel = plan.output_len >= 16384
         && should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool);
 
-    if use_parallel {
+    if affine_identity && plan.row_len == 256 {
+        if use_parallel {
+            super::super::scope_ctx::par_chunks_mut_dispatch(
+                output.as_mut_slice(),
+                plan.row_len * 64,
+                |chunk_idx, out_chunk| {
+                    let row_start = chunk_idx * 64;
+                    let input_start = row_start * plan.row_len;
+                    let input_chunk = &input_data[input_start..input_start + out_chunk.len()];
+                    layer_norm_identity_rows_256(input_chunk, out_chunk, params.epsilon);
+                },
+            );
+        } else {
+            layer_norm_identity_rows_256(input_data, output.as_mut_slice(), params.epsilon);
+        }
+    } else if use_parallel {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
             plan.row_len,
@@ -218,6 +314,7 @@ pub fn layer_norm_last_dim_with_config_and_pool(
                     out_row,
                     gamma_data,
                     beta_data,
+                    affine_identity,
                     params.epsilon,
                 );
             },
@@ -230,6 +327,7 @@ pub fn layer_norm_last_dim_with_config_and_pool(
                 out_row,
                 gamma_data,
                 beta_data,
+                affine_identity,
                 params.epsilon,
             );
         }
@@ -305,6 +403,40 @@ fn build_log_softmax_plan(input: &Tensor) -> Result<SoftmaxPlan, KernelError> {
         row_len,
         output_len,
     })
+}
+
+fn should_parallelize_softmax(
+    plan: SoftmaxPlan,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
+) -> bool {
+    let min_parallel_elements = if config == ParallelElementwiseConfig::default() {
+        default_softmax_min_parallel_elements()
+    } else {
+        config.min_parallel_elements
+    };
+    should_parallelize_len(plan.output_len, min_parallel_elements, thread_pool)
+}
+
+fn default_softmax_min_parallel_elements() -> usize {
+    if standalone_yscv_pool_requested() {
+        SOFTMAX_YSCV_POOL_MIN_PARALLEL_ELEMENTS
+    } else {
+        SOFTMAX_MIN_PARALLEL_ELEMENTS
+    }
+}
+
+fn standalone_yscv_pool_requested() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("YSCV_POOL").as_deref() == Ok("yscv"))
+}
+
+fn softmax_rows_per_parallel_chunk(row_len: usize) -> usize {
+    if row_len == 0 {
+        return 1;
+    }
+    (SOFTMAX_PARALLEL_CHUNK_ELEMENTS / row_len).max(1)
 }
 
 fn build_logsumexp_plan(input: &Tensor) -> Result<LogSumExpPlan, KernelError> {
@@ -385,6 +517,17 @@ fn validate_layer_norm_parameter(
     Ok(())
 }
 
+fn validate_same_output_shape(input: &Tensor, output: &Tensor) -> Result<(), KernelError> {
+    if input.shape() == output.shape() {
+        return Ok(());
+    }
+    Err(TensorError::ShapeMismatch {
+        left: input.shape().to_vec(),
+        right: output.shape().to_vec(),
+    }
+    .into())
+}
+
 #[allow(unsafe_code)]
 fn batch_norm2d_nhwc_row(
     input: &[f32],
@@ -406,6 +549,11 @@ fn batch_norm2d_nhwc_row(
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if channels >= 16 && std::is_x86_feature_detected!("avx512f") {
+        unsafe { batch_norm_row_avx512(input_row, out_row, scale, shift, channels) };
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if channels >= 8 && std::is_x86_feature_detected!("avx") {
         unsafe { batch_norm_row_avx(input_row, out_row, scale, shift, channels) };
         return;
@@ -416,12 +564,32 @@ fn batch_norm2d_nhwc_row(
         return;
     }
 
+    if channels == 3 {
+        batch_norm_row_c3(input_row, out_row, scale, shift);
+        return;
+    }
+
     // Scalar fallback — iterate per pixel to avoid modulo
     for px in 0..plan.width {
         let base = px * channels;
         for c in 0..channels {
             out_row[base + c] = input_row[base + c] * scale[c] + shift[c];
         }
+    }
+}
+
+fn batch_norm_row_c3(input: &[f32], output: &mut [f32], scale: &[f32], shift: &[f32]) {
+    let s0 = scale[0];
+    let s1 = scale[1];
+    let s2 = scale[2];
+    let b0 = shift[0];
+    let b1 = shift[1];
+    let b2 = shift[2];
+
+    for (src, dst) in input.chunks_exact(3).zip(output.chunks_exact_mut(3)) {
+        dst[0] = src[0] * s0 + b0;
+        dst[1] = src[1] * s1 + b1;
+        dst[2] = src[2] * s2 + b2;
     }
 }
 
@@ -449,6 +617,40 @@ unsafe fn batch_norm_row_neon(
         let r = vfmaq_f32(sh, v, s); // sh + v * s
         vst1q_f32(outp.add(i), r);
         i += 4;
+    }
+    while i < total {
+        let c = i % channels;
+        *outp.add(i) = *inp.add(i) * *scale.as_ptr().add(c) + *shift.as_ptr().add(c);
+        i += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn batch_norm_row_avx512(
+    input: &[f32],
+    output: &mut [f32],
+    scale: &[f32],
+    shift: &[f32],
+    channels: usize,
+) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    let total = input.len();
+    let inp = input.as_ptr();
+    let outp = output.as_mut_ptr();
+    let mut i = 0usize;
+    while i + 16 <= total {
+        let c = i % channels;
+        let v = _mm512_loadu_ps(inp.add(i));
+        let s = _mm512_loadu_ps(scale.as_ptr().add(c));
+        let sh = _mm512_loadu_ps(shift.as_ptr().add(c));
+        let r = _mm512_add_ps(_mm512_mul_ps(v, s), sh);
+        _mm512_storeu_ps(outp.add(i), r);
+        i += 16;
     }
     while i < total {
         let c = i % channels;
@@ -525,21 +727,6 @@ unsafe fn batch_norm_row_sse(
     }
 }
 
-fn softmax_last_dim_row(input: &[f32], row_idx: usize, out_row: &mut [f32]) {
-    let row_start = row_idx * out_row.len();
-    let row_input = &input[row_start..row_start + out_row.len()];
-    // Fused: max + sub-exp + sum + divide in one function, keeping data in L1 cache
-    // and eliminating 4 separate dispatch calls.
-    softmax_row_fused_dispatch(row_input, out_row);
-}
-
-fn log_softmax_last_dim_row(input: &[f32], row_idx: usize, out_row: &mut [f32]) {
-    let row_start = row_idx * out_row.len();
-    let row_input = &input[row_start..row_start + out_row.len()];
-    // Fused: max + sum(exp(x-max)) + subtract in one dispatch, using SIMD where available.
-    log_softmax_row_fused_dispatch(row_input, out_row);
-}
-
 fn logsumexp_last_dim_row(input: &[f32], row_idx: usize, row_len: usize) -> f32 {
     let row_start = row_idx * row_len;
     let row_input = &input[row_start..row_start + row_len];
@@ -562,6 +749,7 @@ fn layer_norm_last_dim_row(
     out_row: &mut [f32],
     gamma: &[f32],
     beta: &[f32],
+    affine_identity: bool,
     epsilon: f32,
 ) {
     let row_start = row_idx * out_row.len();
@@ -575,8 +763,84 @@ fn layer_norm_last_dim_row(
     let variance = sum_sq / row_len - mean * mean;
     let inv_std = (variance + epsilon).sqrt().recip();
 
-    // SIMD Pass 2: normalize + scale + shift
-    layer_norm_apply(row_input, out_row, gamma, beta, mean, inv_std);
+    // SIMD Pass 2: normalize plus optional affine scale/shift.
+    if affine_identity {
+        layer_norm_apply_identity(row_input, out_row, mean, inv_std);
+    } else {
+        layer_norm_apply(row_input, out_row, gamma, beta, mean, inv_std);
+    }
+}
+
+fn layer_norm_affine_is_identity(gamma: &[f32], beta: &[f32]) -> bool {
+    gamma.iter().all(|&value| value == 1.0) && beta.iter().all(|&value| value == 0.0)
+}
+
+#[allow(unsafe_code)]
+fn layer_norm_identity_rows_256(input: &[f32], output: &mut [f32], epsilon: f32) {
+    debug_assert_eq!(input.len(), output.len());
+    debug_assert_eq!(input.len() % 256, 0);
+
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx512f") {
+        unsafe {
+            for (in_row, out_row) in input.chunks(256).zip(output.chunks_mut(256)) {
+                layer_norm_identity_row_256_avx512(in_row, out_row, epsilon);
+            }
+        }
+        return;
+    }
+
+    for (in_row, out_row) in input.chunks(256).zip(output.chunks_mut(256)) {
+        layer_norm_identity_row(in_row, out_row, epsilon);
+    }
+}
+
+fn layer_norm_identity_row(input: &[f32], output: &mut [f32], epsilon: f32) {
+    let n = input.len() as f32;
+    let (sum, sum_sq) = layer_norm_stats(input);
+    let mean = sum / n;
+    let variance = sum_sq / n - mean * mean;
+    let inv_std = (variance + epsilon).sqrt().recip();
+    layer_norm_apply_identity(input, output, mean, inv_std);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn layer_norm_identity_row_256_avx512(input: &[f32], output: &mut [f32], epsilon: f32) {
+    use std::arch::x86_64::{
+        _mm512_add_ps, _mm512_loadu_ps, _mm512_mul_ps, _mm512_reduce_add_ps, _mm512_set1_ps,
+        _mm512_setzero_ps, _mm512_storeu_ps, _mm512_sub_ps,
+    };
+
+    debug_assert_eq!(input.len(), 256);
+    debug_assert_eq!(output.len(), 256);
+
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let mut sum = _mm512_setzero_ps();
+    let mut sum_sq = _mm512_setzero_ps();
+    let mut i = 0usize;
+    while i < 256 {
+        let v = _mm512_loadu_ps(in_ptr.add(i));
+        sum = _mm512_add_ps(sum, v);
+        sum_sq = _mm512_add_ps(sum_sq, _mm512_mul_ps(v, v));
+        i += 16;
+    }
+
+    let mean = _mm512_reduce_add_ps(sum) * (1.0 / 256.0);
+    let variance = _mm512_reduce_add_ps(sum_sq) * (1.0 / 256.0) - mean * mean;
+    let inv_std = (variance + epsilon).sqrt().recip();
+    let vmean = _mm512_set1_ps(mean);
+    let vinv = _mm512_set1_ps(inv_std);
+
+    i = 0;
+    while i < 256 {
+        let v = _mm512_loadu_ps(in_ptr.add(i));
+        let out = _mm512_mul_ps(_mm512_sub_ps(v, vmean), vinv);
+        _mm512_storeu_ps(out_ptr.add(i), out);
+        i += 16;
+    }
 }
 
 #[allow(unsafe_code)]
@@ -586,6 +850,10 @@ fn layer_norm_stats(data: &[f32]) -> (f32, f32) {
     #[cfg(target_arch = "aarch64")]
     if n >= 4 && std::arch::is_aarch64_feature_detected!("neon") {
         return unsafe { layer_norm_stats_neon(data) };
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if n >= 16 && std::is_x86_feature_detected!("avx512f") {
+        return unsafe { layer_norm_stats_avx512(data) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if n >= 8 && std::is_x86_feature_detected!("avx") {
@@ -619,6 +887,41 @@ unsafe fn layer_norm_stats_neon(data: &[f32]) -> (f32, f32) {
     }
     let mut sum = vaddvq_f32(vsum);
     let mut sum_sq = vaddvq_f32(vsq);
+    while i < data.len() {
+        let v = *ptr.add(i);
+        sum += v;
+        sum_sq += v * v;
+        i += 1;
+    }
+    (sum, sum_sq)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn layer_norm_stats_avx512(data: &[f32]) -> (f32, f32) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    let mut vsum = _mm512_setzero_ps();
+    let mut vsq = _mm512_setzero_ps();
+    let ptr = data.as_ptr();
+    let mut i = 0usize;
+    let end16 = data.len() & !15;
+    while i < end16 {
+        let v = _mm512_loadu_ps(ptr.add(i));
+        vsum = _mm512_add_ps(vsum, v);
+        vsq = _mm512_add_ps(vsq, _mm512_mul_ps(v, v));
+        i += 16;
+    }
+
+    let mut sum_buf = [0.0f32; 16];
+    let mut sum_sq_buf = [0.0f32; 16];
+    _mm512_storeu_ps(sum_buf.as_mut_ptr(), vsum);
+    _mm512_storeu_ps(sum_sq_buf.as_mut_ptr(), vsq);
+    let mut sum = sum_buf.iter().sum::<f32>();
+    let mut sum_sq = sum_sq_buf.iter().sum::<f32>();
     while i < data.len() {
         let v = *ptr.add(i);
         sum += v;
@@ -686,6 +989,11 @@ fn layer_norm_apply(
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if n >= 16 && std::is_x86_feature_detected!("avx512f") {
+        unsafe { layer_norm_apply_avx512(input, out, gamma, beta, mean, inv_std) };
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if n >= 8 && std::is_x86_feature_detected!("avx") {
         unsafe { layer_norm_apply_avx(input, out, gamma, beta, mean, inv_std) };
         return;
@@ -693,6 +1001,105 @@ fn layer_norm_apply(
 
     for i in 0..n {
         out[i] = (input[i] - mean) * inv_std * gamma[i] + beta[i];
+    }
+}
+
+#[allow(unsafe_code)]
+fn layer_norm_apply_identity(input: &[f32], out: &mut [f32], mean: f32, inv_std: f32) {
+    let n = input.len();
+
+    #[cfg(target_arch = "aarch64")]
+    if n >= 4 && std::arch::is_aarch64_feature_detected!("neon") {
+        unsafe { layer_norm_apply_identity_neon(input, out, mean, inv_std) };
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if n >= 16 && std::is_x86_feature_detected!("avx512f") {
+        unsafe { layer_norm_apply_identity_avx512(input, out, mean, inv_std) };
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if n >= 8 && std::is_x86_feature_detected!("avx") {
+        unsafe { layer_norm_apply_identity_avx(input, out, mean, inv_std) };
+        return;
+    }
+
+    for i in 0..n {
+        out[i] = (input[i] - mean) * inv_std;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn layer_norm_apply_identity_neon(input: &[f32], out: &mut [f32], mean: f32, inv_std: f32) {
+    use std::arch::aarch64::*;
+    let vmean = vdupq_n_f32(mean);
+    let vinv = vdupq_n_f32(inv_std);
+    let mut i = 0usize;
+    let end4 = input.len() & !3;
+    while i < end4 {
+        let v = vld1q_f32(input.as_ptr().add(i));
+        let r = vmulq_f32(vsubq_f32(v, vmean), vinv);
+        vst1q_f32(out.as_mut_ptr().add(i), r);
+        i += 4;
+    }
+    while i < input.len() {
+        out[i] = (input[i] - mean) * inv_std;
+        i += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn layer_norm_apply_identity_avx512(
+    input: &[f32],
+    out: &mut [f32],
+    mean: f32,
+    inv_std: f32,
+) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    let vmean = _mm512_set1_ps(mean);
+    let vinv = _mm512_set1_ps(inv_std);
+    let mut i = 0usize;
+    let end16 = input.len() & !15;
+    while i < end16 {
+        let v = _mm512_loadu_ps(input.as_ptr().add(i));
+        let r = _mm512_mul_ps(_mm512_sub_ps(v, vmean), vinv);
+        _mm512_storeu_ps(out.as_mut_ptr().add(i), r);
+        i += 16;
+    }
+    while i < input.len() {
+        out[i] = (input[i] - mean) * inv_std;
+        i += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn layer_norm_apply_identity_avx(input: &[f32], out: &mut [f32], mean: f32, inv_std: f32) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    let vmean = _mm256_set1_ps(mean);
+    let vinv = _mm256_set1_ps(inv_std);
+    let mut i = 0usize;
+    let end8 = input.len() & !7;
+    while i < end8 {
+        let v = _mm256_loadu_ps(input.as_ptr().add(i));
+        let r = _mm256_mul_ps(_mm256_sub_ps(v, vmean), vinv);
+        _mm256_storeu_ps(out.as_mut_ptr().add(i), r);
+        i += 8;
+    }
+    while i < input.len() {
+        out[i] = (input[i] - mean) * inv_std;
+        i += 1;
     }
 }
 
@@ -720,6 +1127,40 @@ unsafe fn layer_norm_apply_neon(
         let r = vfmaq_f32(b, norm, g);
         vst1q_f32(out.as_mut_ptr().add(i), r);
         i += 4;
+    }
+    while i < input.len() {
+        out[i] = (input[i] - mean) * inv_std * gamma[i] + beta[i];
+        i += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn layer_norm_apply_avx512(
+    input: &[f32],
+    out: &mut [f32],
+    gamma: &[f32],
+    beta: &[f32],
+    mean: f32,
+    inv_std: f32,
+) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    let vmean = _mm512_set1_ps(mean);
+    let vinv = _mm512_set1_ps(inv_std);
+    let mut i = 0usize;
+    let end16 = input.len() & !15;
+    while i < end16 {
+        let v = _mm512_loadu_ps(input.as_ptr().add(i));
+        let g = _mm512_loadu_ps(gamma.as_ptr().add(i));
+        let b = _mm512_loadu_ps(beta.as_ptr().add(i));
+        let norm = _mm512_mul_ps(_mm512_sub_ps(v, vmean), vinv);
+        let r = _mm512_add_ps(_mm512_mul_ps(norm, g), b);
+        _mm512_storeu_ps(out.as_mut_ptr().add(i), r);
+        i += 16;
     }
     while i < input.len() {
         out[i] = (input[i] - mean) * inv_std * gamma[i] + beta[i];

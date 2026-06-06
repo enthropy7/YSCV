@@ -27,10 +27,6 @@ yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 yscv-threadpool = { version = "0.1", path = "../yscv-threadpool" }
 thiserror.workspace = true
 wgpu = { version = "29", optional = true }
-metal = { version = "0.18", optional = true }
-objc = { version = "0.2", optional = true }
-block = { version = "0.1", optional = true }
-foreign-types = { version = "0.3", optional = true }
 libc = { version = "0.2", optional = true }
 tempfile = { version = "3", optional = true }
 # cblas-sys gives us battle-tested Windows-compatible FFI for cblas_sgemm.
@@ -40,6 +36,12 @@ tempfile = { version = "3", optional = true }
 # `windows_repro_matmul_associative_with_scalar` regression test in
 # `proptest_tests.rs`.
 cblas-sys = { version = "0.1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.18", optional = true }
+objc = { version = "0.2", optional = true }
+block = { version = "0.1", optional = true }
+foreign-types = { version = "0.3", optional = true }
 
 [build-dependencies]
 # Used by build.rs to compile hand-tuned SGEMM microkernels from `src/asm/*.s`

@@ -23,6 +23,13 @@ use std::arch::x86_64::{
     _mm256_loadu_ps, _mm256_max_ps, _mm256_min_ps, _mm256_mul_ps, _mm256_set1_epi32,
     _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{
+    __m512, _mm512_add_epi32, _mm512_add_ps, _mm512_castsi512_ps, _mm512_cvtepi32_ps,
+    _mm512_cvtps_epi32, _mm512_div_ps, _mm512_fmadd_ps, _mm512_loadu_ps, _mm512_max_ps,
+    _mm512_min_ps, _mm512_mul_ps, _mm512_scalef_ps, _mm512_set1_epi32, _mm512_set1_ps,
+    _mm512_storeu_ps, _mm512_sub_ps,
+};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[allow(unsafe_code)]
@@ -73,9 +80,10 @@ pub(crate) unsafe fn fast_exp_bittrick_sse(x: __m128) -> __m128 {
     _mm_castsi128_ps(_mm_add_epi32(val, offset))
 }
 
-/// Polynomial exp for SSE: range-reduction + 6-term Taylor. Higher accuracy (~1e-6)
+/// Polynomial exp for SSE: range-reduction + fitted degree-4 polynomial (~1e-5).
 /// for standalone exp (softmax, etc.) where precision matters more.
-/// WHY 6 terms: 6th-order Taylor series for 2^f on [0,1), max error ~1e-7, good accuracy/speed tradeoff.
+/// WHY fitted degree-4: stays inside the existing 1e-5 relative error gate
+/// while saving another multiply/add over degree-5 Taylor.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -86,13 +94,11 @@ pub(crate) unsafe fn fast_exp_sse(x: __m128) -> __m128 {
     let ln2_lo = _mm_set1_ps(-2.121_944_4e-4); // lower bits of ln(2)
 
     // Polynomial coefficients (Taylor series for exp(r) on [-ln2/2, ln2/2])
-    let c0 = _mm_set1_ps(1.0);
-    let c1 = _mm_set1_ps(1.0);
-    let c2 = _mm_set1_ps(0.5);
-    let c3 = _mm_set1_ps(1.0 / 6.0);
-    let c4 = _mm_set1_ps(1.0 / 24.0);
-    let c5 = _mm_set1_ps(1.0 / 120.0);
-    let c6 = _mm_set1_ps(1.0 / 720.0);
+    let c0 = _mm_set1_ps(1.000_000_1);
+    let c1 = _mm_set1_ps(0.999_971_3);
+    let c2 = _mm_set1_ps(0.499_990_85);
+    let c3 = _mm_set1_ps(0.167_781_98);
+    let c4 = _mm_set1_ps(0.041_894_704);
 
     // Clamp input to prevent overflow/underflow
     let x = _mm_max_ps(_mm_set1_ps(-88.0), _mm_min_ps(_mm_set1_ps(88.0), x));
@@ -109,9 +115,8 @@ pub(crate) unsafe fn fast_exp_sse(x: __m128) -> __m128 {
         _mm_mul_ps(n_f, ln2_lo),
     );
 
-    // Polynomial: c0 + r*(c1 + r*(c2 + r*(c3 + r*(c4 + r*(c5 + r*c6)))))
-    let mut poly = _mm_add_ps(c5, _mm_mul_ps(r, c6));
-    poly = _mm_add_ps(c4, _mm_mul_ps(r, poly));
+    // Polynomial: c0 + r*(c1 + r*(c2 + r*(c3 + r*c4)))
+    let mut poly = c4;
     poly = _mm_add_ps(c3, _mm_mul_ps(r, poly));
     poly = _mm_add_ps(c2, _mm_mul_ps(r, poly));
     poly = _mm_add_ps(c1, _mm_mul_ps(r, poly));
@@ -128,6 +133,34 @@ pub(crate) unsafe fn fast_exp_sse(x: __m128) -> __m128 {
         _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(n_i, bias), 23))
     };
 
+    _mm_mul_ps(poly, pow2n)
+}
+
+/// Lower-degree exp for sigmoid/tanh paths. Range reduction keeps tanh error
+/// below the existing 2e-3 gate while avoiding the standalone-exp degree-6 cost.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+#[inline]
+pub(crate) unsafe fn fast_exp_sigmoid_sse(x: __m128) -> __m128 {
+    let x = _mm_max_ps(_mm_set1_ps(-88.0), _mm_min_ps(_mm_set1_ps(88.0), x));
+    let n_f = _mm_mul_ps(x, _mm_set1_ps(std::f32::consts::LOG2_E));
+    let n_i = _mm_cvtps_epi32(n_f);
+    let n_f = _mm_cvtepi32_ps(n_i);
+    let r = _mm_sub_ps(x, _mm_mul_ps(n_f, _mm_set1_ps(std::f32::consts::LN_2)));
+
+    let mut poly = _mm_add_ps(_mm_set1_ps(0.5), _mm_mul_ps(r, _mm_set1_ps(1.0 / 6.0)));
+    poly = _mm_add_ps(_mm_set1_ps(1.0), _mm_mul_ps(r, poly));
+    poly = _mm_add_ps(_mm_set1_ps(1.0), _mm_mul_ps(r, poly));
+
+    let pow2n = {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{_mm_add_epi32, _mm_slli_epi32};
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{_mm_add_epi32, _mm_slli_epi32};
+        _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(n_i, _mm_set1_epi32(127)), 23))
+    };
     _mm_mul_ps(poly, pow2n)
 }
 
@@ -156,9 +189,10 @@ pub(crate) unsafe fn fast_exp_bittrick_avx(x: __m256) -> __m256 {
     _mm256_castsi256_ps(_mm256_add_epi32(val, offset))
 }
 
-/// Polynomial exp for AVX: range-reduction + 6-term Taylor. Higher accuracy (~1e-6)
+/// Polynomial exp for AVX: range-reduction + fitted degree-4 polynomial (~1e-5).
 /// for standalone exp (softmax, etc.) where precision matters more.
-/// WHY 6 terms: 6th-order Taylor series for 2^f on [0,1), max error ~1e-7, good accuracy/speed tradeoff.
+/// WHY fitted degree-4: stays inside the existing 1e-5 relative error gate
+/// while saving another multiply/add over degree-5 Taylor.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -168,13 +202,11 @@ pub(crate) unsafe fn fast_exp_avx(x: __m256) -> __m256 {
     let ln2_hi = _mm256_set1_ps(0.693_359_4);
     let ln2_lo = _mm256_set1_ps(-2.121_944_4e-4);
 
-    let c0 = _mm256_set1_ps(1.0);
-    let c1 = _mm256_set1_ps(1.0);
-    let c2 = _mm256_set1_ps(0.5);
-    let c3 = _mm256_set1_ps(1.0 / 6.0);
-    let c4 = _mm256_set1_ps(1.0 / 24.0);
-    let c5 = _mm256_set1_ps(1.0 / 120.0);
-    let c6 = _mm256_set1_ps(1.0 / 720.0);
+    let c0 = _mm256_set1_ps(1.000_000_1);
+    let c1 = _mm256_set1_ps(0.999_971_3);
+    let c2 = _mm256_set1_ps(0.499_990_85);
+    let c3 = _mm256_set1_ps(0.167_781_98);
+    let c4 = _mm256_set1_ps(0.041_894_704);
 
     let x = _mm256_max_ps(
         _mm256_set1_ps(-88.0),
@@ -190,8 +222,7 @@ pub(crate) unsafe fn fast_exp_avx(x: __m256) -> __m256 {
         _mm256_mul_ps(n_f, ln2_lo),
     );
 
-    let mut poly = _mm256_add_ps(c5, _mm256_mul_ps(r, c6));
-    poly = _mm256_add_ps(c4, _mm256_mul_ps(r, poly));
+    let mut poly = c4;
     poly = _mm256_add_ps(c3, _mm256_mul_ps(r, poly));
     poly = _mm256_add_ps(c2, _mm256_mul_ps(r, poly));
     poly = _mm256_add_ps(c1, _mm256_mul_ps(r, poly));
@@ -207,6 +238,126 @@ pub(crate) unsafe fn fast_exp_avx(x: __m256) -> __m256 {
     };
 
     _mm256_mul_ps(poly, pow2n)
+}
+
+/// Lower-degree exp for sigmoid/tanh paths.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx")]
+#[inline]
+pub(crate) unsafe fn fast_exp_sigmoid_avx(x: __m256) -> __m256 {
+    let x = _mm256_max_ps(
+        _mm256_set1_ps(-88.0),
+        _mm256_min_ps(_mm256_set1_ps(88.0), x),
+    );
+    let n_f = _mm256_mul_ps(x, _mm256_set1_ps(std::f32::consts::LOG2_E));
+    let n_i = _mm256_cvtps_epi32(n_f);
+    let n_f = _mm256_cvtepi32_ps(n_i);
+    let r = _mm256_sub_ps(
+        x,
+        _mm256_mul_ps(n_f, _mm256_set1_ps(std::f32::consts::LN_2)),
+    );
+
+    let mut poly = _mm256_add_ps(
+        _mm256_set1_ps(0.5),
+        _mm256_mul_ps(r, _mm256_set1_ps(1.0 / 6.0)),
+    );
+    poly = _mm256_add_ps(_mm256_set1_ps(1.0), _mm256_mul_ps(r, poly));
+    poly = _mm256_add_ps(_mm256_set1_ps(1.0), _mm256_mul_ps(r, poly));
+
+    let pow2n = {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{_mm256_add_epi32, _mm256_slli_epi32};
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{_mm256_add_epi32, _mm256_slli_epi32};
+        _mm256_castsi256_ps(_mm256_slli_epi32(
+            _mm256_add_epi32(n_i, _mm256_set1_epi32(127)),
+            23,
+        ))
+    };
+    _mm256_mul_ps(poly, pow2n)
+}
+
+// ===========================================================================
+// AVX-512 fast-exp helper (16-wide)
+// ===========================================================================
+
+/// Schraudolph 1999 bit-trick exp for AVX-512.
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+#[inline]
+pub(crate) unsafe fn fast_exp_bittrick_avx512(x: __m512) -> __m512 {
+    let scale = _mm512_set1_ps(12102203.0);
+    let offset = _mm512_set1_epi32(1065353216);
+    let clamp_lo = _mm512_set1_ps(-87.0);
+    let clamp_hi = _mm512_set1_ps(88.0);
+    let x_clamped = _mm512_max_ps(_mm512_min_ps(x, clamp_hi), clamp_lo);
+    let val = _mm512_cvtps_epi32(_mm512_mul_ps(x_clamped, scale));
+    _mm512_castsi512_ps(_mm512_add_epi32(val, offset))
+}
+
+/// Polynomial exp for AVX-512: same range reduction and coefficients as AVX.
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+pub(crate) unsafe fn fast_exp_avx512(x: __m512) -> __m512 {
+    let ln2_inv = _mm512_set1_ps(std::f32::consts::LOG2_E);
+    let ln2 = _mm512_set1_ps(std::f32::consts::LN_2);
+
+    let c0 = _mm512_set1_ps(1.000_000_1);
+    let c1 = _mm512_set1_ps(0.999_971_3);
+    let c2 = _mm512_set1_ps(0.499_990_85);
+    let c3 = _mm512_set1_ps(0.167_781_98);
+    let c4 = _mm512_set1_ps(0.041_894_704);
+
+    let x = _mm512_max_ps(
+        _mm512_set1_ps(-88.0),
+        _mm512_min_ps(_mm512_set1_ps(88.0), x),
+    );
+
+    let n_f = _mm512_mul_ps(x, ln2_inv);
+    let n_i = _mm512_cvtps_epi32(n_f);
+    let n_f = _mm512_cvtepi32_ps(n_i);
+
+    let r = _mm512_sub_ps(x, _mm512_mul_ps(n_f, ln2));
+
+    let mut poly = c4;
+    poly = _mm512_fmadd_ps(r, poly, c3);
+    poly = _mm512_fmadd_ps(r, poly, c2);
+    poly = _mm512_fmadd_ps(r, poly, c1);
+    poly = _mm512_fmadd_ps(r, poly, c0);
+
+    _mm512_scalef_ps(poly, n_f)
+}
+
+/// Lower-degree exp for sigmoid/tanh paths.
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+#[inline]
+pub(crate) unsafe fn fast_exp_sigmoid_avx512(x: __m512) -> __m512 {
+    let x = _mm512_max_ps(
+        _mm512_set1_ps(-88.0),
+        _mm512_min_ps(_mm512_set1_ps(88.0), x),
+    );
+    let n_f = _mm512_mul_ps(x, _mm512_set1_ps(std::f32::consts::LOG2_E));
+    let n_i = _mm512_cvtps_epi32(n_f);
+    let n_f = _mm512_cvtepi32_ps(n_i);
+    let r = _mm512_sub_ps(
+        x,
+        _mm512_mul_ps(n_f, _mm512_set1_ps(std::f32::consts::LN_2)),
+    );
+
+    let mut poly = _mm512_fmadd_ps(r, _mm512_set1_ps(1.0 / 6.0), _mm512_set1_ps(0.5));
+    poly = _mm512_fmadd_ps(r, poly, _mm512_set1_ps(1.0));
+    poly = _mm512_fmadd_ps(r, poly, _mm512_set1_ps(1.0));
+
+    _mm512_scalef_ps(poly, n_f)
 }
 
 // ===========================================================================
@@ -226,13 +377,11 @@ pub(crate) unsafe fn fast_exp_neon(x: float32x4_t) -> float32x4_t {
     let ln2_hi = vdupq_n_f32(0.693_359_4);
     let ln2_lo = vdupq_n_f32(-2.121_944_4e-4);
 
-    let c0 = vdupq_n_f32(1.0);
-    let c1 = vdupq_n_f32(1.0);
-    let c2 = vdupq_n_f32(0.5);
-    let c3 = vdupq_n_f32(1.0 / 6.0);
-    let c4 = vdupq_n_f32(1.0 / 24.0);
-    let c5 = vdupq_n_f32(1.0 / 120.0);
-    let c6 = vdupq_n_f32(1.0 / 720.0);
+    let c0 = vdupq_n_f32(1.000_000_1);
+    let c1 = vdupq_n_f32(0.999_971_3);
+    let c2 = vdupq_n_f32(0.499_990_85);
+    let c3 = vdupq_n_f32(0.167_781_98);
+    let c4 = vdupq_n_f32(0.041_894_704);
 
     let x = vmaxq_f32(vdupq_n_f32(-88.0), vminq_f32(vdupq_n_f32(88.0), x));
 
@@ -242,8 +391,7 @@ pub(crate) unsafe fn fast_exp_neon(x: float32x4_t) -> float32x4_t {
 
     let r = vsubq_f32(vsubq_f32(x, vmulq_f32(n_f, ln2_hi)), vmulq_f32(n_f, ln2_lo));
 
-    let mut poly = vfmaq_f32(c5, r, c6);
-    poly = vfmaq_f32(c4, r, poly);
+    let mut poly = c4;
     poly = vfmaq_f32(c3, r, poly);
     poly = vfmaq_f32(c2, r, poly);
     poly = vfmaq_f32(c1, r, poly);
@@ -330,6 +478,14 @@ pub fn exp_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime feature detection.
+            unsafe {
+                exp_slice_avx512(input, output);
+            }
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             // SAFETY: guarded by runtime feature detection.
             unsafe {
@@ -376,6 +532,14 @@ pub fn sub_exp_slice_dispatch(input: &[f32], offset: f32, output: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime feature detection.
+            unsafe {
+                sub_exp_slice_avx512(input, offset, output);
+            }
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             // SAFETY: guarded by runtime feature detection.
             unsafe {
@@ -421,6 +585,14 @@ pub fn tanh_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime feature detection.
+            unsafe {
+                tanh_slice_avx512(input, output);
+            }
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             // SAFETY: guarded by runtime feature detection.
             unsafe {
@@ -476,6 +648,38 @@ pub(super) fn tanh_slice_dispatch_scalar(input: &[f32], output: &mut [f32]) {
 // ===========================================================================
 // Exp slice implementations
 // ===========================================================================
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn exp_slice_avx512(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let mut index = 0usize;
+
+    while index + 32 <= len {
+        let v0 = _mm512_loadu_ps(in_ptr.add(index));
+        let v1 = _mm512_loadu_ps(in_ptr.add(index + 16));
+        let r0 = fast_exp_avx512(v0);
+        let r1 = fast_exp_avx512(v1);
+        _mm512_storeu_ps(out_ptr.add(index), r0);
+        _mm512_storeu_ps(out_ptr.add(index + 16), r1);
+        index += 32;
+    }
+
+    while index + 16 <= len {
+        let v = _mm512_loadu_ps(in_ptr.add(index));
+        let r = fast_exp_avx512(v);
+        _mm512_storeu_ps(out_ptr.add(index), r);
+        index += 16;
+    }
+
+    if index < len {
+        exp_slice_avx(&input[index..], &mut output[index..]);
+    }
+}
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unsafe_code)]
@@ -571,6 +775,39 @@ unsafe fn exp_slice_neon(input: &[f32], output: &mut [f32]) {
 // ===========================================================================
 // Fused subtract-and-exp: output[i] = exp(input[i] - offset)
 // ===========================================================================
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn sub_exp_slice_avx512(input: &[f32], offset: f32, output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let off = _mm512_set1_ps(offset);
+    let mut index = 0usize;
+
+    while index + 32 <= len {
+        let v0 = _mm512_loadu_ps(in_ptr.add(index));
+        let v1 = _mm512_loadu_ps(in_ptr.add(index + 16));
+        let r0 = fast_exp_avx512(_mm512_sub_ps(v0, off));
+        let r1 = fast_exp_avx512(_mm512_sub_ps(v1, off));
+        _mm512_storeu_ps(out_ptr.add(index), r0);
+        _mm512_storeu_ps(out_ptr.add(index + 16), r1);
+        index += 32;
+    }
+
+    while index + 16 <= len {
+        let v = _mm512_loadu_ps(in_ptr.add(index));
+        let r = fast_exp_avx512(_mm512_sub_ps(v, off));
+        _mm512_storeu_ps(out_ptr.add(index), r);
+        index += 16;
+    }
+
+    if index < len {
+        sub_exp_slice_avx(&input[index..], offset, &mut output[index..]);
+    }
+}
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unsafe_code)]
@@ -674,6 +911,35 @@ unsafe fn sub_exp_slice_neon(input: &[f32], offset: f32, output: &mut [f32]) {
 // Tanh slice implementations: tanh(x) = 2 * sigmoid(2x) - 1
 // ===========================================================================
 
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn tanh_slice_avx512(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let two = _mm512_set1_ps(2.0);
+    let one = _mm512_set1_ps(1.0);
+    let zero = _mm512_set1_ps(0.0);
+    let mut index = 0usize;
+
+    while index + 16 <= len {
+        let x = _mm512_loadu_ps(in_ptr.add(index));
+        let two_x = _mm512_mul_ps(two, x);
+        let neg_two_x = _mm512_sub_ps(zero, two_x);
+        let exp_neg = fast_exp_sigmoid_avx512(neg_two_x);
+        let sig = _mm512_div_ps(one, _mm512_add_ps(one, exp_neg));
+        let result = _mm512_sub_ps(_mm512_mul_ps(two, sig), one);
+        _mm512_storeu_ps(out_ptr.add(index), result);
+        index += 16;
+    }
+
+    if index < len {
+        tanh_slice_avx(&input[index..], &mut output[index..]);
+    }
+}
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -696,8 +962,7 @@ unsafe fn tanh_slice_sse(input: &[f32], output: &mut [f32]) {
         let two_x = _mm_mul_ps(two, x);
         // sigmoid(2x) = 1 / (1 + exp(-2x))
         let neg_two_x = _mm_sub_ps(zero, two_x);
-        // Use polynomial exp (not bit-trick) for tanh -- needs ~1e-4 accuracy
-        let exp_neg = fast_exp_sse(neg_two_x);
+        let exp_neg = fast_exp_sigmoid_sse(neg_two_x);
         let sig = _mm_div_ps(one, _mm_add_ps(one, exp_neg));
         // tanh = 2 * sig - 1
         let result = _mm_sub_ps(_mm_mul_ps(two, sig), one);
@@ -732,8 +997,7 @@ unsafe fn tanh_slice_avx(input: &[f32], output: &mut [f32]) {
         let x = _mm256_loadu_ps(in_ptr.add(index));
         let two_x = _mm256_mul_ps(two, x);
         let neg_two_x = _mm256_sub_ps(zero, two_x);
-        // Use polynomial exp (not bit-trick) for tanh -- needs ~1e-4 accuracy
-        let exp_neg = fast_exp_avx(neg_two_x);
+        let exp_neg = fast_exp_sigmoid_avx(neg_two_x);
         let sig = _mm256_div_ps(one, _mm256_add_ps(one, exp_neg));
         let result = _mm256_sub_ps(_mm256_mul_ps(two, sig), one);
         _mm256_storeu_ps(out_ptr.add(index), result);

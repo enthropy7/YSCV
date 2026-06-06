@@ -272,7 +272,7 @@ pub(crate) fn execute_node_cpu_fallback(
 /// with `--features "gpu metal-backend"` get both entry points without
 /// symbol collision and without the wgpu fallback inheriting the
 /// layout pass.
-#[cfg(feature = "metal-backend")]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 #[inline]
 pub(crate) fn execute_node_cpu_for_metal_compile(
     node: &OnnxNode,

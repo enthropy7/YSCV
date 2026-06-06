@@ -182,26 +182,35 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
 
     // Conv: 4-in -> 8-out, 1x1 kernel. Weight = 8*4*1*1 = 32 elements,
     // > 16 so the rewriter quantizes it.
+    let input_name = "calib_qdq_input_xyz";
+    let weight_name = "calib_qdq_weight_xyz";
+    let output_name = "calib_qdq_output_xyz";
     let weight_data: Vec<f32> = (0..32).map(|i| (i as f32 - 16.0) * 0.05).collect();
     let conv_w = onnx::TensorProto {
-        name: Some("w".into()),
+        name: Some(weight_name.into()),
         dims: vec![8, 4, 1, 1],
         data_type: Some(1),
         float_data: weight_data.clone(),
         ..Default::default()
     };
+
     let nodes = vec![onnx::NodeProto {
         op_type: Some("Conv".into()),
         name: Some("conv0".into()),
-        input: vec!["x".into(), "w".into()],
-        output: vec!["y".into()],
+        input: vec![input_name.into(), weight_name.into()],
+        output: vec![output_name.into()],
         attribute: vec![
             make_ints_attr("kernel_shape", vec![1, 1]),
             make_ints_attr("strides", vec![1, 1]),
         ],
         ..Default::default()
     }];
-    let bytes = build_minimal_onnx_model(nodes, vec![conv_w], vec!["x", "w"], vec!["y"]);
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![conv_w],
+        vec![input_name, weight_name],
+        vec![output_name],
+    );
     let model_fp32 = load_onnx_model(&bytes).unwrap();
 
     let input_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.25).collect();
@@ -209,9 +218,9 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
 
     // 1) Reference fp32 run.
     let mut feed_fp32 = HashMap::new();
-    feed_fp32.insert("x".to_string(), input.clone());
+    feed_fp32.insert(input_name.to_string(), input.clone());
     let result_fp32 = run_onnx_model(&model_fp32, feed_fp32).unwrap();
-    let y_fp32 = result_fp32["y"].clone();
+    let y_fp32 = result_fp32[output_name].clone();
 
     // 2) Calibrate on the same input (single-sample is enough for a smoke
     //    test — real calibration uses many).
@@ -219,12 +228,12 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
     {
         let _scope = collector.scope();
         let mut feed_cal = HashMap::new();
-        feed_cal.insert("x".to_string(), input.clone());
+        feed_cal.insert(input_name.to_string(), input.clone());
         let _ = run_onnx_model(&model_fp32, feed_cal).unwrap();
     }
     let stats = collector.snapshot();
     assert!(
-        stats.contains_key("x"),
+        stats.contains_key(input_name),
         "calibration must capture input activation"
     );
 
@@ -242,15 +251,17 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
         "rewritten model must contain QuantizeLinear"
     );
     assert!(
-        model_qdq.initializers.contains_key("w_q"),
+        model_qdq
+            .initializers
+            .contains_key("calib_qdq_weight_xyz_q"),
         "rewritten model must contain quantized weight initializer"
     );
 
     // 4) Run rewritten model.
     let mut feed_qdq = HashMap::new();
-    feed_qdq.insert("x".to_string(), input);
+    feed_qdq.insert(input_name.to_string(), input);
     let result_qdq = run_onnx_model(&model_qdq, feed_qdq).unwrap();
-    let y_qdq = &result_qdq["y"];
+    let y_qdq = &result_qdq[output_name];
     assert_eq!(y_qdq.shape(), y_fp32.shape());
 
     // 5) Compare. Loose tolerance: per-channel int8 quantization on a

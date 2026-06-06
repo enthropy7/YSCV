@@ -18,11 +18,32 @@ use std::arch::x86_64::{
     _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps,
     _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{
+    _mm512_add_ps, _mm512_div_ps, _mm512_loadu_ps, _mm512_max_ps, _mm512_mul_ps, _mm512_set1_ps,
+    _mm512_setzero_ps, _mm512_storeu_ps, _mm512_sub_ps,
+};
 
 #[cfg(target_arch = "aarch64")]
 use super::exp::fast_exp_sigmoid_neon;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use super::exp::{fast_exp_avx, fast_exp_bittrick_avx, fast_exp_bittrick_sse, fast_exp_sse};
+#[cfg(target_arch = "x86_64")]
+use super::exp::{fast_exp_avx512, fast_exp_bittrick_avx512};
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn x86_memory_simd_forces_avx2() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("YSCV_X86_MEMORY_SIMD")
+            .map(|value| {
+                let value = value.to_ascii_lowercase();
+                matches!(value.as_str(), "avx2" | "ymm" | "256")
+            })
+            .unwrap_or(false)
+    })
+}
 
 // ===========================================================================
 // ReLU dispatch
@@ -42,6 +63,14 @@ pub fn relu_slice_dispatch(values: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if !x86_memory_simd_forces_avx2() && std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime feature detection.
+            unsafe {
+                relu_slice_avx512(values);
+            }
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             // SAFETY: guarded by runtime feature detection.
             unsafe {
@@ -94,6 +123,14 @@ pub fn relu_to_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if !x86_memory_simd_forces_avx2() && std::is_x86_feature_detected!("avx512f") {
+            // SAFETY: guarded by runtime feature detection.
+            unsafe {
+                relu_to_slice_avx512(input, output);
+            }
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             // SAFETY: guarded by runtime feature detection.
             unsafe {
@@ -165,6 +202,14 @@ pub fn sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
     {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
+            #[cfg(target_arch = "x86_64")]
+            if std::is_x86_feature_detected!("avx512f") {
+                // SAFETY: guarded by runtime feature detection.
+                unsafe {
+                    sigmoid_slice_avx512(input, output);
+                }
+                return;
+            }
             if std::is_x86_feature_detected!("avx") {
                 // SAFETY: guarded by runtime feature detection.
                 unsafe {
@@ -224,6 +269,11 @@ pub fn silu_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx512f") {
+            unsafe { silu_slice_avx512(input, output) };
+            return;
+        }
         if std::is_x86_feature_detected!("avx") {
             unsafe { silu_slice_avx(input, output) };
             return;
@@ -235,6 +285,45 @@ pub fn silu_slice_dispatch(input: &[f32], output: &mut [f32]) {
     }
 
     silu_slice_dispatch_scalar(input, output);
+}
+
+/// Fused GELU approximation: `x * sigmoid(1.702 * x)`.
+#[allow(unsafe_code)]
+#[inline]
+pub fn gelu_sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
+    debug_assert_eq!(input.len(), output.len());
+
+    if cfg!(miri) {
+        gelu_sigmoid_slice_scalar(input, output);
+        return;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            unsafe { gelu_sigmoid_slice_neon(input, output) };
+            return;
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx512f") {
+            unsafe { gelu_sigmoid_slice_avx512(input, output) };
+            return;
+        }
+        if std::is_x86_feature_detected!("avx") {
+            unsafe { gelu_sigmoid_slice_avx(input, output) };
+            return;
+        }
+        if std::is_x86_feature_detected!("sse") {
+            unsafe { gelu_sigmoid_slice_sse(input, output) };
+            return;
+        }
+    }
+
+    gelu_sigmoid_slice_scalar(input, output);
 }
 
 /// In-place SiLU on a mutable slice. Avoids creating aliasing `&[f32]` +
@@ -799,6 +888,13 @@ fn silu_slice_dispatch_scalar(input: &[f32], output: &mut [f32]) {
     }
 }
 
+fn gelu_sigmoid_slice_scalar(input: &[f32], output: &mut [f32]) {
+    for (o, &v) in output.iter_mut().zip(input.iter()) {
+        let s = 1.0 / (1.0 + (-(1.702 * v)).exp());
+        *o = v * s;
+    }
+}
+
 // ===========================================================================
 // ReLU SIMD implementations
 // ===========================================================================
@@ -858,6 +954,41 @@ unsafe fn relu_slice_avx(values: &mut [f32]) {
 
     if index < len {
         relu_slice_sse(&mut values[index..]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn relu_slice_avx512(values: &mut [f32]) {
+    let len = values.len();
+    let ptr = values.as_mut_ptr();
+    let zero = _mm512_setzero_ps();
+    let mut index = 0usize;
+
+    while index + 64 <= len {
+        let v0 = _mm512_max_ps(_mm512_loadu_ps(ptr.add(index)), zero);
+        let v1 = _mm512_max_ps(_mm512_loadu_ps(ptr.add(index + 16)), zero);
+        let v2 = _mm512_max_ps(_mm512_loadu_ps(ptr.add(index + 32)), zero);
+        let v3 = _mm512_max_ps(_mm512_loadu_ps(ptr.add(index + 48)), zero);
+        _mm512_storeu_ps(ptr.add(index), v0);
+        _mm512_storeu_ps(ptr.add(index + 16), v1);
+        _mm512_storeu_ps(ptr.add(index + 32), v2);
+        _mm512_storeu_ps(ptr.add(index + 48), v3);
+        index += 64;
+    }
+
+    while index + 16 <= len {
+        _mm512_storeu_ps(
+            ptr.add(index),
+            _mm512_max_ps(_mm512_loadu_ps(ptr.add(index)), zero),
+        );
+        index += 16;
+    }
+
+    if index < len {
+        relu_slice_avx(&mut values[index..]);
     }
 }
 
@@ -963,6 +1094,42 @@ unsafe fn relu_to_slice_avx(input: &[f32], output: &mut [f32]) {
 
     if index < len {
         relu_to_slice_sse(&input[index..], &mut output[index..]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn relu_to_slice_avx512(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let zero = _mm512_setzero_ps();
+    let mut index = 0usize;
+
+    while index + 64 <= len {
+        let a0 = _mm512_loadu_ps(in_ptr.add(index));
+        let a1 = _mm512_loadu_ps(in_ptr.add(index + 16));
+        let a2 = _mm512_loadu_ps(in_ptr.add(index + 32));
+        let a3 = _mm512_loadu_ps(in_ptr.add(index + 48));
+        _mm512_storeu_ps(out_ptr.add(index), _mm512_max_ps(a0, zero));
+        _mm512_storeu_ps(out_ptr.add(index + 16), _mm512_max_ps(a1, zero));
+        _mm512_storeu_ps(out_ptr.add(index + 32), _mm512_max_ps(a2, zero));
+        _mm512_storeu_ps(out_ptr.add(index + 48), _mm512_max_ps(a3, zero));
+        index += 64;
+    }
+
+    while index + 16 <= len {
+        _mm512_storeu_ps(
+            out_ptr.add(index),
+            _mm512_max_ps(_mm512_loadu_ps(in_ptr.add(index)), zero),
+        );
+        index += 16;
+    }
+
+    if index < len {
+        relu_to_slice_avx(&input[index..], &mut output[index..]);
     }
 }
 
@@ -1291,6 +1458,261 @@ unsafe fn sigmoid_slice_avx(input: &[f32], output: &mut [f32]) {
 
 // (sigmoid_slice_neon defined above at line ~291)
 
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn sigmoid_slice_avx512(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let one = _mm512_set1_ps(1.0);
+    let zero = _mm512_setzero_ps();
+    let mut index = 0usize;
+
+    while index + 32 <= len {
+        let x0 = _mm512_loadu_ps(in_ptr.add(index));
+        let x1 = _mm512_loadu_ps(in_ptr.add(index + 16));
+        let e0 = fast_exp_bittrick_avx512(_mm512_sub_ps(zero, x0));
+        let e1 = fast_exp_bittrick_avx512(_mm512_sub_ps(zero, x1));
+        let r0 = _mm512_div_ps(one, _mm512_add_ps(one, e0));
+        let r1 = _mm512_div_ps(one, _mm512_add_ps(one, e1));
+        _mm512_storeu_ps(out_ptr.add(index), r0);
+        _mm512_storeu_ps(out_ptr.add(index + 16), r1);
+        index += 32;
+    }
+
+    while index + 16 <= len {
+        let x = _mm512_loadu_ps(in_ptr.add(index));
+        let exp_neg_x = fast_exp_bittrick_avx512(_mm512_sub_ps(zero, x));
+        let result = _mm512_div_ps(one, _mm512_add_ps(one, exp_neg_x));
+        _mm512_storeu_ps(out_ptr.add(index), result);
+        index += 16;
+    }
+
+    if index < len {
+        sigmoid_slice_avx(&input[index..], &mut output[index..]);
+    }
+}
+
+// ===========================================================================
+// GELU sigmoid-approx SIMD implementations
+// ===========================================================================
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn gelu_sigmoid_slice_neon(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let scale = vdupq_n_f32(1.702);
+    let one = vdupq_n_f32(1.0);
+    let mut index = 0usize;
+
+    while index + 16 <= len {
+        let x0 = vld1q_f32(in_ptr.add(index));
+        let x1 = vld1q_f32(in_ptr.add(index + 4));
+        let x2 = vld1q_f32(in_ptr.add(index + 8));
+        let x3 = vld1q_f32(in_ptr.add(index + 12));
+        let e0 = fast_exp_sigmoid_neon(vnegq_f32(vmulq_f32(scale, x0)));
+        let e1 = fast_exp_sigmoid_neon(vnegq_f32(vmulq_f32(scale, x1)));
+        let e2 = fast_exp_sigmoid_neon(vnegq_f32(vmulq_f32(scale, x2)));
+        let e3 = fast_exp_sigmoid_neon(vnegq_f32(vmulq_f32(scale, x3)));
+        vst1q_f32(
+            out_ptr.add(index),
+            vmulq_f32(x0, vdivq_f32(one, vaddq_f32(one, e0))),
+        );
+        vst1q_f32(
+            out_ptr.add(index + 4),
+            vmulq_f32(x1, vdivq_f32(one, vaddq_f32(one, e1))),
+        );
+        vst1q_f32(
+            out_ptr.add(index + 8),
+            vmulq_f32(x2, vdivq_f32(one, vaddq_f32(one, e2))),
+        );
+        vst1q_f32(
+            out_ptr.add(index + 12),
+            vmulq_f32(x3, vdivq_f32(one, vaddq_f32(one, e3))),
+        );
+        index += 16;
+    }
+
+    while index + 4 <= len {
+        let x = vld1q_f32(in_ptr.add(index));
+        let e = fast_exp_sigmoid_neon(vnegq_f32(vmulq_f32(scale, x)));
+        let sig = vdivq_f32(one, vaddq_f32(one, e));
+        vst1q_f32(out_ptr.add(index), vmulq_f32(x, sig));
+        index += 4;
+    }
+
+    while index < len {
+        let x = *in_ptr.add(index);
+        let s = 1.0 / (1.0 + (-(1.702 * x)).exp());
+        *out_ptr.add(index) = x * s;
+        index += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn gelu_sigmoid_slice_avx512(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let scale = _mm512_set1_ps(1.702);
+    let one = _mm512_set1_ps(1.0);
+    let zero = _mm512_setzero_ps();
+    let mut index = 0usize;
+
+    while index + 32 <= len {
+        let x0 = _mm512_loadu_ps(in_ptr.add(index));
+        let x1 = _mm512_loadu_ps(in_ptr.add(index + 16));
+        let z0 = _mm512_mul_ps(scale, x0);
+        let z1 = _mm512_mul_ps(scale, x1);
+        let e0 = fast_exp_avx512(_mm512_sub_ps(zero, z0));
+        let e1 = fast_exp_avx512(_mm512_sub_ps(zero, z1));
+        let y0 = _mm512_mul_ps(x0, _mm512_div_ps(one, _mm512_add_ps(one, e0)));
+        let y1 = _mm512_mul_ps(x1, _mm512_div_ps(one, _mm512_add_ps(one, e1)));
+        _mm512_storeu_ps(out_ptr.add(index), y0);
+        _mm512_storeu_ps(out_ptr.add(index + 16), y1);
+        index += 32;
+    }
+
+    while index + 16 <= len {
+        let x = _mm512_loadu_ps(in_ptr.add(index));
+        let z = _mm512_mul_ps(scale, x);
+        let e = fast_exp_avx512(_mm512_sub_ps(zero, z));
+        let y = _mm512_mul_ps(x, _mm512_div_ps(one, _mm512_add_ps(one, e)));
+        _mm512_storeu_ps(out_ptr.add(index), y);
+        index += 16;
+    }
+
+    if index < len {
+        gelu_sigmoid_slice_avx(&input[index..], &mut output[index..]);
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+unsafe fn gelu_sigmoid_slice_sse(input: &[f32], output: &mut [f32]) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::_mm_div_ps;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::_mm_div_ps;
+
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let scale = _mm_set1_ps(1.702);
+    let one = _mm_set1_ps(1.0);
+    let zero = _mm_setzero_ps();
+    let mut index = 0usize;
+
+    while index + 16 <= len {
+        let x0 = _mm_loadu_ps(in_ptr.add(index));
+        let x1 = _mm_loadu_ps(in_ptr.add(index + 4));
+        let x2 = _mm_loadu_ps(in_ptr.add(index + 8));
+        let x3 = _mm_loadu_ps(in_ptr.add(index + 12));
+        let e0 = fast_exp_sse(_mm_sub_ps(zero, _mm_mul_ps(scale, x0)));
+        let e1 = fast_exp_sse(_mm_sub_ps(zero, _mm_mul_ps(scale, x1)));
+        let e2 = fast_exp_sse(_mm_sub_ps(zero, _mm_mul_ps(scale, x2)));
+        let e3 = fast_exp_sse(_mm_sub_ps(zero, _mm_mul_ps(scale, x3)));
+        _mm_storeu_ps(
+            out_ptr.add(index),
+            _mm_mul_ps(x0, _mm_div_ps(one, _mm_add_ps(one, e0))),
+        );
+        _mm_storeu_ps(
+            out_ptr.add(index + 4),
+            _mm_mul_ps(x1, _mm_div_ps(one, _mm_add_ps(one, e1))),
+        );
+        _mm_storeu_ps(
+            out_ptr.add(index + 8),
+            _mm_mul_ps(x2, _mm_div_ps(one, _mm_add_ps(one, e2))),
+        );
+        _mm_storeu_ps(
+            out_ptr.add(index + 12),
+            _mm_mul_ps(x3, _mm_div_ps(one, _mm_add_ps(one, e3))),
+        );
+        index += 16;
+    }
+
+    while index + 4 <= len {
+        let x = _mm_loadu_ps(in_ptr.add(index));
+        let e = fast_exp_sse(_mm_sub_ps(zero, _mm_mul_ps(scale, x)));
+        let sig = _mm_div_ps(one, _mm_add_ps(one, e));
+        _mm_storeu_ps(out_ptr.add(index), _mm_mul_ps(x, sig));
+        index += 4;
+    }
+
+    while index < len {
+        let x = *in_ptr.add(index);
+        let s = 1.0 / (1.0 + (-(1.702 * x)).exp());
+        *out_ptr.add(index) = x * s;
+        index += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx")]
+unsafe fn gelu_sigmoid_slice_avx(input: &[f32], output: &mut [f32]) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::_mm256_div_ps;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::_mm256_div_ps;
+
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let scale = _mm256_set1_ps(1.702);
+    let one = _mm256_set1_ps(1.0);
+    let zero = _mm256_setzero_ps();
+    let mut index = 0usize;
+
+    while index + 32 <= len {
+        let x0 = _mm256_loadu_ps(in_ptr.add(index));
+        let x1 = _mm256_loadu_ps(in_ptr.add(index + 8));
+        let x2 = _mm256_loadu_ps(in_ptr.add(index + 16));
+        let x3 = _mm256_loadu_ps(in_ptr.add(index + 24));
+        let e0 = fast_exp_avx(_mm256_sub_ps(zero, _mm256_mul_ps(scale, x0)));
+        let e1 = fast_exp_avx(_mm256_sub_ps(zero, _mm256_mul_ps(scale, x1)));
+        let e2 = fast_exp_avx(_mm256_sub_ps(zero, _mm256_mul_ps(scale, x2)));
+        let e3 = fast_exp_avx(_mm256_sub_ps(zero, _mm256_mul_ps(scale, x3)));
+        _mm256_storeu_ps(
+            out_ptr.add(index),
+            _mm256_mul_ps(x0, _mm256_div_ps(one, _mm256_add_ps(one, e0))),
+        );
+        _mm256_storeu_ps(
+            out_ptr.add(index + 8),
+            _mm256_mul_ps(x1, _mm256_div_ps(one, _mm256_add_ps(one, e1))),
+        );
+        _mm256_storeu_ps(
+            out_ptr.add(index + 16),
+            _mm256_mul_ps(x2, _mm256_div_ps(one, _mm256_add_ps(one, e2))),
+        );
+        _mm256_storeu_ps(
+            out_ptr.add(index + 24),
+            _mm256_mul_ps(x3, _mm256_div_ps(one, _mm256_add_ps(one, e3))),
+        );
+        index += 32;
+    }
+
+    while index + 8 <= len {
+        let x = _mm256_loadu_ps(in_ptr.add(index));
+        let e = fast_exp_avx(_mm256_sub_ps(zero, _mm256_mul_ps(scale, x)));
+        let sig = _mm256_div_ps(one, _mm256_add_ps(one, e));
+        _mm256_storeu_ps(out_ptr.add(index), _mm256_mul_ps(x, sig));
+        index += 8;
+    }
+
+    if index < len {
+        gelu_sigmoid_slice_sse(&input[index..], &mut output[index..]);
+    }
+}
+
 // ===========================================================================
 // SiLU SIMD implementations
 // ===========================================================================
@@ -1553,6 +1975,43 @@ unsafe fn silu_slice_sse(input: &[f32], output: &mut [f32]) {
         let s = 1.0 / (1.0 + (-v).exp());
         *out_ptr.add(index) = v * s;
         index += 1;
+    }
+}
+
+/// Fused SiLU (x * sigmoid(x)) using AVX.
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn silu_slice_avx512(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let one = _mm512_set1_ps(1.0);
+    let zero = _mm512_setzero_ps();
+    let mut index = 0usize;
+
+    while index + 32 <= len {
+        let x0 = _mm512_loadu_ps(in_ptr.add(index));
+        let x1 = _mm512_loadu_ps(in_ptr.add(index + 16));
+        let e0 = fast_exp_avx512(_mm512_sub_ps(zero, x0));
+        let e1 = fast_exp_avx512(_mm512_sub_ps(zero, x1));
+        let y0 = _mm512_mul_ps(x0, _mm512_div_ps(one, _mm512_add_ps(one, e0)));
+        let y1 = _mm512_mul_ps(x1, _mm512_div_ps(one, _mm512_add_ps(one, e1)));
+        _mm512_storeu_ps(out_ptr.add(index), y0);
+        _mm512_storeu_ps(out_ptr.add(index + 16), y1);
+        index += 32;
+    }
+
+    while index + 16 <= len {
+        let x = _mm512_loadu_ps(in_ptr.add(index));
+        let e = fast_exp_avx512(_mm512_sub_ps(zero, x));
+        let y = _mm512_mul_ps(x, _mm512_div_ps(one, _mm512_add_ps(one, e)));
+        _mm512_storeu_ps(out_ptr.add(index), y);
+        index += 16;
+    }
+
+    if index < len {
+        silu_slice_avx(&input[index..], &mut output[index..]);
     }
 }
 

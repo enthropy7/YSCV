@@ -18,7 +18,7 @@ mod gather_scatter;
 pub(crate) mod gpu;
 pub mod kv_cache;
 mod linear;
-#[cfg(feature = "metal-backend")]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 #[allow(unsafe_code)]
 #[path = "metal/mod.rs"]
 pub mod metal_runner;

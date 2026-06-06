@@ -5,15 +5,25 @@
 //!
 //! Also supports YOLO models from slowwork/ when no arg is given.
 
+#[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
+fn main() {
+    eprintln!("bench_mpsgraph requires macOS with the metal-backend feature");
+}
+
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::collections::HashMap;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::time::Instant;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_onnx::{
     compile_metal_plan, compile_mpsgraph_plan, load_onnx_model_from_file, run_metal_plan,
     run_mpsgraph_plan, run_onnx_model,
 };
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn bench_model(
     model_path: &str,
     input_shape: Vec<usize>,
@@ -174,6 +184,7 @@ fn bench_model(
     Ok(())
 }
 
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
