@@ -117,6 +117,40 @@ fn backend_add_supports_broadcasting() {
 }
 
 #[test]
+fn elementwise_lastdim_broadcast_uses_fast_path_shapes() {
+    let lhs = Tensor::from_vec(
+        vec![2, 2, 3],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ],
+    )
+    .unwrap();
+    let rhs = Tensor::from_vec(vec![1, 3], vec![10.0, 20.0, 30.0]).unwrap();
+    let parallel = ParallelElementwiseConfig {
+        min_parallel_elements: 1,
+    };
+
+    let out = add_with_config(&lhs, &rhs, parallel).unwrap();
+    assert_eq!(out.shape(), &[2, 2, 3]);
+    assert_eq!(
+        out.data(),
+        &[
+            11.0, 22.0, 33.0, 14.0, 25.0, 36.0, 17.0, 28.0, 39.0, 20.0, 31.0, 42.0
+        ]
+    );
+}
+
+#[test]
+fn elementwise_lastdim_broadcast_preserves_lhs_rhs_order_for_sub() {
+    let lhs = Tensor::from_vec(vec![3], vec![10.0, 20.0, 30.0]).unwrap();
+    let rhs = Tensor::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+    let out = sub_with_config(&lhs, &rhs, ParallelElementwiseConfig::disabled()).unwrap();
+
+    assert_eq!(out.shape(), &[2, 3]);
+    assert_eq!(out.data(), &[9.0, 18.0, 27.0, 6.0, 15.0, 24.0]);
+}
+
+#[test]
 fn free_add_matches_backend_add() {
     let backend = CpuBackend;
     let lhs = Tensor::from_vec(vec![2], vec![1.0, 2.0]).unwrap();

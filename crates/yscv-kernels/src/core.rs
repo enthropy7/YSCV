@@ -87,18 +87,18 @@ pub use ops::quantize::{
 };
 pub use ops::rope::apply_rotary_embedding;
 pub use ops::{
-    BinaryKind, DEFAULT_ELEMENTWISE_MIN_PARALLEL_ELEMENTS,
+    BinaryKind, CpuDispatchReport, DEFAULT_ELEMENTWISE_MIN_PARALLEL_ELEMENTS,
     DEFAULT_MATMUL_MIN_PARALLEL_OUTPUT_ELEMENTS, DEFAULT_MATMUL_MIN_PARALLEL_SHARED_DIM,
     Depthwise3x3I8Params, DepthwiseI8Params, GemmEpilogue, PackedB, PackedNChwBc,
-    ParallelElementwiseConfig, ParallelMatmulConfig, add_nchwc, add_reduce_dispatch,
-    add_with_config_and_pool, avg_pool2d_nchw, avg_pool2d_nchwc,
+    ParallelElementwiseConfig, ParallelMatmulConfig, SimdDispatchPath, add_nchwc,
+    add_reduce_dispatch, add_with_config_and_pool, avg_pool2d_nchw, avg_pool2d_nchwc,
     avg_pool2d_nhwc_with_config_and_pool, batch_norm2d_nchwc,
     batch_norm2d_nhwc_with_config_and_pool, binary_same_shape_dispatch,
     conv2d_nchwc_dw3x3_s1_same_pad, conv2d_nchwc_pointwise_with_activation_prepacked,
     conv2d_nchwc_pointwise_with_residual_activation_prepacked,
     conv2d_nchwc_with_activation_prepacked, conv2d_nhwc_pointwise_with_residual_relu,
     conv2d_nhwc_with_activation_prepacked, conv2d_nhwc_with_activation_with_config_and_pool,
-    conv2d_nhwc_with_config_and_pool, conv3d,
+    conv2d_nhwc_with_config_and_pool, conv3d, cpu_dispatch_report,
     depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool,
     depthwise_conv2d_nhwc_padded_with_config_and_pool,
     depthwise_conv2d_nhwc_with_activation_with_config_and_pool,

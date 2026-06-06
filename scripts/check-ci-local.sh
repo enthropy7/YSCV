@@ -177,6 +177,7 @@ if [ "$cross" -eq 1 ]; then
 
   run cargo check -p yscv-kernels --target x86_64-pc-windows-msvc --no-default-features
   run cargo check -p yscv-kernels --target aarch64-apple-darwin --no-default-features
+  run cargo clippy -p yscv-kernels --target aarch64-apple-darwin --no-default-features --lib -- -D warnings
   run cargo check -p yscv-kernels --target x86_64-apple-darwin --no-default-features
 fi
 

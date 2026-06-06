@@ -25,6 +25,10 @@ OPS: List[OpSpec] = [
     ("add_1M", "add", [1024, 1024]),
     ("mul_1M", "mul", [1024, 1024]),
     ("exp_1M", "exp", [1024, 1024]),
+    ("sum_1M", "sum", [1024, 1024]),
+    ("max_1M", "max", [1024, 1024]),
+    ("add_broadcast_1024x1024_by_1024", "add_broadcast_lastdim", [1024, 1024]),
+    ("sub_broadcast_1024_by_1024x1024", "sub_broadcast_row_by_mat", [1024, 1024]),
     ("relu_921K", "relu", [921600]),
     ("sigmoid_921K", "sigmoid", [921600]),
     ("tanh_1M", "tanh", [1024, 1024]),
@@ -42,10 +46,13 @@ def init(name: str, value: np.ndarray) -> onnx.TensorProto:
     return numpy_helper.from_array(value.astype(np.float32), name=name)
 
 
+def init_i64(name: str, value: np.ndarray) -> onnx.TensorProto:
+    return numpy_helper.from_array(value.astype(np.int64), name=name)
+
+
 def make_model(op: str, shape: List[int]) -> bytes:
-    x = helper.make_tensor_value_info("X", TensorProto.FLOAT, shape)
-    y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, shape)
-    inputs = [x]
+    output_shape: List[int] = shape
+    inputs = [helper.make_tensor_value_info("X", TensorProto.FLOAT, shape)]
     initializers: List[onnx.TensorProto] = []
     nodes: List[onnx.NodeProto] = []
 
@@ -55,6 +62,18 @@ def make_model(op: str, shape: List[int]) -> bytes:
     elif op == "mul":
         inputs.append(helper.make_tensor_value_info("B", TensorProto.FLOAT, shape))
         nodes.append(helper.make_node("Mul", ["X", "B"], ["Y"]))
+    elif op == "add_broadcast_lastdim":
+        inputs.append(helper.make_tensor_value_info("B", TensorProto.FLOAT, [shape[-1]]))
+        nodes.append(helper.make_node("Add", ["X", "B"], ["Y"]))
+    elif op == "sub_broadcast_row_by_mat":
+        inputs[0] = helper.make_tensor_value_info("X", TensorProto.FLOAT, [shape[-1]])
+        inputs.append(helper.make_tensor_value_info("B", TensorProto.FLOAT, shape))
+        nodes.append(helper.make_node("Sub", ["X", "B"], ["Y"]))
+    elif op in ("sum", "max"):
+        output_shape = []
+        initializers.append(init_i64("axes", np.arange(len(shape), dtype=np.int64)))
+        node_type = "ReduceSum" if op == "sum" else "ReduceMax"
+        nodes.append(helper.make_node(node_type, ["X", "axes"], ["Y"], keepdims=0))
     elif op in ("exp", "relu", "sigmoid", "tanh"):
         nodes.append(helper.make_node(op.capitalize() if op != "relu" else "Relu", ["X"], ["Y"]))
     elif op == "softmax":
@@ -115,6 +134,7 @@ def make_model(op: str, shape: List[int]) -> bytes:
     else:
         raise ValueError(f"unknown op: {op}")
 
+    y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, output_shape)
     graph = helper.make_graph(nodes, f"ort_single_{op}", inputs, [y], initializer=initializers)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
     model.ir_version = 10
@@ -134,6 +154,11 @@ def make_session(op: str, shape: List[int], threads: int, rng: np.random.Generat
         "X": rng.uniform(-3.0, 3.0, size=shape).astype(np.float32),
     }
     if op in ("add", "mul"):
+        feed["B"] = rng.uniform(-1.0, 1.0, size=shape).astype(np.float32)
+    elif op == "add_broadcast_lastdim":
+        feed["B"] = rng.uniform(-1.0, 1.0, size=(shape[-1],)).astype(np.float32)
+    elif op == "sub_broadcast_row_by_mat":
+        feed["X"] = rng.uniform(-3.0, 3.0, size=(shape[-1],)).astype(np.float32)
         feed["B"] = rng.uniform(-1.0, 1.0, size=shape).astype(np.float32)
     return sess, feed
 

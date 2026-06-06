@@ -12,6 +12,46 @@ fn assert_close(a: &[f32], b: &[f32], tol: f32) {
     }
 }
 
+fn assert_path_matches_features(path: SimdDispatchPath, report: CpuDispatchReport) {
+    let features = report.cpu.features;
+    match path {
+        SimdDispatchPath::Avx512 => assert!(features.avx512f, "{path:?} without AVX-512F"),
+        SimdDispatchPath::Avx => assert!(features.avx, "{path:?} without AVX"),
+        SimdDispatchPath::Sse2 => assert!(features.sse2, "{path:?} without SSE2"),
+        SimdDispatchPath::Sse => assert!(features.sse, "{path:?} without SSE"),
+        SimdDispatchPath::Neon => assert!(features.neon, "{path:?} without NEON"),
+        SimdDispatchPath::Accelerate => {
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            panic!("Accelerate path outside macOS aarch64");
+        }
+        SimdDispatchPath::Mkl => {
+            #[cfg(not(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64"))))]
+            panic!("MKL path without the x86 mkl feature");
+        }
+        SimdDispatchPath::Armpl => {
+            #[cfg(not(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos"))))]
+            panic!("ARMPL path without the non-macOS aarch64 armpl feature");
+        }
+        SimdDispatchPath::Scalar => {}
+    }
+}
+
+#[test]
+fn cpu_dispatch_report_matches_host_features() {
+    let report = cpu_dispatch_report();
+    println!("cpu dispatch report: {report:#?}");
+
+    assert_path_matches_features(report.relu, report);
+    assert_path_matches_features(report.sigmoid, report);
+    assert_path_matches_features(report.exp, report);
+    assert_path_matches_features(report.binary, report);
+    assert_path_matches_features(report.fma, report);
+    assert_path_matches_features(report.reduce, report);
+    assert_path_matches_features(report.softmax, report);
+    assert_path_matches_features(report.batch_norm, report);
+    assert_path_matches_features(report.layer_norm, report);
+}
+
 #[test]
 fn exp_matches_scalar() {
     let input: Vec<f32> = (-20..=20).map(|i| i as f32 * 0.5).collect();

@@ -20,6 +20,7 @@ pub(super) fn detect() -> Cpu {
 fn detect_features() -> CpuFeatures {
     CpuFeatures {
         sse: std::is_x86_feature_detected!("sse"),
+        sse2: std::is_x86_feature_detected!("sse2"),
         avx: std::is_x86_feature_detected!("avx"),
         avx2: std::is_x86_feature_detected!("avx2"),
         fma: std::is_x86_feature_detected!("fma"),

@@ -6,9 +6,9 @@ use super::config::{
     BinaryKind, PARALLEL_SLICE_CHUNK_ELEMENTS, ParallelElementwiseConfig, should_parallelize_len,
 };
 use super::simd::{
-    binary_same_shape_dispatch, exp_slice_dispatch, gelu_sigmoid_slice_dispatch,
-    relu_slice_dispatch, relu_to_slice_dispatch, sigmoid_slice_dispatch, silu_slice_dispatch,
-    tanh_slice_dispatch,
+    binary_broadcast_lastdim_dispatch, binary_same_shape_dispatch, exp_slice_dispatch,
+    gelu_sigmoid_slice_dispatch, relu_slice_dispatch, relu_to_slice_dispatch,
+    sigmoid_slice_dispatch, silu_slice_dispatch, tanh_slice_dispatch,
 };
 
 // 48K floats gives exp enough rows per task to amortize rayon wake-up while
@@ -460,6 +460,11 @@ fn binary_with_config_and_pool(
     kind: BinaryKind,
 ) -> Result<Tensor, KernelError> {
     if lhs.shape() != rhs.shape() {
+        if let Some(result) =
+            binary_broadcast_lastdim_with_config_and_pool(lhs, rhs, config, thread_pool, kind)
+        {
+            return result;
+        }
         return binary_fallback(lhs, rhs, kind);
     }
 
@@ -532,6 +537,130 @@ fn ensure_same_shape(lhs: &Tensor, rhs: &Tensor) -> Result<(), KernelError> {
 
 fn binary_parallel_chunk_elements(len: usize, thread_pool: Option<&ThreadPool>) -> usize {
     parallel_chunk_elements_for_threads(len, thread_pool)
+}
+
+fn binary_broadcast_lastdim_with_config_and_pool(
+    lhs: &Tensor,
+    rhs: &Tensor,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
+    kind: BinaryKind,
+) -> Option<Result<Tensor, KernelError>> {
+    let lhs_shape = lhs.shape();
+    let rhs_shape = rhs.shape();
+    let lhs_last = *lhs_shape.last()?;
+    let rhs_last = *rhs_shape.last()?;
+    if lhs_last == 0 || lhs_last != rhs_last {
+        return None;
+    }
+
+    let rhs_is_lastdim_vec = rhs_shape.iter().rev().skip(1).all(|&dim| dim == 1);
+    let lhs_is_lastdim_vec = lhs_shape.iter().rev().skip(1).all(|&dim| dim == 1);
+
+    if rhs_is_lastdim_vec && !lhs_is_lastdim_vec {
+        if rhs_shape.len() > lhs_shape.len() {
+            return None;
+        }
+        let big = lhs.data();
+        let row = &rhs.data()[..lhs_last];
+        let mut output = AlignedVec::<f32>::uninitialized(big.len());
+        binary_broadcast_lastdim_rows(
+            big,
+            row,
+            output.as_mut_slice(),
+            lhs_last,
+            true,
+            config,
+            thread_pool,
+            kind,
+        );
+        return Some(Ok(Tensor::from_raw_parts(
+            lhs.shape(),
+            lhs.strides(),
+            output,
+        )));
+    }
+
+    if lhs_is_lastdim_vec && !rhs_is_lastdim_vec {
+        if lhs_shape.len() > rhs_shape.len() {
+            return None;
+        }
+        let row = &lhs.data()[..rhs_last];
+        let big = rhs.data();
+        let mut output = AlignedVec::<f32>::uninitialized(big.len());
+        binary_broadcast_lastdim_rows(
+            big,
+            row,
+            output.as_mut_slice(),
+            rhs_last,
+            false,
+            config,
+            thread_pool,
+            kind,
+        );
+        return Some(Ok(Tensor::from_raw_parts(
+            rhs.shape(),
+            rhs.strides(),
+            output,
+        )));
+    }
+
+    None
+}
+
+fn binary_broadcast_lastdim_rows(
+    big: &[f32],
+    row: &[f32],
+    output: &mut [f32],
+    row_len: usize,
+    big_is_lhs: bool,
+    config: ParallelElementwiseConfig,
+    thread_pool: Option<&ThreadPool>,
+    kind: BinaryKind,
+) {
+    debug_assert_eq!(big.len(), output.len());
+    debug_assert_eq!(row.len(), row_len);
+    debug_assert_eq!(big.len() % row_len, 0);
+
+    if should_parallelize_len(big.len(), config.min_parallel_elements, thread_pool) {
+        let chunk_elements = binary_parallel_chunk_elements(big.len(), thread_pool)
+            .max(row_len)
+            .div_ceil(row_len)
+            * row_len;
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output,
+            chunk_elements,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * chunk_elements;
+                binary_broadcast_lastdim_chunk(
+                    &big[start..start + out_chunk.len()],
+                    row,
+                    out_chunk,
+                    row_len,
+                    big_is_lhs,
+                    kind,
+                );
+            },
+        );
+    } else {
+        binary_broadcast_lastdim_chunk(big, row, output, row_len, big_is_lhs, kind);
+    }
+}
+
+fn binary_broadcast_lastdim_chunk(
+    big: &[f32],
+    row: &[f32],
+    output: &mut [f32],
+    row_len: usize,
+    big_is_lhs: bool,
+    kind: BinaryKind,
+) {
+    for (big_row, out_row) in big
+        .chunks_exact(row_len)
+        .zip(output.chunks_exact_mut(row_len))
+    {
+        binary_broadcast_lastdim_dispatch(big_row, row, out_row, row_len, big_is_lhs, kind);
+    }
 }
 
 fn parallel_chunk_elements_for_threads(len: usize, thread_pool: Option<&ThreadPool>) -> usize {

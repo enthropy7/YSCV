@@ -30,6 +30,7 @@ use super::exp::fast_exp_avx512;
 use super::exp::fast_exp_neon;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use super::exp::{fast_exp_avx, fast_exp_sse};
+use super::{SimdDispatchPath, dispatch_path};
 
 // ===========================================================================
 // Softmax dispatch
@@ -49,10 +50,12 @@ pub fn softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_len: u
         return;
     }
 
+    let path = dispatch_path(true, false);
+
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
                     softmax_row_fused_neon(in_row, out_row);
@@ -62,26 +65,26 @@ pub fn softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_len: u
         }
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                if row_len == 256 {
-                    for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
-                        softmax_row_256_avx512(in_row, out_row);
-                    }
-                } else {
-                    for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
-                        softmax_row_fused_avx512(in_row, out_row);
-                    }
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            if row_len == 256 {
+                for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
+                    softmax_row_256_avx512(in_row, out_row);
+                }
+            } else {
+                for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
+                    softmax_row_fused_avx512(in_row, out_row);
                 }
             }
-            return;
         }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
                     softmax_row_fused_avx(in_row, out_row);
@@ -89,8 +92,8 @@ pub fn softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_len: u
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
                     softmax_row_fused_sse(in_row, out_row);
@@ -123,10 +126,12 @@ pub fn log_softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_le
         return;
     }
 
+    let path = dispatch_path(true, false);
+
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
                     log_softmax_row_fused_neon(in_row, out_row);
@@ -136,20 +141,20 @@ pub fn log_softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_le
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
+                log_softmax_row_fused_avx512(in_row, out_row);
+            }
+        }
+        return;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
-                    log_softmax_row_fused_avx512(in_row, out_row);
-                }
-            }
-            return;
-        }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
                     log_softmax_row_fused_avx(in_row, out_row);
@@ -157,8 +162,8 @@ pub fn log_softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_le
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
                     log_softmax_row_fused_sse(in_row, out_row);

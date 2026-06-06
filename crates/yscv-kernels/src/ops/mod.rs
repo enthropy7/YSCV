@@ -47,9 +47,10 @@ pub use matmul::{
     matmul_2d_with_config, pack_b_for_session,
 };
 pub use simd::{
-    add_reduce_dispatch, binary_same_shape_dispatch, exp_slice_dispatch, fma_slice_dispatch,
-    matmul_row_dispatch, max_reduce_dispatch, relu_slice_dispatch, relu_to_slice_dispatch,
-    sigmoid_slice_dispatch, sub_exp_slice_dispatch, tanh_slice_dispatch,
+    CpuDispatchReport, SimdDispatchPath, add_reduce_dispatch, binary_same_shape_dispatch,
+    cpu_dispatch_report, exp_slice_dispatch, fma_slice_dispatch, matmul_row_dispatch,
+    max_reduce_dispatch, relu_slice_dispatch, relu_to_slice_dispatch, sigmoid_slice_dispatch,
+    sub_exp_slice_dispatch, tanh_slice_dispatch,
 };
 
 pub use config::{

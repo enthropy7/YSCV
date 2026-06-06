@@ -31,7 +31,7 @@ fn detect_uarch() -> Microarch {
     #[cfg(target_os = "macos")]
     {
         // All current Apple ARM cores share one tuning bucket for now.
-        return Microarch::AppleSilicon;
+        Microarch::AppleSilicon
     }
     #[cfg(not(target_os = "macos"))]
     {

@@ -79,6 +79,7 @@ pub struct CpuFeatures {
     pub sve: bool,
     // x86_64
     pub sse: bool,
+    pub sse2: bool,
     pub avx: bool,
     pub avx2: bool,
     pub fma: bool,
@@ -88,7 +89,7 @@ pub struct CpuFeatures {
 
 /// The detected host CPU. Single source of truth for dispatch; obtain via
 /// [`host_cpu`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cpu {
     pub uarch: Microarch,
     pub features: CpuFeatures,

@@ -7,7 +7,9 @@ use super::config::{
     LayerNormLastDimTensors, LayerNormPlan, LogSumExpPlan, ParallelElementwiseConfig,
     RmsNormLastDimTensors, RmsNormPlan, SoftmaxPlan, should_parallelize_len,
 };
-use super::simd::{log_softmax_rows_fused_dispatch, softmax_rows_fused_dispatch};
+use super::simd::{
+    SimdDispatchPath, dispatch_path, log_softmax_rows_fused_dispatch, softmax_rows_fused_dispatch,
+};
 
 const SOFTMAX_MIN_PARALLEL_ELEMENTS: usize = 65_536;
 const SOFTMAX_YSCV_POOL_MIN_PARALLEL_ELEMENTS: usize = 16_384;
@@ -543,23 +545,28 @@ fn batch_norm2d_nhwc_row(
 
     // SIMD: process pixel-by-pixel, each pixel has `channels` values
     // For channels divisible by 4 (common: 16, 32, 64, 128), use NEON/AVX
+    let path = dispatch_path(true, true);
     #[cfg(target_arch = "aarch64")]
-    if channels >= 4 && std::arch::is_aarch64_feature_detected!("neon") {
+    if channels >= 4 && path == SimdDispatchPath::Neon {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { batch_norm_row_neon(input_row, out_row, scale, shift, channels) };
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if channels >= 16 && std::is_x86_feature_detected!("avx512f") {
+    if channels >= 16 && path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { batch_norm_row_avx512(input_row, out_row, scale, shift, channels) };
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if channels >= 8 && std::is_x86_feature_detected!("avx") {
+    if channels >= 8 && path == SimdDispatchPath::Avx {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { batch_norm_row_avx(input_row, out_row, scale, shift, channels) };
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if channels >= 4 && std::is_x86_feature_detected!("sse2") {
+    if channels >= 4 && path == SimdDispatchPath::Sse2 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { batch_norm_row_sse(input_row, out_row, scale, shift, channels) };
         return;
     }
@@ -781,7 +788,8 @@ fn layer_norm_identity_rows_256(input: &[f32], output: &mut [f32], epsilon: f32)
     debug_assert_eq!(input.len() % 256, 0);
 
     #[cfg(target_arch = "x86_64")]
-    if std::is_x86_feature_detected!("avx512f") {
+    if dispatch_path(true, false) == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe {
             for (in_row, out_row) in input.chunks(256).zip(output.chunks_mut(256)) {
                 layer_norm_identity_row_256_avx512(in_row, out_row, epsilon);
@@ -846,17 +854,21 @@ unsafe fn layer_norm_identity_row_256_avx512(input: &[f32], output: &mut [f32], 
 #[allow(unsafe_code)]
 fn layer_norm_stats(data: &[f32]) -> (f32, f32) {
     let n = data.len();
+    let path = dispatch_path(true, false);
 
     #[cfg(target_arch = "aarch64")]
-    if n >= 4 && std::arch::is_aarch64_feature_detected!("neon") {
+    if n >= 4 && path == SimdDispatchPath::Neon {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         return unsafe { layer_norm_stats_neon(data) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 16 && std::is_x86_feature_detected!("avx512f") {
+    if n >= 16 && path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         return unsafe { layer_norm_stats_avx512(data) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 8 && std::is_x86_feature_detected!("avx") {
+    if n >= 8 && path == SimdDispatchPath::Avx {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         return unsafe { layer_norm_stats_avx(data) };
     }
 
@@ -982,19 +994,23 @@ fn layer_norm_apply(
     inv_std: f32,
 ) {
     let n = input.len();
+    let path = dispatch_path(true, false);
 
     #[cfg(target_arch = "aarch64")]
-    if n >= 4 && std::arch::is_aarch64_feature_detected!("neon") {
+    if n >= 4 && path == SimdDispatchPath::Neon {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_neon(input, out, gamma, beta, mean, inv_std) };
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 16 && std::is_x86_feature_detected!("avx512f") {
+    if n >= 16 && path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_avx512(input, out, gamma, beta, mean, inv_std) };
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 8 && std::is_x86_feature_detected!("avx") {
+    if n >= 8 && path == SimdDispatchPath::Avx {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_avx(input, out, gamma, beta, mean, inv_std) };
         return;
     }
@@ -1007,19 +1023,23 @@ fn layer_norm_apply(
 #[allow(unsafe_code)]
 fn layer_norm_apply_identity(input: &[f32], out: &mut [f32], mean: f32, inv_std: f32) {
     let n = input.len();
+    let path = dispatch_path(true, false);
 
     #[cfg(target_arch = "aarch64")]
-    if n >= 4 && std::arch::is_aarch64_feature_detected!("neon") {
+    if n >= 4 && path == SimdDispatchPath::Neon {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_identity_neon(input, out, mean, inv_std) };
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 16 && std::is_x86_feature_detected!("avx512f") {
+    if n >= 16 && path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_identity_avx512(input, out, mean, inv_std) };
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 8 && std::is_x86_feature_detected!("avx") {
+    if n >= 8 && path == SimdDispatchPath::Avx {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_identity_avx(input, out, mean, inv_std) };
         return;
     }

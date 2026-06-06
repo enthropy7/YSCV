@@ -49,6 +49,8 @@ unsafe extern "C" {
     fn armpl_svexp_f32(n: i32, x: *const f32, y: *mut f32);
 }
 
+use super::{SimdDispatchPath, dispatch_path};
+
 // ===========================================================================
 // SSE fast-exp helper (4-wide)
 // ===========================================================================
@@ -476,25 +478,27 @@ pub fn exp_slice_dispatch(input: &[f32], output: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(true, false);
+
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            exp_slice_avx512(input, output);
+        }
+        return;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                exp_slice_avx512(input, output);
-            }
-            return;
-        }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 exp_slice_avx(input, output);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 exp_slice_sse(input, output);
             }
@@ -504,8 +508,8 @@ pub fn exp_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 exp_slice_neon(input, output);
             }
@@ -530,25 +534,27 @@ pub fn sub_exp_slice_dispatch(input: &[f32], offset: f32, output: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(true, false);
+
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            sub_exp_slice_avx512(input, offset, output);
+        }
+        return;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                sub_exp_slice_avx512(input, offset, output);
-            }
-            return;
-        }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 sub_exp_slice_avx(input, offset, output);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 sub_exp_slice_sse(input, offset, output);
             }
@@ -558,8 +564,8 @@ pub fn sub_exp_slice_dispatch(input: &[f32], offset: f32, output: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 sub_exp_slice_neon(input, offset, output);
             }
@@ -583,25 +589,27 @@ pub fn tanh_slice_dispatch(input: &[f32], output: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(true, false);
+
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            tanh_slice_avx512(input, output);
+        }
+        return;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                tanh_slice_avx512(input, output);
-            }
-            return;
-        }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 tanh_slice_avx(input, output);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 tanh_slice_sse(input, output);
             }
@@ -611,8 +619,8 @@ pub fn tanh_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 tanh_slice_neon(input, output);
             }

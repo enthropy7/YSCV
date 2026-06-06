@@ -30,20 +30,7 @@ use super::exp::fast_exp_sigmoid_neon;
 use super::exp::{fast_exp_avx, fast_exp_bittrick_avx, fast_exp_bittrick_sse, fast_exp_sse};
 #[cfg(target_arch = "x86_64")]
 use super::exp::{fast_exp_avx512, fast_exp_bittrick_avx512};
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn x86_memory_simd_forces_avx2() -> bool {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("YSCV_X86_MEMORY_SIMD")
-            .map(|value| {
-                let value = value.to_ascii_lowercase();
-                matches!(value.as_str(), "avx2" | "ymm" | "256")
-            })
-            .unwrap_or(false)
-    })
-}
+use super::{SimdDispatchPath, dispatch_path, x86_memory_simd_forces_avx2};
 
 // ===========================================================================
 // ReLU dispatch
@@ -61,25 +48,27 @@ pub fn relu_slice_dispatch(values: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(!x86_memory_simd_forces_avx2(), false);
+
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            relu_slice_avx512(values);
+        }
+        return;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        #[cfg(target_arch = "x86_64")]
-        if !x86_memory_simd_forces_avx2() && std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                relu_slice_avx512(values);
-            }
-            return;
-        }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_slice_avx(values);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_slice_sse(values);
             }
@@ -89,8 +78,8 @@ pub fn relu_slice_dispatch(values: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_slice_neon(values);
             }
@@ -121,25 +110,27 @@ pub fn relu_to_slice_dispatch(input: &[f32], output: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(!x86_memory_simd_forces_avx2(), false);
+
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            relu_to_slice_avx512(input, output);
+        }
+        return;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        #[cfg(target_arch = "x86_64")]
-        if !x86_memory_simd_forces_avx2() && std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                relu_to_slice_avx512(input, output);
-            }
-            return;
-        }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_to_slice_avx(input, output);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_to_slice_sse(input, output);
             }
@@ -149,8 +140,8 @@ pub fn relu_to_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_to_slice_neon(input, output);
             }
@@ -198,46 +189,46 @@ pub fn sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
         return;
     }
 
-    // NEON / AVX / SSE dispatch for sigmoid.
-    {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            #[cfg(target_arch = "x86_64")]
-            if std::is_x86_feature_detected!("avx512f") {
-                // SAFETY: guarded by runtime feature detection.
-                unsafe {
-                    sigmoid_slice_avx512(input, output);
-                }
-                return;
-            }
-            if std::is_x86_feature_detected!("avx") {
-                // SAFETY: guarded by runtime feature detection.
-                unsafe {
-                    sigmoid_slice_avx(input, output);
-                }
-                return;
-            }
-            if std::is_x86_feature_detected!("sse") {
-                // SAFETY: guarded by runtime feature detection.
-                unsafe {
-                    sigmoid_slice_sse(input, output);
-                }
-                return;
-            }
-        }
+    let path = dispatch_path(true, false);
 
-        #[cfg(target_arch = "aarch64")]
-        {
-            if std::arch::is_aarch64_feature_detected!("neon") {
-                unsafe {
-                    sigmoid_slice_neon(input, output);
-                }
-                return;
-            }
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            sigmoid_slice_avx512(input, output);
         }
-
-        sigmoid_slice_dispatch_scalar(input, output);
+        return;
     }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+            unsafe {
+                sigmoid_slice_avx(input, output);
+            }
+            return;
+        }
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+            unsafe {
+                sigmoid_slice_sse(input, output);
+            }
+            return;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+            unsafe {
+                sigmoid_slice_neon(input, output);
+            }
+            return;
+        }
+    }
+
+    sigmoid_slice_dispatch_scalar(input, output);
 }
 
 // ===========================================================================
@@ -257,9 +248,12 @@ pub fn silu_slice_dispatch(input: &[f32], output: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(true, false);
+
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 silu_slice_neon(input, output);
             }
@@ -270,15 +264,18 @@ pub fn silu_slice_dispatch(input: &[f32], output: &mut [f32]) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("avx512f") {
+        if path == SimdDispatchPath::Avx512 {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { silu_slice_avx512(input, output) };
             return;
         }
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { silu_slice_avx(input, output) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { silu_slice_sse(input, output) };
             return;
         }
@@ -298,9 +295,12 @@ pub fn gelu_sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(true, false);
+
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { gelu_sigmoid_slice_neon(input, output) };
             return;
         }
@@ -309,15 +309,18 @@ pub fn gelu_sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("avx512f") {
+        if path == SimdDispatchPath::Avx512 {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { gelu_sigmoid_slice_avx512(input, output) };
             return;
         }
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { gelu_sigmoid_slice_avx(input, output) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { gelu_sigmoid_slice_sse(input, output) };
             return;
         }
@@ -334,7 +337,8 @@ pub fn gelu_sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
 pub fn silu_inplace(data: &mut [f32]) {
     #[cfg(target_arch = "aarch64")]
     {
-        if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        let path = dispatch_path(false, false);
+        if path == SimdDispatchPath::Neon {
             // SAFETY: NEON loads full 4-element vectors before storing back,
             // so src==dst is safe. Only raw pointers used -- no aliasing refs.
             unsafe {
@@ -356,10 +360,12 @@ pub fn silu_inplace(data: &mut [f32]) {
 pub fn bias_relu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
     debug_assert!(output.len() >= m * n);
     debug_assert!(bias.len() >= n);
+    let path = dispatch_path(false, false);
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_relu_nhwc_avx(output, bias, m, n) };
             return;
         }
@@ -367,7 +373,8 @@ pub fn bias_relu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: us
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_relu_nhwc_neon(output, bias, m, n) };
             return;
         }
@@ -385,10 +392,12 @@ pub fn bias_relu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: us
 pub fn bias_add_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
     debug_assert!(output.len() >= m * n);
     debug_assert!(bias.len() >= n);
+    let path = dispatch_path(false, false);
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_add_nhwc_avx(output, bias, m, n) };
             return;
         }
@@ -396,7 +405,8 @@ pub fn bias_add_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usi
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_add_nhwc_neon(output, bias, m, n) };
             return;
         }
@@ -437,7 +447,8 @@ pub fn fused_row_epilogue_dispatch(
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+        let features = crate::host_cpu().features;
+        if features.avx && features.fma {
             // SAFETY: AVX+FMA feature-gated above. Slice lengths
             // checked against n by debug_asserts.
             unsafe {
@@ -539,10 +550,12 @@ unsafe fn fused_row_epilogue_avx_fma(
 pub fn bias_silu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usize) {
     debug_assert!(output.len() >= m * n);
     debug_assert!(bias.len() >= n);
+    let path = dispatch_path(false, false);
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_silu_nhwc_avx(output, bias, m, n) };
             return;
         }
@@ -550,7 +563,8 @@ pub fn bias_silu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: us
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_silu_nhwc_neon(output, bias, m, n) };
             return;
         }

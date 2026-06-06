@@ -2,6 +2,7 @@
 // fma_slice_dispatch + impls, matmul_row_dispatch + impls
 // ===========================================================================
 
+use super::{SimdDispatchPath, dispatch_path};
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{float32x4_t, vdupq_n_f32, vfmaq_f32, vld1q_f32, vst1q_f32};
 #[cfg(target_arch = "x86")]
@@ -36,17 +37,19 @@ pub fn fma_slice_dispatch(a: &[f32], b: &[f32], acc: &mut [f32]) {
         return;
     }
 
+    let path = dispatch_path(false, false);
+
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 fma_slice_avx(a, b, acc);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 fma_slice_sse(a, b, acc);
             }
@@ -56,8 +59,8 @@ pub fn fma_slice_dispatch(a: &[f32], b: &[f32], acc: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 fma_slice_neon(a, b, acc);
             }
@@ -209,13 +212,15 @@ pub unsafe fn matmul_row_dispatch(
         return;
     }
 
+    let path = dispatch_path(false, false);
+
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
             matmul_row_avx(left_row, right, out_row, k, n);
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if path == SimdDispatchPath::Sse {
             matmul_row_sse(left_row, right, out_row, k, n);
             return;
         }
@@ -223,7 +228,7 @@ pub unsafe fn matmul_row_dispatch(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
             matmul_row_neon(left_row, right, out_row, k, n);
             return;
         }
@@ -319,7 +324,7 @@ unsafe fn matmul_row_avx(
     k: usize,
     n: usize,
 ) {
-    if std::is_x86_feature_detected!("fma") {
+    if crate::host_cpu().features.fma {
         matmul_row_avx_fma(left_row, right, out_row, k, n);
         return;
     }
@@ -524,6 +529,8 @@ pub unsafe fn matmul_row_set_dispatch(
         return;
     }
 
+    let path = dispatch_path(true, false);
+
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         // AVX-512 gate: the AVX-512 row-set kernel only wins at very wide
@@ -544,17 +551,17 @@ pub unsafe fn matmul_row_set_dispatch(
         });
         if !avx512_off
             && (n >= min_dim || k >= min_dim)
-            && std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("fma")
+            && path == SimdDispatchPath::Avx512
+            && crate::host_cpu().features.fma
         {
             matmul_row_set_avx512(left_row, right, out_row, k, n);
             return;
         }
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
             matmul_row_set_avx(left_row, right, out_row, k, n);
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if path == SimdDispatchPath::Sse {
             matmul_row_set_sse(left_row, right, out_row, k, n);
             return;
         }
@@ -562,7 +569,7 @@ pub unsafe fn matmul_row_set_dispatch(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
             matmul_row_set_neon(left_row, right, out_row, k, n);
             return;
         }
@@ -644,7 +651,7 @@ unsafe fn matmul_row_set_avx(
     k: usize,
     n: usize,
 ) {
-    if std::is_x86_feature_detected!("fma") {
+    if crate::host_cpu().features.fma {
         matmul_row_set_avx_fma(left_row, right, out_row, k, n);
         return;
     }

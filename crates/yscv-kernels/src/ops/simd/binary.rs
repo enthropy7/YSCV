@@ -23,20 +23,7 @@ use std::arch::x86_64::{
 };
 
 use super::super::config::BinaryKind;
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn x86_memory_simd_forces_avx2() -> bool {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("YSCV_X86_MEMORY_SIMD")
-            .map(|value| {
-                let value = value.to_ascii_lowercase();
-                matches!(value.as_str(), "avx2" | "ymm" | "256")
-            })
-            .unwrap_or(false)
-    })
-}
+use super::{SimdDispatchPath, dispatch_path, x86_memory_simd_forces_avx2};
 
 #[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
 #[allow(unsafe_code, dead_code)]
@@ -157,25 +144,27 @@ pub fn binary_same_shape_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kin
         return;
     }
 
+    let path = dispatch_path(!x86_memory_simd_forces_avx2(), false);
+
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+        unsafe {
+            binary_same_shape_avx512(lhs, rhs, out, kind);
+        }
+        return;
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        #[cfg(target_arch = "x86_64")]
-        if !x86_memory_simd_forces_avx2() && std::is_x86_feature_detected!("avx512f") {
-            // SAFETY: guarded by runtime feature detection.
-            unsafe {
-                binary_same_shape_avx512(lhs, rhs, out, kind);
-            }
-            return;
-        }
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 binary_same_shape_avx(lhs, rhs, out, kind);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 binary_same_shape_sse(lhs, rhs, out, kind);
             }
@@ -185,8 +174,8 @@ pub fn binary_same_shape_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kin
 
     #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 binary_same_shape_neon(lhs, rhs, out, kind);
             }
@@ -200,6 +189,159 @@ pub fn binary_same_shape_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kin
     }
 }
 
+/// Elementwise binary op for `[rows, row_len] op [row_len]` broadcasting.
+#[allow(unsafe_code, unreachable_code)]
+#[inline]
+pub(crate) fn binary_broadcast_lastdim_dispatch(
+    big: &[f32],
+    row: &[f32],
+    out: &mut [f32],
+    row_len: usize,
+    big_is_lhs: bool,
+    kind: BinaryKind,
+) {
+    debug_assert_eq!(big.len(), out.len());
+    debug_assert_eq!(row.len(), row_len);
+    debug_assert!(row_len > 0);
+    debug_assert_eq!(big.len() % row_len, 0);
+
+    if cfg!(miri) {
+        binary_broadcast_lastdim_scalar(big, row, out, row_len, big_is_lhs, kind);
+        return;
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        binary_broadcast_lastdim_rows_with(
+            big,
+            row,
+            out,
+            row_len,
+            big_is_lhs,
+            kind,
+            binary_same_shape_dispatch,
+        );
+        return;
+    }
+
+    let path = dispatch_path(!x86_memory_simd_forces_avx2(), false);
+
+    #[cfg(target_arch = "x86_64")]
+    if path == SimdDispatchPath::Avx512 {
+        binary_broadcast_lastdim_rows_with(
+            big,
+            row,
+            out,
+            row_len,
+            big_is_lhs,
+            kind,
+            |lhs, rhs, out, kind| {
+                // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+                unsafe { binary_same_shape_avx512(lhs, rhs, out, kind) }
+            },
+        );
+        return;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if path == SimdDispatchPath::Avx {
+            binary_broadcast_lastdim_rows_with(
+                big,
+                row,
+                out,
+                row_len,
+                big_is_lhs,
+                kind,
+                |lhs, rhs, out, kind| {
+                    // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+                    unsafe { binary_same_shape_avx(lhs, rhs, out, kind) }
+                },
+            );
+            return;
+        }
+        if path == SimdDispatchPath::Sse {
+            binary_broadcast_lastdim_rows_with(
+                big,
+                row,
+                out,
+                row_len,
+                big_is_lhs,
+                kind,
+                |lhs, rhs, out, kind| {
+                    // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+                    unsafe { binary_same_shape_sse(lhs, rhs, out, kind) }
+                },
+            );
+            return;
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+    {
+        if path == SimdDispatchPath::Neon {
+            binary_broadcast_lastdim_rows_with(
+                big,
+                row,
+                out,
+                row_len,
+                big_is_lhs,
+                kind,
+                |lhs, rhs, out, kind| {
+                    // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+                    unsafe { binary_same_shape_neon(lhs, rhs, out, kind) }
+                },
+            );
+            return;
+        }
+    }
+
+    binary_broadcast_lastdim_scalar(big, row, out, row_len, big_is_lhs, kind);
+}
+
+fn binary_broadcast_lastdim_rows_with<F>(
+    big: &[f32],
+    row: &[f32],
+    out: &mut [f32],
+    row_len: usize,
+    big_is_lhs: bool,
+    kind: BinaryKind,
+    mut kernel: F,
+) where
+    F: FnMut(&[f32], &[f32], &mut [f32], BinaryKind),
+{
+    for (big_row, out_row) in big.chunks_exact(row_len).zip(out.chunks_exact_mut(row_len)) {
+        if big_is_lhs {
+            kernel(big_row, row, out_row, kind);
+        } else {
+            kernel(row, big_row, out_row, kind);
+        }
+    }
+}
+
+fn binary_broadcast_lastdim_scalar(
+    big: &[f32],
+    row: &[f32],
+    out: &mut [f32],
+    row_len: usize,
+    big_is_lhs: bool,
+    kind: BinaryKind,
+) {
+    for (big_row, out_row) in big.chunks_exact(row_len).zip(out.chunks_exact_mut(row_len)) {
+        for index in 0..row_len {
+            let (lhs, rhs) = if big_is_lhs {
+                (big_row[index], row[index])
+            } else {
+                (row[index], big_row[index])
+            };
+            out_row[index] = match kind {
+                BinaryKind::Add => lhs + rhs,
+                BinaryKind::Sub => lhs - rhs,
+                BinaryKind::Mul => lhs * rhs,
+            };
+        }
+    }
+}
+
 /// Multiply every element of `data` by `scalar` in-place.
 #[allow(unsafe_code, dead_code)]
 #[inline]
@@ -210,11 +352,12 @@ pub fn mul_scalar_inplace_dispatch(data: &mut [f32], scalar: f32) {
         }
         return;
     }
+    let path = dispatch_path(false, false);
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { mul_scalar_inplace_neon(data, scalar) };
             return;
         }
@@ -222,13 +365,13 @@ pub fn mul_scalar_inplace_dispatch(data: &mut [f32], scalar: f32) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { mul_scalar_inplace_avx(data, scalar) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
-            // SAFETY: guarded by runtime feature detection.
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { mul_scalar_inplace_sse(data, scalar) };
             return;
         }
@@ -564,10 +707,12 @@ pub fn add_relu_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
         }
         return;
     }
+    let path = dispatch_path(false, false);
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { add_relu_inplace_avx(data, rhs) };
             return;
         }
@@ -575,7 +720,8 @@ pub fn add_relu_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { add_relu_inplace_neon(data, rhs) };
             return;
         }
@@ -665,14 +811,17 @@ pub fn add_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
         }
         return;
     }
+    let path = dispatch_path(false, false);
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { add_inplace_avx(data, rhs) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { add_inplace_sse(data, rhs) };
             return;
         }
@@ -680,7 +829,8 @@ pub fn add_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { add_inplace_neon(data, rhs) };
             return;
         }

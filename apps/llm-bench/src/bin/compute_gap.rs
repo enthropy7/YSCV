@@ -2,9 +2,10 @@ use std::time::Instant;
 
 use yscv_kernels::{
     BatchNorm2dParams, LayerNormLastDimParams, ParallelElementwiseConfig, add_out,
-    batch_norm2d_nhwc, exp_with_config, gelu, layer_norm_last_dim, log_softmax_last_dim,
-    log_softmax_last_dim_out, mul_out, relu, relu_out_with_config, relu_to_slice_dispatch, sigmoid,
-    sigmoid_with_config, silu, silu_inplace, softmax_last_dim, softmax_last_dim_out, tanh_act,
+    add_reduce_dispatch, add_with_config, batch_norm2d_nhwc, exp_with_config, gelu,
+    layer_norm_last_dim, log_softmax_last_dim, log_softmax_last_dim_out, max_reduce_dispatch,
+    mul_out, relu, relu_out_with_config, relu_to_slice_dispatch, sigmoid, sigmoid_with_config,
+    silu, silu_inplace, softmax_last_dim, softmax_last_dim_out, sub_with_config, tanh_act,
     tanh_act_with_config,
 };
 use yscv_tensor::Tensor;
@@ -159,6 +160,35 @@ fn main() {
     });
     bench(&args, "exp_1M", || {
         let _ = exp_with_config(&a1m, ParallelElementwiseConfig::default());
+    });
+    bench(&args, "sum_1M_raw_slice", || {
+        std::hint::black_box(add_reduce_dispatch(a1m.data()));
+    });
+    bench(&args, "max_1M_raw_slice", || {
+        std::hint::black_box(max_reduce_dispatch(a1m.data()));
+    });
+
+    let mat_1024 = Tensor::from_vec(
+        vec![1024, 1024],
+        (0..1_048_576)
+            .map(|i| ((i as f32 * 0.0009).sin() * 3.0) - 1.0)
+            .collect(),
+    )
+    .unwrap();
+    let row_1024 = Tensor::from_vec(
+        vec![1024],
+        (0..1024)
+            .map(|i| ((i as f32 * 0.007).cos() * 2.0) + 0.5)
+            .collect(),
+    )
+    .unwrap();
+    bench(&args, "add_broadcast_1024x1024_by_1024", || {
+        let _ =
+            add_with_config(&mat_1024, &row_1024, ParallelElementwiseConfig::default()).unwrap();
+    });
+    bench(&args, "sub_broadcast_1024_by_1024x1024", || {
+        let _ =
+            sub_with_config(&row_1024, &mat_1024, ParallelElementwiseConfig::default()).unwrap();
     });
     bench(&args, "relu_921K", || {
         let _ = relu(&a921k);

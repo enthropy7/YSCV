@@ -2,6 +2,9 @@
 
 CPU and GPU compute backends with SIMD dispatch and BLAS integration. Powers all neural network operations in yscv.
 
+Use `cpu_dispatch_report()` to inspect the detected host CPU and the
+single-op SIMD/backend paths selected at runtime.
+
 ## Backends
 
 | Backend | Platform | How |
