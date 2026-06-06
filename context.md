@@ -10,10 +10,11 @@ and PR workflow.
 
 ## Architecture
 
-18 library crates, 3 apps, 1 examples crate.
+19 library crates, 3 apps, 1 examples crate.
 
 ```
 yscv (umbrella re-export)
+├── yscv-cpu             ← Cached host CPU identity and runtime feature detection
 ├── yscv-tensor          ← N-dimensional tensor, f32/f16/bf16, SIMD ops
 ├── yscv-kernels         ← CPU + GPU compute backends, SIMD, RKNN NPU
 ├── yscv-threadpool      ← Work-stealing pool + rayon scope abstraction, opt-in PersistentSection

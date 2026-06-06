@@ -128,6 +128,132 @@ fn pointwise_conv_matmul_config(m: usize, k: usize, n: usize) -> ParallelMatmulC
     }
 }
 
+/// Shape-independent snapshot of convolution dispatch gates for benchmark logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConvDispatchReport {
+    pub primary_isa: &'static str,
+    pub avx512_dw: bool,
+    pub c16_dw: bool,
+    pub nchwc_pw_direct: bool,
+    pub kcblock: bool,
+    pub mr16: bool,
+    pub pw_prefetch: bool,
+    pub pointwise_min_elems: usize,
+    pub pointwise_min_flops: usize,
+}
+
+impl std::fmt::Display for ConvDispatchReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "isa={}; avx512_dw={}; c16_dw={}; nchwc_pw_direct={}; kcblock={}; mr16={}; pw_prefetch={}; pointwise_min_elems={}; pointwise_min_flops={}",
+            self.primary_isa,
+            self.avx512_dw,
+            self.c16_dw,
+            self.nchwc_pw_direct,
+            self.kcblock,
+            self.mr16,
+            self.pw_prefetch,
+            self.pointwise_min_elems,
+            self.pointwise_min_flops
+        )
+    }
+}
+
+pub fn conv_dispatch_report() -> ConvDispatchReport {
+    let features = crate::host_cpu().features;
+    let (pointwise_min_elems, pointwise_min_flops) = pointwise_conv_parallel_threshold();
+    ConvDispatchReport {
+        primary_isa: conv_primary_isa(features),
+        avx512_dw: conv_avx512_dw_enabled(features),
+        c16_dw: conv_c16_dw_enabled(features),
+        nchwc_pw_direct: conv_nchwc_pw_direct_enabled(features),
+        kcblock: conv_kcblock_enabled(features),
+        mr16: conv_mr16_enabled(features),
+        pw_prefetch: conv_pw_prefetch_enabled(features),
+        pointwise_min_elems,
+        pointwise_min_flops,
+    }
+}
+
+fn conv_primary_isa(features: crate::CpuFeatures) -> &'static str {
+    if features.avx512f && conv_avx512_dw_enabled(features) {
+        "avx512"
+    } else if features.x86_avx_fma() {
+        "avx/fma"
+    } else if features.avx {
+        "avx"
+    } else if features.sse2 {
+        "sse2"
+    } else if features.sse {
+        "sse"
+    } else if features.neon {
+        "neon"
+    } else {
+        "scalar"
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn conv_avx512_dw_enabled(features: crate::CpuFeatures) -> bool {
+    features.avx512f && !avx512_dw_disabled()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn conv_avx512_dw_enabled(_features: crate::CpuFeatures) -> bool {
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
+fn conv_c16_dw_enabled(features: crate::CpuFeatures) -> bool {
+    features.avx512f && !c16_dw_disabled()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn conv_c16_dw_enabled(_features: crate::CpuFeatures) -> bool {
+    false
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn conv_nchwc_pw_direct_enabled(features: crate::CpuFeatures) -> bool {
+    features.avx512f && !nchwc_pw_direct_disabled()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn conv_nchwc_pw_direct_enabled(_features: crate::CpuFeatures) -> bool {
+    false
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn conv_kcblock_enabled(features: crate::CpuFeatures) -> bool {
+    features.avx512f && kcblock_enabled()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn conv_kcblock_enabled(_features: crate::CpuFeatures) -> bool {
+    false
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn conv_mr16_enabled(features: crate::CpuFeatures) -> bool {
+    features.avx512f && mr16_enabled()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn conv_mr16_enabled(_features: crate::CpuFeatures) -> bool {
+    false
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+fn conv_pw_prefetch_enabled(features: crate::CpuFeatures) -> bool {
+    (features.avx512f || features.neon) && pw_prefetch_enabled()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+fn conv_pw_prefetch_enabled(_features: crate::CpuFeatures) -> bool {
+    false
+}
+
 /// Post-convolution fused activation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activation {

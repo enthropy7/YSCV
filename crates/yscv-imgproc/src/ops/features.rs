@@ -45,7 +45,7 @@ pub fn harris_corners(
     let mut prods = vec![0.0f32; n * 3]; // interleaved [sxx0,sxy0,syy0, sxx1,sxy1,syy1, ...]
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
             sobel_products_interleaved_neon(data, &mut prods, h, w);
@@ -56,7 +56,7 @@ pub fn harris_corners(
     #[cfg(not(target_arch = "aarch64"))]
     {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+        if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
             // SAFETY: ISA guard (feature detection) above.
             unsafe {
                 sobel_products_interleaved_sse(data, &mut prods, h, w);
@@ -211,7 +211,7 @@ fn vec_add_row(acc: &mut [f32], src: &[f32]) {
             use std::arch::x86::*;
             #[cfg(target_arch = "x86_64")]
             use std::arch::x86_64::*;
-            if std::is_x86_feature_detected!("sse") {
+            if yscv_cpu::host_cpu().features.sse {
                 let ap = acc.as_mut_ptr();
                 let sp = src.as_ptr();
                 while i + 4 <= n {
@@ -261,7 +261,7 @@ fn vec_sub_row(acc: &mut [f32], src: &[f32]) {
             use std::arch::x86::*;
             #[cfg(target_arch = "x86_64")]
             use std::arch::x86_64::*;
-            if std::is_x86_feature_detected!("sse") {
+            if yscv_cpu::host_cpu().features.sse {
                 let ap = acc.as_mut_ptr();
                 let sp = src.as_ptr();
                 while i + 4 <= n {
@@ -843,7 +843,7 @@ fn dt_vertical_min_forward(dist: &mut [f32], src_start: usize, cur_start: usize,
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vertical_neon(dist, src_start, cur_start, w) };
         }
@@ -851,7 +851,7 @@ fn dt_vertical_min_forward(dist: &mut [f32], src_start: usize, cur_start: usize,
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_vertical_sse(dist, src_start, cur_start, w) };
         }

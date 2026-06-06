@@ -219,13 +219,13 @@ fn harris_sobel_row_simd(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { harris_sobel_neon(row0, row1, row2, dix, diy, w) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             return unsafe { harris_sobel_sse(row0, row1, row2, dix, diy, w) };
         }
     }

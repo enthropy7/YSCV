@@ -222,7 +222,7 @@ fn integral_add_row(sat: &mut [f32], prev_off: usize, cur_off: usize, w: usize) 
             use std::arch::x86::*;
             #[cfg(target_arch = "x86_64")]
             use std::arch::x86_64::*;
-            if std::is_x86_feature_detected!("sse") {
+            if yscv_cpu::host_cpu().features.sse {
                 let p = sat.as_mut_ptr();
                 while x + 4 <= w {
                     let a = _mm_loadu_ps(p.add(cur_off + x));

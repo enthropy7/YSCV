@@ -113,14 +113,14 @@ fn normalize_rgb8_to_f32_uninit_inplace(
 unsafe fn normalize_u8_to_f32(dst: *mut MaybeUninit<f32>, src: *const u8, len: usize) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx2") {
+        if yscv_cpu::host_cpu().features.avx2 {
             // SAFETY: caller guarantees valid, non-overlapping in-bounds pointers for `len`.
             unsafe {
                 normalize_u8_to_f32_avx2(dst, src, len);
             }
             return;
         }
-        if std::is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             // SAFETY: caller guarantees valid, non-overlapping in-bounds pointers for `len`.
             unsafe {
                 normalize_u8_to_f32_sse2(dst, src, len);
@@ -131,7 +131,7 @@ unsafe fn normalize_u8_to_f32(dst: *mut MaybeUninit<f32>, src: *const u8, len: u
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: caller guarantees valid, non-overlapping in-bounds pointers for `len`.
             unsafe {
                 normalize_u8_to_f32_neon(dst, src, len);

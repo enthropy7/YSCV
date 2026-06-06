@@ -59,6 +59,8 @@ fn public_dispatch_report_is_populated() {
     assert!(!report.int8_matmul.is_empty());
     assert!(!report.int8_prepacked.is_empty());
     assert!(text.contains("single_ops="));
+    assert!(text.contains("matmul="));
+    assert!(text.contains("conv="));
     assert!(text.contains("int8_matmul="));
 }
 

@@ -2720,6 +2720,7 @@ version = "0.1.9"
 dependencies = [
  "yscv-autograd",
  "yscv-cli",
+ "yscv-cpu",
  "yscv-detect",
  "yscv-eval",
  "yscv-imgproc",
@@ -2772,6 +2773,10 @@ dependencies = [
  "yscv-track",
  "yscv-video",
 ]
+
+[[package]]
+name = "yscv-cpu"
+version = "0.1.9"
 
 [[package]]
 name = "yscv-detect"
@@ -2827,6 +2832,7 @@ dependencies = [
  "proptest",
  "rayon",
  "thiserror",
+ "yscv-cpu",
  "yscv-tensor",
 ]
 
@@ -2849,6 +2855,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "wgpu",
+ "yscv-cpu",
  "yscv-tensor",
  "yscv-threadpool",
 ]
@@ -2894,6 +2901,7 @@ dependencies = [
  "rayon",
  "tempfile",
  "thiserror",
+ "yscv-cpu",
  "yscv-kernels",
  "yscv-tensor",
  "yscv-threadpool",
@@ -2905,6 +2913,7 @@ version = "0.1.9"
 dependencies = [
  "thiserror",
  "yscv-autograd",
+ "yscv-cpu",
  "yscv-tensor",
 ]
 
@@ -2951,6 +2960,7 @@ dependencies = [
  "proptest",
  "rayon",
  "thiserror",
+ "yscv-cpu",
 ]
 
 [[package]]
@@ -2984,6 +2994,7 @@ dependencies = [
  "proptest",
  "rayon",
  "thiserror",
+ "yscv-cpu",
  "yscv-tensor",
 ]
 

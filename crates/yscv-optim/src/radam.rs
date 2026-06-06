@@ -231,7 +231,7 @@ fn radam_update_inner(
     use_adaptive: bool,
 ) {
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe {
             radam_update_neon(
                 weights,
@@ -255,7 +255,7 @@ fn radam_update_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         unsafe {
             radam_update_avx(
                 weights,
@@ -279,7 +279,7 @@ fn radam_update_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
         unsafe {
             radam_update_sse(
                 weights,

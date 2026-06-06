@@ -18,17 +18,17 @@ pub(crate) fn sum_dispatch(data: &[f32]) -> f32 {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { sum_avx(data) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { sum_sse(data) };
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { sum_neon(data) };
         }
     }
@@ -134,17 +134,17 @@ pub(crate) fn max_dispatch(data: &[f32]) -> f32 {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { max_avx(data) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { max_sse(data) };
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { max_neon(data) };
         }
     }
@@ -253,17 +253,17 @@ pub(crate) fn min_dispatch(data: &[f32]) -> f32 {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { min_avx(data) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { min_sse(data) };
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { min_neon(data) };
         }
     }

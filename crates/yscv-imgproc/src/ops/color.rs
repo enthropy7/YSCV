@@ -83,7 +83,7 @@ fn grayscale_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_neon_row(src, dst) };
         }
@@ -91,11 +91,11 @@ fn grayscale_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_avx_row(src, dst) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_sse_row(src, dst) };
         }
@@ -367,7 +367,7 @@ fn hsv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { hsv_neon_row(src, dst) };
         }
@@ -375,11 +375,11 @@ fn hsv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { hsv_avx_row(src, dst) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { hsv_sse_row(src, dst) };
         }
@@ -898,7 +898,7 @@ fn lab_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { lab_neon_row(src, dst) };
         }
@@ -906,11 +906,11 @@ fn lab_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { lab_avx_row(src, dst) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { lab_sse_row(src, dst) };
         }
@@ -1401,7 +1401,7 @@ fn yuv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { yuv_neon_row(src, dst) };
         }
@@ -1409,11 +1409,11 @@ fn yuv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { yuv_avx_row(src, dst) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { yuv_sse_row(src, dst) };
         }
@@ -1799,7 +1799,7 @@ fn bgr_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { bgr_neon_row(src, dst) };
         }
@@ -1807,11 +1807,11 @@ fn bgr_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { bgr_avx_row(src, dst) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { bgr_sse_row(src, dst) };
         }

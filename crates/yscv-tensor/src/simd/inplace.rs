@@ -20,11 +20,11 @@ pub(crate) fn add_inplace_dispatch(dst: &mut [f32], src: &[f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { add_inplace_avx(dst, src) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { add_inplace_sse(dst, src) };
             return;
         }
@@ -32,7 +32,7 @@ pub(crate) fn add_inplace_dispatch(dst: &mut [f32], src: &[f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { add_inplace_neon(dst, src) };
             return;
         }
@@ -126,11 +126,11 @@ pub(crate) fn max_inplace_dispatch(dst: &mut [f32], src: &[f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { max_inplace_avx(dst, src) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { max_inplace_sse(dst, src) };
             return;
         }
@@ -138,7 +138,7 @@ pub(crate) fn max_inplace_dispatch(dst: &mut [f32], src: &[f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { max_inplace_neon(dst, src) };
             return;
         }
@@ -234,11 +234,11 @@ pub(crate) fn relu_inplace_dispatch(values: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { relu_inplace_avx(values) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { relu_inplace_sse(values) };
             return;
         }
@@ -246,7 +246,7 @@ pub(crate) fn relu_inplace_dispatch(values: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { relu_inplace_neon(values) };
             return;
         }
@@ -337,11 +337,11 @@ pub(crate) fn add_scalar_inplace_dispatch(values: &mut [f32], s: f32) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { add_scalar_inplace_avx(values, s) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { add_scalar_inplace_sse(values, s) };
             return;
         }
@@ -349,7 +349,7 @@ pub(crate) fn add_scalar_inplace_dispatch(values: &mut [f32], s: f32) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { add_scalar_inplace_neon(values, s) };
             return;
         }
@@ -431,11 +431,11 @@ pub(crate) fn mul_scalar_inplace_dispatch(values: &mut [f32], s: f32) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { mul_scalar_inplace_avx(values, s) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { mul_scalar_inplace_sse(values, s) };
             return;
         }
@@ -443,7 +443,7 @@ pub(crate) fn mul_scalar_inplace_dispatch(values: &mut [f32], s: f32) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { mul_scalar_inplace_neon(values, s) };
             return;
         }

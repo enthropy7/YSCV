@@ -560,7 +560,7 @@ fn yuv420_to_rgb8_rows(
 ) {
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: feature detected at runtime.
             unsafe {
                 yuv420_to_rgb8_rows_neon(
@@ -573,7 +573,7 @@ fn yuv420_to_rgb8_rows(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if yscv_cpu::host_cpu().features.avx2 {
             unsafe {
                 yuv420_to_rgb8_rows_avx2(
                     y_plane, u_plane, v_plane, rgb_out, width, uv_stride, start_row, end_row,
@@ -581,7 +581,7 @@ fn yuv420_to_rgb8_rows(
             }
             return;
         }
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             unsafe {
                 yuv420_to_rgb8_rows_sse2(
                     y_plane, u_plane, v_plane, rgb_out, width, uv_stride, start_row, end_row,
@@ -1141,7 +1141,7 @@ pub fn nv12_to_rgb8(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe {
                 nv12_to_rgb8_neon(y, uv, w, h, out);
             }
@@ -1151,7 +1151,7 @@ pub fn nv12_to_rgb8(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             unsafe {
                 nv12_to_rgb8_sse2(y, uv, w, h, out);
             }
@@ -1402,7 +1402,7 @@ pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe {
                 yuyv_to_rgb8_neon(data, w, h, out);
             }
@@ -1412,7 +1412,7 @@ pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             unsafe {
                 yuyv_to_rgb8_sse2(data, w, h, out);
             }

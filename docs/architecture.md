@@ -7,7 +7,7 @@ This document explains how the yscv framework is put together — the crate depe
 The crates form a layered architecture. Lower layers know nothing about higher layers.
 
 **Layer 0 — Foundation:**
-`yscv-tensor` provides the `Tensor` type with 115+ operations, f32/f16/bf16 dtype support, operator overloading (`+`, `-`, `*`, `/`), `Display` impl, and SIMD-accelerated reductions. Everything else depends on this.
+`yscv-cpu` owns cached host CPU identity (`Microarch`, `CpuFeatures`, `host_cpu`) for runtime dispatch. `yscv-tensor` provides the `Tensor` type with 115+ operations, f32/f16/bf16 dtype support, operator overloading (`+`, `-`, `*`, `/`), `Display` impl, and SIMD-accelerated reductions. Everything else depends on this.
 
 **Layer 1 — Compute:**
 `yscv-kernels` provides the `Backend` trait (conv2d, matmul, pool, normalization, activation, backward ops). It has a `CpuBackend` (deterministic, single-threaded for training reproducibility), a `ThreadedCpuBackend` (rayon-backed), and an optional `GpuBackend` using wgpu compute shaders (61 WGSL + 4 Metal shaders including backward kernels). The public free functions (used by the ONNX runner) use `ParallelElementwiseConfig::default()` for automatic parallelism. The SIMD code lives in `crates/yscv-kernels/src/ops/simd/` with AVX, SSE, and NEON implementations for every kernel. Depthwise conv2d has dedicated NEON (4-wide FMA), AVX (8-wide), and SSE (4-wide) kernels for `depth_multiplier == 1`.
@@ -22,7 +22,7 @@ The crates form a layered architecture. Lower layers know nothing about higher l
 `yscv-imgproc` (160 image processing ops), `yscv-video` (H.264/HEVC codecs, hardware decode, MP4/MKV containers, camera, audio metadata), `yscv-detect` (YOLOv8/v11), `yscv-track` (DeepSORT/ByteTrack/Kalman), `yscv-recognize` (VP-Tree matching, Recognizer), `yscv-eval` (classification/detection/tracking/regression/image-quality metrics + 8 dataset adapters), and `yscv-onnx` (122 CPU op runtime + ~20-op Metal/MPSGraph plan compiler with triple-buffered async `submit`/`wait` API for multi-input models) each handle a specific domain. They depend on the foundation but not on each other (except detect → video for frame types, track → detect for detection types).
 
 **Layer 5 — Applications:**
-`yscv-cli` (in-workspace crate) plus `apps/bench` and `apps/camera-face-tool` are end-to-end binaries that wire everything together. The `apps/` programs are not part of the 18-crate workspace library set; they live alongside it as standalone applications.
+`yscv-cli` (in-workspace crate) plus `apps/bench` and `apps/camera-face-tool` are end-to-end binaries that wire everything together. The `apps/` programs are not part of the 19-crate workspace library set; they live alongside it as standalone applications.
 
 ## SIMD dispatch model
 
@@ -34,17 +34,18 @@ These use a three-tier dispatch: AVX → SSE → NEON → scalar. The pattern is
 
 ```rust
 pub fn relu_slice_dispatch(data: &mut [f32]) {
+    let features = yscv_cpu::host_cpu().features;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if is_x86_feature_detected!("avx") { return unsafe { relu_avx(data) }; }
+    if features.avx { return unsafe { relu_avx(data) }; }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if is_x86_feature_detected!("sse") { return unsafe { relu_sse(data) }; }
+    if features.sse { return unsafe { relu_sse(data) }; }
     #[cfg(target_arch = "aarch64")]
-    if is_aarch64_feature_detected!("neon") { return unsafe { relu_neon(data) }; }
+    if features.neon { return unsafe { relu_neon(data) }; }
     relu_scalar(data);
 }
 ```
 
-Each implementation is marked with `#[target_feature(enable = "...")]` so the compiler generates appropriate instructions. The feature detection call is cached after the first invocation (atomic load, ~1ns).
+Each implementation is marked with `#[target_feature(enable = "...")]` so the compiler generates appropriate instructions. The CPU identity is detected once through `yscv-cpu`; later dispatch checks read cached feature booleans.
 
 This three-tier *ISA* dispatch is being extended with a *microarchitecture* layer (Cortex-A53 vs A55 vs A72, Zen vs Intel within an ISA) — a runtime `Cpu { uarch, features }` identity plus a capability-first kernel-selection table, resolved once at session start. See [microarch-dispatch.md](microarch-dispatch.md) for the vision and the zero-regression phased roadmap.
 

@@ -156,7 +156,7 @@ pub(crate) fn exec_fused_dw_pw(
     let dwpw_smart_enabled =
         backbone_nchwc && chain_entry && pw_cout >= 16 && pw_cout.is_multiple_of(16);
     #[cfg(target_arch = "x86_64")]
-    let has_avx512f = std::is_x86_feature_detected!("avx512f");
+    let has_avx512f = yscv_cpu::host_cpu().features.avx512f;
     #[cfg(not(target_arch = "x86_64"))]
     let has_avx512f = false;
     if (nchwc_pair_avx512_enabled || dwpw_smart_enabled)
@@ -1441,7 +1441,7 @@ pub(crate) fn exec_fused_pw_dw_pw_reduce(
             && c_exp.is_multiple_of(16)
             && batch == 1
             && residual_slice.is_none()
-            && std::is_x86_feature_detected!("avx512f")
+            && yscv_cpu::host_cpu().features.avx512f
             && matches!(
                 pw_expand_activation,
                 yscv_kernels::Activation::None | yscv_kernels::Activation::Relu

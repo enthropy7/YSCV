@@ -2,6 +2,7 @@
 
 pub use yscv_autograd as autograd;
 pub use yscv_cli as cli;
+pub use yscv_cpu as cpu;
 pub use yscv_detect as detect;
 pub use yscv_eval as eval;
 pub use yscv_imgproc as imgproc;
@@ -16,6 +17,9 @@ pub use yscv_video as video;
 
 /// Commonly used types from across the yscv ecosystem.
 pub mod prelude {
+    // cpu dispatch identity
+    pub use yscv_cpu::{Cpu, CpuFeatures, Microarch, host_cpu};
+
     // tensor
     pub use yscv_tensor::{DType, Device, Tensor, TensorError};
 

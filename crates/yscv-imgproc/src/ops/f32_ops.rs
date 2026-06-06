@@ -83,14 +83,14 @@ fn grayscale_f32_simd(src: &[f32], dst: &mut [f32], total: usize) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_f32_neon(src, dst, total) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { grayscale_f32_sse(src, dst, total) };
         }
@@ -187,7 +187,7 @@ pub fn gaussian_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     let mut out = vec![0.0f32; h * w];
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
             gauss_3x3_direct_f32_neon(src, &mut out, h, w);
@@ -196,7 +196,7 @@ pub fn gaussian_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse2 {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
             gauss_3x3_direct_f32_sse(src, &mut out, h, w);
@@ -506,7 +506,7 @@ pub fn box_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     let mut out = vec![0.0f32; h * w];
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
             box_3x3_direct_f32_neon(src, &mut out, h, w);
@@ -515,7 +515,7 @@ pub fn box_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse2 {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
             box_3x3_direct_f32_sse(src, &mut out, h, w);
@@ -820,7 +820,7 @@ pub fn dilate_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     let mut out = vec![0.0f32; h * w];
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
             dilate_3x3_direct_f32_neon(src, &mut out, h, w);
@@ -829,7 +829,7 @@ pub fn dilate_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     }
 
     #[cfg(target_arch = "x86_64")]
-    if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse2 {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
             dilate_3x3_direct_f32_sse(src, &mut out, h, w);
@@ -1161,14 +1161,14 @@ fn sobel_f32_simd_row(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { sobel_f32_neon_row(row0, row1, row2, dst, w) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { sobel_f32_sse_row(row0, row1, row2, dst, w) };
         }
@@ -1331,14 +1331,14 @@ fn threshold_f32_simd(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { threshold_f32_neon(src, dst, total, thresh, max_val) };
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             // SAFETY: ISA guard (feature detection) above.
             return unsafe { threshold_f32_sse(src, dst, total, thresh, max_val) };
         }

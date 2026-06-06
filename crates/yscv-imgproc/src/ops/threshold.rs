@@ -144,7 +144,7 @@ fn threshold_binary_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32, max
     if !cfg!(miri) {
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_binary_neon(src.as_ptr(), dst.as_mut_ptr(), len, threshold, max_val)
@@ -153,12 +153,12 @@ fn threshold_binary_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32, max
         }
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            if std::is_x86_feature_detected!("avx") {
+            if yscv_cpu::host_cpu().features.avx {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_binary_avx(src.as_ptr(), dst.as_mut_ptr(), len, threshold, max_val)
                 };
-            } else if std::is_x86_feature_detected!("sse") {
+            } else if yscv_cpu::host_cpu().features.sse {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_binary_sse(src.as_ptr(), dst.as_mut_ptr(), len, threshold, max_val)
@@ -335,7 +335,7 @@ fn threshold_binary_inv_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32,
     if !cfg!(miri) {
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_binary_inv_neon(
@@ -350,7 +350,7 @@ fn threshold_binary_inv_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32,
         }
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            if std::is_x86_feature_detected!("avx") {
+            if yscv_cpu::host_cpu().features.avx {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_binary_inv_avx(
@@ -361,7 +361,7 @@ fn threshold_binary_inv_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32,
                         max_val,
                     )
                 };
-            } else if std::is_x86_feature_detected!("sse") {
+            } else if yscv_cpu::host_cpu().features.sse {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_binary_inv_sse(
@@ -498,7 +498,7 @@ fn threshold_truncate_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32) {
     if !cfg!(miri) {
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_truncate_neon(src.as_ptr(), dst.as_mut_ptr(), len, threshold)
@@ -507,12 +507,12 @@ fn threshold_truncate_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32) {
         }
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            if std::is_x86_feature_detected!("avx") {
+            if yscv_cpu::host_cpu().features.avx {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_truncate_avx(src.as_ptr(), dst.as_mut_ptr(), len, threshold)
                 };
-            } else if std::is_x86_feature_detected!("sse") {
+            } else if yscv_cpu::host_cpu().features.sse {
                 // SAFETY: feature detected; pointers valid for len elements.
                 i = unsafe {
                     threshold_truncate_sse(src.as_ptr(), dst.as_mut_ptr(), len, threshold)

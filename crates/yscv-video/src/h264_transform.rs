@@ -20,7 +20,7 @@ pub fn inverse_dct_4x4(coeffs: &mut [i32; 16]) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             unsafe {
                 inverse_dct_4x4_sse2(coeffs);
             }
@@ -220,7 +220,7 @@ pub fn dequant_4x4(coeffs: &mut [i32; 16], qp: i32) {
     }
 
     #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("sse2") {
+    if yscv_cpu::host_cpu().features.sse2 {
         unsafe {
             use std::arch::x86_64::*;
             let ptr = coeffs.as_mut_ptr();

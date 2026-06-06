@@ -137,7 +137,7 @@ pub fn fast9_detect_raw(
             let mut x = x_start;
 
             #[cfg(target_arch = "aarch64")]
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 while x + 4 <= x_end {
                     // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =
@@ -169,7 +169,7 @@ pub fn fast9_detect_raw(
             }
 
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            if std::is_x86_feature_detected!("sse") {
+            if yscv_cpu::host_cpu().features.sse {
                 while x + 4 <= x_end {
                     // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =
@@ -254,7 +254,7 @@ pub fn fast9_detect_raw(
             // SIMD batch: check 4 consecutive center pixels at a time
             // This vectorizes the cardinal early-rejection test
             #[cfg(target_arch = "aarch64")]
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 while x + 4 <= x_end {
                     // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =
@@ -288,7 +288,7 @@ pub fn fast9_detect_raw(
             }
 
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            if std::is_x86_feature_detected!("sse") {
+            if yscv_cpu::host_cpu().features.sse {
                 while x + 4 <= x_end {
                     // SAFETY: ISA guard (feature detection) above; indices bounded by border.
                     let pass_mask =

@@ -38,11 +38,11 @@ pub(crate) fn unary_dispatch(data: &[f32], out: &mut [f32], kind: UnaryKind) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { unary_avx(data, out, kind) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { unary_sse(data, out, kind) };
             return;
         }
@@ -50,7 +50,7 @@ pub(crate) fn unary_dispatch(data: &[f32], out: &mut [f32], kind: UnaryKind) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { unary_neon(data, out, kind) };
             return;
         }

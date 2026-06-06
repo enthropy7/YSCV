@@ -108,7 +108,7 @@ pub fn resize_nearest_u8(input: &ImageU8, out_h: usize, out_w: usize) -> Option<
 #[inline]
 fn resize_nearest_row(src_row: &[u8], dst_row: &mut [u8], x_map: &[usize], channels: usize) {
     #[cfg(target_arch = "aarch64")]
-    if channels == 1 && !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if channels == 1 && !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe {
             resize_nearest_row_1ch_neon(src_row, dst_row, x_map);
         }
@@ -117,13 +117,13 @@ fn resize_nearest_row(src_row: &[u8], dst_row: &mut [u8], x_map: &[usize], chann
 
     #[cfg(target_arch = "x86_64")]
     if channels == 1 && !cfg!(miri) {
-        if is_x86_feature_detected!("avx2") {
+        if yscv_cpu::host_cpu().features.avx2 {
             unsafe {
                 resize_nearest_row_1ch_avx2(src_row, dst_row, x_map);
             }
             return;
         }
-        if is_x86_feature_detected!("ssse3") {
+        if yscv_cpu::host_cpu().features.ssse3 {
             unsafe {
                 resize_nearest_row_1ch_sse(src_row, dst_row, x_map);
             }
@@ -612,7 +612,7 @@ fn resize_bilinear_u8_1ch_stride2(
     fx_arr: &[u16],
 ) {
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe {
             resize_1ch_stride2_neon_full(
                 src.as_ptr(),
@@ -815,7 +815,7 @@ fn resize_bilinear_u8_1ch_fused(
         let mut done = 0usize;
 
         #[cfg(target_arch = "aarch64")]
-        if use_tbl2 && !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        if use_tbl2 && !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
             done = unsafe {
                 resize_1ch_fused_neon16(
                     src_row0,
@@ -838,7 +838,7 @@ fn resize_bilinear_u8_1ch_fused(
         }
 
         #[cfg(target_arch = "x86_64")]
-        if use_tbl1_tail && !cfg!(miri) && is_x86_feature_detected!("ssse3") {
+        if use_tbl1_tail && !cfg!(miri) && yscv_cpu::host_cpu().features.ssse3 {
             done = unsafe {
                 resize_1ch_fused_sse(
                     src_row0, src_row1, dst_row, &base16, &idx16_0, &idx16_1, &base8, &idx8_0,
@@ -1188,14 +1188,14 @@ unsafe fn resize_hpass_multi_ch(
     if c == 3 {
         #[cfg(target_arch = "aarch64")]
         {
-            if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+            if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
                 resize_hpass_rgb_neon(sp, hp, sx_byte, sx1_byte, fx_rep, out_w);
                 return;
             }
         }
         #[cfg(target_arch = "x86_64")]
         {
-            if !cfg!(miri) && is_x86_feature_detected!("sse2") {
+            if !cfg!(miri) && yscv_cpu::host_cpu().features.sse2 {
                 resize_hpass_rgb_sse(sp, hp, sx_byte, sx1_byte, fx_rep, out_w);
                 return;
             }
@@ -1433,7 +1433,7 @@ unsafe fn resize_vpass_multi_ch(hbuf0: &[u16], hbuf1: &[u16], dst: &mut [u8], fy
 
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 resize_vpass_neon(hbuf0, hbuf1, dst, fy, len);
                 return;
             }
@@ -1441,7 +1441,7 @@ unsafe fn resize_vpass_multi_ch(hbuf0: &[u16], hbuf1: &[u16], dst: &mut [u8], fy
 
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") {
+            if yscv_cpu::host_cpu().features.sse2 {
                 resize_vpass_sse(hbuf0, hbuf1, dst, fy, len);
                 return;
             }

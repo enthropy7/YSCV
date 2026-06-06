@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 yscv-autograd = { version = "0.1", path = "../yscv-autograd" }
+yscv-cpu = { version = "0.1", path = "../yscv-cpu" }
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
 

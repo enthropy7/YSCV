@@ -84,7 +84,7 @@ All numbers: Apple M-series, `--release`, LTO=thin, single-threaded, best of 5. 
 | NV12 BT.601 → RGB | ✓ | ✓ | — |
 | u8 → f32 normalize for ML preprocessing | ✓ | ✓ | ✓ |
 
-In addition to these named functions, the H.264 path uses scalar code that the Rust compiler auto-vectorises with `-C target-cpu=native`. The pure-Rust SIMD implementations are gated by `#[cfg(target_arch)]` (NEON is compile-time, SSE2/AVX2 use `is_x86_feature_detected!` runtime dispatch).
+In addition to these named functions, the H.264 path uses scalar code that the Rust compiler auto-vectorises with `-C target-cpu=native`. The pure-Rust SIMD implementations are gated by `#[cfg(target_arch)]` and cached `yscv_cpu::host_cpu().features` runtime dispatch.
 
 ### Memory
 

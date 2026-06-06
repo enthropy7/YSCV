@@ -3,8 +3,6 @@
 
 pub const CRATE_ID: &str = "yscv-kernels";
 
-#[path = "arch/mod.rs"]
-mod arch;
 #[path = "backend/mod.rs"]
 mod backend;
 #[path = "error.rs"]
@@ -25,13 +23,15 @@ mod scope_ctx;
 
 pub use scope_ctx::{ScopeGuard, install_scope, with_installed_session, with_scope};
 
-pub use arch::{Cpu, CpuFeatures, Microarch, host_cpu};
+pub use yscv_cpu::{Cpu, CpuFeatures, Microarch, host_cpu};
 
 /// Human-readable snapshot of the CPU dispatch choices used by hot kernels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DispatchReport {
     pub cpu: Cpu,
     pub single_ops: ops::simd::CpuDispatchReport,
+    pub matmul: ops::MatmulDispatchReport,
+    pub conv: ops::ConvDispatchReport,
     pub int8_matmul: &'static str,
     pub int8_prepacked: &'static str,
 }
@@ -40,17 +40,24 @@ impl std::fmt::Display for DispatchReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "cpu={:?}; single_ops=[{}]; int8_matmul={}; int8_prepacked={}",
-            self.cpu.uarch, self.single_ops, self.int8_matmul, self.int8_prepacked
+            "cpu={:?}; single_ops=[{}]; matmul=[{}]; conv=[{}]; int8_matmul={}; int8_prepacked={}",
+            self.cpu.uarch,
+            self.single_ops,
+            self.matmul,
+            self.conv,
+            self.int8_matmul,
+            self.int8_prepacked
         )
     }
 }
 
-/// Returns the cached host CPU plus the selected standalone and INT8 paths.
+/// Returns the cached host CPU plus the selected/gated hot compute paths.
 pub fn dispatch_report() -> DispatchReport {
     DispatchReport {
         cpu: *host_cpu(),
         single_ops: ops::simd::cpu_dispatch_report(),
+        matmul: ops::matmul_dispatch_report(),
+        conv: ops::conv_dispatch_report(),
         int8_matmul: ops::int8_matmul::int8_matmul_dispatch_path(),
         int8_prepacked: ops::int8_matmul::int8_prepacked_dispatch_path(),
     }

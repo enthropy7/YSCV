@@ -17,10 +17,11 @@ imwrite("gray.png", &gray)?;
 
 ## Included Crates
 
-The yscv workspace ships 18 library crates; this umbrella re-exports them all behind a single prelude:
+The yscv workspace ships 19 library crates; this umbrella re-exports them all behind a single prelude:
 
 | Crate | What it does |
 |-------|-------------|
+| `yscv-cpu` | Cached host CPU identity and runtime feature detection |
 | `yscv-tensor` | 115 `Tensor` ops, f32/f16/bf16, broadcasting, SIMD |
 | `yscv-kernels` | CPU/GPU compute backends (61 WGSL + 4 Metal shaders, wgpu + metal-rs) |
 | `yscv-autograd` | Tape-based reverse-mode autodiff with 61 `Op` variants |

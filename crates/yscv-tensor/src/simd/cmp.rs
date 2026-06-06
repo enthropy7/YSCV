@@ -21,7 +21,7 @@ pub(crate) fn clamp_dispatch(data: &[f32], out: &mut [f32], min_val: f32, max_va
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { clamp_neon(data, out, min_val, max_val) };
             return;
         }
@@ -29,11 +29,11 @@ pub(crate) fn clamp_dispatch(data: &[f32], out: &mut [f32], min_val: f32, max_va
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { clamp_avx(data, out, min_val, max_val) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { clamp_sse(data, out, min_val, max_val) };
             return;
         }
@@ -135,7 +135,7 @@ pub(crate) fn cmp_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind: CmpK
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { cmp_neon(lhs, rhs, out, lhs.len(), kind) };
             return;
         }

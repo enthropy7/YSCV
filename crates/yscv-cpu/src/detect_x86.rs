@@ -1,7 +1,5 @@
-//! x86 host detection: CPUID vendor + family/model → microarch, std macros →
-//! features. The microarch mapping is intentionally coarse for Phase 0 (vendor
-//! and family, with a light model split where it matters); it is refined per
-//! model in later phases when specialised kernels actually consult it.
+//! x86 host detection: CPUID vendor + family/model to microarch, std macros
+//! to runtime features.
 
 use super::{Cpu, CpuFeatures, Microarch};
 
@@ -21,6 +19,7 @@ fn detect_features() -> CpuFeatures {
     CpuFeatures {
         sse: std::is_x86_feature_detected!("sse"),
         sse2: std::is_x86_feature_detected!("sse2"),
+        ssse3: std::is_x86_feature_detected!("ssse3"),
         avx: std::is_x86_feature_detected!("avx"),
         avx2: std::is_x86_feature_detected!("avx2"),
         fma: std::is_x86_feature_detected!("fma"),
@@ -43,7 +42,6 @@ fn detect_uarch() -> Microarch {
     }
 }
 
-/// Vendor string from CPUID leaf 0 (`EBX:EDX:ECX`).
 fn cpuid_vendor() -> [u8; 12] {
     let r = __cpuid(0);
     let mut v = [0u8; 12];
@@ -53,8 +51,6 @@ fn cpuid_vendor() -> [u8; 12] {
     v
 }
 
-/// Effective family and model from CPUID leaf 1 `EAX`, applying the extended
-/// family/model rules.
 fn cpuid_family_model() -> (u32, u32) {
     let eax = __cpuid(1).eax;
     let base_family = (eax >> 8) & 0xf;
@@ -76,10 +72,8 @@ fn cpuid_family_model() -> (u32, u32) {
 
 fn amd_uarch(family: u32, model: u32) -> Microarch {
     match family {
-        0x17 => Microarch::Zen2, // Zen / Zen+ / Zen2 — one bucket for now
+        0x17 => Microarch::Zen2,
         0x19 => {
-            // Family 0x19 spans Zen3 and Zen4; Zen4 desktop/mobile/server land
-            // in the upper model ranges (e.g. Raphael 0x61). Coarse split.
             if model >= 0x60 || (0x10..=0x1f).contains(&model) {
                 Microarch::Zen4
             } else {
@@ -95,10 +89,9 @@ fn intel_uarch(family: u32, model: u32) -> Microarch {
     if family != 0x6 {
         return Microarch::GenericX86;
     }
-    // Coarse representative buckets by model; refined in later phases.
     match model {
-        0x55 => Microarch::IntelSkylake,        // Skylake-SP / Cascade Lake
-        0x6a | 0x6c => Microarch::IntelIceLake, // Ice Lake-SP
+        0x55 => Microarch::IntelSkylake,
+        0x6a | 0x6c => Microarch::IntelIceLake,
         0x8f => Microarch::IntelSapphireRapids,
         _ => Microarch::GenericX86,
     }

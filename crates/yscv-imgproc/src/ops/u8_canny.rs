@@ -341,14 +341,14 @@ fn canny_sobel3x3_row(
     if !cfg!(miri) {
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 done =
                     unsafe { canny_sobel3x3_row_neon(above, center, below, mag_row, dir_row, w) };
             }
         }
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("ssse3") {
+            if yscv_cpu::host_cpu().features.ssse3 {
                 done = unsafe { canny_sobel3x3_row_sse(above, center, below, mag_row, dir_row, w) };
             }
         }
@@ -683,7 +683,7 @@ fn canny_nms_dir_row(
     if !cfg!(miri) {
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 let (d, sc) = unsafe {
                     canny_nms_dir_row_neon(
                         mag_above, mag_cur, mag_below, dir_row, nms_row, w, low, high,
@@ -695,7 +695,7 @@ fn canny_nms_dir_row(
         }
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("sse2") {
+            if yscv_cpu::host_cpu().features.sse2 {
                 let (d, sc) = unsafe {
                     canny_nms_dir_row_sse(
                         mag_above, mag_cur, mag_below, dir_row, nms_row, w, low, high,

@@ -226,7 +226,7 @@ fn lamb_pass1_inner(
     weight_decay: f32,
 ) -> (f32, f32) {
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         return unsafe {
             lamb_pass1_neon(
                 weights,
@@ -246,7 +246,7 @@ fn lamb_pass1_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         return unsafe {
             lamb_pass1_avx(
                 weights,
@@ -266,7 +266,7 @@ fn lamb_pass1_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
         return unsafe {
             lamb_pass1_sse(
                 weights,
@@ -323,7 +323,7 @@ fn lamb_pass2_inner(
     weight_decay: f32,
 ) {
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe {
             lamb_pass2_neon(
                 weights,
@@ -340,7 +340,7 @@ fn lamb_pass2_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         unsafe {
             lamb_pass2_avx(
                 weights,
@@ -357,7 +357,7 @@ fn lamb_pass2_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
         unsafe {
             lamb_pass2_sse(
                 weights,

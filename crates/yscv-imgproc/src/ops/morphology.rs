@@ -20,19 +20,19 @@ fn dilate_simd_row_c1(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { dilate_neon_row_c1(row0, row1, row2, out, w) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { dilate_avx_row_c1(row0, row1, row2, out, w) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { dilate_sse_row_c1(row0, row1, row2, out, w) };
         }
     }
@@ -59,19 +59,19 @@ fn dilate_simd_row_mc(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { dilate_neon_row_mc(row0, row1, row2, out, row_len, channels) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { dilate_avx_row_mc(row0, row1, row2, out, row_len, channels) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { dilate_sse_row_mc(row0, row1, row2, out, row_len, channels) };
         }
     }
@@ -207,19 +207,19 @@ fn erode_simd_row_mc(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { erode_neon_row_mc(row0, row1, row2, out, row_len, channels) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { erode_avx_row_mc(row0, row1, row2, out, row_len, channels) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { erode_sse_row_mc(row0, row1, row2, out, row_len, channels) };
         }
     }
@@ -458,19 +458,19 @@ fn erode_simd_row_c1(row0: &[f32], row1: &[f32], row2: &[f32], out: &mut [f32], 
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { erode_neon_row_c1(row0, row1, row2, out, w) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { erode_avx_row_c1(row0, row1, row2, out, w) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { erode_sse_row_c1(row0, row1, row2, out, w) };
         }
     }

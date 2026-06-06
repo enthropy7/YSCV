@@ -189,19 +189,19 @@ fn axpy_neg(weights: &mut [f32], grads: &[f32], lr: f32) {
     let len = weights.len();
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe { axpy_neg_neon(weights, grads, lr) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         unsafe { axpy_neg_avx(weights, grads, lr) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
         unsafe { axpy_neg_sse(weights, grads, lr) };
         return;
     }
@@ -231,19 +231,19 @@ fn fma_inplace(dst: &mut [f32], src: &[f32], scale: f32) {
     let len = dst.len();
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe { fma_inplace_neon(dst, src, scale) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         unsafe { fma_inplace_avx(dst, src, scale) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
         unsafe { fma_inplace_sse(dst, src, scale) };
         return;
     }
@@ -260,19 +260,19 @@ fn momentum_update(velocity: &mut [f32], grad: &[f32], momentum: f32, grad_scale
     let len = velocity.len();
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe { momentum_update_neon(velocity, grad, momentum, grad_scale) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         unsafe { momentum_update_avx(velocity, grad, momentum, grad_scale) };
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
         unsafe { momentum_update_sse(velocity, grad, momentum, grad_scale) };
         return;
     }

@@ -214,7 +214,7 @@ fn adamw_update_inner(
     let len = weights.len();
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         unsafe {
             adamw_update_neon(
                 weights,
@@ -237,7 +237,7 @@ fn adamw_update_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         unsafe {
             adamw_update_avx(
                 weights,
@@ -260,7 +260,7 @@ fn adamw_update_inner(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse {
         unsafe {
             adamw_update_sse(
                 weights,

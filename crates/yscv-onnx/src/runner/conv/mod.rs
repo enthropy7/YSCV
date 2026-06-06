@@ -19,16 +19,16 @@ fn dot_dispatch() -> DotFn {
     *DOT_FN.get_or_init(|| {
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 return dot_neon;
             }
         }
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            if std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("fma") {
+            if yscv_cpu::host_cpu().features.avx && yscv_cpu::host_cpu().features.fma {
                 return dot_avx;
             }
-            if std::is_x86_feature_detected!("sse") {
+            if yscv_cpu::host_cpu().features.sse {
                 return dot_sse;
             }
         }

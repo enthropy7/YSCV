@@ -1,15 +1,11 @@
-//! Host CPU identity — the foundation of microarchitecture-aware kernel
-//! dispatch (see `docs/microarch-dispatch.md`).
+//! Host CPU identity — the foundation of runtime kernel dispatch.
 //!
 //! [`host_cpu`] detects the running core's microarchitecture and feature set
-//! **once** (cached in a `OnceLock`) and is the single source of truth that
-//! per-op selection tables consult. Detection never fails: an unrecognised core
-//! resolves to a `Generic*` microarch, and missing features simply read
-//! `false`, so the framework always lands on a correct (if not perfectly
-//! scheduled) path.
-//!
-//! This is Phase 0 of the dispatch roadmap: identity only, no kernel selection
-//! yet. The `select_<op>` tables that consume [`Cpu`] arrive in later phases.
+//! once, caches it in a `OnceLock`, and exposes the result as the shared source
+//! of truth for yscv crates. Detection never fails: an unrecognised core
+//! resolves to a `Generic*` microarch, and missing features read `false`, so
+//! callers always have a correct fallback path.
+#![deny(unsafe_code)]
 
 use std::sync::OnceLock;
 
@@ -18,10 +14,8 @@ mod detect_aarch64;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod detect_x86;
 
-/// Coarse CPU microarchitecture. Used to refine kernel selection *on top of* a
-/// feature-correct choice — never for correctness. `Generic*` / `Scalar` are
-/// first-class values, not errors: an unknown core gets a feature-appropriate
-/// generic kernel.
+/// Coarse CPU microarchitecture. Used to refine kernel selection on top of a
+/// feature-correct choice, never as the correctness gate itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Microarch {
@@ -50,14 +44,12 @@ pub enum Microarch {
 }
 
 impl Microarch {
-    /// In-order cores (no hardware reordering) — where hand-baked instruction
-    /// scheduling pays the most, because the compiler can't recover it.
+    /// In-order cores where hand-baked instruction scheduling pays most.
     pub fn is_in_order(self) -> bool {
         matches!(self, Microarch::CortexA53 | Microarch::CortexA55)
     }
 
-    /// True for the `Generic*` / `Scalar` fallbacks (no microarch specialisation
-    /// available — selection should lean on feature flags alone).
+    /// True for fallback identities with no microarch specialisation.
     pub fn is_generic(self) -> bool {
         matches!(
             self,
@@ -66,9 +58,7 @@ impl Microarch {
     }
 }
 
-/// Runtime CPU feature flags relevant to kernel selection. A plain bool struct
-/// (no external bitflags dep); detected via the std `is_*_feature_detected!`
-/// macros, which read HWCAP on aarch64 and CPUID on x86 under the hood.
+/// Runtime CPU feature flags relevant to kernel selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CpuFeatures {
     // aarch64
@@ -80,6 +70,7 @@ pub struct CpuFeatures {
     // x86_64
     pub sse: bool,
     pub sse2: bool,
+    pub ssse3: bool,
     pub avx: bool,
     pub avx2: bool,
     pub fma: bool,
@@ -104,6 +95,11 @@ impl CpuFeatures {
     #[inline]
     pub fn x86_avx2_sse41(self) -> bool {
         self.avx2 && self.sse41
+    }
+
+    #[inline]
+    pub fn x86_avx2_ssse3(self) -> bool {
+        self.avx2 && self.ssse3
     }
 
     #[inline]
@@ -141,16 +137,13 @@ pub struct Cpu {
 }
 
 /// Detects the host CPU once and returns the cached identity. Cheap after the
-/// first call (an atomic load).
+/// first call.
 pub fn host_cpu() -> &'static Cpu {
     static CPU: OnceLock<Cpu> = OnceLock::new();
     CPU.get_or_init(detect_host)
 }
 
 fn detect_host() -> Cpu {
-    // Under Miri, CPUID / sysfs / HWCAP probing isn't modelled — return the
-    // scalar identity so dispatch (which already gates SIMD behind `!cfg!(miri)`)
-    // takes the scalar path without touching unsupported intrinsics.
     if cfg!(miri) {
         return Cpu {
             uarch: Microarch::Scalar,
@@ -182,11 +175,8 @@ mod tests {
     fn host_cpu_detects_without_panic_and_is_cached() {
         let a = host_cpu();
         let b = host_cpu();
-        // Same cached instance.
         assert!(std::ptr::eq(a, b));
 
-        // On the build arch the detector must land on a non-Scalar microarch
-        // and report the ISA's baseline feature.
         #[cfg(target_arch = "aarch64")]
         {
             assert_ne!(a.uarch, Microarch::Scalar);
@@ -195,10 +185,8 @@ mod tests {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             assert_ne!(a.uarch, Microarch::Scalar);
-            // No hard feature assert — minimal x86_64 baseline is SSE2 only.
         }
 
-        // Visible under `cargo test -- --nocapture` to eyeball detection per box.
         println!("detected host cpu: {a:?}");
     }
 }

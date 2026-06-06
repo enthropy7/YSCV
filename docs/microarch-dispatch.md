@@ -131,10 +131,9 @@ a usable value.
 - **aarch64:** read MIDR (`CPU part 0xd03` = A53, `0xd05` = A55, `0xd08` = A72,
   `0xd0b` = A76, …) via a **fallback chain** — `mrs` (where the kernel emulates
   the ID register) → `/proc/cpuinfo` `CPU part` → macOS `sysctl` (Apple) →
-  `GenericAarch64`. Features via `getauxval(AT_HWCAP)` /
-  `is_aarch64_feature_detected!`.
-- **x86_64:** `CPUID` — vendor + family/model → Zen/Intel microarch; features via
-  `is_x86_feature_detected!`.
+  `GenericAarch64`. Features are detected once inside `yscv-cpu`.
+- **x86_64:** `CPUID` — vendor + family/model → Zen/Intel microarch; features
+  are detected once inside `yscv-cpu`.
 
 **Layer 3 — Dispatch table.** Per hot-kernel family, a selector returning a
 fn-pointer. Two rules make it safe:

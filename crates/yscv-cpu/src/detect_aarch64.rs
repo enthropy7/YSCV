@@ -1,11 +1,4 @@
-//! aarch64 host detection: MIDR → microarch, HWCAP (via std macros) → features.
-//!
-//! Microarch comes from the MIDR_EL1 part number, read through a fallback chain
-//! that never panics:
-//!   1. sysfs `…/cpu0/regs/identification/midr_el1` (cleanest, modern kernels)
-//!   2. `/proc/cpuinfo` `CPU part`
-//!   3. macOS → Apple Silicon
-//!   4. anything else → `GenericAarch64`
+//! aarch64 host detection: MIDR to microarch, std macros to runtime features.
 
 use super::{Cpu, CpuFeatures, Microarch};
 
@@ -30,7 +23,6 @@ fn detect_features() -> CpuFeatures {
 fn detect_uarch() -> Microarch {
     #[cfg(target_os = "macos")]
     {
-        // All current Apple ARM cores share one tuning bucket for now.
         Microarch::AppleSilicon
     }
     #[cfg(not(target_os = "macos"))]
@@ -42,17 +34,14 @@ fn detect_uarch() -> Microarch {
     }
 }
 
-/// Reads the 12-bit MIDR part number, or `None` if it can't be determined.
 #[cfg(not(target_os = "macos"))]
 fn read_midr_part() -> Option<u32> {
-    // sysfs MIDR_EL1, e.g. "0x00000000410fd034" → part = bits[15:4] = 0xd03.
     if let Ok(s) =
         std::fs::read_to_string("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1")
         && let Some(midr) = parse_hex_u64(s.trim())
     {
         return Some(((midr >> 4) & 0xfff) as u32);
     }
-    // /proc/cpuinfo "CPU part : 0xd03" (already the part number).
     if let Ok(info) = std::fs::read_to_string("/proc/cpuinfo") {
         for line in info.lines() {
             if let Some(rest) = line.strip_prefix("CPU part")
@@ -73,8 +62,6 @@ fn parse_hex_u64(s: &str) -> Option<u64> {
     u64::from_str_radix(&hex, 16).ok()
 }
 
-/// ARM-implementer part numbers (the common edge / SBC cores). Unknown parts
-/// fall back to the generic NEON path.
 #[cfg(not(target_os = "macos"))]
 fn part_to_uarch(part: u32) -> Microarch {
     match part {
@@ -83,7 +70,7 @@ fn part_to_uarch(part: u32) -> Microarch {
         0xd08 => Microarch::CortexA72,
         0xd09 => Microarch::CortexA73,
         0xd0b => Microarch::CortexA76,
-        0xd41 | 0xd42 => Microarch::CortexA78, // A78 / A78C
+        0xd41 | 0xd42 => Microarch::CortexA78,
         0xd0c => Microarch::NeoverseN1,
         _ => Microarch::GenericAarch64,
     }

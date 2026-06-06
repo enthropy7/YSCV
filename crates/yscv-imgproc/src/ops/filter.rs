@@ -19,17 +19,17 @@ fn box_blur_simd_row_c1(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { box_blur_neon_row_c1(row0, row1, row2, out, w) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::is_x86_feature_detected!("avx") {
+    if yscv_cpu::host_cpu().features.avx {
         return unsafe { box_blur_avx_row_c1(row0, row1, row2, out, w) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { box_blur_sse_row_c1(row0, row1, row2, out, w) };
         }
     }
@@ -283,17 +283,17 @@ fn gauss_h_simd_row_c1(src: &[f32], out: &mut [f32], w: usize) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { gauss_h_neon_row_c1(src, out, w) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::is_x86_feature_detected!("avx") {
+    if yscv_cpu::host_cpu().features.avx {
         return unsafe { gauss_h_avx_row_c1(src, out, w) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { gauss_h_sse_row_c1(src, out, w) };
         }
     }
@@ -516,17 +516,17 @@ fn gauss_v_simd_row_c1(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { gauss_v_neon_c1(above, center, below, out, w) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::is_x86_feature_detected!("avx") {
+    if yscv_cpu::host_cpu().features.avx {
         return unsafe { gauss_v_avx_c1(above, center, below, out, w) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { gauss_v_sse_c1(above, center, below, out, w) };
         }
     }
@@ -1240,9 +1240,9 @@ pub fn bilateral_filter(
 
     // Check SIMD availability once, outside the hot loop
     #[cfg(target_arch = "aarch64")]
-    let use_neon = !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon");
+    let use_neon = !cfg!(miri) && yscv_cpu::host_cpu().features.neon;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    let use_sse2 = !cfg!(miri) && std::is_x86_feature_detected!("sse2");
+    let use_sse2 = !cfg!(miri) && yscv_cpu::host_cpu().features.sse2;
 
     // Interior x range: [radius_u, w - radius_u)
     let x_start = radius_u;

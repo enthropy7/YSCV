@@ -1,0 +1,16 @@
+[package]
+name = "yscv-cpu"
+description = "Cached host CPU identity and feature detection for yscv runtime dispatch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

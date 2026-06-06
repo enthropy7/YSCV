@@ -128,12 +128,12 @@ fn rgb_to_hsv_u8_row(
 
     // NEON path: deinterleave RGB, vectorized max/min/delta/V/S, scalar H
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         start = unsafe { rgb_to_hsv_u8_neon_row(src, dst, count, sdiv, hdiv) };
     }
 
     #[cfg(target_arch = "x86_64")]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse4.1") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse41 {
         start = unsafe { rgb_to_hsv_u8_sse_row(src, dst, count, sdiv, hdiv) };
     }
 

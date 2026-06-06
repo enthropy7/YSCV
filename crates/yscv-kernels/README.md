@@ -198,7 +198,7 @@ println!("{}", yscv_kernels::dispatch_report());
 ```
 
 The report includes the cached host CPU identity, standalone SIMD choices,
-and INT8 matmul/prepacked paths.
+matmul/conv dispatch gates, and INT8 matmul/prepacked paths.
 
 ### Bias+Activation Dispatch (NHWC post-conv fallback)
 

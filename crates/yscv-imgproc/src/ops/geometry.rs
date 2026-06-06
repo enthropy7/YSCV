@@ -170,17 +170,17 @@ fn sobel_simd_row_c1(
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { sobel_neon_row_c1(row0, row1, row2, gx_out, gy_out, w) };
         }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { sobel_avx_row_c1(row0, row1, row2, gx_out, gy_out, w) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { sobel_sse_row_c1(row0, row1, row2, gx_out, gy_out, w) };
         }
     }
@@ -399,17 +399,17 @@ fn magnitude_simd(gx: &[f32], gy: &[f32], out: &mut [f32]) -> usize {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             return unsafe { magnitude_neon(gx, gy, out, len) };
         }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             return unsafe { magnitude_avx(gx, gy, out, len) };
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             return unsafe { magnitude_sse(gx, gy, out, len) };
         }
     }
@@ -924,7 +924,7 @@ fn warp_perspective_c1(
 
         #[cfg(target_arch = "aarch64")]
         {
-            if std::arch::is_aarch64_feature_detected!("neon") {
+            if yscv_cpu::host_cpu().features.neon {
                 dx = unsafe {
                     warp_perspective_c1_neon_row(
                         in_data,
@@ -947,7 +947,7 @@ fn warp_perspective_c1(
         }
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            if std::is_x86_feature_detected!("sse") {
+            if yscv_cpu::host_cpu().features.sse {
                 dx = unsafe {
                     warp_perspective_c1_sse_row(
                         in_data,

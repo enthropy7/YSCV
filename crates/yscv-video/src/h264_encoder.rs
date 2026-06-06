@@ -161,7 +161,7 @@ pub fn forward_dct_4x4(block: &mut [i32; 16]) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             unsafe {
                 forward_dct_4x4_sse2(block);
             }

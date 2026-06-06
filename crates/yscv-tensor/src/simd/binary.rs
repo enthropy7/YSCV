@@ -79,11 +79,11 @@ pub(crate) fn binary_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind: B
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { binary_avx(lhs, rhs, out, kind) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { binary_sse(lhs, rhs, out, kind) };
             return;
         }
@@ -91,7 +91,7 @@ pub(crate) fn binary_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind: B
 
     #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { binary_neon(lhs, rhs, out, kind) };
             return;
         }

@@ -4,6 +4,7 @@ members = [
     "apps/bench",
     "apps/camera-face-tool",
     "apps/llm-bench",
+    "crates/yscv-cpu",
     "crates/yscv-tensor",
     "crates/yscv-autograd",
     "crates/yscv-optim",

@@ -91,6 +91,169 @@ unsafe impl Send for GemmEpilogue {}
 #[allow(unsafe_code)]
 unsafe impl Sync for GemmEpilogue {}
 
+/// Shape-independent snapshot of matmul dispatch state for benchmark logs.
+///
+/// The final GEMM kernel remains shape-dependent, but these fields capture the
+/// cached host ISA, BLAS availability, and opt-in/kill-switch gates that decide
+/// the candidate set before shape checks run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatmulDispatchReport {
+    pub primary_isa: &'static str,
+    pub blas: &'static str,
+    pub avx512: bool,
+    pub avx512_mr12: bool,
+    pub avx512_relu: bool,
+    pub asm_4x24: bool,
+    pub mr6: bool,
+    pub mr8: bool,
+    pub low_k_tile: bool,
+}
+
+impl std::fmt::Display for MatmulDispatchReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "isa={}; blas={}; avx512={}; avx512_mr12={}; avx512_relu={}; asm_4x24={}; mr6={}; mr8={}; low_k_tile={}",
+            self.primary_isa,
+            self.blas,
+            self.avx512,
+            self.avx512_mr12,
+            self.avx512_relu,
+            self.asm_4x24,
+            self.mr6,
+            self.mr8,
+            self.low_k_tile
+        )
+    }
+}
+
+pub fn matmul_dispatch_report() -> MatmulDispatchReport {
+    let features = crate::host_cpu().features;
+    MatmulDispatchReport {
+        primary_isa: matmul_primary_isa(features),
+        blas: matmul_blas_status(),
+        avx512: matmul_avx512_enabled(),
+        avx512_mr12: matmul_avx512_mr12_enabled(),
+        avx512_relu: matmul_avx512_relu_enabled(),
+        asm_4x24: matmul_asm_4x24_enabled(),
+        mr6: matmul_mr6_enabled(),
+        mr8: matmul_mr8_enabled(),
+        low_k_tile: matmul_low_k_tile_enabled(),
+    }
+}
+
+fn matmul_primary_isa(features: crate::CpuFeatures) -> &'static str {
+    if features.avx512f && matmul_avx512_enabled() {
+        "avx512"
+    } else if features.x86_avx_fma() {
+        "avx/fma"
+    } else if features.avx {
+        "avx"
+    } else if features.sse2 {
+        "sse2"
+    } else if features.sse {
+        "sse"
+    } else if features.neon {
+        "neon"
+    } else {
+        "scalar"
+    }
+}
+
+#[cfg(feature = "blas")]
+fn matmul_blas_status() -> &'static str {
+    if use_blas() { "enabled" } else { "disabled" }
+}
+
+#[cfg(not(feature = "blas"))]
+fn matmul_blas_status() -> &'static str {
+    "not-compiled"
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+fn matmul_avx512_enabled() -> bool {
+    kernels::avx512_enabled()
+}
+
+#[cfg(not(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))))]
+fn matmul_avx512_enabled() -> bool {
+    false
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+fn matmul_avx512_mr12_enabled() -> bool {
+    avx512_mr12_enabled()
+}
+
+#[cfg(not(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))))]
+fn matmul_avx512_mr12_enabled() -> bool {
+    false
+}
+
+#[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
+fn matmul_avx512_relu_enabled() -> bool {
+    kernels::avx512_relu_enabled()
+}
+
+#[cfg(not(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos"))))]
+fn matmul_avx512_relu_enabled() -> bool {
+    false
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        target_os = "linux",
+        target_os = "macos",
+        all(target_os = "windows", not(target_env = "msvc"))
+    )
+))]
+fn matmul_asm_4x24_enabled() -> bool {
+    kernels::asm_4x24_enabled()
+}
+
+#[cfg(not(all(
+    target_arch = "x86_64",
+    any(
+        target_os = "linux",
+        target_os = "macos",
+        all(target_os = "windows", not(target_env = "msvc"))
+    )
+)))]
+fn matmul_asm_4x24_enabled() -> bool {
+    false
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn matmul_mr6_enabled() -> bool {
+    kernels::mr6_enabled()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn matmul_mr6_enabled() -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+fn matmul_mr8_enabled() -> bool {
+    kernels::mr8_enabled()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn matmul_mr8_enabled() -> bool {
+    false
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn matmul_low_k_tile_enabled() -> bool {
+    low_k::low_k_tile_enabled()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn matmul_low_k_tile_enabled() -> bool {
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Blocked matmul constants
 // ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ bytes = "1"
 libc = { version = "0.2", optional = true }
 nokhwa = { version = "0.10.10", optional = true, default-features = false, features = ["input-native"] }
 rayon = "1.11"
+yscv-cpu = { version = "0.1", path = "../yscv-cpu" }
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
 

@@ -69,7 +69,7 @@ unsafe fn normalize_3ch(
     let (s0, s1, s2) = (inv_std[0], inv_std[1], inv_std[2]);
 
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         use std::arch::aarch64::*;
         let vm = vld1q_f32([m0, m1, m2, 0.0].as_ptr());
         let vs = vld1q_f32([s0, s1, s2, 0.0].as_ptr());
@@ -103,13 +103,13 @@ unsafe fn normalize_3ch(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         normalize_3ch_avx(src_ptr, dst_ptr, m0, m1, m2, s0, s1, s2, num_pixels);
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse2") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse2 {
         normalize_3ch_sse(src_ptr, dst_ptr, m0, m1, m2, s0, s1, s2, num_pixels);
         return;
     }
@@ -236,7 +236,7 @@ unsafe fn normalize_1ch(
     len: usize,
 ) {
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         use std::arch::aarch64::*;
         let vm = vdupq_n_f32(mean);
         let vs = vdupq_n_f32(inv_std);
@@ -255,13 +255,13 @@ unsafe fn normalize_1ch(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         normalize_1ch_avx(src_ptr, dst_ptr, mean, inv_std, len);
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse2") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse2 {
         normalize_1ch_sse(src_ptr, dst_ptr, mean, inv_std, len);
         return;
     }
@@ -342,7 +342,7 @@ unsafe fn normalize_generic(
     num_pixels: usize,
 ) {
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         use std::arch::aarch64::*;
         let simd_end = channels & !3;
         for px in 0..num_pixels {
@@ -367,13 +367,13 @@ unsafe fn normalize_generic(
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("avx") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.avx {
         normalize_generic_avx(src_ptr, dst_ptr, mean, inv_std, channels, num_pixels);
         return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if !cfg!(miri) && std::is_x86_feature_detected!("sse2") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.sse2 {
         normalize_generic_sse(src_ptr, dst_ptr, mean, inv_std, channels, num_pixels);
         return;
     }

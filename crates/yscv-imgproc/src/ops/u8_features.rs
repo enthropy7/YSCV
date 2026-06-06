@@ -7,8 +7,8 @@
 //! 1. **`SendConstPtr` / `SendPtr` slice reconstruction for rayon** — pointer derived from
 //!    a slice that outlives the parallel scope; each thread accesses non-overlapping rows.
 //!
-//! 2. **SIMD intrinsics (NEON / SSE2 / AVX2)** — ISA availability guaranteed by runtime
-//!    `is_aarch64_feature_detected!` / `is_x86_feature_detected!` guards or `#[target_feature]`.
+//! 2. **SIMD intrinsics (NEON / SSE2 / AVX2)** — ISA availability guaranteed
+//!    by cached `yscv_cpu::host_cpu().features` guards or `#[target_feature]`.
 //!
 //! 3. **Pointer arithmetic in distance transform** — loop bounds ensure offsets stay within
 //!    the `h * w` allocation.
@@ -185,7 +185,7 @@ fn fast9_detect_row(
 
     // NEON fast path: check 16 consecutive center pixels at once for early rejection
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         use std::arch::aarch64::*;
         let sp = src.as_ptr();
         // SAFETY: (category 2) NEON guaranteed by feature detection guard above.
@@ -325,7 +325,7 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
         let mut i = 0usize;
 
         #[cfg(target_arch = "aarch64")]
-        if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+        if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
             use std::arch::aarch64::*;
             // SAFETY: ISA guard (feature detection) above; i+16 <= total bounds checked.
             unsafe {
@@ -357,9 +357,9 @@ pub fn distance_transform_u8(image: &ImageU8) -> Vec<u16> {
     // Forward pass: top-to-bottom, then left-to-right
     // Vertical: d[y][x] = min(d[y][x], d[y-1][x] + 1)
     #[cfg(target_arch = "aarch64")]
-    let has_neon = !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon");
+    let has_neon = !cfg!(miri) && yscv_cpu::host_cpu().features.neon;
     #[cfg(target_arch = "x86_64")]
-    let has_sse = !cfg!(miri) && is_x86_feature_detected!("sse2");
+    let has_sse = !cfg!(miri) && yscv_cpu::host_cpu().features.sse2;
 
     // Exactly 2 passes — same as OpenCV:
     // Pass 1 (forward): for each pixel, propagate from top and left
@@ -799,7 +799,7 @@ pub fn bilateral_filter_u8(
 
     // Dispatch to NEON path if available
     #[cfg(target_arch = "aarch64")]
-    if !cfg!(miri) && std::arch::is_aarch64_feature_detected!("neon") {
+    if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         bilateral_u8_parallel(
             src,
             &mut out,
@@ -818,7 +818,7 @@ pub fn bilateral_filter_u8(
     // Dispatch to AVX2 or SSE path if available
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if !cfg!(miri) {
-        if std::is_x86_feature_detected!("avx2") {
+        if yscv_cpu::host_cpu().features.avx2 {
             bilateral_u8_parallel_x86::<true>(
                 src,
                 &mut out,
@@ -833,7 +833,7 @@ pub fn bilateral_filter_u8(
             );
             return out;
         }
-        if std::is_x86_feature_detected!("sse2") {
+        if yscv_cpu::host_cpu().features.sse2 {
             bilateral_u8_parallel_x86::<false>(
                 src,
                 &mut out,

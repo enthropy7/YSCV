@@ -42,9 +42,9 @@ pub use elementwise::{
 #[cfg(target_arch = "aarch64")]
 pub use matmul::hgemm_6x16_neon;
 pub use matmul::{
-    GemmEpilogue, PackedB, matmul_2d, matmul_2d_sequential, matmul_2d_slices,
+    GemmEpilogue, MatmulDispatchReport, PackedB, matmul_2d, matmul_2d_sequential, matmul_2d_slices,
     matmul_2d_slices_fused_maybe_packed, matmul_2d_slices_parallel, matmul_2d_slices_trans_a,
-    matmul_2d_with_config, pack_b_for_session,
+    matmul_2d_with_config, matmul_dispatch_report, pack_b_for_session,
 };
 pub use simd::{
     CpuDispatchReport, SimdDispatchPath, add_reduce_dispatch, binary_same_shape_dispatch,
@@ -58,10 +58,10 @@ pub use config::{
     LayerNormLastDimTensors, Pool2dSpec, RmsNormLastDimTensors, SeparableConv2dKernels,
     SeparableConv2dSpec,
 };
-pub use conv::Activation;
 pub use conv::conv2d_nhwc_indirect_padded;
 pub use conv::conv2d_nhwc_padded;
 pub use conv::conv3d;
+pub use conv::{Activation, ConvDispatchReport, conv_dispatch_report};
 pub use conv::{
     conv2d_nchwc_pointwise_with_activation_prepacked,
     conv2d_nchwc_pointwise_with_residual_activation_prepacked,

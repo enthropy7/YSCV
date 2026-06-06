@@ -48,11 +48,11 @@ pub(crate) fn exp_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { exp_avx(data, out) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { exp_sse(data, out) };
             return;
         }
@@ -60,7 +60,7 @@ pub(crate) fn exp_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { exp_neon(data, out) };
             return;
         }
@@ -82,7 +82,7 @@ pub(crate) fn exp_inplace_dispatch(data: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             // SAFETY: input and output alias, but each element is read
             // once then written, so there's no ordering hazard.
             unsafe {
@@ -93,7 +93,7 @@ pub(crate) fn exp_inplace_dispatch(data: &mut [f32]) {
             };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe {
                 let ptr = data.as_ptr();
                 let len = data.len();
@@ -106,7 +106,7 @@ pub(crate) fn exp_inplace_dispatch(data: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe {
                 let ptr = data.as_ptr();
                 let len = data.len();
@@ -459,7 +459,7 @@ pub(crate) fn sin_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { sin_neon(data, out) };
             return;
         }
@@ -467,11 +467,11 @@ pub(crate) fn sin_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { sin_avx(data, out) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { sin_sse(data, out) };
             return;
         }
@@ -500,7 +500,7 @@ pub(crate) fn cos_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { cos_neon(data, out) };
             return;
         }
@@ -508,11 +508,11 @@ pub(crate) fn cos_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { cos_avx(data, out) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { cos_sse(data, out) };
             return;
         }
@@ -881,7 +881,7 @@ pub(crate) fn ln_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::arch::is_aarch64_feature_detected!("neon") {
+        if yscv_cpu::host_cpu().features.neon {
             unsafe { ln_neon(data, out) };
             return;
         }
@@ -889,11 +889,11 @@ pub(crate) fn ln_dispatch(data: &[f32], out: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if std::is_x86_feature_detected!("avx") {
+        if yscv_cpu::host_cpu().features.avx {
             unsafe { ln_avx(data, out) };
             return;
         }
-        if std::is_x86_feature_detected!("sse") {
+        if yscv_cpu::host_cpu().features.sse {
             unsafe { ln_sse(data, out) };
             return;
         }

@@ -124,14 +124,15 @@ per-hardware performance is in
 > [docs/performance-benchmarks.md](docs/performance-benchmarks.md). Until it
 > lands, treat any performance claim as provisional.
 
-1,861 default tests / 1,897 with all features, across 18 crates.
+1,861 default tests / 1,897 with all features, across 19 crates.
 
 ## What's inside
 
-The framework is split into 18 crates, each doing one thing well:
+The framework is split into 19 crates, each doing one thing well:
 
 | Crate | Purpose |
 |-------|---------|
+| `yscv-cpu` | Cached host CPU identity (`Microarch`, `CpuFeatures`, `host_cpu`) shared by runtime dispatch |
 | `yscv-tensor` | N-dimensional tensor with 115 ops, f32/f16/bf16, SIMD-accelerated |
 | `yscv-kernels` | CPU + GPU compute backends, 315 SIMD functions, 61 WGSL + 4 Metal shaders |
 | `yscv-autograd` | Reverse-mode autodiff with 61 backward op variants |
@@ -220,7 +221,7 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |
 | **Allocator** | mimalloc | mimalloc | mimalloc |
 
-SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework uses `std::is_x86_feature_detected!("avx")` on x86 and compile-time `#[cfg(target_arch = "aarch64")]` on ARM. 315 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
+SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. 315 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
 
 ### Recommended release profile
 

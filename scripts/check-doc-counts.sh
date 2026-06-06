@@ -15,7 +15,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # ── Expected counts ──────────────────────────────────────────────────
-EXPECTED_CRATES=18                   # +yscv-quantize-cli for the PTQ arc
+EXPECTED_CRATES=19                   # +yscv-cpu for shared runtime dispatch identity
 EXPECTED_VERSION="0.1.9"
 EXPECTED_ONNX_OPS=122                # several ops folded into fused kernels post-arc
 EXPECTED_TENSOR_METHODS=159          # ops.rs + tensor.rs + linalg.rs
