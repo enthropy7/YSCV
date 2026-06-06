@@ -55,12 +55,11 @@ fn read_midr_part() -> Option<u32> {
     // /proc/cpuinfo "CPU part : 0xd03" (already the part number).
     if let Ok(info) = std::fs::read_to_string("/proc/cpuinfo") {
         for line in info.lines() {
-            if let Some(rest) = line.strip_prefix("CPU part") {
-                if let Some(idx) = rest.find("0x")
-                    && let Some(part) = parse_hex_u64(rest[idx..].trim())
-                {
-                    return Some(part as u32);
-                }
+            if let Some(rest) = line.strip_prefix("CPU part")
+                && let Some(idx) = rest.find("0x")
+                && let Some(part) = parse_hex_u64(rest[idx..].trim())
+            {
+                return Some(part as u32);
             }
         }
     }

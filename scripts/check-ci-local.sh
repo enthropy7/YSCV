@@ -170,6 +170,7 @@ if [ "$cross" -eq 1 ]; then
 
   if ensure_aarch64_linux_cross; then
     run cargo check --workspace --target aarch64-unknown-linux-gnu --no-default-features
+    run cargo clippy -p yscv-kernels --features rknn --target aarch64-unknown-linux-gnu -- -D warnings
   else
     echo "skip: aarch64 workspace cross-check needs CC_aarch64_unknown_linux_gnu or aarch64-linux-gnu-gcc" >&2
   fi
