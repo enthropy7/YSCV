@@ -15,6 +15,7 @@ let c = (&a + &b)?;
 - **Data types**: f32, f16 (IEEE 754), bf16 (Brain Float)
 - **Broadcasting**: automatic shape expansion following NumPy rules
 - **SIMD**: runtime dispatch for NEON (aarch64) and SSE2/AVX (x86_64)
+  through cached `yscv-cpu` feature detection
 - **Aligned memory**: 32-byte aligned allocations for AVX
 - **Operations**: arithmetic, matmul, transpose, reshape, slice, gather, scatter, reduce, clamp, pad, concat, split, topk, sort
 

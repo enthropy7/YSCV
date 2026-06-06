@@ -93,7 +93,7 @@ small, because ISA selection already captures most of it.
 │ Layer 3 · Dispatch table          select_gemm(cpu) -> fn-ptr │
 │   capability-first, microarch-second; resolved ONCE at start │
 ├─────────────────────────────────────────────────────────────┤
-│ Layer 2 · Detector                arch/detect_{aarch64,x86}  │
+│ Layer 2 · Detector                yscv-cpu/detect_{aarch64,x86} │
 │   MIDR / CPUID → Microarch + features, with a fallback chain  │
 ├─────────────────────────────────────────────────────────────┤
 │ Layer 1 · Hardware identity       Cpu { uarch, features }    │
@@ -101,8 +101,8 @@ small, because ISA selection already captures most of it.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Layer 1 — Hardware identity (`arch/`).** The single source of truth, computed
-once at startup and cached.
+**Layer 1 — Hardware identity (`yscv-cpu`).** The single source of truth,
+computed once at startup and cached.
 
 ```rust
 pub enum Microarch {
@@ -114,12 +114,23 @@ pub enum Microarch {
     GenericAarch64, GenericX86, Scalar,
 }
 
-bitflags! { pub struct CpuFeatures {
+pub struct CpuFeatures {
     // aarch64
-    NEON; DOTPROD; I8MM; FP16; SVE;
+    pub neon: bool,
+    pub dotprod: bool,
+    pub i8mm: bool,
+    pub fp16: bool,
+    pub sve: bool,
     // x86_64
-    AVX2; FMA; AVX512F; AVX512VNNI; AMX;
-} }
+    pub sse: bool,
+    pub sse2: bool,
+    pub ssse3: bool,
+    pub avx: bool,
+    pub avx2: bool,
+    pub fma: bool,
+    pub avx512f: bool,
+    pub avx512vnni: bool,
+}
 
 pub struct Cpu { pub uarch: Microarch, pub features: CpuFeatures }
 pub fn host_cpu() -> &'static Cpu;   // OnceLock
@@ -151,8 +162,8 @@ type GemmKernel = fn(&[f32], usize, usize, &[f32], usize, &mut [f32]);
 pub fn select_gemm(cpu: &Cpu) -> GemmKernel {
     match cpu.uarch {
         Microarch::CortexA53                               => a53::gemm_8x8,
-        _ if cpu.features.contains(CpuFeatures::AVX512F)   => avx512::gemm,
-        _ if cpu.features.contains(CpuFeatures::NEON)      => generic_neon::gemm,
+        _ if cpu.features.avx512f                          => avx512::gemm,
+        _ if cpu.features.neon                             => generic_neon::gemm,
         _                                                  => scalar::gemm,
     }
 }
@@ -195,17 +206,17 @@ ops/gemm/
 
 | Phase | Work | Status |
 |---|---|---|
-| **0 ✓** | `arch/` module: `Microarch`, `CpuFeatures`, `Cpu`, `host_cpu()` + detector (aarch64 MIDR chain, x86 CPUID). No kernel changes. | **DONE.** Detects `Zen4` (dev) and `CortexA53` (Orange Pi, MIDR `0x…d034`, with correct `neon`-only feature set); 0 perf change. |
+| **0 ✓** | `yscv-cpu` crate: `Microarch`, `CpuFeatures`, `Cpu`, `host_cpu()` + detector (aarch64 MIDR chain, x86 CPUID). No kernel changes. | **DONE.** Detects `Zen4` (dev) and `CortexA53` (Orange Pi, MIDR `0x…d034`, with correct `neon`-only feature set); 0 perf change. |
 | **1 ✓** | Route one op family's dispatch through `host_cpu()`. (Did the fused PW/DW selectors — `select_variant` / `select_dw5_variant` / `select_tile_variant` — reading `cpu.features` instead of ad-hoc `is_*_feature_detected!`, with an `is_in_order()` hook comment for the future asm split.) | **DONE.** Inert (`cpu.features.x` == the cached macro result); 358 tests, `CortexA53` confirmed in the live aarch64 binary. |
-| **2 ✓** | Extend `host_cpu()` routing across the rest of the hot path (GEMM/matmul, conv, first-layer, single-op SIMD, int8 selectors). | **DONE.** Hot-path feature gates now read the cached `host_cpu().features` source instead of ad-hoc raw feature probes. CI guards raw `is_*_feature_detected!` calls so new probes stay inside `arch/detect_*`, and benchmark logs print the selected dispatch paths for reproducibility. |
+| **2 ✓** | Extend `host_cpu()` routing across the rest of the hot path (GEMM/matmul, conv, first-layer, single-op SIMD, int8 selectors, tensor/imgproc/optim/video SIMD). | **DONE.** Hot-path feature gates now read the cached `host_cpu().features` source instead of ad-hoc raw feature probes. CI guards raw `is_*_feature_detected!` calls so new probes stay inside `yscv-cpu/src/detect_*`, and benchmark logs print the selected dispatch paths for reproducibility. |
 | **3+** | Add per-microarch kernel **variants** — the actual performance work. | **Needs the board.** Per-board before/after, net-positive defaults-on. See the backlog below. |
 
 **Where we are.** Phases 0–2 are done and proven: the framework now *knows* its
 core (`host_cpu()`), hot-path feature gates route through that cached identity,
-and the benchmark harnesses report the resolved single-op paths. That is the
-hard, valuable part — the foundation. Phase 3 is the real win and is **gated on
-hardware**, because a microarch kernel cannot be tuned without that silicon to
-measure on.
+and benchmark harnesses report resolved single-op, matmul, conv, INT8, and
+active `YSCV_*` runtime-config paths. That is the hard, valuable part — the
+foundation. Phase 3 is the real win and is **gated on hardware**, because a
+microarch kernel cannot be tuned without that silicon to measure on.
 
 ### Phase 3 backlog (per board)
 
@@ -239,17 +250,17 @@ keep only net-positive, document the rest.
 ## Where this lives in the code
 
 ```
+crates/yscv-cpu/src/
+  lib.rs              # Microarch, CpuFeatures, Cpu, host_cpu()
+  detect_aarch64.rs   # MIDR / cpuinfo / sysctl fallback chain
+  detect_x86.rs       # CPUID vendor + family/model
+
 crates/yscv-kernels/src/
-  arch/
-    mod.rs            # Microarch, CpuFeatures, Cpu, host_cpu()
-    detect_aarch64.rs # MIDR / cpuinfo / sysctl fallback chain
-    detect_x86.rs     # CPUID vendor + family/model
+  core.rs             # dispatch_report() / runtime_dispatch_report()
   ops/
-    gemm/             # Phase 1 first mover
-      mod.rs          # select_gemm + table
-      cortex_a53.rs  generic_neon.rs  avx512.rs  avx2.rs  scalar.rs
+    matmul/ conv/ …   # capability-first selectors and dispatch reports
     depthwise/ pointwise/ …   # follow the same shape in Phase 3+
 ```
 
-The existing `select_dw3_row_fn` is the precedent; the `arch/` layer makes that
-selection *hardware-aware* and generalises it across kernels.
+The existing `select_dw3_row_fn` is the precedent; the `yscv-cpu` identity
+layer makes that selection *hardware-aware* and generalises it across kernels.

@@ -115,6 +115,34 @@ the fused-epilogue path (`row_gemm_set_parallel_fused`,
 activation) — all the R4 / R7 / R9 / A2 landings in the April arc
 only fire on the non-BLAS branch.
 
+### CPU dispatch inspection
+
+Runtime CPU identity is centralized in `yscv-cpu`. Raw
+`is_*_feature_detected!` probes are allowed only in
+`crates/yscv-cpu/src/detect_*`; `scripts/check-runtime-dispatch.sh`
+enforces that the rest of the workspace reads cached
+`host_cpu().features`.
+
+For benchmark logs and bug reports:
+
+```rust
+println!("{}", yscv_kernels::dispatch_report());
+```
+
+For structured tooling:
+
+```rust
+let dispatch = yscv_kernels::runtime_dispatch_report();
+let config = yscv_kernels::runtime_config_report();
+```
+
+`runtime_dispatch_report()` includes the cached CPU identity, standalone
+SIMD paths, matmul/conv dispatch gates, INT8 paths, and
+`RuntimeConfigReport`. `runtime_config_report()` records every active
+`YSCV_*` environment override visible to the process in stable name order,
+so new A/B knobs show up automatically without updating a hand-written
+allowlist.
+
 ### `YSCV_AVX512_SGEMM` — AVX-512 MR=12×NR=32 GEMM kernel (x86_64)
 
 Default **OFF**. Set `YSCV_AVX512_SGEMM=1` to enable.

@@ -221,7 +221,7 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |
 | **Allocator** | mimalloc | mimalloc | mimalloc |
 
-SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. 315 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
+SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. `yscv_kernels::runtime_dispatch_report()` exposes the typed CPU/kernel selection snapshot, while `runtime_config_report()` records active `YSCV_*` A/B overrides for reproducible benchmark logs. 315 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
 
 ### Recommended release profile
 

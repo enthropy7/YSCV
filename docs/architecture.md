@@ -30,7 +30,9 @@ There are two distinct SIMD systems in the project.
 
 ### f32 operations (yscv-kernels, yscv-tensor)
 
-These use a three-tier dispatch: AVX → SSE → NEON → scalar. The pattern is always the same:
+These use capability-first runtime dispatch: AVX-512 and AVX2/FMA on x86
+where a kernel has those lanes, AVX/SSE fallbacks on older x86, NEON on
+aarch64, then scalar everywhere else. The pattern is always the same:
 
 ```rust
 pub fn relu_slice_dispatch(data: &mut [f32]) {
@@ -45,7 +47,7 @@ pub fn relu_slice_dispatch(data: &mut [f32]) {
 }
 ```
 
-Each implementation is marked with `#[target_feature(enable = "...")]` so the compiler generates appropriate instructions. The CPU identity is detected once through `yscv-cpu`; later dispatch checks read cached feature booleans.
+Each implementation is marked with `#[target_feature(enable = "...")]` so the compiler generates appropriate instructions. The CPU identity is detected once through `yscv-cpu`; later dispatch checks read cached feature booleans. `yscv_kernels::runtime_dispatch_report()` exposes the typed dispatch snapshot used by benchmark logs, and `runtime_config_report()` records active `YSCV_*` runtime overrides in stable order.
 
 This three-tier *ISA* dispatch is being extended with a *microarchitecture* layer (Cortex-A53 vs A55 vs A72, Zen vs Intel within an ISA) — a runtime `Cpu { uarch, features }` identity plus a capability-first kernel-selection table, resolved once at session start. See [microarch-dispatch.md](microarch-dispatch.md) for the vision and the zero-regression phased roadmap.
 

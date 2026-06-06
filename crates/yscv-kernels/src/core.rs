@@ -25,42 +25,104 @@ pub use scope_ctx::{ScopeGuard, install_scope, with_installed_session, with_scop
 
 pub use yscv_cpu::{Cpu, CpuFeatures, Microarch, host_cpu};
 
-/// Human-readable snapshot of the CPU dispatch choices used by hot kernels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DispatchReport {
+/// One active `YSCV_*` runtime override visible to the current process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeEnvOverride {
+    pub name: String,
+    pub value: String,
+}
+
+/// Typed snapshot of runtime configuration overrides.
+///
+/// This intentionally records every active `YSCV_*` environment variable rather
+/// than maintaining a hand-written allowlist; new A/B flags show up in benchmark
+/// logs automatically.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeConfigReport {
+    pub yscv_env: Vec<RuntimeEnvOverride>,
+}
+
+impl RuntimeConfigReport {
+    pub fn has_overrides(&self) -> bool {
+        !self.yscv_env.is_empty()
+    }
+}
+
+impl std::fmt::Display for RuntimeConfigReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.yscv_env.is_empty() {
+            f.write_str("none")
+        } else {
+            for (idx, var) in self.yscv_env.iter().enumerate() {
+                if idx > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{}={}", var.name, var.value)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Returns active `YSCV_*` runtime overrides in stable name order.
+pub fn runtime_config_report() -> RuntimeConfigReport {
+    let mut yscv_env: Vec<_> = std::env::vars()
+        .filter_map(|(name, value)| {
+            name.starts_with("YSCV_")
+                .then_some(RuntimeEnvOverride { name, value })
+        })
+        .collect();
+    yscv_env.sort_by(|a, b| a.name.cmp(&b.name));
+    RuntimeConfigReport { yscv_env }
+}
+
+/// Typed snapshot of the CPU dispatch choices used by hot kernels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeDispatchReport {
     pub cpu: Cpu,
     pub single_ops: ops::simd::CpuDispatchReport,
     pub matmul: ops::MatmulDispatchReport,
     pub conv: ops::ConvDispatchReport,
     pub int8_matmul: &'static str,
     pub int8_prepacked: &'static str,
+    pub config: RuntimeConfigReport,
 }
 
-impl std::fmt::Display for DispatchReport {
+/// Backwards-compatible name used by existing benchmark code.
+pub type DispatchReport = RuntimeDispatchReport;
+
+impl std::fmt::Display for RuntimeDispatchReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "cpu={:?}; single_ops=[{}]; matmul=[{}]; conv=[{}]; int8_matmul={}; int8_prepacked={}",
+            "cpu={:?}; single_ops=[{}]; matmul=[{}]; conv=[{}]; int8_matmul={}; int8_prepacked={}; config=[{}]",
             self.cpu.uarch,
             self.single_ops,
             self.matmul,
             self.conv,
             self.int8_matmul,
-            self.int8_prepacked
+            self.int8_prepacked,
+            self.config
         )
     }
 }
 
 /// Returns the cached host CPU plus the selected/gated hot compute paths.
-pub fn dispatch_report() -> DispatchReport {
-    DispatchReport {
+pub fn runtime_dispatch_report() -> RuntimeDispatchReport {
+    RuntimeDispatchReport {
         cpu: *host_cpu(),
         single_ops: ops::simd::cpu_dispatch_report(),
         matmul: ops::matmul_dispatch_report(),
         conv: ops::conv_dispatch_report(),
         int8_matmul: ops::int8_matmul::int8_matmul_dispatch_path(),
         int8_prepacked: ops::int8_matmul::int8_prepacked_dispatch_path(),
+        config: runtime_config_report(),
     }
+}
+
+/// Returns the cached host CPU plus the selected/gated hot compute paths.
+pub fn dispatch_report() -> DispatchReport {
+    runtime_dispatch_report()
 }
 
 pub use backend::conv2d_nhwc_padded;

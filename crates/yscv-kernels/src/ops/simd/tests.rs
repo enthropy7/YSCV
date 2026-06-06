@@ -62,6 +62,7 @@ fn public_dispatch_report_is_populated() {
     assert!(text.contains("matmul="));
     assert!(text.contains("conv="));
     assert!(text.contains("int8_matmul="));
+    assert!(text.contains("config="));
 }
 
 #[test]

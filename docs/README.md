@@ -93,8 +93,8 @@ Pick your starting point.
 ### Architecture & references
 
 - **[architecture.md](architecture.md)** — crate dependency layers,
-  SIMD dispatch model (AVX/SSE/NEON + scalar fallback), threading
-  strategy, memory patterns, source-file map.
+  `yscv-cpu` host identity, SIMD dispatch model (AVX-512/AVX2/AVX/SSE/NEON +
+  scalar fallback), threading strategy, memory patterns, source-file map.
 - **[ecosystem-capability-matrix.md](ecosystem-capability-matrix.md)** —
   canonical map of every capability area, status, and gap relative
   to a Python CV/DL stack.
@@ -114,6 +114,7 @@ Pick your starting point.
 | Crate | What it does |
 |---|---|
 | [yscv](../crates/yscv/README.md) | Umbrella — re-exports prelude + per-crate APIs. |
+| [yscv-cpu](../crates/yscv-cpu/README.md) | Cached host CPU identity and runtime feature detection shared by dispatch. |
 | [yscv-tensor](../crates/yscv-tensor/README.md) | N-dim tensor with 115 ops, f32/f16/bf16, SIMD-aligned storage. |
 | [yscv-kernels](../crates/yscv-kernels/README.md) | CPU + GPU compute backends, 315 SIMD functions, RKNN bindings. |
 | [yscv-autograd](../crates/yscv-autograd/README.md) | Reverse-mode autodiff, 61 backward op variants. |

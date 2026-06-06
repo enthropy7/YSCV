@@ -2,14 +2,15 @@
 
 CPU and GPU compute backends with SIMD dispatch and BLAS integration. Powers all neural network operations in yscv.
 
-Use `cpu_dispatch_report()` to inspect the detected host CPU and the
-single-op SIMD/backend paths selected at runtime.
+Use `dispatch_report()` for the full CPU dispatch snapshot, or
+`cpu_dispatch_report()` when you only need standalone single-op SIMD/backend
+paths.
 
 ## Backends
 
 | Backend | Platform | How |
 |---------|----------|-----|
-| CPU (SIMD) | All | NEON, SSE2, AVX2 runtime dispatch |
+| CPU (SIMD) | All | NEON, SSE2/SSE4, AVX/AVX2/FMA, AVX-512 runtime dispatch |
 | CPU (BLAS) | All | MKL, Arm PL, or fallback |
 | GPU (wgpu) | All | Vulkan, Metal, DX12 via wgpu |
 | GPU (Metal) | macOS | Native MPSGraph for Apple Silicon |
@@ -198,7 +199,9 @@ println!("{}", yscv_kernels::dispatch_report());
 ```
 
 The report includes the cached host CPU identity, standalone SIMD choices,
-matmul/conv dispatch gates, and INT8 matmul/prepacked paths.
+matmul/conv dispatch gates, INT8 matmul/prepacked paths, and every active
+`YSCV_*` runtime override. For structured callers, use
+`runtime_dispatch_report()` and `runtime_config_report()`.
 
 ### Bias+Activation Dispatch (NHWC post-conv fallback)
 
