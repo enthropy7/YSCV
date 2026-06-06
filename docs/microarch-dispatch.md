@@ -198,14 +198,15 @@ ops/gemm/
 |---|---|---|
 | **0 ✓** | `arch/` module: `Microarch`, `CpuFeatures`, `Cpu`, `host_cpu()` + detector (aarch64 MIDR chain, x86 CPUID). No kernel changes. | **DONE.** Detects `Zen4` (dev) and `CortexA53` (Orange Pi, MIDR `0x…d034`, with correct `neon`-only feature set); 0 perf change. |
 | **1 ✓** | Route one op family's dispatch through `host_cpu()`. (Did the fused PW/DW selectors — `select_variant` / `select_dw5_variant` / `select_tile_variant` — reading `cpu.features` instead of ad-hoc `is_*_feature_detected!`, with an `is_in_order()` hook comment for the future asm split.) | **DONE.** Inert (`cpu.features.x` == the cached macro result); 358 tests, `CortexA53` confirmed in the live aarch64 binary. |
-| **2** | Extend `host_cpu()` routing across the rest of the hot path (GEMM/matmul, conv, first-layer). | *Mostly cosmetic* (feature-source centralisation, **0 perf/behaviour change**) — do opportunistically, not as a churn pass. Caveats: the GEMM path checks `avx` (not `avx2`), so a separate `avx` feature flag must be added first to migrate it *correctly*. **Do not** pre-split kernels into per-microarch files yet (principle #7) — there is one variant per ISA today, so split files would be duplicates that drift. |
+| **2 ✓** | Extend `host_cpu()` routing across the rest of the hot path (GEMM/matmul, conv, first-layer, single-op SIMD, int8 selectors). | **DONE.** Hot-path feature gates now read the cached `host_cpu().features` source instead of ad-hoc raw feature probes. CI guards raw `is_*_feature_detected!` calls so new probes stay inside `arch/detect_*`, and benchmark logs print the selected dispatch paths for reproducibility. |
 | **3+** | Add per-microarch kernel **variants** — the actual performance work. | **Needs the board.** Per-board before/after, net-positive defaults-on. See the backlog below. |
 
-**Where we are.** Phases 0–1 are done and proven: the framework now *knows* its
-core (`host_cpu()`) and the hottest kernel family dispatches through it, with zero
-behaviour/perf change. That is the hard, valuable part — the foundation. Phase 2
-is cosmetic centralisation; Phase 3 is the real win and is **gated on hardware**,
-because a microarch kernel cannot be tuned without that silicon to measure on.
+**Where we are.** Phases 0–2 are done and proven: the framework now *knows* its
+core (`host_cpu()`), hot-path feature gates route through that cached identity,
+and the benchmark harnesses report the resolved single-op paths. That is the
+hard, valuable part — the foundation. Phase 3 is the real win and is **gated on
+hardware**, because a microarch kernel cannot be tuned without that silicon to
+measure on.
 
 ### Phase 3 backlog (per board)
 

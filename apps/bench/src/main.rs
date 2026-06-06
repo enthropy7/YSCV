@@ -40,6 +40,7 @@ fn bench_n<F: FnMut()>(name: &str, n: usize, mut f: F) {
 fn main() {
     println!("yscv framework benchmark");
     println!("========================");
+    println!("Dispatch: {}", yscv_kernels::dispatch_report());
     println!();
     println!("  {:<40} {:>13}", "Operation", "Time (ms)");
     println!("  {}", "-".repeat(53));

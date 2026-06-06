@@ -17,7 +17,7 @@ mod fma;
 mod reduce;
 mod softmax;
 
-use std::fmt;
+use std::{fmt, sync::OnceLock};
 
 #[cfg(test)]
 mod tests;
@@ -105,6 +105,21 @@ pub fn cpu_dispatch_report() -> CpuDispatchReport {
 }
 
 pub(crate) fn dispatch_path(_prefer_avx512: bool, _prefer_sse2: bool) -> SimdDispatchPath {
+    static DEFAULT: OnceLock<SimdDispatchPath> = OnceLock::new();
+    static PREFER_AVX512: OnceLock<SimdDispatchPath> = OnceLock::new();
+    static PREFER_SSE2: OnceLock<SimdDispatchPath> = OnceLock::new();
+    static PREFER_AVX512_SSE2: OnceLock<SimdDispatchPath> = OnceLock::new();
+
+    let cached = match (_prefer_avx512, _prefer_sse2) {
+        (false, false) => &DEFAULT,
+        (true, false) => &PREFER_AVX512,
+        (false, true) => &PREFER_SSE2,
+        (true, true) => &PREFER_AVX512_SSE2,
+    };
+    *cached.get_or_init(|| dispatch_path_uncached(_prefer_avx512, _prefer_sse2))
+}
+
+fn dispatch_path_uncached(_prefer_avx512: bool, _prefer_sse2: bool) -> SimdDispatchPath {
     if cfg!(miri) {
         return SimdDispatchPath::Scalar;
     }
@@ -136,6 +151,11 @@ pub(crate) fn dispatch_path(_prefer_avx512: bool, _prefer_sse2: bool) -> SimdDis
 }
 
 pub(crate) fn exp_dispatch_path() -> SimdDispatchPath {
+    static CACHED: OnceLock<SimdDispatchPath> = OnceLock::new();
+    *CACHED.get_or_init(exp_dispatch_path_uncached)
+}
+
+fn exp_dispatch_path_uncached() -> SimdDispatchPath {
     if cfg!(miri) {
         return SimdDispatchPath::Scalar;
     }
@@ -172,6 +192,11 @@ pub(crate) fn exp_dispatch_path() -> SimdDispatchPath {
 }
 
 pub(crate) fn binary_dispatch_path() -> SimdDispatchPath {
+    static CACHED: OnceLock<SimdDispatchPath> = OnceLock::new();
+    *CACHED.get_or_init(binary_dispatch_path_uncached)
+}
+
+fn binary_dispatch_path_uncached() -> SimdDispatchPath {
     if cfg!(miri) {
         return SimdDispatchPath::Scalar;
     }

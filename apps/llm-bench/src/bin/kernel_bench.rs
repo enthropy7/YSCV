@@ -395,40 +395,54 @@ fn bench_int4_gemm() {
 }
 
 fn detected_features() {
+    println!("Dispatch: {}", yscv_kernels::dispatch_report());
     print!("CPU features: ");
     #[cfg(target_arch = "x86_64")]
     {
+        let features = yscv_kernels::host_cpu().features;
         let mut feats = vec![];
-        if std::is_x86_feature_detected!("avx2") {
+        if features.avx2 {
             feats.push("AVX2");
         }
-        if std::is_x86_feature_detected!("fma") {
+        if features.fma {
             feats.push("FMA");
         }
-        if std::is_x86_feature_detected!("avxvnni") {
+        if features.avxvnni {
             feats.push("AVX-VNNI");
         }
-        if std::is_x86_feature_detected!("avx512f") {
+        if features.avx512f {
             feats.push("AVX-512F");
         }
-        if std::is_x86_feature_detected!("avx512bw") {
+        if features.avx512bw {
             feats.push("AVX-512BW");
         }
-        if std::is_x86_feature_detected!("avx512vnni") {
+        if features.avx512vnni {
             feats.push("AVX-512-VNNI");
         }
-        println!("{}", feats.join(", "));
+        if feats.is_empty() {
+            println!("scalar");
+        } else {
+            println!("{}", feats.join(", "));
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {
-        let mut feats = vec!["NEON"];
-        if std::arch::is_aarch64_feature_detected!("dotprod") {
+        let features = yscv_kernels::host_cpu().features;
+        let mut feats = vec![];
+        if features.neon {
+            feats.push("NEON");
+        }
+        if features.dotprod {
             feats.push("dotprod (SDOT)");
         }
-        if std::arch::is_aarch64_feature_detected!("i8mm") {
+        if features.i8mm {
             feats.push("i8mm (SMMLA)");
         }
-        println!("{}", feats.join(", "));
+        if feats.is_empty() {
+            println!("scalar");
+        } else {
+            println!("{}", feats.join(", "));
+        }
     }
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
