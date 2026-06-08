@@ -31,6 +31,24 @@ pub(super) fn pointwise_nx16_direct_disabled() -> bool {
     })
 }
 
+/// Whether the direct nx16 pointwise kernel should run at the current thread
+/// count for an `m`-row GEMM. Single-thread always uses it (the streaming dot
+/// beats packed blocked GEMM on x86). Multi-thread only when each thread gets
+/// ≥64 output rows (`m / threads ≥ 64`) and `m ≥ 256` so the kernel's row-chunk
+/// parallelism balances; below that the packed blocked GEMM scales better
+/// (measured: the tower 256×256×256 PW steps win with parallel nx16 at 4T but
+/// lose at 6T where 256/6 ≈ 43 rows/thread is too few). Kill-switch
+/// `YSCV_NX16_MT_OFF`.
+pub(super) fn nx16_threads_ok(m: usize) -> bool {
+    let threads = rayon::current_num_threads();
+    if threads <= 1 {
+        return true;
+    }
+    static OFF: OnceLock<bool> = OnceLock::new();
+    let off = *OFF.get_or_init(|| std::env::var_os("YSCV_NX16_MT_OFF").is_some());
+    !off && m >= 256 && m / threads >= 64
+}
+
 #[allow(unsafe_code)]
 pub(super) fn pointwise_16x16_direct(
     input: &[f32],

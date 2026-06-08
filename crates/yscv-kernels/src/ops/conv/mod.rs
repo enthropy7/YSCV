@@ -504,7 +504,7 @@ pub fn conv2d_nhwc_pointwise_with_residual_relu(
         && n.is_multiple_of(16)
         && n >= 32
         && m <= 1024
-        && rayon::current_num_threads() <= 1
+        && nx16_threads_ok(m)
         && matches!(
             activation,
             Activation::None | Activation::Relu | Activation::Silu
@@ -640,7 +640,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             && n.is_multiple_of(16)
             && n >= 32
             && m <= 1024
-            && rayon::current_num_threads() <= 1
+            && nx16_threads_ok(m)
             && matches!(
                 activation,
                 Activation::None | Activation::Relu | Activation::Silu
