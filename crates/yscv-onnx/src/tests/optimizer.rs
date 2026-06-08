@@ -88,6 +88,63 @@ fn fuse_conv_relu_merges_pair() {
 }
 
 #[test]
+fn reorder_enables_fusion_on_interleaved_branches() {
+    // Two branches exported interleaved (`convA, convB, reluA, reluB`),
+    // the order multi-input models (e.g. a Siamese tracker) commonly get.
+    // Positional `fuse_conv_relu` only inspects `nodes[i+1]`, so neither
+    // Conv+Relu pair is adjacent and nothing fuses. `optimize_onnx_graph`
+    // reorders into a depth-first topological order first, which walks each
+    // branch to completion and restores producer/consumer adjacency.
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv_a".into()),
+            input: vec!["xa".into(), "w".into()],
+            output: vec!["conv_a_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv_b".into()),
+            input: vec!["xb".into(), "w".into()],
+            output: vec!["conv_b_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu_a".into()),
+            input: vec!["conv_a_out".into()],
+            output: vec!["ya".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu_b".into()),
+            input: vec!["conv_b_out".into()],
+            output: vec!["yb".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![], vec!["xa", "xb", "w"], vec!["ya", "yb"]);
+    let mut model = load_onnx_model(&bytes).unwrap();
+    optimize_onnx_graph(&mut model);
+    assert_eq!(
+        model.node_count(),
+        2,
+        "both interleaved Conv+Relu pairs should fuse after reorder"
+    );
+    assert!(
+        model.nodes.iter().all(|n| n.op_type == "Conv_Relu"),
+        "every node should be a fused Conv_Relu, got {:?}",
+        model
+            .nodes
+            .iter()
+            .map(|n| n.op_type.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn graph_stats_reports_op_counts() {
     let nodes = vec![
         onnx::NodeProto {
