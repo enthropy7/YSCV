@@ -559,6 +559,23 @@ fn dw_interior_enabled() -> bool {
     *CACHED.get_or_init(|| std::env::var_os("YSCV_FUSED_PW_DW_DW_INTERIOR").is_some())
 }
 
+/// DW 5×5 filter-tap reuse: process `DW5_REUSE_OW` interior output pixels per
+/// inner block, loading each per-channel filter tap once and reusing it across
+/// all of them. Drops the kernel from 2 loads/FMA (1-pixel tile) to
+/// `(1 + OW)/OW ≈ 1.2` loads/FMA — the MLAS strategy. Kill switch
+/// `YSCV_DW5_REUSE_OFF=1` falls back to the 1-pixel tiled body.
+fn dw5_reuse_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var_os("YSCV_DW5_REUSE_OFF").is_none())
+}
+
+/// Output pixels processed per reuse block. 6 mirrors MLAS's pixel tile and
+/// keeps `DW5_REUSE_OW * DW5_REUSE_CHUNKS = 12` accumulator ZMMs plus 1 weight
+/// + 1 input temp well within the 32-ZMM file.
+const DW5_REUSE_OW: usize = 6;
+/// Channel chunks (16-lane groups) accumulated together inside a reuse block.
+const DW5_REUSE_CHUNKS: usize = 2;
+
 fn interior_ow_range(
     in_w: usize,
     stride: usize,
@@ -1460,23 +1477,198 @@ unsafe fn compute_dw5_row_avx512_inner(ctx: Dw5RowCtx<'_, '_>) {
             }};
         }
 
-        for ow in ow_start..ow_end {
-            let iw0 = (ow as i32) * (stride as i32) - (pad as i32);
-            let interior = all_rows && iw0 >= 0 && (iw0 as usize + 4) < in_w;
-            if interior {
+        // One pixel of the per-pixel path (full tiles + residual), interior or
+        // border. Used for border pixels and the interior tail that does not
+        // fill a reuse block.
+        macro_rules! row_pixel {
+            ($ow:expr, $interior:expr) => {{
                 for tile in 0..full_tiles {
-                    row_tile_body!(ow, TILED_CHUNKS, tile * TILED_CHUNKS * 16, true);
+                    row_tile_body!($ow, TILED_CHUNKS, tile * TILED_CHUNKS * 16, $interior);
                 }
                 if residual_chunks > 0 {
-                    row_tile_body!(ow, residual_chunks, full_tiles * TILED_CHUNKS * 16, true);
+                    row_tile_body!(
+                        $ow,
+                        residual_chunks,
+                        full_tiles * TILED_CHUNKS * 16,
+                        $interior
+                    );
                 }
-            } else {
-                for tile in 0..full_tiles {
-                    row_tile_body!(ow, TILED_CHUNKS, tile * TILED_CHUNKS * 16, false);
+            }};
+        }
+
+        // Contiguous interior range: every pixel has all 5 rows present and all
+        // 5 kx taps in [0, in_w). `iw0 = ow*stride - pad` is monotone in `ow`,
+        // so the interior pixels form one contiguous span.
+        let (int_lo, int_hi) = if all_rows {
+            dw5_interior_ow_range(in_w, stride, pad, ow_start, ow_end)
+        } else {
+            (ow_end, ow_end)
+        };
+
+        // Border pixels before the interior span.
+        for ow in ow_start..int_lo {
+            row_pixel!(ow, false);
+        }
+
+        if dw5_reuse_enabled() {
+            // Interior: process DW5_REUSE_OW pixels per block, loading each
+            // filter tap once per channel-chunk and reusing it across the
+            // block's pixels. Per-pixel tap order (ky→kx) matches the per-pixel
+            // body, so each accumulator's FMA chain is bit-identical.
+            let ow_chunks = c_exp_chunks / DW5_REUSE_CHUNKS;
+            let ow_res_chunks = c_exp_chunks % DW5_REUSE_CHUNKS;
+            let mut ow = int_lo;
+            while ow + DW5_REUSE_OW <= int_hi {
+                for ct in 0..ow_chunks {
+                    dw5_reuse_block(
+                        &row_ptrs,
+                        dw_weight,
+                        dw_bias,
+                        out_row,
+                        ow,
+                        ct * DW5_REUSE_CHUNKS * 16,
+                        DW5_REUSE_CHUNKS,
+                        c_exp,
+                        w_ky_stride,
+                        w_kx_stride,
+                        stride,
+                        pad,
+                        relu,
+                        zero,
+                    );
                 }
-                if residual_chunks > 0 {
-                    row_tile_body!(ow, residual_chunks, full_tiles * TILED_CHUNKS * 16, false);
+                if ow_res_chunks > 0 {
+                    dw5_reuse_block(
+                        &row_ptrs,
+                        dw_weight,
+                        dw_bias,
+                        out_row,
+                        ow,
+                        ow_chunks * DW5_REUSE_CHUNKS * 16,
+                        ow_res_chunks,
+                        c_exp,
+                        w_ky_stride,
+                        w_kx_stride,
+                        stride,
+                        pad,
+                        relu,
+                        zero,
+                    );
                 }
+                ow += DW5_REUSE_OW;
+            }
+            // Interior tail (fewer than DW5_REUSE_OW pixels).
+            for ow in ow..int_hi {
+                row_pixel!(ow, true);
+            }
+        } else {
+            for ow in int_lo..int_hi {
+                row_pixel!(ow, true);
+            }
+        }
+
+        // Border pixels after the interior span.
+        for ow in int_hi..ow_end {
+            row_pixel!(ow, false);
+        }
+    }
+}
+
+/// Contiguous interior output-pixel range for a 5×5 DW: every `ow` in
+/// `[lo, hi)` has `iw0 = ow*stride - pad >= 0` and `iw0 + 4 < in_w`, so all 5
+/// horizontal taps land in `[0, in_w)`. Mirrors `interior_ow_range` (3×3) with
+/// kernel size 5.
+fn dw5_interior_ow_range(
+    in_w: usize,
+    stride: usize,
+    pad: usize,
+    ow_start: usize,
+    ow_end: usize,
+) -> (usize, usize) {
+    debug_assert!(stride > 0);
+    if in_w < 5 {
+        return (ow_end, ow_end);
+    }
+    // iw0 >= 0  ⇒  ow >= ceil(pad / stride)
+    let lo = pad.div_ceil(stride);
+    // iw0 + 4 <= in_w - 1  ⇒  ow*stride <= in_w + pad - 5
+    let last = (in_w + pad - 5) / stride;
+    // Clamp into [ow_start, ow_end] and keep lo <= hi so the three caller
+    // loops (border-before, interior, border-after) partition the output row
+    // exactly once. An inverted or out-of-range span would double-process or
+    // overrun pixels.
+    let int_lo = ow_start.max(lo).min(ow_end);
+    let int_hi = ow_end.min(last + 1).max(int_lo);
+    (int_lo, int_hi)
+}
+
+/// One interior reuse block: `DW5_REUSE_OW` output pixels starting at `ow0`,
+/// across `nchunks` channel chunks at lane offset `lane_off`. For each of the
+/// 25 taps the weight chunk is loaded once and reused across all
+/// `DW5_REUSE_OW` pixels; each pixel loads only its own shifted input chunk.
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, clippy::too_many_arguments)]
+unsafe fn dw5_reuse_block(
+    row_ptrs: &[*const f32; 5],
+    dw_weight: &[f32],
+    dw_bias: Option<&[f32]>,
+    out_row: &mut [f32],
+    ow0: usize,
+    lane_off: usize,
+    nchunks: usize,
+    c_exp: usize,
+    w_ky_stride: usize,
+    w_kx_stride: usize,
+    stride: usize,
+    pad: usize,
+    relu: bool,
+    zero: __m512,
+) {
+    unsafe {
+        // acc[p * nchunks + k]: pixel p, channel chunk k.
+        let mut acc: [__m512; DW5_REUSE_OW * DW5_REUSE_CHUNKS] =
+            [zero; DW5_REUSE_OW * DW5_REUSE_CHUNKS];
+        if let Some(b) = dw_bias {
+            let bp = b.as_ptr().add(lane_off);
+            for k in 0..nchunks {
+                let bv = _mm512_loadu_ps(bp.add(k * 16));
+                for p in 0..DW5_REUSE_OW {
+                    acc[p * DW5_REUSE_CHUNKS + k] = bv;
+                }
+            }
+        }
+
+        // Leftmost input column of pixel 0; pixel p starts at iw0 + p*stride.
+        let iw0_base = (ow0 as i32) * (stride as i32) - (pad as i32);
+        for ky in 0..5usize {
+            let pw_row = row_ptrs[ky];
+            for kx in 0..5usize {
+                let w_ptr = dw_weight
+                    .as_ptr()
+                    .add(ky * w_ky_stride + kx * w_kx_stride + lane_off);
+                for k in 0..nchunks {
+                    let w = _mm512_loadu_ps(w_ptr.add(k * 16));
+                    for p in 0..DW5_REUSE_OW {
+                        let iw = iw0_base + (p * stride) as i32 + kx as i32;
+                        let pw_ptr = pw_row.add(iw as usize * c_exp + lane_off + k * 16);
+                        let x = _mm512_loadu_ps(pw_ptr);
+                        let idx = p * DW5_REUSE_CHUNKS + k;
+                        acc[idx] = _mm512_fmadd_ps(x, w, acc[idx]);
+                    }
+                }
+            }
+        }
+
+        for p in 0..DW5_REUSE_OW {
+            let dst_ptr = out_row.as_mut_ptr().add((ow0 + p) * c_exp + lane_off);
+            for k in 0..nchunks {
+                let idx = p * DW5_REUSE_CHUNKS + k;
+                let v = if relu {
+                    _mm512_max_ps(acc[idx], zero)
+                } else {
+                    acc[idx]
+                };
+                _mm512_storeu_ps(dst_ptr.add(k * 16), v);
             }
         }
     }
@@ -1774,24 +1966,161 @@ unsafe fn compute_dw5_tile_avx512_inner(ctx: Dw5TileCtx<'_, '_>) {
             }};
         }
 
-        for ow in ow_start..ow_end {
-            let iw0 = (ow as i32) * (stride as i32) - (pad as i32);
-            // Interior = all 5 kx taps land in [0, in_w): no bounds check.
-            let interior = all_rows && iw0 >= 0 && (iw0 as usize + 4) < in_w;
-            if interior {
+        macro_rules! tile_pixel {
+            ($ow:expr, $interior:expr) => {{
                 for tile in 0..full_tiles {
-                    tile_body!(ow, TILED_CHUNKS, tile * TILED_CHUNKS * 16, true);
+                    tile_body!($ow, TILED_CHUNKS, tile * TILED_CHUNKS * 16, $interior);
                 }
                 if residual_chunks > 0 {
-                    tile_body!(ow, residual_chunks, full_tiles * TILED_CHUNKS * 16, true);
+                    tile_body!(
+                        $ow,
+                        residual_chunks,
+                        full_tiles * TILED_CHUNKS * 16,
+                        $interior
+                    );
                 }
-            } else {
-                for tile in 0..full_tiles {
-                    tile_body!(ow, TILED_CHUNKS, tile * TILED_CHUNKS * 16, false);
+            }};
+        }
+
+        let (int_lo, int_hi) = if all_rows {
+            dw5_interior_ow_range(in_w, stride, pad, ow_start, ow_end)
+        } else {
+            (ow_end, ow_end)
+        };
+
+        for ow in ow_start..int_lo {
+            tile_pixel!(ow, false);
+        }
+
+        if dw5_reuse_enabled() {
+            let ow_chunks = chunks / DW5_REUSE_CHUNKS;
+            let ow_res_chunks = chunks % DW5_REUSE_CHUNKS;
+            let mut ow = int_lo;
+            while ow + DW5_REUSE_OW <= int_hi {
+                for ct in 0..ow_chunks {
+                    dw5_reuse_block_tile(
+                        &row_ptrs,
+                        dw_weight,
+                        dw_bias,
+                        out_row,
+                        ow,
+                        ct * DW5_REUSE_CHUNKS * 16,
+                        DW5_REUSE_CHUNKS,
+                        c_exp,
+                        c_tile,
+                        oc_start,
+                        w_ky_stride,
+                        w_kx_stride,
+                        stride,
+                        pad,
+                        relu,
+                        zero,
+                    );
                 }
-                if residual_chunks > 0 {
-                    tile_body!(ow, residual_chunks, full_tiles * TILED_CHUNKS * 16, false);
+                if ow_res_chunks > 0 {
+                    dw5_reuse_block_tile(
+                        &row_ptrs,
+                        dw_weight,
+                        dw_bias,
+                        out_row,
+                        ow,
+                        ow_chunks * DW5_REUSE_CHUNKS * 16,
+                        ow_res_chunks,
+                        c_exp,
+                        c_tile,
+                        oc_start,
+                        w_ky_stride,
+                        w_kx_stride,
+                        stride,
+                        pad,
+                        relu,
+                        zero,
+                    );
                 }
+                ow += DW5_REUSE_OW;
+            }
+            for ow in ow..int_hi {
+                tile_pixel!(ow, true);
+            }
+        } else {
+            for ow in int_lo..int_hi {
+                tile_pixel!(ow, true);
+            }
+        }
+
+        for ow in int_hi..ow_end {
+            tile_pixel!(ow, false);
+        }
+    }
+}
+
+/// `dw5_reuse_block` for the packed-tile layout: inputs are `c_tile`-strided
+/// per row, weights and output carry the `oc_start` channel-tile offset.
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, clippy::too_many_arguments)]
+unsafe fn dw5_reuse_block_tile(
+    row_ptrs: &[*const f32; 5],
+    dw_weight: &[f32],
+    dw_bias: Option<&[f32]>,
+    out_row: &mut [f32],
+    ow0: usize,
+    tile_off: usize,
+    nchunks: usize,
+    c_exp: usize,
+    c_tile: usize,
+    oc_start: usize,
+    w_ky_stride: usize,
+    w_kx_stride: usize,
+    stride: usize,
+    pad: usize,
+    relu: bool,
+    zero: __m512,
+) {
+    unsafe {
+        let mut acc: [__m512; DW5_REUSE_OW * DW5_REUSE_CHUNKS] =
+            [zero; DW5_REUSE_OW * DW5_REUSE_CHUNKS];
+        if let Some(b) = dw_bias {
+            let bp = b.as_ptr().add(oc_start + tile_off);
+            for k in 0..nchunks {
+                let bv = _mm512_loadu_ps(bp.add(k * 16));
+                for p in 0..DW5_REUSE_OW {
+                    acc[p * DW5_REUSE_CHUNKS + k] = bv;
+                }
+            }
+        }
+
+        let iw0_base = (ow0 as i32) * (stride as i32) - (pad as i32);
+        for ky in 0..5usize {
+            let pw_row = row_ptrs[ky];
+            for kx in 0..5usize {
+                let w_ptr = dw_weight
+                    .as_ptr()
+                    .add(ky * w_ky_stride + kx * w_kx_stride + oc_start + tile_off);
+                for k in 0..nchunks {
+                    let w = _mm512_loadu_ps(w_ptr.add(k * 16));
+                    for p in 0..DW5_REUSE_OW {
+                        let iw = iw0_base + (p * stride) as i32 + kx as i32;
+                        let pw_ptr = pw_row.add(iw as usize * c_tile + tile_off + k * 16);
+                        let x = _mm512_loadu_ps(pw_ptr);
+                        let idx = p * DW5_REUSE_CHUNKS + k;
+                        acc[idx] = _mm512_fmadd_ps(x, w, acc[idx]);
+                    }
+                }
+            }
+        }
+
+        for p in 0..DW5_REUSE_OW {
+            let dst_ptr = out_row
+                .as_mut_ptr()
+                .add((ow0 + p) * c_exp + oc_start + tile_off);
+            for k in 0..nchunks {
+                let idx = p * DW5_REUSE_CHUNKS + k;
+                let v = if relu {
+                    _mm512_max_ps(acc[idx], zero)
+                } else {
+                    acc[idx]
+                };
+                _mm512_storeu_ps(dst_ptr.add(k * 16), v);
             }
         }
     }

@@ -337,6 +337,200 @@ fn tracker_5x5_stride1_inw16_c24_c144_norelu() {
     case_5x5(1, 16, 16, 24, 144, 1, false);
 }
 
+// The AVX-512 DW5 filter-tap-reuse path (DW5_REUSE_OW pixels/block, weight
+// loaded once and reused) must be BIT-identical to the per-pixel tap order
+// (ky→kx, fused multiply-add). A scalar reference replays that exact order
+// with `mul_add` (matching FMA semantics/rounding) so `==` is meaningful, not
+// just within tolerance. Covers the tracker DW5 shapes (c_exp ∈ {96,256,672},
+// widths spanning border + multiple full reuse blocks, stride 1 & 2).
+#[cfg(target_arch = "x86_64")]
+fn dw5_reuse_bit_identical_case(in_w: usize, c_exp: usize, stride: usize, relu: bool) {
+    if !crate::host_cpu().features.avx512f {
+        return;
+    }
+    let pad = 2usize;
+    // 5 contiguous input rows of `in_w * c_exp` lanes.
+    let rows_data: Vec<Vec<f32>> = (0..5)
+        .map(|r| seeded(in_w * c_exp, 0.7 + r as f32 * 0.11))
+        .collect();
+    let weight = seeded(25 * c_exp, 1.9);
+    let bias = seeded(c_exp, 0.3);
+    let out_w = (in_w + 2 * pad - 5) / stride + 1;
+
+    let rows_ref: [Option<&[f32]>; 5] = std::array::from_fn(|ky| Some(rows_data[ky].as_slice()));
+    let mut got = vec![f32::NAN; out_w * c_exp];
+    let ctx = super::Dw5RowCtx {
+        rows: rows_ref,
+        dw_weight: &weight,
+        dw_bias: Some(&bias),
+        out_row: &mut got,
+        in_w,
+        ow_start: 0,
+        ow_end: out_w,
+        c_exp,
+        stride,
+        pad,
+        relu,
+    };
+    super::avx512::compute_dw5_row_avx512(ctx);
+
+    // Reference: per-pixel, ky→kx tap order, fused multiply-add per channel.
+    let mut want = vec![0.0f32; out_w * c_exp];
+    for ow in 0..out_w {
+        let iw0 = ow as isize * stride as isize - pad as isize;
+        for c in 0..c_exp {
+            let mut acc = bias[c];
+            for ky in 0..5usize {
+                for kx in 0..5usize {
+                    let iw = iw0 + kx as isize;
+                    if iw < 0 || iw as usize >= in_w {
+                        continue;
+                    }
+                    let x = rows_data[ky][iw as usize * c_exp + c];
+                    let w = weight[ky * 5 * c_exp + kx * c_exp + c];
+                    acc = x.mul_add(w, acc);
+                }
+            }
+            if relu {
+                acc = acc.max(0.0);
+            }
+            want[ow * c_exp + c] = acc;
+        }
+    }
+
+    for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+        assert_eq!(
+            g.to_bits(),
+            w.to_bits(),
+            "dw5 reuse not bit-identical at i={i} (in_w={in_w} c_exp={c_exp} stride={stride} relu={relu}): got={g} want={w}"
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn dw5_reuse_bit_identical_tracker_shapes() {
+    // c_exp=96/256 → 6/16 chunks (DW5_REUSE_CHUNKS=2 → full tiles, no chunk
+    // residual); c_exp=672 → 42 chunks. Widths exercise: < one reuse block,
+    // exactly one block + border, and several blocks + a pixel tail.
+    // Widths span: no interior (in_w<5), single interior pixel, border-only
+    // tails, exactly one reuse block, and several blocks + a pixel tail.
+    for &(in_w, c_exp) in &[
+        (4usize, 96usize),
+        (5, 96),
+        (6, 256),
+        (8, 96),
+        (12, 256),
+        (16, 96),
+        (16, 672),
+        (33, 256),
+    ] {
+        for &stride in &[1usize, 2usize] {
+            for &relu in &[false, true] {
+                dw5_reuse_bit_identical_case(in_w, c_exp, stride, relu);
+            }
+        }
+    }
+}
+
+// Bit-identical check for the packed-tile DW5 path (`compute_dw5_tile_avx512`,
+// production route for c_exp > 256). Exercises the `oc_start`/`c_tile`/`c_exp`
+// offset arithmetic by computing one channel sub-tile of a wider c_exp. Input
+// is packed per-tile-column (stride `c_tile`); output and weights carry the
+// full-`c_exp` offset.
+#[cfg(target_arch = "x86_64")]
+fn dw5_reuse_tile_bit_identical_case(
+    in_w: usize,
+    c_exp: usize,
+    oc_start: usize,
+    c_tile: usize,
+    stride: usize,
+    relu: bool,
+) {
+    if !crate::host_cpu().features.avx512f {
+        return;
+    }
+    let pad = 2usize;
+    // 5 input rows packed as `in_w * c_tile` (only this tile's channels).
+    let rows_data: Vec<Vec<f32>> = (0..5)
+        .map(|r| seeded(in_w * c_tile, 0.5 + r as f32 * 0.13))
+        .collect();
+    let weight = seeded(25 * c_exp, 2.1);
+    let bias = seeded(c_exp, 0.25);
+    let out_w = (in_w + 2 * pad - 5) / stride + 1;
+
+    let rows_ref: [Option<&[f32]>; 5] = std::array::from_fn(|ky| Some(rows_data[ky].as_slice()));
+    let mut got = vec![f32::NAN; out_w * c_exp];
+    let ctx = super::Dw5TileCtx {
+        rows: rows_ref,
+        dw_weight: &weight,
+        dw_bias: Some(&bias),
+        out_row: &mut got,
+        in_w,
+        ow_start: 0,
+        ow_end: out_w,
+        c_exp,
+        oc_start,
+        c_tile,
+        stride,
+        pad,
+        relu,
+    };
+    super::avx512::compute_dw5_tile_avx512(ctx);
+
+    let mut want = got.clone();
+    for ow in 0..out_w {
+        let iw0 = ow as isize * stride as isize - pad as isize;
+        for cl in 0..c_tile {
+            let c = oc_start + cl;
+            let mut acc = bias[c];
+            for ky in 0..5usize {
+                for kx in 0..5usize {
+                    let iw = iw0 + kx as isize;
+                    if iw < 0 || iw as usize >= in_w {
+                        continue;
+                    }
+                    let x = rows_data[ky][iw as usize * c_tile + cl];
+                    let w = weight[ky * 5 * c_exp + kx * c_exp + c];
+                    acc = x.mul_add(w, acc);
+                }
+            }
+            if relu {
+                acc = acc.max(0.0);
+            }
+            want[ow * c_exp + c] = acc;
+        }
+    }
+
+    for ow in 0..out_w {
+        for cl in 0..c_tile {
+            let i = ow * c_exp + oc_start + cl;
+            assert_eq!(
+                got[i].to_bits(),
+                want[i].to_bits(),
+                "dw5 tile reuse not bit-identical at i={i} (in_w={in_w} c_exp={c_exp} oc_start={oc_start} c_tile={c_tile} stride={stride} relu={relu}): got={} want={}",
+                got[i],
+                want[i]
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn dw5_reuse_tile_bit_identical_tracker_shapes() {
+    // c_exp=672 production route. oc_start=256/c_tile=128 covers a non-zero
+    // channel-tile offset; widths span border-only, one block, multiblock+tail.
+    for &(in_w, oc_start, c_tile) in &[(16usize, 0usize, 128usize), (16, 256, 128), (33, 384, 256)]
+    {
+        for &stride in &[1usize, 2usize] {
+            for &relu in &[false, true] {
+                dw5_reuse_tile_bit_identical_case(in_w, 672, oc_start, c_tile, stride, relu);
+            }
+        }
+    }
+}
+
 // Hand-asm column-reuse 3×3 stride-2 DW microkernel (aarch64). Bit-parity vs a
 // fused-FMA reference on the xif2_0 interior shape (in_w=128, c_exp=96) + GFLOPS
 // against the NEON intrinsic.
