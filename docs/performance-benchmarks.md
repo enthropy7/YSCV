@@ -151,32 +151,33 @@ standalone loop; the normal inference default is unchanged. p50 deltas within
 
 ### ARM — Orange Pi Zero 3 (Cortex-A53)
 
-Same per-op isolated methodology on the A53 (yscv `compute_gap`, ONNX Runtime
-1.26.0, NumPy 2.4.6; 300 iterations, p50 µs, 1 thread). PyTorch is not
-installed on the device and is omitted.
+Same per-op isolated methodology on the A53 (yscv `compute_gap`, PyTorch
+2.12.0+cpu, ONNX Runtime 1.26.0, NumPy 2.4.6; 300 iterations, p50 µs, 1 thread).
 
-| Operation | Shape | yscv | NumPy | ORT |
-|-----------|-------|-----:|------:|----:|
-| add | 1024×1024 | 6645 | 6690 | 6938 |
-| mul | 1024×1024 | 6647 | 7317 | 7295 |
-| exp | 1024×1024 | 13161 | 41029 | 17716 |
-| relu | 921600 | 3406 | 5924 | 3280 |
-| sigmoid | 921600 | 4100 | 47008 | 16139 |
-| tanh | 1024×1024 | 5907 | 21555 | 16507 |
-| gelu (sigmoid approx) | 1024×1024 | 7321 | 79255 | 25720 |
-| silu | 1024×1024 | 5989 | 67883 | 23827 |
-| softmax | 512×256 | 1069 | 7276 | 3413 |
-| layer_norm | 512×256 | 508 | 4495 | 2401 |
-| batch_norm | 1×3×64×64 | 23 | 221 | 88 |
+| Operation | Shape | yscv | NumPy | PyTorch | ORT |
+|-----------|-------|-----:|------:|--------:|----:|
+| add | 1024×1024 | 6645 | 6690 | 8250 | 6938 |
+| mul | 1024×1024 | 6647 | 7317 | 7810 | 7295 |
+| exp | 1024×1024 | 13161 | 41029 | 23915 | 17716 |
+| relu | 921600 | 3406 | 5924 | 3012 | 3280 |
+| sigmoid | 921600 | 4100 | 47008 | 22677 | 16139 |
+| tanh | 1024×1024 | 5907 | 21555 | 44393 | 16507 |
+| gelu (sigmoid approx) | 1024×1024 | 7321 | 79255 | 37741 | 25720 |
+| silu | 1024×1024 | 5989 | 67883 | 27541 | 23827 |
+| softmax | 512×256 | 1069 | 7276 | 3212 | 3413 |
+| layer_norm | 512×256 | 508 | 4495 | 1561 | 2401 |
+| batch_norm | 1×3×64×64 | 23 | 221 | 186 | 88 |
 
 **Honest reading (A53).** On the weak in-order core, memory-bound elementwise
-(`add`, `relu`) is at parity across all three — limited by the Pi's DRAM
-bandwidth, not arithmetic. yscv's NEON polynomial-approximation kernels then
-pull far ahead on transcendentals/activations: `sigmoid` ~3.9× vs ORT and
-~11× vs NumPy, `gelu` ~3.5× / ~10.8×, `silu` ~4.0× / ~11.3×, `tanh` ~2.8× /
-~3.6×, plus `softmax` / `layer_norm` / `batch_norm` 3–9×. On ARM yscv beats
-both NumPy and ORT-CPU on every op outside memory-bound parity — consistent
-with the tracker result, where yscv is 1.5–1.6× faster than ORT on the A53.
+(`add`, `relu`) is at parity across all four — limited by the Pi's DRAM
+bandwidth, not arithmetic (PyTorch is the only one to edge ahead on `relu`,
+3012 vs yscv 3406 µs). yscv's NEON polynomial-approximation kernels then pull
+far ahead on transcendentals/activations: `sigmoid` ~3.9× vs ORT, ~5.5× vs
+PyTorch, ~11× vs NumPy; `tanh` ~2.8× / ~7.5× / ~3.6×; `gelu` ~3.5× / ~5.2× /
+~10.8×; `silu` ~4.0× / ~4.6× / ~11.3×; plus `softmax` / `layer_norm` /
+`batch_norm` 3–9× over every backend. On ARM yscv beats NumPy, PyTorch, and
+ORT-CPU on every op outside memory-bound parity — consistent with the tracker
+result, where yscv is 1.5–1.6× faster than ORT on the A53.
 
 Reproduce on the device:
 
@@ -185,6 +186,7 @@ cargo build --release -p yscv-llm-bench --bin compute_gap
 RAYON_NUM_THREADS=1 ./target/release/compute_gap --iters 300
 python3 benchmarks/python/bench_ort_single_ops.py   --iters 300 --threads 1
 python3 benchmarks/python/bench_numpy_single_ops.py --iters 300 --threads 1
+python3 benchmarks/python/bench_torch_single_ops.py --iters 300 --threads 1
 ```
 
 ---
