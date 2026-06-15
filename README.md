@@ -13,7 +13,7 @@
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
-> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On edge ARM SBCs we are competitive with ORT-CPU on a public Siamese tracker; **the published benchmarks are being re-measured on current hardware and tooling** — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On a public Siamese tracker we are within ~7% of ORT-CPU single-thread on x86 and competitive on ARM SBCs; **the CPU benchmarks are freshly measured on current hardware** (GPU/Apple-Silicon sections still pending re-measurement) — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 >
 > Agent-friendly documentation. YSCV is structured so that an AI coding agent can wire it into a downstream project end-to-end without prior context: every crate has a focused `README.md` describing its surface, [`docs/cookbook.md`](docs/cookbook.md) has recipes per task, [`docs/feature-flags.md`](docs/feature-flags.md) is exhaustive on Cargo features and runtime env knobs, [`AGENTS.md`](AGENTS.md) has the workflow + style rules verbatim, and per-op profile labels (`YSCV_RUNNER_PROFILE=path` dumps fused-path JSON) make hot-path issues self-diagnosing. The benefit is downstream: agents can build working code on top of yscv quickly, not the other way around. Responsibility for any PR — including patches drafted by an agent — rests with the human author submitting it.
 
@@ -115,14 +115,20 @@ asm-vs-intrinsics coverage, A/B env toggles); the direction for broadening
 per-hardware performance is in
 [docs/microarch-dispatch.md](docs/microarch-dispatch.md).
 
-> **Benchmarks are being re-measured.** The previous headline numbers were taken
-> across mixed hardware, dates, and tooling versions — not a fair
-> apples-to-apples set — so they have been pulled rather than left to mislead. A
-> clean, reproducible suite (fixed hardware, pinned competitor versions,
-> interleaved A/B, reported in both ms and FPS, regenerable from a script in the
-> repo) is being rebuilt in
-> [docs/performance-benchmarks.md](docs/performance-benchmarks.md). Until it
-> lands, treat any performance claim as provisional.
+> **Benchmarks (current CPU suite).** The CPU sections of
+> [docs/performance-benchmarks.md](docs/performance-benchmarks.md) are freshly
+> measured on fixed hardware with pinned competitor versions and a regenerable
+> script. On a public Siamese tracker, AMD Ryzen 5 7500F (Zen 4):
+> **8.63 ms / 1T (116 FPS), 2.52 ms / 6T (396 FPS)** — roughly 7% behind ONNX
+> Runtime 1.24.4 single-thread, with ORT scaling better across cores (the gap
+> widens to ~1.45× at 6T). On single ops yscv is at parity with NumPy/PyTorch on
+> memory-bound elementwise and faster on transcendentals and activations; it
+> beats ORT-CPU across the board. See
+> [docs/performance-benchmarks.md](docs/performance-benchmarks.md) for the
+> tables, methodology, and exact reproduction commands. The older
+> Apple-Silicon / Metal / video numbers in that doc were measured on different
+> hardware and dates and are marked *pending re-measurement* — treat those as
+> provisional.
 
 1,861 default tests / 1,897 with all features, across 19 crates.
 
