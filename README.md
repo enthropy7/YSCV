@@ -44,7 +44,7 @@ imwrite("gray.png", &gray)?;
 
 YSCV covers the full pipeline — from reading pixels off a camera to training a neural network to deploying an optimized model. Here are some real examples:
 
-**Video surveillance and security.** Hook up a camera, detect people, track them across frames, recognize faces — all in 67 microseconds per frame. That's 15,000 FPS on a single CPU core. No GPU needed. Deploy on any ARM or x86 device as a static binary.
+**Video surveillance and security.** Hook up a camera, detect people, track them across frames, recognize faces. The tracking and face-matching stages cost tens of microseconds per frame on a single CPU core; the detector/tracker model inference is the real budget (a public Siamese tracker runs ~8.6 ms / 116 FPS single-thread on a Zen 4 core — see [benchmarks](docs/performance-benchmarks.md)). No GPU needed — deploy on any ARM or x86 device as a static binary.
 
 **Factory quality control.** Train a defect detection model on your laptop, export to ONNX, quantize to INT8, deploy on cheap edge hardware on the production line. The whole thing runs without internet, without Python, without Docker.
 
