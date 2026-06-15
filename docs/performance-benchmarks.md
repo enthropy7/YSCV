@@ -53,22 +53,27 @@ per-op hot-path map.
 
 ### ARM — Orange Pi Zero 3 (Cortex-A53, 4C)
 
-yscv (commit `d8d43ea` on the device). No fresh same-rig ORT or XNNPACK number
-was captured this round.
+yscv (commit `d8d43ea` on the device) vs ONNX Runtime 1.26.0
+(`CPUExecutionProvider`), same host, same model and inputs. On this edge-ARM
+target yscv is **faster than ORT** at both thread counts — the inverse of the
+x86 picture, and the project's actual deployment target.
 
-| Threads | yscv min | yscv FPS |
-|--------:|---------:|---------:|
-| 1 | 321 ms | 3.1 |
-| 4 | 101 ms | 9.9 |
+Ratio here is `ORT / yscv` (>1.0 means yscv is faster).
 
-*Reference context (prior measurement, not a fresh same-rig run):* on the
-A53, yscv has previously measured near-parity with XNNPACK at roughly
-307 ms / 1T and 98.5 ms / 4T. Those figures come from an earlier session and
-are cited here only for scale, not as a head-to-head from this round.
+| Threads | yscv min | yscv FPS | ORT min | ORT / yscv |
+|--------:|---------:|---------:|--------:|-----------:|
+| 1 | 321 ms | 3.1 | 496 ms | **1.54×** |
+| 4 | 101 ms | 9.9 | 161 ms | **1.59×** |
+
+*Reference context (prior measurement, not from this round):* yscv has also
+measured near-parity with XNNPACK on the A53 at roughly 307 ms / 1T and
+98.5 ms / 4T; cited for scale only.
 
 ---
 
-## Single-operation compute (Zen 4, 1 thread)
+## Single-operation compute (1 thread)
+
+### x86 — AMD Ryzen 5 7500F (Zen 4)
 
 Per-operation isolated microbenchmarks at **1 thread**, 1000 iterations after
 200 warmup, each op in a fresh process. yscv / PyTorch / ONNX Runtime figures
@@ -143,6 +148,44 @@ contamination on later memory-bound ops, so isolated per-op p50 is the source
 of truth. yscv uses `YSCV_POOL=yscv` and `YSCV_POOL_SPIN_US=200` for this tight
 standalone loop; the normal inference default is unchanged. p50 deltas within
 1 µs are reported as parity.
+
+### ARM — Orange Pi Zero 3 (Cortex-A53)
+
+Same per-op isolated methodology on the A53 (yscv `compute_gap`, ONNX Runtime
+1.26.0, NumPy 2.4.6; 300 iterations, p50 µs, 1 thread). PyTorch is not
+installed on the device and is omitted.
+
+| Operation | Shape | yscv | NumPy | ORT |
+|-----------|-------|-----:|------:|----:|
+| add | 1024×1024 | 6645 | 6690 | 6938 |
+| mul | 1024×1024 | 6647 | 7317 | 7295 |
+| exp | 1024×1024 | 13161 | 41029 | 17716 |
+| relu | 921600 | 3406 | 5924 | 3280 |
+| sigmoid | 921600 | 4100 | 47008 | 16139 |
+| tanh | 1024×1024 | 5907 | 21555 | 16507 |
+| gelu (sigmoid approx) | 1024×1024 | 7321 | 79255 | 25720 |
+| silu | 1024×1024 | 5989 | 67883 | 23827 |
+| softmax | 512×256 | 1069 | 7276 | 3413 |
+| layer_norm | 512×256 | 508 | 4495 | 2401 |
+| batch_norm | 1×3×64×64 | 23 | 221 | 88 |
+
+**Honest reading (A53).** On the weak in-order core, memory-bound elementwise
+(`add`, `relu`) is at parity across all three — limited by the Pi's DRAM
+bandwidth, not arithmetic. yscv's NEON polynomial-approximation kernels then
+pull far ahead on transcendentals/activations: `sigmoid` ~3.9× vs ORT and
+~11× vs NumPy, `gelu` ~3.5× / ~10.8×, `silu` ~4.0× / ~11.3×, `tanh` ~2.8× /
+~3.6×, plus `softmax` / `layer_norm` / `batch_norm` 3–9×. On ARM yscv beats
+both NumPy and ORT-CPU on every op outside memory-bound parity — consistent
+with the tracker result, where yscv is 1.5–1.6× faster than ORT on the A53.
+
+Reproduce on the device:
+
+```bash
+cargo build --release -p yscv-llm-bench --bin compute_gap
+RAYON_NUM_THREADS=1 ./target/release/compute_gap --iters 300
+python3 benchmarks/python/bench_ort_single_ops.py   --iters 300 --threads 1
+python3 benchmarks/python/bench_numpy_single_ops.py --iters 300 --threads 1
+```
 
 ---
 

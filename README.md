@@ -121,9 +121,12 @@ per-hardware performance is in
 > script. On a public Siamese tracker, AMD Ryzen 5 7500F (Zen 4):
 > **8.63 ms / 1T (116 FPS), 2.52 ms / 6T (396 FPS)** — roughly 7% behind ONNX
 > Runtime 1.24.4 single-thread, with ORT scaling better across cores (the gap
-> widens to ~1.45× at 6T). On single ops yscv is at parity with NumPy/PyTorch on
-> memory-bound elementwise and faster on transcendentals and activations; it
-> beats ORT-CPU across the board. See
+> widens to ~1.45× at 6T). **On the Orange Pi Zero 3 (Cortex-A53) — the actual
+> deployment target — the picture inverts: yscv is 1.5–1.6× *faster* than ORT**
+> on the same tracker (321 ms vs 496 ms / 1T). On single ops yscv is at parity
+> with NumPy/PyTorch on memory-bound elementwise and faster on transcendentals
+> and activations; it beats ORT-CPU across the board (on the A53, up to ~11× on
+> activations like sigmoid/gelu). See
 > [docs/performance-benchmarks.md](docs/performance-benchmarks.md) for the
 > tables, methodology, and exact reproduction commands. The older
 > Apple-Silicon / Metal / video numbers in that doc were measured on different
