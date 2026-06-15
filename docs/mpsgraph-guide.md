@@ -1,9 +1,10 @@
-# MPSGraph guide — fastest ONNX inference on Apple Silicon
+# MPSGraph guide — yscv's fastest backend on Apple Silicon
 
 The `metal-backend` feature gives you **MPSGraph** — Apple's compile-once
-run-many GPU inference engine — wrapped in a simple Rust API. On M-series
-Macs it's typically **5-15× faster than the CPU runner** and **1.4× faster
-than ORT CoreML** on the same model.
+run-many GPU inference engine — wrapped in a simple Rust API. In earlier
+Apple-Silicon runs it measured several times faster than yscv's own CPU
+runner, and faster than ORT CoreML on the same model *(measured on M-series,
+pending re-measurement — see `performance-benchmarks.md`)*.
 
 This doc covers everything: when to use it, the full API, pipelined mode,
 multi-input models, and troubleshooting.
@@ -366,7 +367,8 @@ without calling `wait` debug-warns and loses the outputs.
 
 ## Performance expectations
 
-Numbers from actual benchmarks, M-series Apple Silicon, fp32 inputs:
+Numbers from earlier M-series Apple-Silicon benchmarks, fp32 inputs
+*(measured on Apple M1, pending re-measurement)*:
 
 | Model | Sync latency | Pipelined×3 throughput | vs CPU runner |
 |---|---:|---:|---:|

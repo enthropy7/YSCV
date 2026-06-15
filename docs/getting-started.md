@@ -155,7 +155,8 @@ let plan = compile_mpsgraph_plan(&model, &[("images", &nchw)])?;
 let outputs = run_mpsgraph_plan(&plan, &[("images", nchw.data())])?;
 ```
 
-That's it. ~5× faster than the CPU runner on YOLO. For sustained
+That's it — several times faster than the CPU runner on YOLO in earlier
+Apple-Silicon runs *(pending re-measurement)*. For sustained
 throughput across many frames, use the triple-buffered submit/wait
 API (or read [`docs/mpsgraph-guide.md`](mpsgraph-guide.md) for the
 full MPSGraph walkthrough — when to use sync vs pipelined, multi-input
@@ -280,9 +281,10 @@ rec.enroll("bob",   &bob_embedding)?;
 let matched = rec.match_one(&query_embedding);
 ```
 
-The full detect → track → recognize pipeline runs in **~67 µs per
-frame** end-to-end on a single CPU core. That's 15,000 FPS headroom
-to stack additional logic.
+In the full detect → track → recognize pipeline, the tracking and
+recognition stages cost only tens of microseconds per frame on a single
+CPU core — the detector model inference is the real per-frame budget, so
+there is ample headroom to stack additional logic around it.
 
 ---
 

@@ -53,7 +53,7 @@ Pick your starting point.
 - **[mpsgraph-guide.md](mpsgraph-guide.md)** — standalone guide for
   the Apple Silicon MPSGraph path: when to use, full API reference,
   sync vs pipelined, multi-input models, fallback, troubleshooting.
-  One-stop shop if you want the fastest inference on macOS.
+  One-stop shop for yscv's fastest backend on macOS.
 - **[gpu-backend-guide.md](gpu-backend-guide.md)** — standalone guide
   for the wgpu cross-platform GPU path (Vulkan / Metal / DX12 / GL):
   platform selection, compiled f16 plans, multi-GPU,
@@ -98,9 +98,10 @@ Pick your starting point.
 - **[ecosystem-capability-matrix.md](ecosystem-capability-matrix.md)** —
   canonical map of every capability area, status, and gap relative
   to a Python CV/DL stack.
-- **[performance-benchmarks.md](performance-benchmarks.md)** — full
-  methodology + scorecard vs OpenCV / ffmpeg / NumPy / PyTorch /
-  onnxruntime / CoreML. Reproduction commands.
+- **[performance-benchmarks.md](performance-benchmarks.md)** — measured
+  CPU tracker + single-op tables vs onnxruntime / NumPy / PyTorch (x86
+  Zen 4 + Orange Pi A53), with methodology and reproduction commands;
+  Apple-Silicon / Metal / video sections retained as provisional.
 - **[api-stability.md](api-stability.md)** — versioning policy,
   per-crate stability tiers, release checklist, publish order.
 

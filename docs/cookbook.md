@@ -43,7 +43,7 @@ For GPU support, add feature flags:
 [dependencies]
 yscv = { version = "0.1.9", features = ["gpu"] }           # wgpu (Vulkan/Metal/DX12)
 # or
-yscv = { version = "0.1.9", features = ["metal-backend"] }  # Metal-native (macOS only, fastest)
+yscv = { version = "0.1.9", features = ["metal-backend"] }  # Metal-native (macOS only)
 ```
 
 ### Verify it works
@@ -97,7 +97,7 @@ use yscv_imgproc::{imread, imwrite, resize_bilinear, resize_nearest};
 
 let img = imread("photo.jpg")?;
 let small = resize_bilinear(&img, 320, 240)?;   // high quality
-let fast  = resize_nearest(&img, 320, 240)?;    // 3.3x faster than OpenCV
+let fast  = resize_nearest(&img, 320, 240)?;    // nearest-neighbour; fastest, lowest quality
 imwrite("small.png", &small)?;
 ```
 
@@ -323,7 +323,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 cargo run --release --features gpu
 ```
 
-### Option B: Metal MPSGraph (macOS only — fastest)
+### Option B: Metal MPSGraph (macOS only — yscv's fastest backend on Apple Silicon)
 
 MPSGraph compiles the entire ONNX model into a single GPU dispatch and runs it triple-buffered. For sustained inference, the pipelined API (`submit_mpsgraph_plan` + `wait_mpsgraph_plan`) lets CPU-side marshaling overlap GPU work — ~3–5× higher throughput than the sync path.
 
@@ -421,7 +421,7 @@ let plan = compile_metal_plan(&model, "images", &input)?;
 let outputs = run_metal_plan(&plan, &vec![0.5f32; 1*3*640*640])?;
 ```
 
-Metal performance: **3.5ms** on YOLOv8n, **5.0ms** on YOLO11n, **7.8ms** on VballNet (MPSGraph) — 4× faster than CoreML on YOLOv8n (14.2ms), 1.1× faster on VballNet (8.6ms). CoreML fails entirely on YOLO11n.
+Metal performance *(measured on Apple M1, pending re-measurement)*: 3.5ms on YOLOv8n, 5.0ms on YOLO11n, 7.8ms on VballNet (MPSGraph) — faster than ORT CoreML on YOLOv8n (14.2ms) and on VballNet (8.6ms) in those runs. CoreML failed entirely on YOLO11n.
 
 ---
 
@@ -491,7 +491,7 @@ The model format (v8 vs v11) is auto-detected from the output tensor shape.
 | MPSGraph | 3.5ms | 5.0ms |
 | ORT compatible | Yes | No (opset 22) |
 
-**Use YOLOv8n** when you need maximum compatibility (ORT, CoreML, TensorRT all support it) or fastest absolute speed on both CPU and GPU.
+**Use YOLOv8n** when you need maximum compatibility (ORT, CoreML, TensorRT all support it) or lower latency on both CPU and GPU.
 
 **Use YOLO11n** when you want better accuracy per FLOP. YOLO11n uses C2PSA (cross-stage partial + spatial attention) and depthwise separable convolutions — fewer parameters with better feature extraction. Slightly slower than v8n despite fewer FLOPs because attention blocks (MatMul Q*K^T + Softmax) are memory-bound. Only yscv can run it — ORT and tract crash on opset 22.
 
@@ -506,7 +506,7 @@ MPSGraph (3.5ms)  →  Metal per-op (12.1ms)  →  CPU (31.7ms)
 
 | Backend | When to use |
 |---------|-------------|
-| **MPSGraph** | Default choice on macOS. Compiles entire model into one GPU dispatch. Fastest by far (3.5ms YOLOv8n). Requires `--features metal-backend`. |
+| **MPSGraph** | Default choice on macOS. Compiles entire model into one GPU dispatch. yscv's fastest backend on Apple Silicon (3.5ms YOLOv8n, *measured on M1, pending re-measurement*). Requires `--features metal-backend`. |
 | **Metal per-op** | Fallback when MPSGraph compilation fails (e.g. dynamic reshape chains, unsupported ops). Still 2.6x faster than CPU. Same feature flag. |
 | **CPU** | No feature flags needed. Works everywhere. Relative speed vs ORT is model+hardware dependent (see `performance-benchmarks.md` for current measured matrices). Best for Linux/Windows servers, CI, or when GPU isn't available. |
 | **wgpu** | Cross-platform GPU via Vulkan/Metal/DX12. Use `--features gpu`. Slower than Metal-native on macOS but works on all platforms with GPU. |
@@ -582,7 +582,7 @@ fn main() {
 }
 ```
 
-The full detect → track → recognize pipeline runs in **67µs per frame** (15,000 FPS).
+In this pipeline the tracking and recognition stages cost tens of microseconds per frame on a single CPU core; the detector/tracker model inference is the real per-frame budget.
 
 ---
 
@@ -833,7 +833,7 @@ scp target/aarch64-unknown-linux-gnu/release/my_app pi@192.168.1.100:~/
 |------|------|-------------|-----------|
 | *(default)* | CPU-only, Accelerate BLAS on macOS | Most cases | All |
 | `gpu` | wgpu GPU compute (Vulkan/Metal/DX12) | Cross-platform GPU inference | All |
-| `metal-backend` | Metal-native GPU pipeline | Fastest Apple Silicon inference | macOS only |
+| `metal-backend` | Metal-native GPU pipeline | yscv's fastest backend on Apple Silicon | macOS only |
 | `native-camera` | Real camera capture | Live video processing | All |
 | `blas` | Hardware BLAS | Enabled by default | All |
 | `mkl` | Intel MKL vectorized math | x86 servers with MKL installed | x86/x86_64 |
@@ -1006,33 +1006,31 @@ python benchmarks/python/bench_kernels.py   # vs PyTorch
 python benchmarks/python/bench_opencv.py    # vs OpenCV
 ```
 
-### Current numbers (Apple M-series, April 2026)
+### Apple M-series (measured April 2026, pending re-measurement)
+
+These were measured on Apple-Silicon hardware on an earlier date; treat them as
+provisional pending re-measurement. The current, freshly-measured CPU figures
+are in [docs/performance-benchmarks.md](performance-benchmarks.md).
 
 | What | yscv | Competitor | Speedup |
 |------|------|-----------|---------|
-| YOLOv8n CPU | **30.4ms** | onnxruntime 37.4ms | **1.2x** |
-| YOLOv8n MPSGraph | **3.5ms** | CoreML 15.5ms | **4.4x** |
-| YOLO11n CPU | **33.7ms** | onnxruntime 35.2ms* | **1.0x** |
-| H.264 decode 1080p60 (1100 frames) | **1187ms** | ffmpeg 5372ms | **4.5x** |
-| H.264 High 1080p (300 frames) | **332ms** | ffmpeg 760ms | **2.3x** |
-| **HEVC 1080p P/B (300 frames)** | **575ms** | **ffmpeg 806ms** | **1.4x** |
-| **HEVC 1080p P/B (600 frames)** | **1288ms** | **ffmpeg 1808ms** | **1.4x** |
-| sigmoid 921K | 0.217ms | PyTorch 1.296ms | **6.0x** |
-| resize nearest u8 | 0.048ms | OpenCV 0.157ms | **3.3x** |
-| detect+track pipeline | 0.067ms | — | 15,000 FPS |
+| YOLOv8n CPU | 30.4ms | onnxruntime 37.4ms | 1.2x |
+| YOLOv8n MPSGraph | 3.5ms | CoreML 15.5ms | 4.4x |
+| YOLO11n CPU | 33.7ms | onnxruntime 35.2ms* | 1.0x |
+| H.264 decode 1080p60 (1100 frames) | 1187ms | ffmpeg 5372ms | 4.5x |
+| H.264 High 1080p (300 frames) | 332ms | ffmpeg 760ms | 2.3x |
+| HEVC 1080p P/B (300 frames) | 575ms | ffmpeg 806ms | 1.4x |
+| HEVC 1080p P/B (600 frames) | 1288ms | ffmpeg 1808ms | 1.4x |
+| sigmoid 921K | 0.217ms | PyTorch 1.296ms | 6.0x |
+| resize nearest u8 | 0.048ms | OpenCV 0.157ms | 3.3x |
 
-### Current numbers (Orange Pi Zero 3, Siamese tracker, April 21, 2026)
+### Orange Pi Zero 3 (Cortex-A53, Siamese tracker)
 
-Same ONNX model, same input shapes, `--iters 200` for both yscv and ORT:
-
-| Threads | yscv p50 | ORT p50 | yscv vs ORT |
-|---:|---:|---:|---:|
-| 1 | **461.63 ms** | 499.25 ms | **1.08x faster** |
-| 2 | **252.08 ms** | 273.18 ms | **1.08x faster** |
-| 3 | **192.91 ms** | 199.41 ms | **1.03x faster** |
-| 4 | **150.17 ms** | 164.56 ms | **1.10x faster** |
-
-Full results: [docs/performance-benchmarks.md](performance-benchmarks.md)
+On this edge-ARM target yscv is faster than ORT on the same tracker. The
+current measured figures (commit `d8d43ea`, ORT 1.26.0) are 321 ms / 1T and
+101 ms / 4T — yscv 1.5–1.6× faster than ORT. See
+[docs/performance-benchmarks.md](performance-benchmarks.md) for the current
+tables, methodology, and reproduction commands.
 
 ---
 
@@ -1220,7 +1218,7 @@ cargo run --example edge_pipeline -- --width 640 --height 480 --frames 60
 ```
 
 The pipeline runs three stages on separate OS threads with zero per-frame allocations.
-Typical throughput on synthetic frames: >500 FPS (capture + detect + overlay + H.264 encode).
+Throughput depends on frame size, the detector model, and the host; the ring-buffer pipeline itself (capture + overlay + H.264 encode, excluding model inference) adds little per-frame overhead.
 
 ---
 

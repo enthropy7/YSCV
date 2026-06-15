@@ -16,7 +16,7 @@ the dedicated guides linked inline.
 yscv (umbrella)
 ├── blas            default ON — BLAS matmul dispatch (Accelerate / OpenBLAS)
 ├── gpu             wgpu cross-platform GPU            → gpu-backend-guide.md
-├── metal-backend   Apple MPSGraph (macOS, fastest)    → mpsgraph-guide.md
+├── metal-backend   Apple MPSGraph (macOS GPU)         → mpsgraph-guide.md
 ├── rknn            Rockchip NPU                       → edge-deployment.md
 ├── rknn-validate   Dry-run RKNN load at config time
 ├── realtime        SCHED_FIFO + affinity + mlockall + governor
@@ -186,8 +186,8 @@ kernels enabled. This is a debug/measurement escape hatch, not a production
 tuning flag.
 
 On Transformer workloads the tradeoff inverts: one big sgemm per
-attention head dominates and `Accelerate` / `MKL` walk all over any
-hand-tuned blocked GEMM.
+attention head is the bulk of the work, and `Accelerate` / `MKL`
+outperform yscv's hand-tuned blocked GEMM there.
 
 ```toml
 # Library default — keeps BLAS on, good for Transformer / classifier
@@ -202,7 +202,7 @@ tracker-specific numbers. On small-channel depthwise/pointwise models
 like the tracker, the custom blocked-GEMM + streaming-fused Conv paths
 beat a generic BLAS call, so the non-BLAS build is often faster there.
 
-### `metal-backend` — Apple MPSGraph (macOS, fastest on Apple Silicon)
+### `metal-backend` — Apple MPSGraph (macOS GPU, yscv's fastest backend on Apple Silicon)
 
 Enables `compile_mpsgraph_plan` / `run_mpsgraph_plan` / pipelined
 submit+wait API. Requires macOS 13+, best on Apple Silicon.

@@ -11,7 +11,7 @@
 ![Tests](https://img.shields.io/badge/tests-1861%20passing%20%7C%201897%20all--features-brightgreen.svg)
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
 
-A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition (67µs per frame), H.264/HEVC/AV1 video decoding (4.5× faster than ffmpeg), hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
 > Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On a public Siamese tracker we are within ~7% of ORT-CPU single-thread on x86 and competitive on ARM SBCs; **the CPU benchmarks are freshly measured on current hardware** (GPU/Apple-Silicon sections still pending re-measurement) — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 >
@@ -101,7 +101,7 @@ let detections = detect_yolov8_from_rgb(&img, &model, &yolov8_coco_config())?;
 let filtered = non_max_suppression(&detections, 0.5);
 ```
 
-The detect → track → recognize pipeline runs in 67µs per frame end-to-end. DeepSORT and ByteTrack are built in. VP-tree ANN for recognition.
+The detect → track → recognize pipeline's tracking and matching stages cost tens of microseconds per frame on a single CPU core (the model inference is the real budget). DeepSORT and ByteTrack are built in. VP-tree ANN for recognition.
 
 ## Performance
 
@@ -177,7 +177,7 @@ cargo run --example yolo_finetune     # fine-tune a detection head
 # wgpu backend (Vulkan / Metal / DX12 — cross-platform)
 cargo run --release --example bench_yolo --features gpu
 
-# Metal-native backend (macOS only — fastest on Apple Silicon)
+# Metal-native backend (macOS only)
 cargo run --release --example bench_mpsgraph --features metal-backend  # MPSGraph + per-op comparison
 cargo run --release --example bench_metal_yolo --features metal-backend
 cargo run --release --example bench_mps_gemm  --features metal-backend
@@ -187,7 +187,7 @@ cargo test --workspace --features metal-backend
 cargo clippy --workspace --features metal-backend
 ```
 
-The `gpu` feature uses wgpu and works on any platform with Vulkan, Metal, or DX12. The `metal-backend` feature talks to Metal directly via `metal-rs` and provides two backends: **MPSGraph** (whole-model graph compilation, fastest — 4.8 ms YOLOv8n; also exposes a triple-buffered `submit_mpsgraph_plan` / `wait_mpsgraph_plan` pipelined API that overlaps CPU marshaling with GPU compute for 3–5× throughput on sustained inference, multi-input models supported) and **Metal per-op** (individual op dispatch with Winograd + MPS GEMM, fallback for unsupported models). On macOS, `metal-backend` is what you want.
+The `gpu` feature uses wgpu and works on any platform with Vulkan, Metal, or DX12. The `metal-backend` feature talks to Metal directly via `metal-rs` and provides two backends: **MPSGraph** (whole-model graph compilation, the fastest of yscv's own backends on Apple Silicon — ~4.8 ms YOLOv8n *(measured on Apple M1, pending re-measurement)*; also exposes a triple-buffered `submit_mpsgraph_plan` / `wait_mpsgraph_plan` pipelined API that overlaps CPU marshaling with GPU compute for higher throughput on sustained inference, multi-input models supported) and **Metal per-op** (individual op dispatch with Winograd + MPS GEMM, fallback for unsupported models). On macOS, `metal-backend` is what you want.
 
 ### System dependencies
 
@@ -207,7 +207,7 @@ Quick summary of the big ones:
 | Flag | What it does | Platforms |
 |------|-------------|-----------|
 | `gpu` | GPU acceleration via wgpu (Vulkan / Metal / DX12) | All |
-| `metal-backend` | Metal-native GPU pipeline — fastest on Apple Silicon | macOS only |
+| `metal-backend` | Metal-native GPU pipeline (yscv's fastest backend on Apple Silicon) | macOS only |
 | `rknn` | Rockchip NPU via `librknnrt.so` (RK3588 / RK3576 / RV1106) — `dlopen` at runtime, full SDK 2.4.3a0 | Linux ARM64 (Rockchip device) |
 | `native-camera` | Real camera capture (V4L2 / AVFoundation / MediaFoundation) | All |
 | `blas` | Hardware BLAS — Accelerate on macOS, OpenBLAS on Linux/Windows | All (default) |
