@@ -13,7 +13,7 @@
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
-> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On a public Siamese tracker we are within ~7% of ORT-CPU single-thread on x86 and competitive on ARM SBCs; **the CPU benchmarks are freshly measured on current hardware** (GPU/Apple-Silicon sections still pending re-measurement) — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On a public Siamese tracker we are within ~7% of ORT-CPU single-thread on x86 and faster than ORT on ARM SBCs and Apple M1; **the CPU benchmarks (x86 / ARM / Apple M1) and the M1 GPU path (MPSGraph vs CoreML) are freshly measured on current hardware** (the YOLO / video Metal sections are still pending re-measurement) — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 >
 > Agent-friendly documentation. YSCV is structured so that an AI coding agent can wire it into a downstream project end-to-end without prior context: every crate has a focused `README.md` describing its surface, [`docs/cookbook.md`](docs/cookbook.md) has recipes per task, [`docs/feature-flags.md`](docs/feature-flags.md) is exhaustive on Cargo features and runtime env knobs, [`AGENTS.md`](AGENTS.md) has the workflow + style rules verbatim, and per-op profile labels (`YSCV_RUNNER_PROFILE=path` dumps fused-path JSON) make hot-path issues self-diagnosing. The benefit is downstream: agents can build working code on top of yscv quickly, not the other way around. Responsibility for any PR — including patches drafted by an agent — rests with the human author submitting it.
 
@@ -123,13 +123,16 @@ per-hardware performance is in
 > Runtime 1.24.4 single-thread, with ORT scaling better across cores (the gap
 > widens to ~1.45× at 6T). **On the Orange Pi Zero 3 (Cortex-A53) — the actual
 > deployment target — the picture inverts: yscv is 1.5–1.6× *faster* than ORT**
-> on the same tracker (321 ms vs 496 ms / 1T). On single ops yscv is at parity
+> on the same tracker (321 ms vs 496 ms / 1T). **On the Apple M1, yscv is
+> 1.9× / 4.3× faster than ORT-CPU at 1 / 4 threads** (15.4 / 5.46 ms), and its
+> MPSGraph GPU path runs the tracker at 1.26 ms sync (792 FPS, 1.3× over ORT
+> CoreML) up to 2688 FPS pipelined. On single ops yscv is at parity
 > with NumPy/PyTorch on memory-bound elementwise and faster on transcendentals
 > and activations; it beats ORT-CPU across the board (on the A53, up to ~11× on
 > activations like sigmoid/gelu). See
 > [docs/performance-benchmarks.md](docs/performance-benchmarks.md) for the
 > tables, methodology, and exact reproduction commands. The older
-> Apple-Silicon / Metal / video numbers in that doc were measured on different
+> YOLO / Metal / video numbers in that doc were measured on different
 > hardware and dates and are marked *pending re-measurement* — treat those as
 > provisional.
 

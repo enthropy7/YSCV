@@ -367,17 +367,17 @@ without calling `wait` debug-warns and loses the outputs.
 
 ## Performance expectations
 
-Numbers from earlier M-series Apple-Silicon benchmarks, fp32 inputs
-*(measured on Apple M1, pending re-measurement)*:
+Apple M1. The Siamese-tracker row is current; the YOLO and VballNet rows are
+from earlier M-series runs *(pending re-measurement)*:
 
 | Model | Sync latency | Pipelined×3 throughput | vs CPU runner |
 |---|---:|---:|---:|
 | YOLOv8n 640×640 | 4.8 ms | ~450 FPS sustained | 7× faster than CPU |
 | YOLO11n 640×640 | 5.9 ms | ~350 FPS sustained | 6× faster than CPU |
 | VballNet (DSConv) | 7.8 ms | ~280 FPS sustained | 16× faster than CPU |
-| Siamese tracker (128+256) | 1.37 ms | **1510 FPS sustained** | 35× faster than CPU |
+| Siamese tracker (128+256) | 1.26 ms | **2151 FPS sustained** | 33× faster than CPU |
 
-**peak burst on Siamese**: 2801 FPS (0.36 ms min latency).
+**peak burst on Siamese**: 3623 FPS (0.28 ms min latency).
 
 See [`performance-benchmarks.md`](performance-benchmarks.md) for full
 methodology + reproduction commands.
