@@ -3,15 +3,16 @@
 Measured CPU-inference and single-operation benchmarks for yscv, compared
 against ONNX Runtime, PyTorch, NumPy, OpenCV, and ffmpeg.
 
-**Last updated**: 2026-06-09 · **commit** `241f36c`
+**Last updated**: 2026-06-16 · **commit** `728a550`
 
 This document has two parts. The **CPU sections** (Siamese tracker, single-op)
 are the current measurement focus: fixed hardware, pinned competitor versions,
-isolated per-op processes, regenerable from a script in the repo. The
-**Apple-Silicon / Metal / video** sections below them are retained for
-reference but were measured on different hardware and dates; where a number
-could not be reproduced on current tooling it is marked
-*pending re-measurement*. Treat those as provisional.
+isolated per-op processes, regenerable from a script in the repo. They cover
+three hosts — AMD Ryzen 5 7500F (Zen 4), Orange Pi Zero 3 (Cortex-A53), and
+Apple M1. The **Metal / video** sections below them are retained for reference
+but were measured on different hardware and dates; where a number could not be
+reproduced on current tooling it is marked *pending re-measurement*. Treat
+those as provisional.
 
 Where yscv is at parity with or behind a competitor, this is stated plainly.
 Ratios are written as `competitor / yscv` (a ratio above 1.0 means yscv is
@@ -68,6 +69,24 @@ Ratio here is `ORT / yscv` (>1.0 means yscv is faster).
 *Reference context (prior measurement, not from this round):* yscv has also
 measured near-parity with XNNPACK on the A53 at roughly 307 ms / 1T and
 98.5 ms / 4T; cited for scale only.
+
+### Apple Silicon — Apple M1 (4 P-cores + 4 E-cores)
+
+yscv vs ONNX Runtime 1.19.2 (`CPUExecutionProvider`), same host, same model and
+inputs, fp32 zero-fill, p50 over 300 iterations. On Apple Silicon yscv is well
+ahead of ORT-CPU at every thread count.
+
+Ratio here is `ORT / yscv` (>1.0 means yscv is faster).
+
+| Threads | yscv p50 | yscv FPS | ORT p50 | ORT / yscv |
+|--------:|---------:|---------:|--------:|-----------:|
+| 1 | 15.37 ms | 65 | 29.80 ms | **1.94×** |
+| 4 | 5.46 ms | 183 | 23.64 ms | **4.33×** |
+| 8 | 6.56 ms | 153 | 37.52 ms | **5.72×** |
+
+Four threads is the sweet spot — the M1's four performance cores saturate
+there, and pushing to eight pulls in the efficiency cores, which regresses both
+runtimes.
 
 ---
 
@@ -189,17 +208,55 @@ python3 benchmarks/python/bench_numpy_single_ops.py --iters 300 --threads 1
 python3 benchmarks/python/bench_torch_single_ops.py --iters 300 --threads 1
 ```
 
+### Apple Silicon — Apple M1
+
+Same per-op isolated methodology on the M1 (yscv `compute_gap`, PyTorch 2.8.0,
+ONNX Runtime 1.19.2, NumPy 2.0.2; 1000 iterations after 200 warmup, p50 µs,
+1 thread).
+
+| Operation | Shape | yscv | NumPy | PyTorch | ORT |
+|-----------|-------|-----:|------:|--------:|----:|
+| add | 1024×1024 | 95 | 141 | 143 | 141 |
+| mul | 1024×1024 | 92 | 140 | 144 | 146 |
+| sum | 1024×1024 | 67 | 176 | 51 | 127 |
+| max | 1024×1024 | 57 | 54 | 167 | 87 |
+| add (broadcast last dim) | 1024×1024 + 1024 | 128 | 154 | 101 | 143 |
+| sub (broadcast row − matrix) | 1024 − 1024×1024 | 131 | 155 | 101 | 145 |
+| exp | 1024×1024 | 446 | 1763 | 979 | 739 |
+| relu | 921600 | 81 | 326 | 79 | 81 |
+| sigmoid | 921600 | 184 | 1800 | 981 | 520 |
+| tanh | 1024×1024 | 436 | 1054 | 3727 | 573 |
+| gelu (sigmoid approx) | 1024×1024 | 442 | 2280 | 1366 | 756 |
+| silu | 1024×1024 | 436 | 2193 | 1149 | 752 |
+| softmax | 32×1000 | 23 | 77 | 47 | 28 |
+| log_softmax | 32×1000 | 23 | 87 | 40 | 28 |
+| softmax | 512×256 | 76 | 303 | 193 | 110 |
+| layer_norm | 512×256 | 55 | 213 | 95 | 263 |
+| batch_norm | 1×64×64×3 ↔ 1×3×64×64 | 2 | 13 | 10 | 4 |
+
+**Honest reading (M1).** Against ORT-CPU yscv is ahead on every op except
+`relu` (81 vs 81 µs, parity), by ~1.1–2.8× on the activations and 4.8× on
+`layer_norm`. Against PyTorch the picture is mixed: yscv wins decisively on the
+polynomial-approximation activations (`tanh` ~8.5×, `sigmoid` ~5.3×, `gelu`
+~3.1×, `silu` ~2.6×) but is *slower* on `sum` (67 vs 51 µs) and the broadcast
+add/sub (128 vs 101, 131 vs 101 µs), where PyTorch's reduction/broadcast
+kernels are better tuned for this core; `relu` is parity. Against NumPy yscv
+wins across the board. As on the other hosts, the activation wins are the
+NEON polynomial approximations trading a float-tolerance error for speed.
+
 ---
 
 ## Methodology summary
 
 - **Hardware:** AMD Ryzen 5 7500F (Zen 4, 6C/12T) for x86; Orange Pi Zero 3
-  (Cortex-A53, 4C) for ARM. NixOS, Rust 1.95 stable, `--release` with
-  `lto = "thin"`, `codegen-units = 1`, mimalloc global allocator.
-- **Tracker:** minimum latency over 300 iterations after warmup, fp32, dual
-  input as described above. Competitor is ONNX Runtime `CPUExecutionProvider`.
-- **Single-op:** p50 of 1000 iterations after 200 warmup, each op isolated in
-  its own process to avoid cross-op cache/allocator contamination.
+  (Cortex-A53, 4C) for ARM; Apple M1 (4 P + 4 E cores) for Apple Silicon. Rust
+  1.95 stable, `--release` with `codegen-units = 1`, mimalloc global allocator.
+- **Tracker:** wall-clock latency over 300 iterations after warmup, fp32, dual
+  input as described above. Competitor is ONNX Runtime `CPUExecutionProvider`
+  (plus `CoreMLExecutionProvider` for the M1 GPU comparison). The Zen 4 and A53
+  tables report min; the M1 tables report p50.
+- **Single-op:** p50 of 1000 iterations after 200 warmup (300 on the A53), each
+  op isolated in its own process to avoid cross-op cache/allocator contamination.
 - **Ratios** are `competitor / yscv`; >1.0 means yscv is faster.
 - All landings in the kernel path are bitwise-identical or 1-ULP-close to the
   reference; the suite builds clean on x86_64 + aarch64 and passes with and
@@ -207,11 +264,12 @@ python3 benchmarks/python/bench_torch_single_ops.py --iters 300 --threads 1
 
 ---
 
-# Reference benchmarks (macOS / Metal / video — pending re-measurement)
+# Reference benchmarks (macOS / Metal / video)
 
-The sections below were measured on Apple-Silicon hardware on earlier dates
-with older tooling versions. They are retained for reference and have **not**
-been re-validated on current hardware. Treat the numbers as provisional.
+The sections below were measured on Apple-Silicon hardware; the Metal tracker
+tables are current, while the YOLO-inference, elementwise, and video sections
+were measured on earlier dates with older tooling and are individually marked
+*pending re-measurement*. Treat those as provisional.
 
 ## Tensor Elementwise Ops (1M f32, vs NumPy) — macOS, measured Apr 2026, pending re-measurement
 
@@ -444,40 +502,42 @@ yscv is the only runtime that runs both YOLOv8n and YOLO11n on GPU. CoreML fails
 
 ### Pipelined Throughput (MPSGraph submit/wait, Apple M1)
 
-The pipelined API (`submit_mpsgraph_plan` + `wait_mpsgraph_plan`) triple-buffers input/output buffers and overlaps CPU marshaling with GPU compute. Sustained per-frame wall-time (1000 iter, Siamese tracker, 2 inputs @ 1×3×128×128 + 1×3×256×256):
+The pipelined API (`submit_mpsgraph_plan` + `wait_mpsgraph_plan`) triple-buffers input/output buffers and overlaps CPU marshaling with GPU compute. Sustained per-frame wall-time (300 iter, Siamese tracker, 2 inputs @ 1×3×128×128 + 1×3×256×256, fp16):
 
 | Mode | p50 | p99 | Sustained FPS |
 |---|---:|---:|---:|
-| yscv sync (`--pipeline 1`) | 1.65 ms | 3.15 ms | 605 |
-| yscv `--pipeline 2` | **0.37 ms** | **0.62 ms** | **2688** |
-| yscv `--pipeline 3` | 0.46 ms | 1.01 ms | 2155 |
-| yscv `--pipeline 4` | 0.55 ms | 0.64 ms | 1818 |
-| onnxruntime CoreML MLProgram | 1.58 ms | 2.18 ms | 631 |
+| yscv sync (`--pipeline 1`) | 1.26 ms | 1.80 ms | 792 |
+| yscv `--pipeline 2` | **0.37 ms** | **0.48 ms** | **2688** |
+| yscv `--pipeline 3` | 0.47 ms | 0.65 ms | 2151 |
+| yscv `--pipeline 4` | 0.56 ms | 0.64 ms | 1776 |
+| onnxruntime CoreML MLProgram | 1.62 ms | 1.98 ms | 617 |
 
-Depth 2 is the throughput sweet spot (4.3× vs ORT CoreML); depth 4 trades raw p50 for the tightest tail (p99=0.64 ms, max=0.78 ms). Pipeline depth is chosen via `YSCV_MPS_PIPELINE` env var (default 3, clamped 1..=8). The API itself is safe regardless: `submit_mpsgraph_plan` back-pressures if the caller has more outstanding handles than the pipeline depth.
+Depth 2 is the throughput sweet spot (4.4× vs ORT CoreML); depth 4 trades raw p50 for the tightest tail (p99 = 0.64 ms). Pipeline depth is chosen via `YSCV_MPS_PIPELINE` env var (default 3, clamped 1..=8). The API itself is safe regardless: `submit_mpsgraph_plan` back-pressures if the caller has more outstanding handles than the pipeline depth.
 
-### Siamese Tracker — Full Backend Comparison (Apple Silicon, Apr 2026)
+### Siamese Tracker — Full Backend Comparison (Apple M1)
 
-Same two-tower Siamese tracker (219 ONNX nodes, inputs 1×3×128×128 +
-1×3×256×256, fp32 zero-fill). Compares every backend yscv ships
-against the corresponding ORT provider on the identical host (M-series
-macOS). 200 iterations after 40-iter warmup; p50 is the reported number.
+Same two-tower Siamese tracker (inputs 1×3×128×128 + 1×3×256×256, fp32
+zero-fill on CPU, fp16 on GPU). Compares every backend yscv ships against the
+corresponding ORT provider on the identical host. p50 over 300 iterations after
+warmup; yscv vs ORT 1.19.2.
 
-| Backend | yscv 0.1.9 | ORT 1.19.2 | yscv vs ORT |
+| Backend | yscv | ORT 1.19.2 | yscv vs ORT |
 |---|---:|---:|---:|
-| **CPU** | **43.1 FPS** (23.2 ms) | 18.9 FPS (53.0 ms) | **2.3× faster** |
-| **GPU sync** | **728 FPS** (1.37 ms) | 532 FPS (1.88 ms, CoreML) | **1.4× faster** |
-| **GPU pipelined×3** | **1510 FPS** (0.66 ms) | — | **2.9×** over ORT CoreML |
-| **GPU peak burst** | 2801 FPS (0.36 ms min) | — | — |
+| **CPU 1T** | **65 FPS** (15.37 ms) | 34 FPS (29.80 ms) | **1.94×** |
+| **CPU 4T** | **183 FPS** (5.46 ms) | 42 FPS (23.64 ms) | **4.33×** |
+| **GPU sync** | **792 FPS** (1.26 ms) | 617 FPS (1.62 ms, CoreML) | **1.28×** |
+| **GPU pipelined×2** | **2688 FPS** (0.37 ms) | — | **4.4×** over ORT CoreML |
+| **GPU peak burst** | 3623 FPS (0.28 ms min) | — | — |
 
 **Why yscv CPU beats ORT CPU on Apple Silicon**: `Accelerate.framework`
 dispatches BLAS through Apple's AMX (Advanced Matrix eXtensions) block
 — a dedicated matrix accelerator inside the CPU complex, separate from
 the Neural Engine. ORT's `CPUExecutionProvider` uses its own
-general-purpose SIMD kernels that don't hit AMX, so it leaves ~2.3×
-throughput on the table. On Intel the opposite holds: ORT's oneDNN is
-highly-tuned for AVX-512 where yscv (which dispatches through
-OpenBLAS) is typically 2-3× slower.
+general-purpose SIMD kernels that don't hit AMX, so it leaves ~1.9×
+throughput on the table single-thread, widening to 4.3× at four threads
+as ORT scales poorly across the M1's P-cores. On Intel the opposite holds:
+ORT's oneDNN is highly-tuned for AVX-512 where yscv (which dispatches
+through OpenBLAS) is typically 2-3× slower.
 
 **Why yscv Metal beats ORT CoreML on Apple Silicon**: ORT's
 `CoreMLExecutionProvider` compiles the graph to CoreML and routes

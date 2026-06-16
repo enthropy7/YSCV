@@ -776,7 +776,10 @@ fn build_graph_node(
     let get_shape = |name: &str| -> Vec<usize> { shapes.get(name).cloned().unwrap_or_default() };
 
     match node.op_type.as_str() {
-        "Conv" => {
+        // `Conv_Relu` is the load-time `fuse_conv_relu` fusion (optimizer.rs);
+        // build the conv graph then fold the activation in, matching the CPU
+        // (dispatch.rs) and wgpu (runner/gpu) backends.
+        "Conv" | "Conv_Relu" => {
             let input = try_get!(&node.inputs[0]);
             let weight = try_get!(&node.inputs[1]);
             let in_shape = get_shape(&node.inputs[0]);
@@ -817,6 +820,11 @@ fn build_graph_node(
                 // Reshape bias [C] → [1, C, 1, 1] for NCHW broadcast
                 let bias_reshaped = graph.reshape(bias, &[1, o_ch as i64, 1, 1])?;
                 out = graph.add(out, bias_reshaped);
+            }
+
+            // Fold the fused activation in (post-bias), matching CPU/wgpu.
+            if node.op_type == "Conv_Relu" {
+                out = graph.relu(out);
             }
 
             // Compute output shape
@@ -964,7 +972,8 @@ fn build_graph_node(
             Ok(Some(vec![(node.outputs[0].clone(), out, vec![n, c, 1, 1])]))
         }
 
-        "BatchNormalization" => {
+        // `BatchNormalization_Relu` is the load-time `fuse_bn_relu` fusion.
+        "BatchNormalization" | "BatchNormalization_Relu" => {
             let input = try_get!(&node.inputs[0]);
             let gamma = try_get!(&node.inputs[1]);
             let beta = try_get!(&node.inputs[2]);
@@ -980,7 +989,10 @@ fn build_graph_node(
             let mean_r = graph.reshape(mean, &[1, c, 1, 1])?;
             let var_r = graph.reshape(variance, &[1, c, 1, 1])?;
 
-            let out = graph.batch_norm(input, mean_r, var_r, gamma_r, beta_r, epsilon);
+            let mut out = graph.batch_norm(input, mean_r, var_r, gamma_r, beta_r, epsilon);
+            if node.op_type == "BatchNormalization_Relu" {
+                out = graph.relu(out);
+            }
             Ok(Some(vec![(node.outputs[0].clone(), out, in_shape)]))
         }
 
