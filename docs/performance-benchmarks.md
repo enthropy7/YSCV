@@ -3,7 +3,7 @@
 Measured CPU-inference and single-operation benchmarks for yscv, compared
 against ONNX Runtime, PyTorch, NumPy, OpenCV, and ffmpeg.
 
-**Last updated**: 2026-06-16 · **commit** `728a550`
+**Last updated**: 2026-06-16 · **commit** `fa80f66`
 
 This document has two parts. The **CPU sections** (Siamese tracker, single-op)
 are the current measurement focus: fixed hardware, pinned competitor versions,
