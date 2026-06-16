@@ -212,7 +212,8 @@ python3 benchmarks/python/bench_torch_single_ops.py --iters 300 --threads 1
 
 Same per-op isolated methodology on the M1 (yscv `compute_gap`, PyTorch 2.8.0,
 ONNX Runtime 1.19.2, NumPy 2.0.2; 1000 iterations after 200 warmup, p50 µs,
-1 thread).
+1 thread), recorded in
+[`single-compute-m1-2026-06-16.md`](../benchmarks/single-compute-m1-2026-06-16.md).
 
 | Operation | Shape | yscv | NumPy | PyTorch | ORT |
 |-----------|-------|-----:|------:|--------:|----:|
