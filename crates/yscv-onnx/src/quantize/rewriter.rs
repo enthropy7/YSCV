@@ -49,9 +49,17 @@ const QUANTIZABLE_OP_TYPES: &[&str] = &["Conv", "MatMul", "Gemm"];
 /// QDQ inputs: such nodes simply pass through (their input names point
 /// to existing DequantizeLinear outputs, not raw activations, and the
 /// stats lookup misses).
+///
+/// `keep_fp32` is the hybrid-quantization knob: any node whose `name`
+/// contains one of these substrings is left entirely fp32 (neither its
+/// weight nor its activation input is quantized). For a Siamese tracker,
+/// passing `["connect_model"]` keeps the dynamic correlation MatMuls and
+/// the detection heads — including the `Exp` bbox decode that blows up
+/// under int8 — in fp32, while the backbone Convs still quantize.
 pub fn rewrite_to_qdq(
     model: &mut OnnxModel,
     activation_stats: &HashMap<String, MinMax>,
+    keep_fp32: &[String],
 ) -> Result<(), OnnxError> {
     let mut new_initializers: HashMap<String, Tensor> = HashMap::new();
     // Weight-dequant nodes consume only constant initialisers and are
@@ -68,6 +76,9 @@ pub fn rewrite_to_qdq(
     for (node_idx, node) in model.nodes.iter().enumerate() {
         if !QUANTIZABLE_OP_TYPES.contains(&node.op_type.as_str()) {
             continue;
+        }
+        if keep_fp32.iter().any(|p| node.name.contains(p.as_str())) {
+            continue; // hybrid: caller pinned this node to fp32
         }
         if node.inputs.len() < 2 {
             continue; // malformed; skip
@@ -865,7 +876,7 @@ mod tests {
     fn weight_only_path_when_no_activation_stats() {
         let mut model = build_minimal_model();
         let stats = HashMap::new();
-        rewrite_to_qdq(&mut model, &stats).unwrap();
+        rewrite_to_qdq(&mut model, &stats, &[]).unwrap();
 
         // Quantized weight + scale + zp present.
         assert!(model.initializers.contains_key("w_q"));
@@ -908,7 +919,7 @@ mod tests {
                 count: 100,
             },
         );
-        rewrite_to_qdq(&mut model, &stats).unwrap();
+        rewrite_to_qdq(&mut model, &stats, &[]).unwrap();
 
         // QuantizeLinear + DequantizeLinear inserted on the activation.
         let q = model
@@ -930,6 +941,28 @@ mod tests {
     }
 
     #[test]
+    fn keep_fp32_pins_named_node_fully_fp32() {
+        let mut model = build_minimal_model();
+        let mut stats = HashMap::new();
+        stats.insert(
+            "x".to_string(),
+            MinMax {
+                min: -2.0,
+                max: 3.0,
+                count: 100,
+            },
+        );
+        // "conv" is a substring of the node name "conv0": neither the
+        // weight nor the activation should be quantized.
+        rewrite_to_qdq(&mut model, &stats, &["conv".to_string()]).unwrap();
+        assert!(!model.initializers.contains_key("w_q"));
+        assert!(!model.nodes.iter().any(|n| n.op_type == "QuantizeLinear"));
+        let conv = model.nodes.iter().find(|n| n.op_type == "Conv").unwrap();
+        assert_eq!(conv.inputs[0], "x");
+        assert_eq!(conv.inputs[1], "w");
+    }
+
+    #[test]
     fn rewrite_skips_small_initializers() {
         let mut model = build_minimal_model();
         // shrink the weight below the 16-element threshold
@@ -937,7 +970,7 @@ mod tests {
             "w".to_string(),
             Tensor::from_vec(vec![2, 4], vec![0.1; 8]).unwrap(),
         );
-        rewrite_to_qdq(&mut model, &HashMap::new()).unwrap();
+        rewrite_to_qdq(&mut model, &HashMap::new(), &[]).unwrap();
         assert!(!model.initializers.contains_key("w_q"));
         // Conv input #1 still points to the original weight name.
         assert_eq!(model.nodes[0].inputs[1], "w");
@@ -1081,7 +1114,7 @@ mod tests {
             .attributes
             .insert("group".to_string(), OnnxAttribute::Int(2));
 
-        rewrite_to_qdq(&mut model, &HashMap::new()).unwrap();
+        rewrite_to_qdq(&mut model, &HashMap::new(), &[]).unwrap();
 
         assert_eq!(
             model
@@ -1108,7 +1141,7 @@ mod tests {
     #[test]
     fn fold_constant_qdq_weight_restores_initializer_input() {
         let mut model = build_minimal_model();
-        rewrite_to_qdq(&mut model, &HashMap::new()).unwrap();
+        rewrite_to_qdq(&mut model, &HashMap::new(), &[]).unwrap();
         assert!(
             model
                 .nodes
@@ -1136,7 +1169,7 @@ mod tests {
     #[test]
     fn prune_unused_initializers_removes_folded_qdq_baggage() {
         let mut model = build_minimal_model();
-        rewrite_to_qdq(&mut model, &HashMap::new()).unwrap();
+        rewrite_to_qdq(&mut model, &HashMap::new(), &[]).unwrap();
         fold_constant_qdq_weights_for_yscv_fast(&mut model).unwrap();
 
         let removed = prune_unused_initializers(&mut model);
@@ -1154,7 +1187,7 @@ mod tests {
         // No quantizable nodes -> no-op.
         let mut model = build_minimal_model();
         model.nodes[0].op_type = "Relu".to_string();
-        rewrite_to_qdq(&mut model, &HashMap::new()).unwrap();
+        rewrite_to_qdq(&mut model, &HashMap::new(), &[]).unwrap();
         // Weight still present, no extra inits.
         assert!(model.initializers.contains_key("w"));
         assert!(!model.initializers.contains_key("w_q"));

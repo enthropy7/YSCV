@@ -240,7 +240,7 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
     // 3) Rewrite the model with collected stats. Reload from bytes so we
     //    get a fresh, mutable copy.
     let mut model_qdq = load_onnx_model(&bytes).unwrap();
-    rewrite_to_qdq(&mut model_qdq, &stats).unwrap();
+    rewrite_to_qdq(&mut model_qdq, &stats, &[]).unwrap();
 
     // Sanity: rewritten model has Q+DQ on x and DQ on w.
     assert!(

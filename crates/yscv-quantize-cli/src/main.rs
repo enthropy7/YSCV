@@ -11,12 +11,18 @@
 //!                            [--calibration name1=stream1.jsonl,name2=stream2.jsonl]
 //!                            [--format qdq|qlinear]
 //!                            [--weights-only]
+//!                            [--keep-fp32 substr[,substr]]
 //! ```
 //!
 //! Without `--calibration` the tool runs in weight-only mode: only Conv /
 //! MatMul / Gemm initializers are quantized, activations stay fp32. With
 //! `--calibration`, each line of the jsonl file is one sample feeding
 //! every named graph input.
+//!
+//! `--keep-fp32` (QDQ only) pins every node whose name contains one of the
+//! given substrings to fp32 — the hybrid knob for models with quantization-
+//! hostile tails (e.g. `--keep-fp32 connect_model` keeps a Siamese tracker's
+//! correlation MatMuls + `Exp` detection heads in fp32, backbone stays int8).
 //!
 //! ## Calibration JSONL format
 //!
@@ -43,7 +49,7 @@ use yscv_tensor::Tensor;
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error(
-        "usage: yscv-quantize <input.onnx> --output <output.onnx> [--calibration <samples.jsonl>] [--format qdq|qlinear] [--weights-only] [--strip-inner-qdq]"
+        "usage: yscv-quantize <input.onnx> --output <output.onnx> [--calibration <samples.jsonl>] [--format qdq|qlinear] [--weights-only] [--strip-inner-qdq] [--keep-fp32 <substr[,substr]>]"
     )]
     Usage,
     #[error("missing required argument: {0}")]
@@ -70,6 +76,7 @@ struct Args {
     format: QuantFormat,
     weights_only: bool,
     strip_inner_qdq: bool,
+    keep_fp32: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +92,7 @@ fn parse_args() -> Result<Args, CliError> {
     let mut format = QuantFormat::Qdq;
     let mut weights_only = false;
     let mut strip_inner_qdq = false;
+    let mut keep_fp32: Vec<String> = Vec::new();
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -115,6 +123,17 @@ fn parse_args() -> Result<Args, CliError> {
             }
             "--weights-only" => weights_only = true,
             "--strip-inner-qdq" => strip_inner_qdq = true,
+            "--keep-fp32" => {
+                let value = iter
+                    .next()
+                    .ok_or(CliError::MissingArg("--keep-fp32 value"))?;
+                keep_fp32.extend(
+                    value
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                );
+            }
             other if other.starts_with('-') => {
                 return Err(CliError::InvalidArg(other.to_string()));
             }
@@ -136,6 +155,7 @@ fn parse_args() -> Result<Args, CliError> {
         format,
         weights_only,
         strip_inner_qdq,
+        keep_fp32,
     })
 }
 
@@ -345,8 +365,11 @@ fn run(args: Args) -> Result<(), CliError> {
             QuantFormat::QLinear => "QLinear",
         }
     );
+    if !args.keep_fp32.is_empty() && args.format == QuantFormat::QLinear {
+        eprintln!("--keep-fp32 ignored for --format qlinear");
+    }
     match args.format {
-        QuantFormat::Qdq => rewrite_to_qdq(&mut model, &stats)?,
+        QuantFormat::Qdq => rewrite_to_qdq(&mut model, &stats, &args.keep_fp32)?,
         QuantFormat::QLinear => rewrite_to_qlinear(&mut model, &stats)?,
     }
 

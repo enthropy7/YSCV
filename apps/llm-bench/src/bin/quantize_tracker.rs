@@ -58,6 +58,7 @@ struct Args {
     calib_samples: Option<usize>,
     eval_samples: Option<usize>,
     seed: u64,
+    keep_fp32: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,7 @@ fn parse_args() -> Result<Args, String> {
     let mut calib_samples: Option<usize> = None;
     let mut eval_samples: Option<usize> = None;
     let mut seed: u64 = 0xCA11;
+    let mut keep_fp32: Vec<String> = Vec::new();
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -84,6 +86,15 @@ fn parse_args() -> Result<Args, String> {
             "--output" => output = iter.next(),
             "--calibration-jsonl" => calibration_jsonl = iter.next(),
             "--eval-jsonl" => eval_jsonl = iter.next(),
+            "--keep-fp32" => {
+                let value = iter.next().ok_or("missing --keep-fp32 value")?;
+                keep_fp32.extend(
+                    value
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                );
+            }
             "--format" => {
                 let value = iter.next().ok_or("missing --format value")?;
                 format = match value.as_str() {
@@ -124,7 +135,8 @@ fn parse_args() -> Result<Args, String> {
                     "usage: quantize_tracker --model PATH --shape NAME:DxDxD[,NAME:DxDxD]* \
                      [--output OUT.onnx] [--format qdq|qlinear] [--calib-samples N] \
                      [--eval-samples N] [--calibration-jsonl JSONL|NAME=JSONL,...] \
-                     [--eval-jsonl JSONL|NAME=JSONL,...] [--seed N]"
+                     [--eval-jsonl JSONL|NAME=JSONL,...] [--seed N] \
+                     [--keep-fp32 substr[,substr]]"
                 );
                 return Err("help".into());
             }
@@ -141,6 +153,7 @@ fn parse_args() -> Result<Args, String> {
         calib_samples,
         eval_samples,
         seed,
+        keep_fp32,
     })
 }
 
@@ -358,6 +371,73 @@ fn delta(fp32: &Tensor, qdq: &Tensor) -> OutputDelta {
     }
 }
 
+/// Decoded-space comparison. A tracker only cares about (a) which grid cell
+/// the score head peaks at — that's *where it thinks the target is* — and
+/// (b) the box decoded at that cell. Raw tensor RMSE overstates the damage;
+/// this is the metric that maps to actual tracking behaviour.
+struct TrackingDelta {
+    peak_match: bool,
+    peak_dist: f32,
+    box_rel_err: Option<f32>,
+}
+
+/// Find the score head (4-D, 1 channel) and bbox head (4-D, >1 channel) in
+/// the output maps by shape, then compare argmax cell + the box at the fp32
+/// peak cell. Returns `None` if no 1-channel score map is present.
+fn decoded_tracking_delta(
+    out_fp32: &HashMap<String, Tensor>,
+    out_qdq: &HashMap<String, Tensor>,
+) -> Option<TrackingDelta> {
+    let mut score: Option<(&Tensor, &Tensor)> = None;
+    let mut bbox: Option<(&Tensor, &Tensor)> = None;
+    for (name, a) in out_fp32 {
+        let Some(b) = out_qdq.get(name) else { continue };
+        let s = a.shape();
+        if s.len() == 4 && s[1] == 1 {
+            score = Some((a, b));
+        } else if s.len() == 4 && s[1] > 1 {
+            bbox = Some((a, b));
+        }
+    }
+    let (score_fp32, score_qdq) = score?;
+    let argmax = |t: &Tensor| -> usize {
+        t.data()
+            .iter()
+            .enumerate()
+            .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                if v > bv { (i, v) } else { (bi, bv) }
+            })
+            .0
+    };
+    let cell_fp32 = argmax(score_fp32);
+    let cell_qdq = argmax(score_qdq);
+    let sh = score_fp32.shape();
+    let w = sh[3] as i32;
+    let dr = (cell_fp32 as i32 / w) - (cell_qdq as i32 / w);
+    let dc = (cell_fp32 as i32 % w) - (cell_qdq as i32 % w);
+    let peak_dist = ((dr * dr + dc * dc) as f32).sqrt();
+
+    let box_rel_err = bbox.map(|(ba, bb)| {
+        let bs = ba.shape();
+        let (channels, hw) = (bs[1], bs[2] * bs[3]);
+        let (da, db) = (ba.data(), bb.data());
+        let mut num = 0.0f64;
+        let mut den = 0.0f64;
+        for ch in 0..channels {
+            let va = da[ch * hw + cell_fp32];
+            let vb = db[ch * hw + cell_fp32];
+            num += ((va - vb) as f64).powi(2);
+            den += (va as f64).powi(2);
+        }
+        (num.sqrt() / den.sqrt().max(1e-6)) as f32
+    });
+    Some(TrackingDelta {
+        peak_match: cell_fp32 == cell_qdq,
+        peak_dist,
+        box_rel_err,
+    })
+}
+
 fn run(args: Args) -> Result<(), String> {
     let inputs = parse_shapes(&args.shape_spec)?;
 
@@ -431,9 +511,8 @@ fn run(args: Args) -> Result<(), String> {
         load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load q: {e}"))?;
     optimize_onnx_graph(&mut model_qdq);
     match args.format {
-        QuantFormat::Qdq => {
-            rewrite_to_qdq(&mut model_qdq, &stats).map_err(|e| format!("rewrite_to_qdq: {e}"))?
-        }
+        QuantFormat::Qdq => rewrite_to_qdq(&mut model_qdq, &stats, &args.keep_fp32)
+            .map_err(|e| format!("rewrite_to_qdq: {e}"))?,
         QuantFormat::QLinear => rewrite_to_qlinear(&mut model_qdq, &stats)
             .map_err(|e| format!("rewrite_to_qlinear: {e}"))?,
     }
@@ -526,6 +605,11 @@ fn run(args: Args) -> Result<(), String> {
     let mut per_output_rel_linf: Vec<f32> = vec![0.0; outputs.len()];
     let mut per_output_rel_rmse_sq: Vec<f64> = vec![0.0; outputs.len()];
     let mut per_output_finite: Vec<bool> = vec![true; outputs.len()];
+    let mut peak_matches = 0usize;
+    let mut peak_dist_sum = 0.0f32;
+    let mut box_rel_sum = 0.0f64;
+    let mut box_n = 0usize;
+    let mut decoded_n = 0usize;
 
     reset_quant_runtime_stats();
     for sample in 0..eval_count {
@@ -564,6 +648,17 @@ fn run(args: Args) -> Result<(), String> {
             per_output_rel_rmse_sq[i] += (d.rel_rmse * d.rel_rmse) as f64;
             per_output_finite[i] &= d.finite;
         }
+        if let Some(td) = decoded_tracking_delta(&out_fp32, &out_qdq) {
+            decoded_n += 1;
+            if td.peak_match {
+                peak_matches += 1;
+            }
+            peak_dist_sum += td.peak_dist;
+            if let Some(e) = td.box_rel_err {
+                box_rel_sum += e as f64;
+                box_n += 1;
+            }
+        }
     }
     let qstats = quant_runtime_stats();
 
@@ -594,6 +689,21 @@ fn run(args: Args) -> Result<(), String> {
             rmse,
             rel_rmse * 100.0,
             if per_output_finite[i] { "yes" } else { "NO" }
+        );
+    }
+    if decoded_n > 0 {
+        let box_pct = if box_n > 0 {
+            format!("{:.2}%", 100.0 * (box_rel_sum / box_n as f64) as f32)
+        } else {
+            "n/a".to_string()
+        };
+        println!(
+            "\n=== decoded tracking metrics on {decoded_n} eval sample(s) — what a tracker actually sees"
+        );
+        println!(
+            "  peak-cell agreement: {peak_matches}/{decoded_n} ({:.0}%)   mean peak shift: {:.2} cells   box rel-err @peak: {box_pct}",
+            100.0 * peak_matches as f32 / decoded_n as f32,
+            peak_dist_sum / decoded_n as f32,
         );
     }
     let representative_gate = args.eval_jsonl.is_some();
