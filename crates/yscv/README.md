@@ -4,7 +4,7 @@ Umbrella crate that re-exports the entire yscv framework. One dependency gives y
 
 ```toml
 [dependencies]
-yscv = "0.1.9"
+yscv = "0.1.10"
 ```
 
 ```rust,ignore

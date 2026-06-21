@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 
 # ── Expected counts ──────────────────────────────────────────────────
 EXPECTED_CRATES=19                   # +yscv-cpu for shared runtime dispatch identity
-EXPECTED_VERSION="0.1.9"
+EXPECTED_VERSION="0.1.10"
 EXPECTED_ONNX_OPS=122                # several ops folded into fused kernels post-arc
 EXPECTED_TENSOR_METHODS=159          # ops.rs + tensor.rs + linalg.rs
 EXPECTED_IMGPROC_FNS=160             # standalone pub fn in crates/yscv-imgproc/src/ops/

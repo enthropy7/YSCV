@@ -32,7 +32,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-yscv = "0.1.9"
+yscv = "0.1.10"
 ```
 
 That's it. No Python, no C++ libraries, no system packages required. On macOS, Apple's Accelerate framework is used automatically for BLAS.
@@ -41,9 +41,9 @@ For GPU support, add feature flags:
 
 ```toml
 [dependencies]
-yscv = { version = "0.1.9", features = ["gpu"] }           # wgpu (Vulkan/Metal/DX12)
+yscv = { version = "0.1.10", features = ["gpu"] }           # wgpu (Vulkan/Metal/DX12)
 # or
-yscv = { version = "0.1.9", features = ["metal-backend"] }  # Metal-native (macOS only)
+yscv = { version = "0.1.10", features = ["metal-backend"] }  # Metal-native (macOS only)
 ```
 
 ### Verify it works

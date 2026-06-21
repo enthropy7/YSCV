@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] — 2026-06-21
+
+### Added
+
+- `--keep-fp32` hybrid knob for QDQ quantization: keep selected layers in fp32
+  while the rest of the graph is quantized.
+
+### Fixed
+
+- MPSGraph backend now folds the load-time `Conv_Relu` /
+  `BatchNormalization_Relu` fusions (build the conv/bn graph, then apply the
+  activation), matching the CPU and wgpu backends. Previously MPSGraph aborted
+  with `unsupported op 'Conv_Relu'` on any Conv+ReLU graph, so the Siamese
+  tracker could not run on Metal.
+
 ### Changed
 
+- Bumped workspace version to `0.1.10` and aligned user-facing documentation
+  and `scripts/check-doc-counts.sh` with the release.
 - Internal refactor: split the largest perf-arc source files (`matmul`,
   `conv`, `fused_pw_dw_3x3`, `backend`, tensor `ops`, the ONNX `runner`,
   and `loader`) into focused directory submodules. No public API or
@@ -16,6 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latency is unchanged within noise.
 - Documentation and code comments cleaned of session-specific
   optimization-arc notes and refreshed to the current module layout.
+
+### Benchmark update — Apple M1 (tracker + single-op + Metal vs CoreML)
+
+Measured on an Apple M1 (4 P + 4 E cores) with the portable harness; tracker
+p50 over 300 iterations, single-op p50 at 1 thread.
+
+| Backend | yscv | ORT 1.19.2 | yscv vs ORT |
+|---|---:|---:|---:|
+| CPU 1T | 65 FPS (15.37 ms) | 34 FPS (29.80 ms) | **1.94×** |
+| CPU 4T | 183 FPS (5.46 ms) | 42 FPS (23.64 ms) | **4.33×** |
+| GPU sync | 792 FPS (1.26 ms) | 617 FPS (1.62 ms, CoreML) | **1.28×** |
+| GPU pipelined×2 | 2688 FPS (0.37 ms) | — | **4.4×** vs CoreML |
+
+Single-op (1 thread): yscv beats ORT-CPU on every op outside `relu` parity, the
+NEON activations running 1.1–8.5× ahead; slower than PyTorch on `sum` and the
+broadcast add/sub. Full tables in
+[`docs/performance-benchmarks.md`](docs/performance-benchmarks.md).
 
 ## [0.1.9] — 2026-05-02
 
