@@ -62,6 +62,7 @@ pub use conv::conv2d_nhwc_indirect_padded;
 pub use conv::conv2d_nhwc_padded;
 pub use conv::conv3d;
 pub use conv::{Activation, ConvDispatchReport, conv_dispatch_report};
+pub use conv::{ConvKernelPath, take_conv_path};
 pub use conv::{
     conv2d_nchwc_pointwise_with_activation_prepacked,
     conv2d_nchwc_pointwise_with_residual_activation_prepacked,
@@ -109,6 +110,7 @@ pub use layout::{
     nhwc_to_nchwc,
 };
 pub use matmul::matmul_2d_with_config_and_pool;
+pub use matmul::{MatmulKernel, take_matmul_kernel};
 pub use nchwc_dw3x3::conv2d_nchwc_dw3x3_s1_same_pad;
 pub use nchwc_ops::{
     add_nchwc, avg_pool2d_nchwc, batch_norm2d_nchwc, max_pool2d_nchwc, relu_nchwc, sigmoid_nchwc,

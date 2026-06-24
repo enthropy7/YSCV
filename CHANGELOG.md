@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CPU profiler (`profile_onnx_model_cpu`) now reports which `yscv-kernels`
+  compute path each Conv dispatched to. The detail table gains a `via <kernel>`
+  column (`indirect-nhwc-3x3`, `nhwc-padded`, `nhwc-gemm`, `nhwc-gemm-prepacked`,
+  `dw-nhwc-padded`, `dw-nhwc`, `dw-nchwc-3x3`, `grouped`, `bnns-nchw`), so it is
+  visible whether a slow Conv took the depthwise, blocked-GEMM, indirect, or
+  grouped path rather than guessing from the shape.
+- The `via` label also reports the *kernel-internal* sub-path the `yscv-kernels`
+  entry point chose, rendered as `runner/sub` — e.g.
+  `nhwc-padded/first-layer-rgb`, `nhwc-gemm/pw-gemm`,
+  `nhwc-padded/winograd-3x3`, `nhwc-padded/im2col-gemm`,
+  `dw-nhwc-padded/dw-avx512`, `dw-nhwc-padded/dw-scalar`. Dense sub-paths:
+  `first-layer-rgb`, `winograd-3x3`, `pw-16x16-direct`, `pw-nx16-direct`,
+  `pw-gemm`, `direct-3x3`, `im2col-gemm`, `row-fma`. Depthwise sub-paths:
+  `dw-c16-avx512`, `dw-avx512`, `dw-avx-fma`, `dw-avx`, `dw-sse`, `dw-neon`,
+  `dw-scalar` — so a depthwise that silently fell to the scalar row kernel
+  (depth_multiplier>1, <4 channels, no SIMD) is visible. Exposed from
+  `yscv-kernels` via `take_conv_path`; the per-row depthwise dispatch is routed
+  through a shared `dw_row_kind` selector so the recorded label can never drift
+  from the kernel actually run. Grouped/indirect record no sub-path.
+- `MatMul` nodes now report the dispatched GEMM family in the `via` column —
+  `blas-sgemm`, `blocked-mr12`, `blocked-mr6`, `blocked-mr8`, `blocked-mr4`,
+  `low-k-tile`, `row-gemm` — so it is visible whether a hot MatMul packed into a
+  blocked microkernel or fell to the per-row path. Recorded by
+  `matmul_2d_slices_fused_maybe_packed` (the `MatMul` op + pointwise Conv entry)
+  and the `Gemm`-op dispatcher tree (`matmul_2d_*_with_plan`), exposed from
+  `yscv-kernels` via `take_matmul_kernel`. Both `MatMul` and `Gemm` profiler
+  nodes carry the `via` label.
+- The fused-path runner profiler (`YSCV_RUNNER_PROFILE`) now also records the
+  dispatched `kernel` label per node, so the *production* fused-path JSON (not
+  just the unfused CPU profiler) shows which Conv sub-path / GEMM family ran.
+  Fused streaming kernels that bypass the instrumented dispatch carry none.
+- `YSCV_PROFILE_FILTER` env narrows the profiler's detail table and JSON dump
+  to a chosen op/name set — a comma-separated spec of op types and/or
+  `name:<substr>` tokens (e.g. `Conv`, `Conv,MatMul`, `name:head`). Lets you
+  bench a specific node subset instead of only the default Conv view.
+- `YSCV_PROFILE_JSON` per-node records now carry Conv `kernel_shape`, `strides`
+  and the dispatched `kernel`, so the dispatch and shape detail are diffable,
+  not just printed.
+- `scripts/gap_diff.py` gains `--filter` (same spec as `YSCV_PROFILE_FILTER`)
+  and `--per-node`, which diffs two runs node-by-node and flags any
+  dispatched-kernel change as `old→new` — ideal for a baseline-vs-change
+  comparison of the same model.
+
 ## [0.1.10] — 2026-06-21
 
 ### Added

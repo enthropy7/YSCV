@@ -606,6 +606,7 @@ pub fn conv2d_nhwc_padded(
             activation,
             None,
         );
+        super::note_conv_path(super::ConvKernelPath::FirstLayerRgb3x3);
         return Tensor::from_aligned(vec![batch, out_h, out_w, c_out], output).map_err(Into::into);
     }
 
@@ -614,6 +615,7 @@ pub fn conv2d_nhwc_padded(
     // On macOS, Apple Accelerate's AMX-backed sgemm makes im2col+GEMM faster.
     #[cfg(all(feature = "blas", not(target_os = "macos")))]
     if kh == 3 && kw == 3 && stride_h == 1 && stride_w == 1 && out_h * out_w >= 64 {
+        super::note_conv_path(super::ConvKernelPath::Winograd3x3);
         return winograd_conv2d_nhwc(
             in_data,
             kernel_data,
@@ -631,6 +633,7 @@ pub fn conv2d_nhwc_padded(
         );
     }
 
+    super::note_conv_path(super::ConvKernelPath::Im2colGemm);
     // Tile size: keep im2col_tile + output_tile in ~2 MB per thread.
     let bytes_per_row = (k + n) * std::mem::size_of::<f32>();
     let tile_m = (2usize * 1024 * 1024)

@@ -563,6 +563,7 @@ pub fn matmul_2d_slices_fused_maybe_packed(
     if use_blas() && !prefer_custom_gemm(m, k, n) {
         blas_sgemm(a, b, out, m, k, n);
         apply_epilogue_fallback(out, m, n, &epilogue);
+        note_matmul_kernel(MatmulKernel::BlasSgemm);
         return;
     }
 
@@ -616,10 +617,12 @@ pub fn matmul_2d_slices_fused_maybe_packed(
             let blocked_blocks = m.div_ceil(MC_PARALLEL_MR8);
             if blocked_blocks >= nthreads {
                 blocked_gemm_parallel_mr8(a, b, out, m, k, n, epilogue, thread_pool, packed_b);
+                note_matmul_kernel(MatmulKernel::BlockedMr8);
                 return;
             }
         } else {
             blocked_gemm_sequential_mr8(a, b, out, m, k, n, epilogue, packed_b);
+            note_matmul_kernel(MatmulKernel::BlockedMr8);
             return;
         }
     }
@@ -645,10 +648,12 @@ pub fn matmul_2d_slices_fused_maybe_packed(
             let blocked_blocks = m.div_ceil(MC_PARALLEL_MR6);
             if blocked_blocks >= nthreads {
                 blocked_gemm_parallel_mr6(a, b, out, m, k, n, epilogue, thread_pool, packed_b);
+                note_matmul_kernel(MatmulKernel::BlockedMr6);
                 return;
             }
         } else {
             blocked_gemm_sequential_mr6(a, b, out, m, k, n, epilogue, packed_b);
+            note_matmul_kernel(MatmulKernel::BlockedMr6);
             return;
         }
     }
@@ -665,6 +670,7 @@ pub fn matmul_2d_slices_fused_maybe_packed(
         } else {
             blocked_gemm_sequential_mr12(a, b, out, m, k, n, epilogue, packed_b);
         }
+        note_matmul_kernel(MatmulKernel::BlockedMr12);
         return;
     }
 
@@ -691,6 +697,7 @@ pub fn matmul_2d_slices_fused_maybe_packed(
         unsafe {
             low_k_tile_4x24_parallel_fused(a, b, out, m, k, n, &epilogue);
         }
+        note_matmul_kernel(MatmulKernel::LowKTile);
         return;
     }
 
@@ -706,6 +713,7 @@ pub fn matmul_2d_slices_fused_maybe_packed(
         let blocked_blocks = m.div_ceil(MC_PARALLEL);
         if !residual_blocked_unsafe && use_blocked_path && blocked_blocks >= nthreads {
             blocked_gemm_parallel(a, b, out, m, k, n, epilogue, thread_pool, packed_b);
+            note_matmul_kernel(MatmulKernel::BlockedMr4);
         } else {
             // Small-k path: fuse bias+activation into the per-row loop
             // so each row's output is written once while cache-hot.
@@ -714,17 +722,21 @@ pub fn matmul_2d_slices_fused_maybe_packed(
             // memory passes instead of one. On m=16384, n=96 that's
             // ~6 MB of extra DRAM traffic per call.
             row_gemm_set_parallel_fused(a, b, out, m, k, n, thread_pool, &epilogue);
+            note_matmul_kernel(MatmulKernel::RowGemm);
         }
     } else if !residual_blocked_unsafe && use_blocked_path {
         blocked_gemm_sequential(a, b, out, m, k, n, epilogue, packed_b);
+        note_matmul_kernel(MatmulKernel::BlockedMr4);
     } else if has_residual {
         // Sequential row-GEMM with residual fused in each row's epilogue.
         // Rare branch — small matrices with residual usually go through
         // the parallel path above.
         row_gemm_set_parallel_fused(a, b, out, m, k, n, thread_pool, &epilogue);
+        note_matmul_kernel(MatmulKernel::RowGemm);
     } else {
         row_gemm_set_sequential(a, b, out, m, k, n);
         apply_epilogue_fallback(out, m, n, &epilogue);
+        note_matmul_kernel(MatmulKernel::RowGemm);
     }
 }
 
@@ -1290,6 +1302,7 @@ fn matmul_2d_sequential_with_plan(
     #[cfg(feature = "blas")]
     if use_blas() {
         blas_sgemm(left, right, &mut output, plan.m, plan.k, plan.n);
+        note_matmul_kernel(MatmulKernel::BlasSgemm);
         return Tensor::from_aligned(vec![plan.m, plan.n], output).map_err(Into::into);
     }
 
@@ -1304,8 +1317,10 @@ fn matmul_2d_sequential_with_plan(
             GemmEpilogue::IDENTITY,
             None,
         );
+        note_matmul_kernel(MatmulKernel::BlockedMr4);
     } else {
         row_gemm_set_sequential(left, right, &mut output, plan.m, plan.k, plan.n);
+        note_matmul_kernel(MatmulKernel::RowGemm);
     }
 
     Tensor::from_aligned(vec![plan.m, plan.n], output).map_err(Into::into)
@@ -1325,6 +1340,7 @@ fn matmul_2d_parallel_with_plan(
     #[cfg(feature = "blas")]
     if use_blas() {
         blas_sgemm(left, right, &mut output, plan.m, plan.k, plan.n);
+        note_matmul_kernel(MatmulKernel::BlasSgemm);
         return Tensor::from_aligned(vec![plan.m, plan.n], output).map_err(Into::into);
     }
 
@@ -1340,6 +1356,7 @@ fn matmul_2d_parallel_with_plan(
             thread_pool,
             None,
         );
+        note_matmul_kernel(MatmulKernel::BlockedMr4);
     } else {
         row_gemm_set_parallel(
             left,
@@ -1350,6 +1367,7 @@ fn matmul_2d_parallel_with_plan(
             plan.n,
             thread_pool,
         );
+        note_matmul_kernel(MatmulKernel::RowGemm);
     }
 
     Tensor::from_aligned(vec![plan.m, plan.n], output).map_err(Into::into)
@@ -1418,6 +1436,10 @@ pub(super) struct SendPtr(pub(super) *mut f32);
 unsafe impl Send for SendPtr {}
 #[allow(unsafe_code)]
 unsafe impl Sync for SendPtr {}
+
+mod kernel_path;
+use kernel_path::note_matmul_kernel;
+pub use kernel_path::{MatmulKernel, take_matmul_kernel};
 
 mod kernels;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

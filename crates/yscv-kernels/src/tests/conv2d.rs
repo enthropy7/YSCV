@@ -744,3 +744,186 @@ fn transpose_conv2d_nhwc_stride2_upsample() {
     assert_eq!(out.data()[0], 1.0);
     assert_eq!(out.data()[2], 2.0); // (0,2)
 }
+
+// --- conv kernel-internal sub-path recorder ---
+
+#[test]
+fn conv_path_records_first_layer_rgb() {
+    // 3×3 stride-2 over a 3-channel (RGB) input routes to the dedicated
+    // first-layer microkernel inside conv2d_nhwc_padded.
+    let input = Tensor::from_vec(vec![1, 8, 8, 3], vec![0.1f32; 8 * 8 * 3]).unwrap();
+    let kernel = Tensor::from_vec(vec![3, 3, 3, 4], vec![0.05f32; 3 * 3 * 3 * 4]).unwrap();
+    crate::take_conv_path(); // clear any leftover from a prior call on this thread
+    let _ = crate::conv2d_nhwc_padded(
+        &input,
+        &kernel,
+        None,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::None,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::take_conv_path(),
+        Some(crate::ConvKernelPath::FirstLayerRgb3x3)
+    );
+}
+
+#[test]
+fn conv_path_records_im2col_for_strided_3x3() {
+    // 3×3 stride-2 with c_in != 3: skips first-layer and Winograd (stride != 1),
+    // so the padded dispatcher falls through to im2col + GEMM.
+    let input = Tensor::from_vec(vec![1, 8, 8, 4], vec![0.1f32; 8 * 8 * 4]).unwrap();
+    let kernel = Tensor::from_vec(vec![3, 3, 4, 8], vec![0.05f32; 3 * 3 * 4 * 8]).unwrap();
+    crate::take_conv_path();
+    let _ = crate::conv2d_nhwc_padded(
+        &input,
+        &kernel,
+        None,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::None,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::take_conv_path(),
+        Some(crate::ConvKernelPath::Im2colGemm)
+    );
+}
+
+// --- depthwise sub-path recorder + refactor correctness ---
+
+/// From-scratch NHWC depthwise reference (dm=1, SAME-pad, stride 1, no
+/// activation). Independent of the kernel under test.
+fn naive_dw_nhwc_same3x3(
+    input: &[f32],
+    kernel: &[f32],
+    bias: &[f32],
+    h: usize,
+    w: usize,
+    c: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; h * w * c];
+    for oy in 0..h {
+        for ox in 0..w {
+            for ch in 0..c {
+                let mut acc = bias[ch];
+                for ky in 0..3usize {
+                    let iy = oy as isize + ky as isize - 1;
+                    if iy < 0 || iy >= h as isize {
+                        continue;
+                    }
+                    for kx in 0..3usize {
+                        let ix = ox as isize + kx as isize - 1;
+                        if ix < 0 || ix >= w as isize {
+                            continue;
+                        }
+                        let in_v = input[((iy as usize * w) + ix as usize) * c + ch];
+                        let k_v = kernel[(ky * 3 + kx) * c + ch];
+                        acc += in_v * k_v;
+                    }
+                }
+                out[(oy * w + ox) * c + ch] = acc;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn depthwise_padded_matches_naive_reference() {
+    // Exercises the refactored dispatch (SIMD path on a vector host) against a
+    // hand-written reference — catches any dispatch/compute regression.
+    let (h, w, c) = (5usize, 5usize, 8usize);
+    let input: Vec<f32> = (0..h * w * c).map(|i| (i as f32 * 0.013).sin()).collect();
+    let kernel: Vec<f32> = (0..9 * c).map(|i| (i as f32 * 0.027).cos() * 0.1).collect();
+    let bias: Vec<f32> = (0..c).map(|i| i as f32 * 0.01).collect();
+    let reference = naive_dw_nhwc_same3x3(&input, &kernel, &bias, h, w, c);
+
+    let input_t = Tensor::from_vec(vec![1, h, w, c], input).unwrap();
+    let kernel_t = Tensor::from_vec(vec![3, 3, c, 1], kernel).unwrap();
+    let bias_t = Tensor::from_vec(vec![c], bias).unwrap();
+    let out = depthwise_conv2d_nhwc_padded_with_activation(
+        &input_t,
+        &kernel_t,
+        Some(&bias_t),
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::None,
+    )
+    .unwrap();
+
+    assert_eq!(out.shape(), &[1, h, w, c]);
+    for (i, (&got, &want)) in out.data().iter().zip(reference.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-4,
+            "mismatch at {i}: got {got}, want {want}"
+        );
+    }
+}
+
+#[test]
+fn conv_path_records_depthwise_scalar_for_narrow_channels() {
+    // out_channels < 4 forces the scalar row kernel on every host.
+    let (h, w, c) = (4usize, 4usize, 2usize);
+    let input = Tensor::from_vec(vec![1, h, w, c], vec![0.2f32; h * w * c]).unwrap();
+    let kernel = Tensor::from_vec(vec![3, 3, c, 1], vec![0.05f32; 9 * c]).unwrap();
+    crate::take_conv_path();
+    let _ = depthwise_conv2d_nhwc_padded_with_activation(
+        &input,
+        &kernel,
+        None,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::None,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::take_conv_path(),
+        Some(crate::ConvKernelPath::DwScalar)
+    );
+}
+
+#[test]
+fn conv_path_records_depthwise_subpath_for_wide_channels() {
+    // dm=1, channels=32 (not the c=16 special): records a concrete dw sub-path.
+    // Which exact variant is host-dependent, so assert it is a `dw-*` label.
+    let (h, w, c) = (8usize, 8usize, 32usize);
+    let input = Tensor::from_vec(vec![1, h, w, c], vec![0.2f32; h * w * c]).unwrap();
+    let kernel = Tensor::from_vec(vec![3, 3, c, 1], vec![0.05f32; 9 * c]).unwrap();
+    crate::take_conv_path();
+    let _ = depthwise_conv2d_nhwc_padded_with_activation(
+        &input,
+        &kernel,
+        None,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        crate::Activation::None,
+    )
+    .unwrap();
+    let label = crate::take_conv_path().map(|p| p.label());
+    assert!(
+        label.is_some_and(|l| l.starts_with("dw-")),
+        "expected a dw-* sub-path, got {label:?}"
+    );
+}

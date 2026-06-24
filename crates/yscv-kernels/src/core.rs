@@ -218,6 +218,7 @@ pub use ops::{
     sub_exp_slice_dispatch, sub_with_config_and_pool, tanh_act_with_config_and_pool,
     tanh_slice_dispatch,
 };
+pub use ops::{ConvKernelPath, take_conv_path};
 pub use ops::{Dw3RowFn, select_dw3_row_fn};
 pub use ops::{
     FusedPwDw5x5, FusedPwDwPwReduce, fused_pw_expand_dw_3x3, fused_pw_expand_dw_5x5,
@@ -228,6 +229,7 @@ pub use ops::{
     Int8FusedDwPwParams, Int8FusedPwDwParams, int8_fused_dw_pw_dispatch, int8_fused_pw_dw_dispatch,
     int8_fused_pw_dw_with_pw_side_dispatch, requant_i32_row_to_i8_dispatch,
 };
+pub use ops::{MatmulKernel, take_matmul_kernel};
 #[cfg(target_arch = "x86_64")]
 pub use ops::{
     compute_dw_row_nchwc_avx512, compute_pw_reduce_row_nchwc_avx512, compute_pw_row_nchwc_avx512,

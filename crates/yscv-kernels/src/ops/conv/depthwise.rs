@@ -1887,6 +1887,74 @@ unsafe fn depthwise_conv2d_nhwc_row_sse(
     }
 }
 
+/// Which per-row depthwise kernel [`depthwise_conv2d_nhwc_row`] dispatches to
+/// for a given plan on this host. Single source of truth shared by the row
+/// dispatch and the profiler note in the calling dispatcher, so the recorded
+/// sub-path can never drift from the kernel actually run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum DwRowKind {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    Avx512,
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    AvxFma,
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    Avx,
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    Sse,
+    #[cfg(target_arch = "aarch64")]
+    Neon,
+    Scalar,
+}
+
+impl DwRowKind {
+    pub(super) fn path(self) -> super::ConvKernelPath {
+        match self {
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            DwRowKind::Avx512 => super::ConvKernelPath::DwAvx512,
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            DwRowKind::AvxFma => super::ConvKernelPath::DwAvxFma,
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            DwRowKind::Avx => super::ConvKernelPath::DwAvx,
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            DwRowKind::Sse => super::ConvKernelPath::DwSse,
+            #[cfg(target_arch = "aarch64")]
+            DwRowKind::Neon => super::ConvKernelPath::DwNeon,
+            DwRowKind::Scalar => super::ConvKernelPath::DwScalar,
+        }
+    }
+}
+
+/// Resolve which per-row depthwise kernel a plan uses on this host. The body of
+/// [`depthwise_conv2d_nhwc_row`] dispatches through this same function, so the
+/// label noted by a dispatcher is exactly the kernel that runs. The SIMD fast
+/// path needs `depth_multiplier == 1` (so the kernel layout is contiguous
+/// `[KH, KW, C]`) and at least 4 output channels to fill a vector.
+pub(super) fn dw_row_kind(plan: DepthwiseConv2dPlan) -> DwRowKind {
+    if plan.depth_multiplier == 1 && plan.out_channels >= 4 && !cfg!(miri) {
+        #[cfg(target_arch = "aarch64")]
+        if crate::host_cpu().features.neon {
+            return DwRowKind::Neon;
+        }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            // AVX-512 DW row kernel, with `YSCV_AVX512_DW_OFF=1` kill-switch.
+            if crate::host_cpu().features.avx512f && !avx512_dw_disabled() {
+                return DwRowKind::Avx512;
+            }
+            if crate::host_cpu().features.avx && crate::host_cpu().features.fma {
+                return DwRowKind::AvxFma;
+            }
+            if crate::host_cpu().features.avx {
+                return DwRowKind::Avx;
+            }
+            if crate::host_cpu().features.sse {
+                return DwRowKind::Sse;
+            }
+        }
+    }
+    DwRowKind::Scalar
+}
+
 pub(super) fn depthwise_conv2d_nhwc_row(
     input: &[f32],
     kernel: &[f32],
@@ -1896,71 +1964,77 @@ pub(super) fn depthwise_conv2d_nhwc_row(
     out_row: &mut [f32],
     activation: Activation,
 ) {
-    // SIMD fast path for depth_multiplier == 1 (standard depthwise conv).
-    // When dm=1, out_channels == channels and the kernel layout simplifies to
-    // [KH, KW, C] — contiguous channel data enables vectorization.
-    if plan.depth_multiplier == 1 && plan.out_channels >= 4 && !cfg!(miri) {
+    match dw_row_kind(plan) {
         #[cfg(target_arch = "aarch64")]
-        if crate::host_cpu().features.neon {
-            // SAFETY: NEON detected, pointers bounded by plan dimensions validated at
-            // function entry. Each output element written exactly once.
+        DwRowKind::Neon => {
+            // SAFETY: NEON selected only when detected; pointers bounded by plan
+            // dimensions validated at entry. Each output element written once.
             #[allow(unsafe_code)]
             unsafe {
                 depthwise_conv2d_nhwc_row_neon(
                     input, kernel, bias, plan, row_idx, out_row, activation,
                 );
             }
-            return;
         }
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            // AVX-512 DW row kernel when available. Kill-switch
-            // `YSCV_AVX512_DW_OFF=1`, cached via OnceLock so the env read
-            // doesn't repeat per DW row.
-            if crate::host_cpu().features.avx512f && !avx512_dw_disabled() {
-                // SAFETY: AVX-512F detected, bounds guaranteed.
-                #[allow(unsafe_code)]
-                unsafe {
-                    depthwise_conv2d_nhwc_row_avx512(
-                        input, kernel, bias, plan, row_idx, out_row, activation,
-                    );
-                }
-                return;
-            }
-            if crate::host_cpu().features.avx && crate::host_cpu().features.fma {
-                // SAFETY: AVX+FMA detected, same bounds guarantees.
-                #[allow(unsafe_code)]
-                unsafe {
-                    depthwise_conv2d_nhwc_row_avx_fma(
-                        input, kernel, bias, plan, row_idx, out_row, activation,
-                    );
-                }
-                return;
-            }
-            if crate::host_cpu().features.avx {
-                // SAFETY: AVX detected (no FMA), same bounds guarantees.
-                #[allow(unsafe_code)]
-                unsafe {
-                    depthwise_conv2d_nhwc_row_avx(
-                        input, kernel, bias, plan, row_idx, out_row, activation,
-                    );
-                }
-                return;
-            }
-            if crate::host_cpu().features.sse {
-                // SAFETY: SSE detected, same bounds guarantees.
-                #[allow(unsafe_code)]
-                unsafe {
-                    depthwise_conv2d_nhwc_row_sse(
-                        input, kernel, bias, plan, row_idx, out_row, activation,
-                    );
-                }
-                return;
+        DwRowKind::Avx512 => {
+            // SAFETY: AVX-512F detected, bounds guaranteed.
+            #[allow(unsafe_code)]
+            unsafe {
+                depthwise_conv2d_nhwc_row_avx512(
+                    input, kernel, bias, plan, row_idx, out_row, activation,
+                );
             }
         }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        DwRowKind::AvxFma => {
+            // SAFETY: AVX+FMA detected, same bounds guarantees.
+            #[allow(unsafe_code)]
+            unsafe {
+                depthwise_conv2d_nhwc_row_avx_fma(
+                    input, kernel, bias, plan, row_idx, out_row, activation,
+                );
+            }
+        }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        DwRowKind::Avx => {
+            // SAFETY: AVX detected (no FMA), same bounds guarantees.
+            #[allow(unsafe_code)]
+            unsafe {
+                depthwise_conv2d_nhwc_row_avx(
+                    input, kernel, bias, plan, row_idx, out_row, activation,
+                );
+            }
+        }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        DwRowKind::Sse => {
+            // SAFETY: SSE detected, same bounds guarantees.
+            #[allow(unsafe_code)]
+            unsafe {
+                depthwise_conv2d_nhwc_row_sse(
+                    input, kernel, bias, plan, row_idx, out_row, activation,
+                );
+            }
+        }
+        DwRowKind::Scalar => {
+            depthwise_conv2d_nhwc_row_scalar(
+                input, kernel, bias, plan, row_idx, out_row, activation,
+            );
+        }
     }
+}
 
-    // Scalar fallback (handles depth_multiplier > 1 and all other cases).
+/// Scalar depthwise row — handles `depth_multiplier > 1`, tiny channel counts,
+/// and hosts without SIMD.
+fn depthwise_conv2d_nhwc_row_scalar(
+    input: &[f32],
+    kernel: &[f32],
+    bias: Option<&[f32]>,
+    plan: DepthwiseConv2dPlan,
+    row_idx: usize,
+    out_row: &mut [f32],
+    activation: Activation,
+) {
     let batch_idx = row_idx / plan.out_h;
     let out_y = row_idx % plan.out_h;
     let in_y0 = out_y * plan.stride_h;

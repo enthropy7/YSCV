@@ -39,6 +39,7 @@ use pooling::*;
 use reduce::*;
 use reshape::*;
 
+mod conv_kernel;
 mod dispatch;
 mod execute;
 mod layout;
@@ -46,6 +47,7 @@ mod plan_branch;
 mod profile;
 mod quant_stats;
 mod tensor_env;
+pub(crate) use conv_kernel::*;
 pub(crate) use dispatch::*;
 pub(crate) use execute::*;
 pub(crate) use layout::*;

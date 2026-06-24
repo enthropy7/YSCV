@@ -440,3 +440,75 @@ mod residual_tail_tests {
         );
     }
 }
+
+// ============================================================================
+// Fused-matmul microkernel-family recorder
+// ============================================================================
+
+mod matmul_kernel_recorder {
+    #[test]
+    fn matmul_records_a_known_family() {
+        let (m, k, n) = (128usize, 128usize, 128usize);
+        let a = vec![0.1f32; m * k];
+        let b = vec![0.05f32; k * n];
+        let mut out = vec![0.0f32; m * n];
+        crate::take_matmul_kernel(); // clear any leftover
+        crate::matmul_2d_slices_fused_maybe_packed(
+            &a,
+            m,
+            k,
+            &b,
+            n,
+            &mut out,
+            None,
+            crate::GemmEpilogue::IDENTITY,
+            crate::ParallelMatmulConfig::default(),
+            None,
+        );
+        let label = crate::take_matmul_kernel().map(|x| x.label());
+        assert!(
+            matches!(
+                label,
+                Some(
+                    "blas-sgemm"
+                        | "blocked-mr8"
+                        | "blocked-mr6"
+                        | "blocked-mr12"
+                        | "low-k-tile"
+                        | "blocked-mr4"
+                        | "row-gemm"
+                )
+            ),
+            "expected a known matmul family, got {label:?}"
+        );
+    }
+
+    // A wide square GEMM routes to a blocked kernel (this host's nix OpenBLAS is
+    // ILP64, so `use_blas()` is false and the custom GEMM always wins) — assert
+    // it lands on blas or a blocked family, not the per-row fallback.
+    #[test]
+    fn matmul_wide_square_uses_blocked_kernel() {
+        let s = 512usize;
+        let a = vec![0.1f32; s * s];
+        let b = vec![0.05f32; s * s];
+        let mut out = vec![0.0f32; s * s];
+        crate::take_matmul_kernel();
+        crate::matmul_2d_slices_fused_maybe_packed(
+            &a,
+            s,
+            s,
+            &b,
+            s,
+            &mut out,
+            None,
+            crate::GemmEpilogue::IDENTITY,
+            crate::ParallelMatmulConfig::default(),
+            None,
+        );
+        let label = crate::take_matmul_kernel().map(|x| x.label());
+        assert!(
+            label.is_some_and(|l| l == "blas-sgemm" || l.starts_with("blocked-")),
+            "wide square GEMM should use blas or a blocked kernel, got {label:?}"
+        );
+    }
+}

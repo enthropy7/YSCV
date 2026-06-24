@@ -600,6 +600,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             activation,
             thread_pool,
         );
+        note_conv_path(ConvKernelPath::FirstLayerRgb3x3);
         return Tensor::from_aligned(
             vec![plan.batch, plan.out_h, plan.out_w, plan.out_channels],
             output,
@@ -626,6 +627,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
                 m,
                 activation,
             );
+            note_conv_path(ConvKernelPath::Pointwise16x16Direct);
             return Tensor::from_aligned(
                 vec![plan.batch, plan.out_h, plan.out_w, plan.out_channels],
                 output,
@@ -657,6 +659,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
                 n,
                 activation,
             );
+            note_conv_path(ConvKernelPath::PointwiseNx16Direct);
             return Tensor::from_aligned(
                 vec![plan.batch, plan.out_h, plan.out_w, plan.out_channels],
                 output,
@@ -686,6 +689,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             pointwise_matmul_cfg,
             thread_pool,
         );
+        note_conv_path(ConvKernelPath::PointwiseGemm);
         return Tensor::from_aligned(
             vec![plan.batch, plan.out_h, plan.out_w, plan.out_channels],
             output,
@@ -750,6 +754,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             (None, Activation::Silu) => silu_slice_inplace(&mut output),
             (None, Activation::None) => {}
         }
+        note_conv_path(ConvKernelPath::Direct3x3);
         return Tensor::from_aligned(vec![1, plan.out_h, plan.out_w, plan.out_channels], output)
             .map_err(Into::into);
     }
@@ -799,6 +804,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             (None, Activation::Silu) => silu_slice_inplace(&mut output),
             (None, Activation::None) => {}
         }
+        note_conv_path(ConvKernelPath::Direct3x3);
         return Tensor::from_aligned(vec![1, plan.out_h, plan.out_w, plan.out_channels], output)
             .map_err(Into::into);
     }
@@ -847,6 +853,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             (None, Activation::Silu) => silu_slice_inplace(&mut output),
             (None, Activation::None) => {}
         }
+        note_conv_path(ConvKernelPath::Direct3x3);
         return Tensor::from_aligned(vec![1, plan.out_h, plan.out_w, plan.out_channels], output)
             .map_err(Into::into);
     }
@@ -863,9 +870,11 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             bias.map(Tensor::data),
             activation,
         )?;
+        note_conv_path(ConvKernelPath::Im2colGemm);
         return Ok(out);
     }
 
+    note_conv_path(ConvKernelPath::RowFma);
     let input_data = input.data();
     let kernel_data = kernel.data();
     let bias_data = bias.map(Tensor::data);
@@ -962,6 +971,7 @@ pub fn depthwise_conv2d_nhwc_with_activation_with_config_and_pool(
     thread_pool: Option<&ThreadPool>,
 ) -> Result<Tensor, KernelError> {
     let plan = build_depthwise_conv2d_plan(input, kernel, bias, spec)?;
+    note_conv_path(dw_row_kind(plan).path());
     let input_data = input.data();
     let kernel_data = kernel.data();
     let bias_data = bias.map(Tensor::data);
@@ -1184,6 +1194,7 @@ pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
             activation,
             thread_pool,
         );
+        note_conv_path(ConvKernelPath::DwC16Avx512);
         return Tensor::from_aligned(vec![batch, out_h, out_w, out_channels], output)
             .map_err(Into::into);
     }
@@ -1235,6 +1246,14 @@ pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
     } else {
         None
     };
+
+    // Interior pixels (the bulk) run the dm1 row kernel; the padded border is
+    // a per-tap scalar epilogue. Report the interior kernel — or scalar when
+    // depth_multiplier > 1 leaves no vectorised interior.
+    note_conv_path(match interior_dm1_plan {
+        Some(dm1_plan) => dw_row_kind(dm1_plan).path(),
+        None => ConvKernelPath::DwScalar,
+    });
 
     let process_row = |row_idx: usize, out_row: &mut [f32]| {
         let batch_idx = row_idx / out_h;
@@ -2608,6 +2627,10 @@ mod gemm_conv;
 #[cfg(feature = "blas")]
 use gemm_conv::conv2d_im2col_gemm_fused;
 pub use gemm_conv::{conv2d_nhwc_indirect_padded, conv2d_nhwc_padded};
+
+mod kernel_path;
+use kernel_path::note_conv_path;
+pub use kernel_path::{ConvKernelPath, take_conv_path};
 
 mod nchwc;
 pub use nchwc::{

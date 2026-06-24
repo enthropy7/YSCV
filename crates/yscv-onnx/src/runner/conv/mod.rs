@@ -361,6 +361,7 @@ pub(super) fn exec_conv_with_params(
         && std::env::var("YSCV_BNNS").is_ok()
         && let Some(result) = exec_conv_bnns_nchw(node, env, activation)?
     {
+        note_conv_kernel(ConvKernel::BnnsNchw);
         env.insert(node.outputs[0].clone(), result);
         // Do NOT mark_nhwc — output stays NCHW
         return Ok(());
@@ -486,6 +487,7 @@ fn conv_compute_nhwc(
                 .map_err(|e| OnnxError::DecodeFailed {
                     message: e.to_string(),
                 })?;
+                note_conv_kernel(ConvKernel::IndirectNhwc3x3);
                 return Ok(t);
             }
         }
@@ -517,6 +519,13 @@ fn conv_compute_nhwc(
             })?;
             (t, true)
         };
+        note_conv_kernel(if has_padding {
+            ConvKernel::NhwcPadded
+        } else if prepacked.is_some() {
+            ConvKernel::NhwcGemmPrepacked
+        } else {
+            ConvKernel::NhwcGemm
+        });
         apply_conv_activation(&mut out_nhwc, activation, activation_fused);
         Ok(out_nhwc)
     } else if group == o_ch && group == input_nhwc.shape()[3] {
@@ -570,6 +579,7 @@ fn conv_compute_nhwc(
                     message: e.to_string(),
                 }
             })?;
+            note_conv_kernel(ConvKernel::DepthwiseNchwc3x3);
             apply_conv_activation(&mut out_nhwc, activation, true);
             return Ok(out_nhwc);
         }
@@ -610,6 +620,11 @@ fn conv_compute_nhwc(
                 message: e.to_string(),
             })
         }?;
+        note_conv_kernel(if has_padding {
+            ConvKernel::DepthwiseNhwcPadded
+        } else {
+            ConvKernel::DepthwiseNhwc
+        });
         apply_conv_activation(&mut out_nhwc, activation, activation_fused);
         Ok(out_nhwc)
     } else {
@@ -737,6 +752,7 @@ fn conv_compute_nhwc(
                 message: e.to_string(),
             }
         })?;
+        note_conv_kernel(ConvKernel::Grouped);
         apply_conv_activation(&mut out_nhwc, activation, relu_fused);
         Ok(out_nhwc)
     }

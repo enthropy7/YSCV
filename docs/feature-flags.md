@@ -535,14 +535,38 @@ yscv-onnx = { version = "0.1", features = ["profile"] }
 
 ```rust
 use yscv_onnx::profile_onnx_model_cpu;
-let times = profile_onnx_model_cpu(&model, inputs)?;
-for (op_name, ms) in times.iter().take(10) {
-    println!("{op_name}: {ms:.2}ms");
-}
+// Runs one unfused inference and prints a per-op timing table plus a
+// "Top <filter> layers" detail table. Conv rows show the dispatched
+// microkernel as `runner-dispatch` or `runner-dispatch/kernel-sub-path`:
+//   0.42ms  [1,3,128,128] → [1,16,64,64]  k=[3,3] s=[2,2] via nhwc-padded/first-layer-rgb at stem
+//   0.10ms  [1,64,40,40]  → [1,64,40,40]  k=[3,3] s=[1,1] via dw-nhwc-padded/dw-avx512 at neck.dw
+//   0.31ms  [64,128]      → [64,96]                       via blocked-mr4 at head.proj   (MatMul)
+profile_onnx_model_cpu(&model, inputs)?;
 ```
 
 Overhead is small (~1% per op) but leave it off in production — the
 counters persist across runs.
+
+Runtime knobs (no rebuild needed):
+
+- `YSCV_PROFILE_FILTER=<spec>` — narrow the detail table and the JSON to a
+  node subset. The spec is comma-separated: a bare token matches an op type
+  exactly (`Conv`, `Conv,MatMul`), `name:<substr>` matches a node-name
+  substring (`name:head`). Unset → the default Conv detail table and an
+  unfiltered JSON.
+- `YSCV_PROFILE_JSON=<path>` — additionally write a machine-readable per-node
+  JSON (name/op/ms/shapes; Conv nodes also carry `kernel_shape`, `strides` and
+  the dispatched `kernel`). Consumed by `scripts/gap_diff.py`.
+- `YSCV_RUNNER_PROFILE=<path>` — aggregate per-node timings over the *fused*
+  runner path across a whole bench loop; dump with `dump_runner_profile`. Each
+  node carries the same dispatched-`kernel` label as the CPU profiler (Conv
+  sub-path / MatMul-Gemm family); fused streaming kernels (e.g. `FusedDwPw`)
+  bypass the instrumented dispatch and carry none.
+
+Diff two profiles with `scripts/gap_diff.py a.json b.json`: `--filter` takes
+the same spec as `YSCV_PROFILE_FILTER`, and `--per-node` diffs node-by-node,
+flagging a dispatched-kernel change as `old→new` — ideal for a
+baseline-vs-change comparison of the same model.
 
 ---
 

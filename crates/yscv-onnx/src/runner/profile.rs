@@ -17,11 +17,10 @@ use super::*;
 /// aggregate cleanly. Shapes are captured on first sighting. Each thread
 /// owns its own store via `thread_local!`; the global registry holds an
 /// `Arc<Mutex<_>>` per thread so `dump_runner_profile` can walk them all
-/// and aggregate without contending on the hot path. Previously this was
-/// a single `Mutex<RunnerProfileStore>` — under tower-parallel two branch
-/// threads recorded concurrently, and even uncontended lock+unlock costs
-/// showed up in per-op timings. Thread-local stores pay zero synchronisation
-/// on record (each thread is the sole writer of its own `RefCell`).
+/// without contending on the hot path. A per-thread `RefCell` pays zero
+/// synchronisation on record — each thread is the sole writer of its own
+/// store, which matters under tower-parallel runs where two branch threads
+/// would otherwise contend on a shared lock inside per-op timing.
 #[derive(Default)]
 struct RunnerProfileStore {
     per_node: HashMap<String, RunnerNodeStat>,
@@ -34,6 +33,24 @@ struct RunnerNodeStat {
     count: u64,
     in_shape: Vec<usize>,
     out_shape: Vec<usize>,
+    /// Dispatched kernel label (Conv sub-path / MatMul-Gemm family), captured
+    /// from the per-thread recorder on first sighting. `None` for ops with no
+    /// recorder, or kernels (e.g. fused DW+PW streaming) that bypass the
+    /// instrumented dispatch.
+    kernel: Option<String>,
+}
+
+/// Reads the dispatched-kernel label for a just-executed node off the
+/// per-thread recorders, consuming it. The fused runner records a node right
+/// after it runs on the same thread, so the slot holds this node's dispatch.
+fn runner_profile_kernel_label(op: &str) -> Option<String> {
+    if op.starts_with("Conv") {
+        take_conv_kernel().map(|d| d.label())
+    } else if op == "MatMul" || op == "Gemm" {
+        yscv_kernels::take_matmul_kernel().map(|k| k.label().to_string())
+    } else {
+        None
+    }
 }
 
 /// Global registry of per-thread stores. Each thread registers its store
@@ -78,6 +95,7 @@ pub(crate) fn runner_profile_record(
     in_shape: Vec<usize>,
     out_shape: Vec<usize>,
 ) {
+    let kernel = runner_profile_kernel_label(op);
     LOCAL_PROFILE.with(|store| {
         // Same-thread lock — uncontended, near-free; kept as `Mutex` rather
         // than `RefCell` so the `Arc` shared with the registry can be
@@ -90,6 +108,7 @@ pub(crate) fn runner_profile_record(
                     op: op.to_string(),
                     in_shape: in_shape.clone(),
                     out_shape: out_shape.clone(),
+                    kernel: kernel.clone(),
                     ..Default::default()
                 });
             entry.total_ns += elapsed_ns;
@@ -99,6 +118,9 @@ pub(crate) fn runner_profile_record(
             }
             if entry.out_shape.is_empty() {
                 entry.out_shape = out_shape;
+            }
+            if entry.kernel.is_none() {
+                entry.kernel = kernel;
             }
         }
     });
@@ -136,6 +158,9 @@ pub fn dump_runner_profile(path: &str) -> Result<(), OnnxError> {
                         }
                         if e.out_shape.is_empty() {
                             e.out_shape = stat.out_shape.clone();
+                        }
+                        if e.kernel.is_none() {
+                            e.kernel = stat.kernel.clone();
                         }
                     })
                     .or_insert_with(|| stat.clone());
@@ -179,6 +204,11 @@ pub fn dump_runner_profile(path: &str) -> Result<(), OnnxError> {
         shape_to_json_local(&mut out, &stat.in_shape);
         out.push_str(",\"out_shape\":");
         shape_to_json_local(&mut out, &stat.out_shape);
+        if let Some(k) = &stat.kernel {
+            out.push_str(",\"kernel\":\"");
+            json_escape_into_local(&mut out, k);
+            out.push('"');
+        }
         out.push('}');
     }
     out.push_str("]}\n");
@@ -231,31 +261,99 @@ struct NodeTiming {
     ms: f64,
     in_shape: Vec<usize>,
     out_shape: Vec<usize>,
-}
-
-#[derive(Debug, Clone)]
-struct ConvDetail {
-    name: String,
-    ms: f64,
-    in_shape: Vec<usize>,
-    out_shape: Vec<usize>,
+    /// Conv-only kernel spatial dims / strides from the ONNX attributes; empty
+    /// for non-Conv ops.
     kernel_shape: Vec<i64>,
     strides: Vec<i64>,
+    /// Rendered dispatch label: for Conv the runner dispatch + kernel-internal
+    /// sub-path (`nhwc-padded/first-layer-rgb`), for MatMul the GEMM family
+    /// (`blocked-mr6`). `None` for ops with no recorder.
+    kernel: Option<String>,
+}
+
+/// Node filter for the profiler's detail table and JSON dump, parsed from
+/// `YSCV_PROFILE_FILTER`. The spec is a comma-separated list of tokens: a bare
+/// token matches an op type exactly (`Conv`, `MatMul`), `name:<substr>` matches
+/// a node-name substring. A node matches if it matches any token. When the env
+/// var is unset the profiler keeps its default view — the Conv detail table and
+/// an unfiltered JSON.
+struct ProfileFilter {
+    active: bool,
+    ops: Vec<String>,
+    name_subs: Vec<String>,
+    label: String,
+}
+
+impl ProfileFilter {
+    fn from_env() -> Self {
+        Self::parse(&std::env::var("YSCV_PROFILE_FILTER").unwrap_or_default())
+    }
+
+    fn parse(raw: &str) -> Self {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Self {
+                active: false,
+                ops: Vec::new(),
+                name_subs: Vec::new(),
+                label: "Conv".to_string(),
+            };
+        }
+        let mut ops = Vec::new();
+        let mut name_subs = Vec::new();
+        for tok in raw.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            match tok.strip_prefix("name:") {
+                Some(sub) => name_subs.push(sub.to_string()),
+                None => ops.push(tok.to_string()),
+            }
+        }
+        Self {
+            active: true,
+            ops,
+            name_subs,
+            label: raw.to_string(),
+        }
+    }
+
+    fn token_match(&self, op: &str, name: &str) -> bool {
+        self.ops.iter().any(|o| o == op) || self.name_subs.iter().any(|s| name.contains(s.as_str()))
+    }
+
+    /// Whether a node belongs in the detail table. Unset filter → Conv only.
+    fn detail_match(&self, op: &str, name: &str) -> bool {
+        if self.active {
+            self.token_match(op, name)
+        } else {
+            op == "Conv"
+        }
+    }
+
+    /// Whether a node belongs in the JSON dump. Unset filter → everything.
+    fn json_match(&self, op: &str, name: &str) -> bool {
+        !self.active || self.token_match(op, name)
+    }
 }
 
 /// Profile CPU inference: measure per-op-type timing.
 ///
 /// When the env var `YSCV_PROFILE_JSON` is set to a file path, a
 /// machine-readable JSON with per-node instance timings is written to
-/// that path in addition to the standard text summary. Format:
+/// that path in addition to the standard text summary. Conv nodes also
+/// carry `kernel_shape`, `strides` and the dispatched `kernel`. Format:
 /// ```json
 /// {"engine":"yscv","total_ms":11.47,"nodes":[
 ///   {"name":"Conv_0","op":"Conv","ms":0.12,
-///    "in_shape":[1,3,128,128],"out_shape":[1,16,64,64]}, ...
+///    "in_shape":[1,3,128,128],"out_shape":[1,16,64,64],
+///    "kernel_shape":[3,3],"strides":[2,2],"kernel":"nhwc-padded"}, ...
 /// ]}
 /// ```
 /// The file is consumed by `scripts/gap_diff.py` for apples-to-apples
 /// comparison against ORT's profiling JSON.
+///
+/// `YSCV_PROFILE_FILTER` narrows both the detail table and the JSON to a
+/// chosen op/name set (e.g. `Conv`, `Conv,MatMul`, `name:head`); see
+/// [`ProfileFilter`]. Unset, the profiler shows the Conv detail table and an
+/// unfiltered JSON.
 pub fn profile_onnx_model_cpu(
     model: &OnnxModel,
     inputs: HashMap<String, Tensor>,
@@ -271,8 +369,8 @@ pub fn profile_onnx_model_cpu(
     let node_kinds = &model.runtime_index.node_kinds;
     let mut skip = vec![false; nodes.len()];
     let mut timings: HashMap<String, (f64, usize)> = HashMap::new();
-    let mut conv_details: Vec<ConvDetail> = Vec::new();
-    // Per-instance timings — fuel for `YSCV_PROFILE_JSON` output.
+    let filter = ProfileFilter::from_env();
+    // Per-instance timings — feed the detail table and `YSCV_PROFILE_JSON`.
     let mut instance_timings: Vec<NodeTiming> = Vec::with_capacity(nodes.len());
 
     let prof_use_counts = &model.runtime_index.use_counts;
@@ -332,6 +430,9 @@ pub fn profile_onnx_model_cpu(
                         ms: elapsed,
                         in_shape: fused_in_shape,
                         out_shape: fused_out_shape,
+                        kernel_shape: Vec::new(),
+                        strides: Vec::new(),
+                        kernel: None,
                     });
                     // Execute intermediate nodes, mark done to prevent re-execution.
                     for mid in 1..look {
@@ -366,6 +467,9 @@ pub fn profile_onnx_model_cpu(
                                 ms: mid_elapsed,
                                 in_shape: mid_in,
                                 out_shape: mid_out,
+                                kernel_shape: Vec::new(),
+                                strides: Vec::new(),
+                                kernel: None,
                             });
                             skip[i + mid] = true;
                         }
@@ -401,7 +505,7 @@ pub fn profile_onnx_model_cpu(
             .map(|t| t.shape().to_vec())
             .unwrap_or_default();
 
-        if kind == NodeKind::Conv {
+        let (kernel_shape, strides, kernel) = if kind == NodeKind::Conv {
             let kernel_shape = match node.attributes.get("kernel_shape") {
                 Some(OnnxAttribute::Ints(v)) => v.clone(),
                 _ => Vec::new(),
@@ -410,15 +514,13 @@ pub fn profile_onnx_model_cpu(
                 Some(OnnxAttribute::Ints(v)) => v.clone(),
                 _ => vec![1, 1],
             };
-            conv_details.push(ConvDetail {
-                name: node.name.clone(),
-                ms: elapsed,
-                in_shape: in_shape.clone(),
-                out_shape: out_shape.clone(),
-                kernel_shape,
-                strides,
-            });
-        }
+            (kernel_shape, strides, take_conv_kernel().map(|d| d.label()))
+        } else if kind == NodeKind::MatMul || kind == NodeKind::Gemm {
+            let kernel = yscv_kernels::take_matmul_kernel().map(|k| k.label().to_string());
+            (Vec::new(), Vec::new(), kernel)
+        } else {
+            (Vec::new(), Vec::new(), None)
+        };
 
         instance_timings.push(NodeTiming {
             name: node.name.clone(),
@@ -426,6 +528,9 @@ pub fn profile_onnx_model_cpu(
             ms: elapsed,
             in_shape,
             out_shape,
+            kernel_shape,
+            strides,
+            kernel,
         });
 
         let entry = timings.entry(op_type).or_insert((0.0, 0));
@@ -447,20 +552,37 @@ pub fn profile_onnx_model_cpu(
     }
     println!("    {:>8.2}ms  total", total);
 
-    // Per-Conv detail: top 10 slowest
-    if !conv_details.is_empty() {
-        conv_details.sort_by(|a, b| b.ms.partial_cmp(&a.ms).unwrap());
-        println!("\n  ── Top Conv layers ──");
-        for detail in conv_details.iter().take(10) {
-            println!(
-                "    {:>6.2}ms  {:?} → {:?}  k={:?} s={:?} at {}",
-                detail.ms,
-                detail.in_shape,
-                detail.out_shape,
-                detail.kernel_shape,
-                detail.strides,
-                detail.name
-            );
+    // Per-node detail for the filtered op set (default: Conv): top 10 slowest.
+    let mut detail: Vec<&NodeTiming> = instance_timings
+        .iter()
+        .filter(|n| filter.detail_match(&n.op, &n.name))
+        .collect();
+    if !detail.is_empty() {
+        detail.sort_by(|a, b| b.ms.partial_cmp(&a.ms).unwrap());
+        println!("\n  ── Top {} layers ──", filter.label);
+        for n in detail.iter().take(10) {
+            if n.op == "Conv" {
+                println!(
+                    "    {:>6.2}ms  {:?} → {:?}  k={:?} s={:?} via {} at {}",
+                    n.ms,
+                    n.in_shape,
+                    n.out_shape,
+                    n.kernel_shape,
+                    n.strides,
+                    n.kernel.as_deref().unwrap_or("?"),
+                    n.name,
+                );
+            } else if let Some(via) = &n.kernel {
+                println!(
+                    "    {:>6.2}ms  {:?} → {:?}  via {} at {}",
+                    n.ms, n.in_shape, n.out_shape, via, n.name,
+                );
+            } else {
+                println!(
+                    "    {:>6.2}ms  {:?} → {:?}  {} at {}",
+                    n.ms, n.in_shape, n.out_shape, n.op, n.name,
+                );
+            }
         }
     }
 
@@ -469,7 +591,11 @@ pub fn profile_onnx_model_cpu(
     if let Ok(path) = std::env::var("YSCV_PROFILE_JSON")
         && !path.is_empty()
     {
-        write_profile_json(&path, &instance_timings, total)?;
+        let json_nodes: Vec<&NodeTiming> = instance_timings
+            .iter()
+            .filter(|n| filter.json_match(&n.op, &n.name))
+            .collect();
+        write_profile_json(&path, &json_nodes, total)?;
         eprintln!("  ── wrote profile JSON to {path} ──");
     }
 
@@ -481,7 +607,18 @@ pub fn profile_onnx_model_cpu(
 /// parser in lockstep. We hand-roll the JSON instead of pulling in serde
 /// because the schema is tiny (strings + numbers + shape arrays) and the
 /// crate already compiles cleanly without a JSON dep.
-fn write_profile_json(path: &str, nodes: &[NodeTiming], total_ms: f64) -> Result<(), OnnxError> {
+fn write_profile_json(path: &str, nodes: &[&NodeTiming], total_ms: f64) -> Result<(), OnnxError> {
+    std::fs::write(path, profile_json_string(nodes, total_ms)).map_err(|e| {
+        OnnxError::DecodeFailed {
+            message: format!("write profile JSON to {path}: {e}"),
+        }
+    })
+}
+
+/// Renders the per-node profile as the JSON string consumed by
+/// `scripts/gap_diff.py`. Split out from the file write so the schema can be
+/// asserted directly in tests.
+fn profile_json_string(nodes: &[&NodeTiming], total_ms: f64) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(64 * nodes.len() + 128);
     out.push_str("{\"engine\":\"yscv\",\"total_ms\":");
@@ -501,12 +638,25 @@ fn write_profile_json(path: &str, nodes: &[NodeTiming], total_ms: f64) -> Result
         shape_to_json(&mut out, &n.in_shape);
         out.push_str(",\"out_shape\":");
         shape_to_json(&mut out, &n.out_shape);
+        // Conv extras — emitted only for Conv nodes, so non-Conv entries keep
+        // the original schema and `gap_diff.py`'s op-level mode is unaffected.
+        if !n.kernel_shape.is_empty() {
+            out.push_str(",\"kernel_shape\":");
+            ints_to_json(&mut out, &n.kernel_shape);
+        }
+        if !n.strides.is_empty() {
+            out.push_str(",\"strides\":");
+            ints_to_json(&mut out, &n.strides);
+        }
+        if let Some(k) = &n.kernel {
+            out.push_str(",\"kernel\":\"");
+            json_escape_into(&mut out, k);
+            out.push('"');
+        }
         out.push('}');
     }
     out.push_str("]}\n");
-    std::fs::write(path, out).map_err(|e| OnnxError::DecodeFailed {
-        message: format!("write profile JSON to {path}: {e}"),
-    })
+    out
 }
 
 /// Escapes a string into an existing JSON output buffer. Covers only the
@@ -540,4 +690,95 @@ fn shape_to_json(out: &mut String, shape: &[usize]) {
         let _ = write!(out, "{d}");
     }
     out.push(']');
+}
+
+/// Formats an `[i64]` attribute (kernel_shape / strides) as a JSON array.
+fn ints_to_json(out: &mut String, values: &[i64]) {
+    use std::fmt::Write as _;
+    out.push('[');
+    for (i, d) in values.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{d}");
+    }
+    out.push(']');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_filter_default_is_conv_only() {
+        let f = ProfileFilter::parse("   ");
+        assert!(!f.active);
+        assert_eq!(f.label, "Conv");
+        // Detail table defaults to Conv; everything else is excluded.
+        assert!(f.detail_match("Conv", "backbone.0"));
+        assert!(!f.detail_match("MatMul", "x"));
+        // JSON is unfiltered when the env var is unset.
+        assert!(f.json_match("MatMul", "x"));
+        assert!(f.json_match("Conv", "x"));
+    }
+
+    #[test]
+    fn profile_filter_matches_ops_and_name_substrings() {
+        let f = ProfileFilter::parse("Conv, MatMul, name:head");
+        assert!(f.active);
+        assert!(f.detail_match("Conv", "backbone.0"));
+        assert!(f.detail_match("MatMul", "x"));
+        // A name substring matches regardless of op type.
+        assert!(f.detail_match("Relu", "head_box"));
+        assert!(!f.detail_match("Relu", "tail"));
+        // When active, the JSON filter mirrors the token match.
+        assert!(f.json_match("Conv", "x"));
+        assert!(!f.json_match("Sigmoid", "tail"));
+    }
+
+    #[test]
+    fn profile_json_emits_conv_extras_only_for_conv() {
+        let conv = NodeTiming {
+            name: "c0".into(),
+            op: "Conv".into(),
+            ms: 0.5,
+            in_shape: vec![1, 3, 8, 8],
+            out_shape: vec![1, 16, 8, 8],
+            kernel_shape: vec![3, 3],
+            strides: vec![1, 1],
+            kernel: Some("nhwc-gemm/pw-gemm".to_string()),
+        };
+        let relu = NodeTiming {
+            name: "r0".into(),
+            op: "Relu".into(),
+            ms: 0.1,
+            in_shape: vec![1, 16, 8, 8],
+            out_shape: vec![1, 16, 8, 8],
+            kernel_shape: Vec::new(),
+            strides: Vec::new(),
+            kernel: None,
+        };
+        let json = profile_json_string(&[&conv, &relu], 0.6);
+        // Conv carries the dispatched kernel (runner/sub) + shape attrs.
+        assert!(json.contains("\"kernel\":\"nhwc-gemm/pw-gemm\""), "{json}");
+        assert!(json.contains("\"kernel_shape\":[3,3]"), "{json}");
+        assert!(json.contains("\"strides\":[1,1]"), "{json}");
+        // The Relu entry keeps the original schema — no conv fields.
+        let relu_obj = json.split("{\"name\":\"r0\"").nth(1).unwrap();
+        assert!(
+            !relu_obj.contains("kernel"),
+            "relu must stay clean: {relu_obj}"
+        );
+    }
+
+    #[test]
+    fn runner_profile_label_skips_unrecorded_ops() {
+        // Only Conv* / MatMul / Gemm have a kernel recorder; everything else
+        // (incl. fused kernels that bypass the instrumented dispatch, like
+        // FusedDwPw) reports no label.
+        assert_eq!(runner_profile_kernel_label("Add"), None);
+        assert_eq!(runner_profile_kernel_label("Relu"), None);
+        assert_eq!(runner_profile_kernel_label("Softmax"), None);
+        assert_eq!(runner_profile_kernel_label("FusedDwPw"), None);
+    }
 }
