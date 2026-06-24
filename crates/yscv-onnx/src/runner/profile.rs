@@ -233,6 +233,16 @@ struct NodeTiming {
     out_shape: Vec<usize>,
 }
 
+#[derive(Debug, Clone)]
+struct ConvDetail {
+    name: String,
+    ms: f64,
+    in_shape: Vec<usize>,
+    out_shape: Vec<usize>,
+    kernel_shape: Vec<i64>,
+    strides: Vec<i64>,
+}
+
 /// Profile CPU inference: measure per-op-type timing.
 ///
 /// When the env var `YSCV_PROFILE_JSON` is set to a file path, a
@@ -261,7 +271,7 @@ pub fn profile_onnx_model_cpu(
     let node_kinds = &model.runtime_index.node_kinds;
     let mut skip = vec![false; nodes.len()];
     let mut timings: HashMap<String, (f64, usize)> = HashMap::new();
-    let mut conv_details: Vec<(String, f64, Vec<usize>, Vec<usize>)> = Vec::new();
+    let mut conv_details: Vec<ConvDetail> = Vec::new();
     // Per-instance timings — fuel for `YSCV_PROFILE_JSON` output.
     let mut instance_timings: Vec<NodeTiming> = Vec::with_capacity(nodes.len());
 
@@ -392,12 +402,22 @@ pub fn profile_onnx_model_cpu(
             .unwrap_or_default();
 
         if kind == NodeKind::Conv {
-            conv_details.push((
-                node.name.clone(),
-                elapsed,
-                in_shape.clone(),
-                out_shape.clone(),
-            ));
+            let kernel_shape = match node.attributes.get("kernel_shape") {
+                Some(OnnxAttribute::Ints(v)) => v.clone(),
+                _ => Vec::new(),
+            };
+            let strides = match node.attributes.get("strides") {
+                Some(OnnxAttribute::Ints(v)) => v.clone(),
+                _ => vec![1, 1],
+            };
+            conv_details.push(ConvDetail {
+                name: node.name.clone(),
+                ms: elapsed,
+                in_shape: in_shape.clone(),
+                out_shape: out_shape.clone(),
+                kernel_shape,
+                strides,
+            });
         }
 
         instance_timings.push(NodeTiming {
@@ -429,10 +449,18 @@ pub fn profile_onnx_model_cpu(
 
     // Per-Conv detail: top 10 slowest
     if !conv_details.is_empty() {
-        conv_details.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        conv_details.sort_by(|a, b| b.ms.partial_cmp(&a.ms).unwrap());
         println!("\n  ── Top Conv layers ──");
-        for (name, ms, in_s, out_s) in conv_details.iter().take(10) {
-            println!("    {:>6.2}ms  {:?} → {:?}  {}", ms, in_s, out_s, name);
+        for detail in conv_details.iter().take(10) {
+            println!(
+                "    {:>6.2}ms  {:?} → {:?}  k={:?} s={:?} at {}",
+                detail.ms,
+                detail.in_shape,
+                detail.out_shape,
+                detail.kernel_shape,
+                detail.strides,
+                detail.name
+            );
         }
     }
 
