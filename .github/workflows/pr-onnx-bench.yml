@@ -1,0 +1,128 @@
+name: PR ONNX Bench
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: pr-onnx-bench-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/bench') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    name: ONNX bench (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      pull-requests: read
+
+    env:
+      ASSET_DIR: /home/runner/.cache/yscv-onnx-pr-bench/assets
+      OUT_DIR: ${{ runner.temp }}/yscv-onnx-pr-bench
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/perf-runners/onnx-pr-bench -> target
+
+      - name: Cache benchmark assets
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/yscv-onnx-pr-bench/assets
+          key: onnx-pr-bench-assets-v1
+
+      - name: Download benchmark assets
+        run: benchmarks/perf-runners/onnx-pr-bench/download-assets.sh "$ASSET_DIR"
+
+      - name: Resolve PR SHAs
+        id: pr
+        run: |
+          echo "base_sha=$(gh pr view "$PR_NUMBER" --json baseRefOid --jq .baseRefOid)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+
+      - name: Fetch PR head
+        run: |
+          git fetch origin "${{ steps.pr.outputs.base_sha }}"
+          git fetch origin "pull/${{ github.event.issue.number }}/head:pr-head"
+
+      - name: Bench base
+        run: |
+          git checkout --detach "${{ steps.pr.outputs.base_sha }}"
+          benchmarks/perf-runners/onnx-pr-bench/run-suite.sh "$ASSET_DIR" "$OUT_DIR/base"
+
+      - name: Bench head
+        run: |
+          git checkout --detach pr-head
+          git checkout "${{ steps.pr.outputs.base_sha }}" -- benchmarks/perf-runners/onnx-pr-bench
+          benchmarks/perf-runners/onnx-pr-bench/run-suite.sh "$ASSET_DIR" "$OUT_DIR/head"
+
+      - name: Upload benchmark JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnx-pr-bench-${{ matrix.arch }}
+          path: ${{ env.OUT_DIR }}
+          if-no-files-found: warn
+
+  comment:
+    if: >
+      always() &&
+      needs.bench.result != 'skipped' &&
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/bench') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    needs: bench
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+
+      - name: Download benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: onnx-pr-bench-*
+          path: ${{ runner.temp }}/onnx-pr-bench-artifacts
+
+      - name: Build benchmark comment
+        run: |
+          python3 benchmarks/perf-runners/onnx-pr-bench/compare.py \
+            --artifact-root "${{ runner.temp }}/onnx-pr-bench-artifacts" \
+            --output "${{ runner.temp }}/onnx-pr-bench-comment.md"
+
+      - name: Comment on PR
+        run: gh pr comment "$PR_NUMBER" --body-file "${{ runner.temp }}/onnx-pr-bench-comment.md"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}

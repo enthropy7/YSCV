@@ -1,0 +1,21 @@
+[package]
+name = "yscv-onnx-pr-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+mimalloc = { version = "0.1", default-features = false }
+serde_json = "1"
+yscv-detect = { path = "../../../crates/yscv-detect" }
+yscv-kernels = { path = "../../../crates/yscv-kernels", default-features = false }
+yscv-onnx = { path = "../../../crates/yscv-onnx", default-features = false }
+yscv-tensor = { path = "../../../crates/yscv-tensor" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3

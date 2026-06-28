@@ -1,0 +1,113 @@
+{
+  "assets": [
+    {
+      "path": "yolov8n.onnx",
+      "env": "YSCV_BENCH_YOLOV8N_URL",
+      "url": "https://huggingface.co/unity/inference-engine-yolo/resolve/6c8bec2eab5fef018527d76285c92b18ac4fd0aa/models/yolov8n.onnx?download=true"
+    },
+    {
+      "path": "yolo11n.onnx",
+      "env": "YSCV_BENCH_YOLO11N_URL",
+      "url": "https://huggingface.co/unity/inference-engine-yolo/resolve/6c8bec2eab5fef018527d76285c92b18ac4fd0aa/models/yolo11n.onnx?download=true"
+    },
+    {
+      "path": "people.jpg",
+      "env": "YSCV_BENCH_PEOPLE_IMAGE_URL",
+      "url": "https://raw.githubusercontent.com/ultralytics/assets/main/bus.jpg"
+    }
+  ],
+  "defaults": {
+    "runs": 3,
+    "threads": 0
+  },
+  "cases": [
+    {
+      "name": "yolov8n_bus_640",
+      "model": "yolov8n.onnx",
+      "iters": 10,
+      "iters_env": "YSCV_PR_BENCH_YOLO_ITERS",
+      "inputs": [
+        {
+          "name": "images",
+          "shape": [1, 3, 640, 640],
+          "source": "image"
+        }
+      ],
+      "image": "people.jpg",
+      "image_input": "images",
+      "image_size": 640
+    },
+    {
+      "name": "yolo11n_bus_640",
+      "model": "yolo11n.onnx",
+      "iters": 10,
+      "iters_env": "YSCV_PR_BENCH_YOLO_ITERS",
+      "inputs": [
+        {
+          "name": "images",
+          "shape": [1, 3, 640, 640],
+          "source": "image"
+        }
+      ],
+      "image": "people.jpg",
+      "image_input": "images",
+      "image_size": 640
+    },
+    {
+      "name": "small_conv_relu_64",
+      "model": "small-conv-relu-64.onnx",
+      "iters": 200,
+      "iters_env": "YSCV_PR_BENCH_SMALL_ITERS",
+      "fill": "random",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [1, 3, 64, 64],
+          "source": "random"
+        }
+      ]
+    },
+    {
+      "name": "small_dw_pw_64",
+      "model": "small-dw-pw-64.onnx",
+      "iters": 200,
+      "iters_env": "YSCV_PR_BENCH_SMALL_ITERS",
+      "fill": "random",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [1, 16, 64, 64],
+          "source": "random"
+        }
+      ]
+    },
+    {
+      "name": "small_residual_conv_64",
+      "model": "small-residual-conv-64.onnx",
+      "iters": 200,
+      "iters_env": "YSCV_PR_BENCH_SMALL_ITERS",
+      "fill": "random",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [1, 8, 64, 64],
+          "source": "random"
+        }
+      ]
+    },
+    {
+      "name": "small_gemm_relu_1x128",
+      "model": "small-gemm-relu-1x128.onnx",
+      "iters": 200,
+      "iters_env": "YSCV_PR_BENCH_SMALL_ITERS",
+      "fill": "random",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [1, 128],
+          "source": "random"
+        }
+      ]
+    }
+  ]
+}
