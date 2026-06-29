@@ -1,6 +1,8 @@
 //! GEMM-based general conv paths: im2col + BLAS GEMM, indirect (padding-free)
 //! convolution, Winograd F(2x2,3x3), and the zero-padded NHWC conv.
 
+use crate::core::scope_ctx::par_chunks_mut_dispatch;
+
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -51,54 +53,61 @@ pub fn conv2d_nhwc_indirect_padded(
     // Zero buffer for padded positions
     let zero_pixel = vec![0.0f32; c_in];
 
-    for b in 0..batch {
+    let config = ParallelMatmulConfig::default();
+    let process_row = |row_idx: usize, out_row: &mut [f32]| {
+        let b = row_idx / out_h;
+        let oy = row_idx % out_h;
+
         let batch_in_base = b * in_h * in_w * c_in;
-        for oy in 0..out_h {
-            let out_row_start = (b * out_h + oy) * out_row_len;
-            let out_row = &mut output[out_row_start..out_row_start + out_row_len];
 
-            for ox in 0..out_w {
-                let out_cell = &mut out_row[ox * c_out..(ox + 1) * c_out];
+        for ox in 0..out_w {
+            let out_cell = &mut out_row[ox * c_out..(ox + 1) * c_out];
 
-                // Init with bias
-                if let Some(bv) = bias_data {
-                    out_cell.copy_from_slice(&bv[..c_out]);
-                } else {
-                    out_cell.fill(0.0);
-                }
+            // Init with bias
+            if let Some(bv) = bias_data {
+                out_cell.copy_from_slice(&bv[..c_out]);
+            } else {
+                out_cell.fill(0.0);
+            }
 
-                // Accumulate kernel positions with inline padding check
-                for ky in 0..kh {
-                    let iy = oy * stride_h + ky;
-                    let in_y = iy as isize - pad_top as isize;
+            // Accumulate kernel positions with inline padding check
+            for ky in 0..kh {
+                let iy = oy * stride_h + ky;
+                let in_y = iy as isize - pad_top as isize;
 
-                    for kx in 0..kw {
-                        let ix = ox * stride_w + kx;
-                        let in_x = ix as isize - pad_left as isize;
+                for kx in 0..kw {
+                    let ix = ox * stride_w + kx;
+                    let in_x = ix as isize - pad_left as isize;
 
-                        let input_pixel = if in_y >= 0
-                            && (in_y as usize) < in_h
-                            && in_x >= 0
-                            && (in_x as usize) < in_w
-                        {
-                            let offset =
-                                batch_in_base + (in_y as usize * in_w + in_x as usize) * c_in;
-                            &in_data[offset..offset + c_in]
-                        } else {
-                            &zero_pixel
-                        };
+                    let input_pixel = if in_y >= 0
+                        && (in_y as usize) < in_h
+                        && in_x >= 0
+                        && (in_x as usize) < in_w
+                    {
+                        let offset = batch_in_base + (in_y as usize * in_w + in_x as usize) * c_in;
+                        &in_data[offset..offset + c_in]
+                    } else {
+                        &zero_pixel
+                    };
 
-                        let k_base = (ky * kw + kx) * c_in * c_out;
-                        for ic in 0..c_in {
-                            let iv = input_pixel[ic];
-                            let kb = k_base + ic * c_out;
-                            conv_fma_row(out_cell, &ker_data[kb..kb + c_out], iv);
-                        }
+                    let k_base = (ky * kw + kx) * c_in * c_out;
+                    for ic in 0..c_in {
+                        let iv = input_pixel[ic];
+                        let kb = k_base + ic * c_out;
+                        conv_fma_row(out_cell, &ker_data[kb..kb + c_out], iv);
                     }
                 }
             }
+        }
 
-            apply_conv_activation_inplace(out_row, activation);
+        apply_conv_activation_inplace(out_row, activation);
+    };
+
+    if should_parallelize_len(output_len, config.min_parallel_output_elements, None) {
+        par_chunks_mut_dispatch(&mut output, out_row_len, process_row);
+    } else {
+        for (row_idx, out_row) in output.chunks_mut(out_row_len).enumerate() {
+            process_row(row_idx, out_row);
         }
     }
 
