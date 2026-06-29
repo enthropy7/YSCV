@@ -555,6 +555,8 @@ fn winograd_conv2d_nhwc(
     pad_right: usize,
     activation: Activation,
 ) -> Result<Tensor, KernelError> {
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
     let padded_h = in_h + pad_top + pad_bottom;
     let padded_w = in_w + pad_left + pad_right;
     let out_h = padded_h - 2; // (padded_h - 3) / 1 + 1
@@ -573,6 +575,8 @@ fn winograd_conv2d_nhwc(
     let mut output = AlignedVec::<f32>::uninitialized(batch * out_h * out_w * c_out);
 
     for b in 0..batch {
+        use crate::GemmEpilogue;
+
         let in_batch = &input[b * in_h * in_w * c_in..(b + 1) * in_h * in_w * c_in];
 
         // 2. Input transform: for each tile, for each channel, compute B^T * d * B
@@ -611,11 +615,36 @@ fn winograd_conv2d_nhwc(
         //    V[alpha]: [n_tiles, c_in], U[alpha]: [c_in, c_out]
         //    M[alpha]: [n_tiles, c_out]
         let mut m_buf = vec![0.0f32; 16 * n_tiles * c_out];
+        let epilogue = GemmEpilogue::IDENTITY;
+        let config = ParallelMatmulConfig::default();
+
+        let packed_u: Option<Vec<_>> =
+            if should_parallelize_len(m_buf.len(), config.min_parallel_output_elements, None) {
+                Some(
+                    (0..16)
+                        .into_par_iter()
+                        .map(|a| {
+                            use crate::pack_b_for_session;
+
+                            let u_slice = &u[a * c_in * c_out..(a + 1) * c_in * c_out];
+                            pack_b_for_session(u_slice, c_in, c_out)
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
         for a in 0..16 {
+            use crate::matmul_2d_slices_fused_maybe_packed;
+
             let v_slice = &v[a * n_tiles * c_in..(a + 1) * n_tiles * c_in];
             let u_slice = &u[a * c_in * c_out..(a + 1) * c_in * c_out];
             let m_slice = &mut m_buf[a * n_tiles * c_out..(a + 1) * n_tiles * c_out];
-            super::super::matmul::blas_sgemm(v_slice, u_slice, m_slice, n_tiles, c_in, c_out);
+            let packed = packed_u.as_ref().map(|packed_u| packed_u[a].as_ref());
+
+            matmul_2d_slices_fused_maybe_packed(
+                v_slice, n_tiles, c_in, u_slice, c_out, m_slice, packed, epilogue, config, None,
+            );
         }
 
         // 4. Output transform: A^T * M * A → 2×2 output per tile, with bias + activation
