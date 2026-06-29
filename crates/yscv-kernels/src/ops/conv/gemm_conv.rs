@@ -1159,4 +1159,93 @@ mod tests {
             assert_eq!(scalar_output, vectorized_output);
         }
     }
+
+    fn assert_winograd_matches_indirect_padded(with_bias: bool, activation: Activation) {
+        let batch = 2;
+        let in_h = 8;
+        let in_w = 9;
+        let c_in = 3;
+        let c_out = 5;
+        let pad_top = 1;
+        let pad_left = 1;
+        let pad_bottom = 1;
+        let pad_right = 1;
+
+        let input_data: Vec<f32> = (0..batch * in_h * in_w * c_in)
+            .map(|i| (i as f32 % 17.0) * 0.05 - 0.4)
+            .collect();
+        let kernel_data: Vec<f32> = (0..3 * 3 * c_in * c_out)
+            .map(|i| (i as f32 % 11.0) * 0.03 - 0.15)
+            .collect();
+
+        let input = Tensor::from_vec(vec![batch, in_h, in_w, c_in], input_data).unwrap();
+        let kernel = Tensor::from_vec(vec![3, 3, c_in, c_out], kernel_data).unwrap();
+        let bias = with_bias.then(|| {
+            let bias_data: Vec<f32> = (0..c_out).map(|i| i as f32 * 0.07 - 0.13).collect();
+            Tensor::from_vec(vec![c_out], bias_data).unwrap()
+        });
+
+        let winograd = winograd_conv2d_nhwc(
+            input.data(),
+            kernel.data(),
+            bias.as_ref().map(Tensor::data),
+            batch,
+            in_h,
+            in_w,
+            c_in,
+            c_out,
+            pad_top,
+            pad_left,
+            pad_bottom,
+            pad_right,
+            activation,
+        )
+        .unwrap();
+        let indirect = conv2d_nhwc_indirect_padded(
+            &input,
+            &kernel,
+            bias.as_ref(),
+            1,
+            1,
+            pad_top,
+            pad_left,
+            pad_bottom,
+            pad_right,
+            activation,
+        )
+        .unwrap();
+
+        assert_eq!(winograd.shape(), indirect.shape());
+        for (idx, (&actual, &expected)) in winograd.data().iter().zip(indirect.data()).enumerate() {
+            let diff = (actual - expected).abs();
+            assert!(
+                diff <= 1.0e-4,
+                "with_bias={with_bias} activation={activation:?} idx={idx} actual={actual} expected={expected} diff={diff}"
+            );
+        }
+    }
+
+    #[test]
+    fn winograd_conv2d_matches_indirect_padded() {
+        assert_winograd_matches_indirect_padded(false, Activation::None);
+    }
+
+    #[test]
+    fn winograd_conv2d_matches_indirect_padded_bias_only() {
+        assert_winograd_matches_indirect_padded(true, Activation::None);
+    }
+
+    #[test]
+    fn winograd_conv2d_matches_indirect_padded_activation_only() {
+        for activation in [Activation::Relu, Activation::Silu] {
+            assert_winograd_matches_indirect_padded(false, activation);
+        }
+    }
+
+    #[test]
+    fn winograd_conv2d_matches_indirect_padded_with_bias_and_activation() {
+        for activation in [Activation::Relu, Activation::Silu] {
+            assert_winograd_matches_indirect_padded(true, activation);
+        }
+    }
 }
