@@ -327,7 +327,7 @@ pub(super) fn conv2d_im2col_gemm_fused(
 ///
 /// Input `kernel` is `[kH=3, kW=3, c_in, c_out]` (NHWC / HWIO).
 /// Output is `[16, c_in, c_out]` (alpha-major, then c_in, then c_out).
-#[cfg(all(feature = "blas", not(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 fn winograd_transform_weights_f32(kernel: &[f32], c_in: usize, c_out: usize) -> Vec<f32> {
     // G = [[1,0,0],[0.5,0.5,0.5],[0.5,-0.5,0.5],[0,0,1]]
     let mut out = vec![0.0f32; 16 * c_in * c_out];
@@ -369,7 +369,7 @@ fn winograd_transform_weights_f32(kernel: &[f32], c_in: usize, c_out: usize) -> 
 /// Winograd input transform: B^T * d * B for one 4×4 tile.
 ///
 /// B^T = [[1,0,-1,0],[0,1,1,0],[0,-1,1,0],[0,1,0,-1]]
-#[cfg(all(feature = "blas", not(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 #[inline]
 fn winograd_input_tile(d: &[f32; 16], out: &mut [f32; 16]) {
     #[cfg(target_arch = "aarch64")]
@@ -397,7 +397,6 @@ fn winograd_input_tile(d: &[f32; 16], out: &mut [f32; 16]) {
 }
 
 #[cfg(all(
-    feature = "blas",
     not(target_os = "macos"),
     any(test, not(any(target_arch = "aarch64", target_arch = "x86_64")))
 ))]
@@ -421,7 +420,7 @@ fn winograd_input_tile_scalar(d: &[f32; 16], out: &mut [f32; 16]) {
     }
 }
 
-#[cfg(all(feature = "blas", not(target_os = "macos"), target_arch = "aarch64"))]
+#[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
 #[inline]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn transpose4x4_f32_neon(
@@ -448,7 +447,7 @@ unsafe fn transpose4x4_f32_neon(
     (c0, c1, c2, c3)
 }
 
-#[cfg(all(feature = "blas", not(target_os = "macos"), target_arch = "aarch64"))]
+#[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
 #[inline]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn winograd_input_tile_neon(d: &[f32; 16], out: &mut [f32; 16]) {
@@ -481,7 +480,7 @@ unsafe fn winograd_input_tile_neon(d: &[f32; 16], out: &mut [f32; 16]) {
     vst1q_f32(out.as_mut_ptr().add(12), r_out3);
 }
 
-#[cfg(all(feature = "blas", not(target_os = "macos"), target_arch = "x86_64"))]
+#[cfg(all(not(target_os = "macos"), target_arch = "x86_64"))]
 #[inline]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn winograd_input_tile_sse(d: &[f32; 16], out: &mut [f32; 16]) {
@@ -519,7 +518,7 @@ unsafe fn winograd_input_tile_sse(d: &[f32; 16], out: &mut [f32; 16]) {
 /// Winograd output transform: A^T * m * A, yielding 2×2 output from 4×4 product.
 ///
 /// A^T = [[1,1,1,0],[0,1,-1,-1]]
-#[cfg(all(feature = "blas", not(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 #[inline]
 fn winograd_output_tile(m: &[f32; 16], out: &mut [f32; 4]) {
     // A^T * m → 2×4 intermediate (rows transformed)
@@ -539,7 +538,7 @@ fn winograd_output_tile(m: &[f32; 16], out: &mut [f32; 4]) {
 ///
 /// Only valid for 3×3 kernels with stride=1.
 /// `input` NHWC `[batch, H, W, c_in]` (unpadded), `kernel` `[3, 3, c_in, c_out]`.
-#[cfg(all(feature = "blas", not(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 fn winograd_conv2d_nhwc(
     input: &[f32],
     kernel: &[f32],
@@ -768,7 +767,7 @@ pub fn conv2d_nhwc_padded(
     // Winograd F(2×2,3×3): on non-Apple platforms, use Winograd for 3×3 stride-1
     // convolutions with enough spatial output to amortise the transform overhead.
     // On macOS, Apple Accelerate's AMX-backed sgemm makes im2col+GEMM faster.
-    #[cfg(all(feature = "blas", not(target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     if kh == 3 && kw == 3 && stride_h == 1 && stride_w == 1 && out_h * out_w >= 64 {
         super::note_conv_path(super::ConvKernelPath::Winograd3x3);
         return winograd_conv2d_nhwc(
@@ -1116,7 +1115,6 @@ fn im2col_nhwc_padded_tile(
 
 #[cfg(all(
     test,
-    feature = "blas",
     not(target_os = "macos"),
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
