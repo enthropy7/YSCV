@@ -175,10 +175,15 @@ fn tensor(shape: Vec<usize>, data: Vec<f32>) -> Result<Tensor, String> {
     Tensor::from_vec(shape, data).map_err(|e| format!("tensor build failed: {e}"))
 }
 
-fn prepare_small(asset_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(asset_dir)
-        .map_err(|e| format!("create {}: {e}", asset_dir.display()))?;
-    let conv = OnnxExportGraph {
+fn conv3x3_relu_graph(
+    in_c: usize,
+    out_c: usize,
+    h: usize,
+    w: usize,
+    w_scale: f32,
+    b_scale: f32,
+) -> Result<OnnxExportGraph, String> {
+    Ok(OnnxExportGraph {
         nodes: vec![
             OnnxExportNode {
                 op_type: "Conv".to_string(),
@@ -206,21 +211,85 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
         initializers: vec![
             (
                 "weight".to_string(),
-                tensor(vec![8, 3, 3, 3], patterned(8 * 3 * 3 * 3, 0.01))?,
+                tensor(
+                    vec![out_c, in_c, 3, 3],
+                    patterned(out_c * in_c * 3 * 3, w_scale),
+                )?,
             ),
-            ("bias".to_string(), tensor(vec![8], patterned(8, 0.005))?),
+            (
+                "bias".to_string(),
+                tensor(vec![out_c], patterned(out_c, b_scale))?,
+            ),
         ],
         inputs: vec![OnnxExportValueInfo {
             name: "input".to_string(),
-            shape: vec![1, 3, 64, 64],
+            shape: vec![1, in_c as i64, h as i64, w as i64],
         }],
         outputs: vec![OnnxExportValueInfo {
             name: "output".to_string(),
-            shape: vec![1, 8, 64, 64],
+            shape: vec![1, out_c as i64, h as i64, w as i64],
         }],
         opset_version: 13,
         int64_initializers: Vec::new(),
-    };
+    })
+}
+
+fn gemm_relu_graph(
+    m: usize,
+    k: usize,
+    n: usize,
+    w_scale: f32,
+    b_scale: f32,
+) -> Result<OnnxExportGraph, String> {
+    Ok(OnnxExportGraph {
+        nodes: vec![
+            OnnxExportNode {
+                op_type: "Gemm".to_string(),
+                name: "gemm".to_string(),
+                inputs: vec![
+                    "input".to_string(),
+                    "weight".to_string(),
+                    "bias".to_string(),
+                ],
+                outputs: vec!["gemm_out".to_string()],
+                attributes: vec![
+                    OnnxExportAttr::Float("alpha".to_string(), 1.0),
+                    OnnxExportAttr::Float("beta".to_string(), 1.0),
+                    OnnxExportAttr::Int("transB".to_string(), 1),
+                ],
+            },
+            OnnxExportNode {
+                op_type: "Relu".to_string(),
+                name: "relu".to_string(),
+                inputs: vec!["gemm_out".to_string()],
+                outputs: vec!["output".to_string()],
+                attributes: Vec::new(),
+            },
+        ],
+        initializers: vec![
+            (
+                "weight".to_string(),
+                tensor(vec![n, k], patterned(n * k, w_scale))?,
+            ),
+            ("bias".to_string(), tensor(vec![n], patterned(n, b_scale))?),
+        ],
+        inputs: vec![OnnxExportValueInfo {
+            name: "input".to_string(),
+            shape: vec![m as i64, k as i64],
+        }],
+        outputs: vec![OnnxExportValueInfo {
+            name: "output".to_string(),
+            shape: vec![m as i64, n as i64],
+        }],
+        opset_version: 13,
+        int64_initializers: Vec::new(),
+    })
+}
+
+fn prepare_small(asset_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(asset_dir)
+        .map_err(|e| format!("create {}: {e}", asset_dir.display()))?;
+    let conv = conv3x3_relu_graph(3, 8, 64, 64, 0.01, 0.005)?;
     export_onnx_model_to_file(
         &conv,
         "yscv-pr-bench",
@@ -365,56 +434,51 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
     )
     .map_err(|e| format!("export small residual: {e}"))?;
 
-    let gemm = OnnxExportGraph {
-        nodes: vec![
-            OnnxExportNode {
-                op_type: "Gemm".to_string(),
-                name: "gemm".to_string(),
-                inputs: vec![
-                    "input".to_string(),
-                    "weight".to_string(),
-                    "bias".to_string(),
-                ],
-                outputs: vec!["gemm_out".to_string()],
-                attributes: vec![
-                    OnnxExportAttr::Float("alpha".to_string(), 1.0),
-                    OnnxExportAttr::Float("beta".to_string(), 1.0),
-                    OnnxExportAttr::Int("transB".to_string(), 1),
-                ],
-            },
-            OnnxExportNode {
-                op_type: "Relu".to_string(),
-                name: "relu".to_string(),
-                inputs: vec!["gemm_out".to_string()],
-                outputs: vec!["output".to_string()],
-                attributes: Vec::new(),
-            },
-        ],
-        initializers: vec![
-            (
-                "weight".to_string(),
-                tensor(vec![64, 128], patterned(64 * 128, 0.002))?,
-            ),
-            ("bias".to_string(), tensor(vec![64], patterned(64, 0.001))?),
-        ],
-        inputs: vec![OnnxExportValueInfo {
-            name: "input".to_string(),
-            shape: vec![1, 128],
-        }],
-        outputs: vec![OnnxExportValueInfo {
-            name: "output".to_string(),
-            shape: vec![1, 64],
-        }],
-        opset_version: 13,
-        int64_initializers: Vec::new(),
-    };
+    let gemm = gemm_relu_graph(1, 128, 64, 0.002, 0.001)?;
     export_onnx_model_to_file(
         &gemm,
         "yscv-pr-bench",
         "small_gemm_relu_1x128",
         &asset_dir.join("small-gemm-relu-1x128.onnx"),
     )
-    .map_err(|e| format!("export small gemm: {e}"))
+    .map_err(|e| format!("export small gemm: {e}"))?;
+
+    // Large-spatial 3×3 stride-1 conv — the dominant Winograd workload in YOLO
+    // backbones. 80×80 output amortises the input/output transforms, so this is
+    // where Winograd should beat im2col+GEMM and where vectorising the
+    // transforms shows up cleanly, without the e2e noise of a full YOLO graph.
+    let wino_spatial = conv3x3_relu_graph(64, 128, 80, 80, 0.004, 0.002)?;
+    export_onnx_model_to_file(
+        &wino_spatial,
+        "yscv-pr-bench",
+        "winograd_3x3_80x80_c64",
+        &asset_dir.join("winograd-3x3-80x80-c64.onnx"),
+    )
+    .map_err(|e| format!("export winograd spatial: {e}"))?;
+
+    // Wide-channel 3×3 stride-1 conv — few tiles, large weight transform. Isolates
+    // the per-inference weight-transform + pack cost (256×256 across 16 tiles),
+    // the term that currently makes Winograd lose; caching packed weights should
+    // move this case the most.
+    let wino_channels = conv3x3_relu_graph(256, 256, 20, 20, 0.002, 0.001)?;
+    export_onnx_model_to_file(
+        &wino_channels,
+        "yscv-pr-bench",
+        "winograd_3x3_20x20_c256",
+        &asset_dir.join("winograd-3x3-20x20-c256.onnx"),
+    )
+    .map_err(|e| format!("export winograd channels: {e}"))?;
+
+    // Medium GEMM (M=256, K=512, N=512) — exercises the blocked multi-row
+    // (mr12/mr6) microkernels, unlike the 1×128 GEMV which only hits the m=1 path.
+    let gemm_mid = gemm_relu_graph(256, 512, 512, 0.002, 0.001)?;
+    export_onnx_model_to_file(
+        &gemm_mid,
+        "yscv-pr-bench",
+        "gemm_relu_256x512x512",
+        &asset_dir.join("gemm-relu-256x512x512.onnx"),
+    )
+    .map_err(|e| format!("export medium gemm: {e}"))
 }
 
 struct XorShift(u32);

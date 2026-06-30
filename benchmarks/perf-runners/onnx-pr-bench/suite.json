@@ -108,6 +108,48 @@
           "source": "random"
         }
       ]
+    },
+    {
+      "name": "winograd_3x3_80x80_c64",
+      "model": "winograd-3x3-80x80-c64.onnx",
+      "iters": 100,
+      "iters_env": "YSCV_PR_BENCH_SMALL_ITERS",
+      "fill": "random",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [1, 64, 80, 80],
+          "source": "random"
+        }
+      ]
+    },
+    {
+      "name": "winograd_3x3_20x20_c256",
+      "model": "winograd-3x3-20x20-c256.onnx",
+      "iters": 150,
+      "iters_env": "YSCV_PR_BENCH_SMALL_ITERS",
+      "fill": "random",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [1, 256, 20, 20],
+          "source": "random"
+        }
+      ]
+    },
+    {
+      "name": "gemm_relu_256x512x512",
+      "model": "gemm-relu-256x512x512.onnx",
+      "iters": 200,
+      "iters_env": "YSCV_PR_BENCH_SMALL_ITERS",
+      "fill": "random",
+      "inputs": [
+        {
+          "name": "input",
+          "shape": [256, 512],
+          "source": "random"
+        }
+      ]
     }
   ]
 }
