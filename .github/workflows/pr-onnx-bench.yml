@@ -30,7 +30,7 @@ jobs:
 
     env:
       ASSET_DIR: /home/runner/.cache/yscv-onnx-pr-bench/assets
-      OUT_DIR: ${{ runner.temp }}/yscv-onnx-pr-bench
+      OUT_DIR: /home/runner/work/_temp/yscv-onnx-pr-bench
 
     steps:
       - name: Checkout default branch
