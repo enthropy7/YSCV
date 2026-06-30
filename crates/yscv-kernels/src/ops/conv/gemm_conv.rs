@@ -375,172 +375,88 @@ fn winograd_transform_weights_f32(kernel: &[f32], c_in: usize, c_out: usize) -> 
     out
 }
 
-/// Winograd input transform: B^T * d * B for one 4×4 tile.
-///
-/// B^T = [[1,0,-1,0],[0,1,1,0],[0,-1,1,0],[0,1,0,-1]]
+// Channel-vectorised elementwise combiners for the Winograd transforms. Plain
+// slice loops so the autovectoriser emits the target SIMD (AVX/SSE/NEON) and
+// falls back to scalar — one source, every architecture.
 #[cfg(not(target_os = "macos"))]
 #[inline]
-fn winograd_input_tile(d: &[f32; 16], out: &mut [f32; 16]) {
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: `d` and `out` reference 16 contiguous f32 values; aarch64 implies NEON.
-        #[allow(unsafe_code)]
-        unsafe {
-            winograd_input_tile_neon(d, out);
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: `d` and `out` reference 16 contiguous f32 values; x86_64 implies SSE.
-        #[allow(unsafe_code)]
-        unsafe {
-            winograd_input_tile_sse(d, out);
-        }
-    }
-
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-    {
-        winograd_input_tile_scalar(d, out);
+fn v_sub(dst: &mut [f32], a: &[f32], b: &[f32]) {
+    for ((o, &x), &y) in dst.iter_mut().zip(a).zip(b) {
+        *o = x - y;
     }
 }
-
-#[cfg(all(
-    not(target_os = "macos"),
-    any(test, not(any(target_arch = "aarch64", target_arch = "x86_64")))
-))]
-#[inline]
-fn winograd_input_tile_scalar(d: &[f32; 16], out: &mut [f32; 16]) {
-    // B^T * d → 4×4 intermediate (rows transformed)
-    let mut bd = [0.0f32; 16];
-    for col in 0..4 {
-        bd[col] = d[col] - d[2 * 4 + col];
-        bd[4 + col] = d[4 + col] + d[2 * 4 + col];
-        bd[8 + col] = -d[4 + col] + d[2 * 4 + col];
-        bd[12 + col] = d[4 + col] - d[3 * 4 + col];
-    }
-    // (B^T * d) * B → 4×4 (columns transformed)
-    for row in 0..4 {
-        let r = row * 4;
-        out[r] = bd[r] - bd[r + 2];
-        out[r + 1] = bd[r + 1] + bd[r + 2];
-        out[r + 2] = -bd[r + 1] + bd[r + 2];
-        out[r + 3] = bd[r + 1] - bd[r + 3];
-    }
-}
-
-#[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
-#[inline]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn transpose4x4_f32_neon(
-    r0: std::arch::aarch64::float32x4_t,
-    r1: std::arch::aarch64::float32x4_t,
-    r2: std::arch::aarch64::float32x4_t,
-    r3: std::arch::aarch64::float32x4_t,
-) -> (
-    std::arch::aarch64::float32x4_t,
-    std::arch::aarch64::float32x4_t,
-    std::arch::aarch64::float32x4_t,
-    std::arch::aarch64::float32x4_t,
-) {
-    use std::arch::aarch64::{vcombine_f32, vget_high_f32, vget_low_f32, vtrnq_f32};
-
-    let t0 = vtrnq_f32(r0, r1);
-    let t1 = vtrnq_f32(r2, r3);
-
-    let c0 = vcombine_f32(vget_low_f32(t0.0), vget_low_f32(t1.0));
-    let c1 = vcombine_f32(vget_low_f32(t0.1), vget_low_f32(t1.1));
-    let c2 = vcombine_f32(vget_high_f32(t0.0), vget_high_f32(t1.0));
-    let c3 = vcombine_f32(vget_high_f32(t0.1), vget_high_f32(t1.1));
-
-    (c0, c1, c2, c3)
-}
-
-#[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
-#[inline]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn winograd_input_tile_neon(d: &[f32; 16], out: &mut [f32; 16]) {
-    use std::arch::aarch64::{vaddq_f32, vld1q_f32, vst1q_f32, vsubq_f32};
-
-    let r0 = vld1q_f32(d.as_ptr().add(0));
-    let r1 = vld1q_f32(d.as_ptr().add(4));
-    let r2 = vld1q_f32(d.as_ptr().add(8));
-    let r3 = vld1q_f32(d.as_ptr().add(12));
-
-    // B^T * d → 4×4 intermediate (rows transformed)
-    let b0 = vsubq_f32(r0, r2);
-    let b1 = vaddq_f32(r1, r2);
-    let b2 = vsubq_f32(r2, r1);
-    let b3 = vsubq_f32(r1, r3);
-
-    let (c0, c1, c2, c3) = transpose4x4_f32_neon(b0, b1, b2, b3);
-
-    // (B^T * d) * B → 4×4 output (columns transformed)
-    let out0 = vsubq_f32(c0, c2);
-    let out1 = vaddq_f32(c1, c2);
-    let out2 = vsubq_f32(c2, c1);
-    let out3 = vsubq_f32(c1, c3);
-
-    let (r_out0, r_out1, r_out2, r_out3) = transpose4x4_f32_neon(out0, out1, out2, out3);
-
-    vst1q_f32(out.as_mut_ptr().add(0), r_out0);
-    vst1q_f32(out.as_mut_ptr().add(4), r_out1);
-    vst1q_f32(out.as_mut_ptr().add(8), r_out2);
-    vst1q_f32(out.as_mut_ptr().add(12), r_out3);
-}
-
-#[cfg(all(not(target_os = "macos"), target_arch = "x86_64"))]
-#[inline]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn winograd_input_tile_sse(d: &[f32; 16], out: &mut [f32; 16]) {
-    use std::arch::x86_64::{
-        _MM_TRANSPOSE4_PS, _mm_add_ps, _mm_loadu_ps, _mm_storeu_ps, _mm_sub_ps,
-    };
-
-    let r0 = _mm_loadu_ps(d.as_ptr().add(0));
-    let r1 = _mm_loadu_ps(d.as_ptr().add(4));
-    let r2 = _mm_loadu_ps(d.as_ptr().add(8));
-    let r3 = _mm_loadu_ps(d.as_ptr().add(12));
-
-    // B^T * d → 4×4 intermediate (rows transformed)
-    let mut b0 = _mm_sub_ps(r0, r2);
-    let mut b1 = _mm_add_ps(r1, r2);
-    let mut b2 = _mm_sub_ps(r2, r1);
-    let mut b3 = _mm_sub_ps(r1, r3);
-
-    _MM_TRANSPOSE4_PS(&mut b0, &mut b1, &mut b2, &mut b3);
-
-    // (B^T * d) * B → 4×4 output (columns transformed)
-    let mut out0 = _mm_sub_ps(b0, b2);
-    let mut out1 = _mm_add_ps(b1, b2);
-    let mut out2 = _mm_sub_ps(b2, b1);
-    let mut out3 = _mm_sub_ps(b1, b3);
-
-    _MM_TRANSPOSE4_PS(&mut out0, &mut out1, &mut out2, &mut out3);
-
-    _mm_storeu_ps(out.as_mut_ptr().add(0), out0);
-    _mm_storeu_ps(out.as_mut_ptr().add(4), out1);
-    _mm_storeu_ps(out.as_mut_ptr().add(8), out2);
-    _mm_storeu_ps(out.as_mut_ptr().add(12), out3);
-}
-
-/// Winograd output transform: A^T * m * A, yielding 2×2 output from 4×4 product.
-///
-/// A^T = [[1,1,1,0],[0,1,-1,-1]]
 #[cfg(not(target_os = "macos"))]
 #[inline]
-fn winograd_output_tile(m: &[f32; 16], out: &mut [f32; 4]) {
-    // A^T * m → 2×4 intermediate (rows transformed)
-    let mut am = [0.0f32; 8];
-    for col in 0..4 {
-        am[col] = m[col] + m[4 + col] + m[8 + col];
-        am[4 + col] = m[4 + col] - m[8 + col] - m[12 + col];
+fn v_add(dst: &mut [f32], a: &[f32], b: &[f32]) {
+    for ((o, &x), &y) in dst.iter_mut().zip(a).zip(b) {
+        *o = x + y;
     }
-    // (A^T * m) * A → 2×2 (columns transformed)
-    out[0] = am[0] + am[1] + am[2];
-    out[1] = am[1] - am[2] - am[3];
-    out[2] = am[4] + am[5] + am[6];
-    out[3] = am[5] - am[6] - am[7];
+}
+#[cfg(not(target_os = "macos"))]
+#[inline]
+fn v_add3(dst: &mut [f32], a: &[f32], b: &[f32], c: &[f32]) {
+    for (((o, &x), &y), &z) in dst.iter_mut().zip(a).zip(b).zip(c) {
+        *o = x + y + z;
+    }
+}
+#[cfg(not(target_os = "macos"))]
+#[inline]
+fn v_sub2(dst: &mut [f32], a: &[f32], b: &[f32], c: &[f32]) {
+    for (((o, &x), &y), &z) in dst.iter_mut().zip(a).zip(b).zip(c) {
+        *o = x - y - z;
+    }
+}
+#[cfg(not(target_os = "macos"))]
+#[inline]
+fn v_add3_bias(dst: &mut [f32], a: &[f32], b: &[f32], c: &[f32], bias: &[f32]) {
+    for ((((o, &x), &y), &z), &bb) in dst.iter_mut().zip(a).zip(b).zip(c).zip(bias) {
+        *o = x + y + z + bb;
+    }
+}
+#[cfg(not(target_os = "macos"))]
+#[inline]
+fn v_sub2_bias(dst: &mut [f32], a: &[f32], b: &[f32], c: &[f32], bias: &[f32]) {
+    for ((((o, &x), &y), &z), &bb) in dst.iter_mut().zip(a).zip(b).zip(c).zip(bias) {
+        *o = x - y - z + bb;
+    }
+}
+
+/// Transformed + packed Winograd weights, memoised across inferences.
+#[cfg(not(target_os = "macos"))]
+struct WinogradCachedWeights {
+    u: Vec<f32>,
+    packed: Vec<std::sync::Arc<crate::PackedB>>,
+}
+
+/// Memoise the weight transform `U = GgGᵀ` and the per-α GEMM packing by kernel
+/// pointer. Both depend only on the (constant) conv weights, so this turns
+/// per-inference work into a one-time cost. Keyed on the weight data pointer
+/// plus shape — fine for ONNX initializers, which outlive the session.
+#[cfg(not(target_os = "macos"))]
+fn winograd_cached_weights(
+    kernel: &[f32],
+    c_in: usize,
+    c_out: usize,
+) -> std::sync::Arc<WinogradCachedWeights> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    static CACHE: OnceLock<
+        Mutex<HashMap<(usize, usize, usize, usize), Arc<WinogradCachedWeights>>>,
+    > = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (kernel.as_ptr() as usize, kernel.len(), c_in, c_out);
+    let mut guard = cache.lock().expect("winograd weight cache poisoned");
+    Arc::clone(guard.entry(key).or_insert_with(|| {
+        let u = winograd_transform_weights_f32(kernel, c_in, c_out);
+        let packed = (0..16)
+            .map(|a| {
+                let u_slice = &u[a * c_in * c_out..(a + 1) * c_in * c_out];
+                crate::pack_b_for_session(u_slice, c_in, c_out)
+            })
+            .collect();
+        Arc::new(WinogradCachedWeights { u, packed })
+    }))
 }
 
 /// Full Winograd F(2×2, 3×3) convolution for NHWC layout.
@@ -575,8 +491,11 @@ fn winograd_conv2d_nhwc(
     let tile_w = out_w.div_ceil(2);
     let n_tiles = tile_h * tile_w;
 
-    // 1. Transform weights: [16, c_in, c_out]
-    let u = winograd_transform_weights_f32(kernel, c_in, c_out);
+    // 1. Transformed + packed weights, memoised by kernel pointer. Both the
+    //    weight transform and the GEMM packing depend only on the constant
+    //    kernel, so they run once per weight instead of once per inference.
+    let weights = winograd_cached_weights(kernel, c_in, c_out);
+    let u: &[f32] = &weights.u;
 
     // SAFETY: every element written by the GEMM + output transform.
     #[allow(unsafe_code)]
@@ -587,105 +506,172 @@ fn winograd_conv2d_nhwc(
 
         let in_batch = &input[b * in_h * in_w * c_in..(b + 1) * in_h * in_w * c_in];
 
-        // 2. Input transform: for each tile, for each channel, compute B^T * d * B
-        //    Result layout: [16, n_tiles, c_in]
-        let mut v = vec![0.0f32; 16 * n_tiles * c_in];
-        for th in 0..tile_h {
-            for tw in 0..tile_w {
-                let tile_idx = th * tile_w + tw;
-                // Top-left corner of the 4×4 input tile in padded coords
-                let py0 = th * 2;
-                let px0 = tw * 2;
+        // 2. Input transform Bᵀ·d·B into layout [16, n_tiles, c_in]. All c_in
+        //    channels of a tile are transformed together so the inner loops
+        //    vectorise over the contiguous channel dimension (NHWC); tiles are
+        //    spread across the rayon pool.
+        // SAFETY: every element is written by the input transform below.
+        #[allow(unsafe_code)]
+        let mut v = AlignedVec::<f32>::uninitialized(16 * n_tiles * c_in);
+        let zero_row = vec![0.0f32; c_in];
+        let v_base = v.as_mut_ptr() as usize;
+        let process_in_tile = |tile_idx: usize, t_scratch: &mut [f32]| {
+            let th = tile_idx / tile_w;
+            let tw = tile_idx % tile_w;
+            let py0 = th * 2;
+            let px0 = tw * 2;
 
-                for ci in 0..c_in {
-                    // Load 4×4 tile with implicit zero-padding
-                    let mut d = [0.0f32; 16];
-                    for dy in 0..4 {
-                        for dx in 0..4 {
-                            let iy = (py0 + dy).wrapping_sub(pad_top);
-                            let ix = (px0 + dx).wrapping_sub(pad_left);
-                            if iy < in_h && ix < in_w {
-                                d[dy * 4 + dx] = in_batch[iy * in_w * c_in + ix * c_in + ci];
-                            }
-                        }
-                    }
-                    let mut vt = [0.0f32; 16];
-                    winograd_input_tile(&d, &mut vt);
-                    for a in 0..16 {
-                        v[a * n_tiles * c_in + tile_idx * c_in + ci] = vt[a];
+            // Gather the 16 rows of the 4×4 input tile (zero row for OOB).
+            let mut d_pos: [&[f32]; 16] = [zero_row.as_slice(); 16];
+            for dy in 0..4 {
+                for dx in 0..4 {
+                    let iy = (py0 + dy).wrapping_sub(pad_top);
+                    let ix = (px0 + dx).wrapping_sub(pad_left);
+                    if iy < in_h && ix < in_w {
+                        let off = iy * in_w * c_in + ix * c_in;
+                        d_pos[dy * 4 + dx] = &in_batch[off..off + c_in];
                     }
                 }
             }
-        }
 
-        // 3. Batched GEMM: for each alpha ∈ 0..16,
-        //    M[alpha] = V[alpha] * U[alpha]
-        //    V[alpha]: [n_tiles, c_in], U[alpha]: [c_in, c_out]
-        //    M[alpha]: [n_tiles, c_out]
-        let mut m_buf = vec![0.0f32; 16 * n_tiles * c_out];
+            // Pass 1 — column transform M1 = Bᵀ·d, rows i=0..4 per column dx.
+            for dx in 0..4 {
+                let d0 = d_pos[dx];
+                let d1 = d_pos[4 + dx];
+                let d2 = d_pos[8 + dx];
+                let d3 = d_pos[12 + dx];
+                let base = |i: usize| (i * 4 + dx) * c_in;
+                v_sub(&mut t_scratch[base(0)..base(0) + c_in], d0, d2);
+                v_add(&mut t_scratch[base(1)..base(1) + c_in], d1, d2);
+                v_sub(&mut t_scratch[base(2)..base(2) + c_in], d2, d1);
+                v_sub(&mut t_scratch[base(3)..base(3) + c_in], d1, d3);
+            }
+
+            // Pass 2 — row transform V = M1·B, scattering the 16 αs into v.
+            // SAFETY: each tile writes disjoint [tile_idx*c_in .. +c_in] runs
+            // within each of the 16 α-blocks, so parallel tiles never overlap.
+            for ty in 0..4 {
+                let tb = ty * 4 * c_in;
+                let (m0, m1, m2, m3) = (
+                    &t_scratch[tb..tb + c_in],
+                    &t_scratch[tb + c_in..tb + 2 * c_in],
+                    &t_scratch[tb + 2 * c_in..tb + 3 * c_in],
+                    &t_scratch[tb + 3 * c_in..tb + 4 * c_in],
+                );
+                for tx in 0..4 {
+                    let voff = (ty * 4 + tx) * n_tiles * c_in + tile_idx * c_in;
+                    #[allow(unsafe_code)]
+                    let dst = unsafe {
+                        std::slice::from_raw_parts_mut((v_base as *mut f32).add(voff), c_in)
+                    };
+                    match tx {
+                        0 => v_sub(dst, m0, m2),
+                        1 => v_add(dst, m1, m2),
+                        2 => v_sub(dst, m2, m1),
+                        _ => v_sub(dst, m1, m3),
+                    }
+                }
+            }
+        };
+        (0..n_tiles).into_par_iter().for_each_init(
+            || vec![0.0f32; 16 * c_in],
+            |t_scratch, tile_idx| process_in_tile(tile_idx, t_scratch),
+        );
+
+        // 3. Batched GEMM: M[α] = V[α] · U[α], with V[α] [n_tiles, c_in],
+        //    U[α] [c_in, c_out], M[α] [n_tiles, c_out].
+        // SAFETY: every element is written by the 16 GEMMs (beta=0) below.
+        #[allow(unsafe_code)]
+        let mut m_buf = AlignedVec::<f32>::uninitialized(16 * n_tiles * c_out);
         let epilogue = GemmEpilogue::IDENTITY;
         let config = ParallelMatmulConfig::default();
-
-        let packed_u: Option<Vec<_>> =
-            if should_parallelize_len(m_buf.len(), config.min_parallel_output_elements, None) {
-                Some(
-                    (0..16)
-                        .into_par_iter()
-                        .map(|a| {
-                            use crate::pack_b_for_session;
-
-                            let u_slice = &u[a * c_in * c_out..(a + 1) * c_in * c_out];
-                            pack_b_for_session(u_slice, c_in, c_out)
-                        })
-                        .collect(),
-                )
-            } else {
-                None
-            };
         for a in 0..16 {
             use crate::matmul_2d_slices_fused_maybe_packed;
 
             let v_slice = &v[a * n_tiles * c_in..(a + 1) * n_tiles * c_in];
             let u_slice = &u[a * c_in * c_out..(a + 1) * c_in * c_out];
             let m_slice = &mut m_buf[a * n_tiles * c_out..(a + 1) * n_tiles * c_out];
-            let packed = packed_u.as_ref().map(|packed_u| packed_u[a].as_ref());
 
             matmul_2d_slices_fused_maybe_packed(
-                v_slice, n_tiles, c_in, u_slice, c_out, m_slice, packed, epilogue, config, None,
+                v_slice,
+                n_tiles,
+                c_in,
+                u_slice,
+                c_out,
+                m_slice,
+                Some(weights.packed[a].as_ref()),
+                epilogue,
+                config,
+                None,
             );
         }
 
-        // 4. Output transform: A^T * M * A → 2×2 output per tile, with bias + activation
+        // 4. Output transform: Aᵀ·M·A → 2×2 per tile, channel-vectorised, bias
+        //    folded in. Activation is applied to the whole batch afterwards.
         let out_batch = &mut output[b * out_h * out_w * c_out..(b + 1) * out_h * out_w * c_out];
-        for th in 0..tile_h {
-            for tw in 0..tile_w {
-                let tile_idx = th * tile_w + tw;
-                let oy0 = th * 2;
-                let ox0 = tw * 2;
-                // Clamp: last tile row/col may produce fewer than 2 valid outputs
-                let valid_h = (out_h - oy0).min(2);
-                let valid_w = (out_w - ox0).min(2);
+        let zero_bias = vec![0.0f32; c_out];
+        let bias_slice: &[f32] = bias.unwrap_or(&zero_bias);
+        let out_base = out_batch.as_mut_ptr() as usize;
+        let process_out_tile = |tile_idx: usize, am_scratch: &mut [f32]| {
+            let th = tile_idx / tile_w;
+            let tw = tile_idx % tile_w;
+            let oy0 = th * 2;
+            let ox0 = tw * 2;
+            // Clamp: last tile row/col may produce fewer than 2 valid outputs
+            let valid_h = (out_h - oy0).min(2);
+            let valid_w = (out_w - ox0).min(2);
 
-                for co in 0..c_out {
-                    // Gather the 4×4 product elements for this (tile, channel)
-                    let mut mt = [0.0f32; 16];
-                    for a in 0..16 {
-                        mt[a] = m_buf[a * n_tiles * c_out + tile_idx * c_out + co];
-                    }
-                    let mut otile = [0.0f32; 4];
-                    winograd_output_tile(&mt, &mut otile);
+            // Pass A — Aᵀ·M: am rows i=0..2 per column j=0..4.
+            for j in 0..4 {
+                let mb = |a: usize| {
+                    let o = a * n_tiles * c_out + tile_idx * c_out;
+                    &m_buf[o..o + c_out]
+                };
+                let (mm0, mm1, mm2, mm3) = (mb(j), mb(4 + j), mb(8 + j), mb(12 + j));
+                let a0 = j * c_out;
+                let a1 = (4 + j) * c_out;
+                v_add3(&mut am_scratch[a0..a0 + c_out], mm0, mm1, mm2);
+                v_sub2(&mut am_scratch[a1..a1 + c_out], mm1, mm2, mm3);
+            }
 
-                    // Add bias
-                    let bias_val = bias.map_or(0.0, |bd| bd[co]);
-                    for dy in 0..valid_h {
-                        for dx in 0..valid_w {
-                            let idx = (oy0 + dy) * out_w * c_out + (ox0 + dx) * c_out + co;
-                            out_batch[idx] = otile[dy * 2 + dx] + bias_val;
-                        }
-                    }
+            // Pass B — (Aᵀ·M)·A + bias, writing the valid 2×2 outputs.
+            // SAFETY: each tile owns disjoint output pixels, so parallel tiles
+            // never write the same location.
+            let cs = c_out;
+            let (am00, am01, am02, am03) = (
+                &am_scratch[0..cs],
+                &am_scratch[cs..2 * cs],
+                &am_scratch[2 * cs..3 * cs],
+                &am_scratch[3 * cs..4 * cs],
+            );
+            let (am10, am11, am12, am13) = (
+                &am_scratch[4 * cs..5 * cs],
+                &am_scratch[5 * cs..6 * cs],
+                &am_scratch[6 * cs..7 * cs],
+                &am_scratch[7 * cs..8 * cs],
+            );
+            let owrite = |oy: usize, ox: usize| {
+                let o = (oy * out_w + ox) * c_out;
+                #[allow(unsafe_code)]
+                unsafe {
+                    std::slice::from_raw_parts_mut((out_base as *mut f32).add(o), cs)
+                }
+            };
+            v_add3_bias(owrite(oy0, ox0), am00, am01, am02, bias_slice);
+            if valid_w == 2 {
+                v_sub2_bias(owrite(oy0, ox0 + 1), am01, am02, am03, bias_slice);
+            }
+            if valid_h == 2 {
+                v_add3_bias(owrite(oy0 + 1, ox0), am10, am11, am12, bias_slice);
+                if valid_w == 2 {
+                    v_sub2_bias(owrite(oy0 + 1, ox0 + 1), am11, am12, am13, bias_slice);
                 }
             }
-        }
+        };
+        (0..n_tiles).into_par_iter().for_each_init(
+            || vec![0.0f32; 8 * c_out],
+            |am_scratch, tile_idx| process_out_tile(tile_idx, am_scratch),
+        );
 
         // Apply activation on the whole batch output
         match activation {
@@ -773,11 +759,30 @@ pub fn conv2d_nhwc_padded(
         return Tensor::from_aligned(vec![batch, out_h, out_w, c_out], output).map_err(Into::into);
     }
 
-    // Winograd F(2×2,3×3): on non-Apple platforms, use Winograd for 3×3 stride-1
-    // convolutions with enough spatial output to amortise the transform overhead.
-    // On macOS, Apple Accelerate's AMX-backed sgemm makes im2col+GEMM faster.
+    // Winograd F(2×2,3×3) for 3×3 stride-1. Its 2.25× smaller GEMM is paid for
+    // with per-tile transforms whose cost scales with (c_in + c_out), so it only
+    // wins once both channel counts are large enough and there is enough spatial
+    // output. The channel floor is per-arch: x86 wins broadly (floor 1), aarch64
+    // shows no end-to-end gain over the blocked-GEMM im2col so Winograd is off by
+    // default; override with YSCV_WINO_MIN_CH. macOS uses Accelerate's AMX sgemm.
+    #[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
+    let default_min_ch = usize::MAX;
+    #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
+    let default_min_ch = 1usize;
     #[cfg(not(target_os = "macos"))]
-    if kh == 3 && kw == 3 && stride_h == 1 && stride_w == 1 && out_h * out_w >= 64 {
+    let wino_min_ch: usize = std::env::var("YSCV_WINO_MIN_CH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default_min_ch);
+    #[cfg(not(target_os = "macos"))]
+    if kh == 3
+        && kw == 3
+        && stride_h == 1
+        && stride_w == 1
+        && out_h * out_w >= 256
+        && c_in >= wino_min_ch
+        && c_out >= wino_min_ch
+    {
         super::note_conv_path(super::ConvKernelPath::Winograd3x3);
         return winograd_conv2d_nhwc(
             in_data,
@@ -1129,43 +1134,6 @@ fn im2col_nhwc_padded_tile(
 ))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn winograd_input_tile_vectorized_matches_scalar() {
-        let cases = [
-            [0.0f32; 16],
-            core::array::from_fn(|i| i as f32),
-            core::array::from_fn(|i| i as f32 * 0.25 - 2.0),
-            core::array::from_fn(|i| if i % 2 == 0 { i as f32 } else { -(i as f32) }),
-        ];
-
-        for input in cases {
-            let mut scalar_output = [0.0f32; 16];
-            let mut vectorized_output = [0.0f32; 16];
-
-            winograd_input_tile_scalar(&input, &mut scalar_output);
-
-            #[cfg(target_arch = "aarch64")]
-            {
-                // SAFETY: test arrays are exactly 16 contiguous f32 values.
-                #[allow(unsafe_code)]
-                unsafe {
-                    winograd_input_tile_neon(&input, &mut vectorized_output);
-                }
-            }
-
-            #[cfg(target_arch = "x86_64")]
-            {
-                // SAFETY: test arrays are exactly 16 contiguous f32 values.
-                #[allow(unsafe_code)]
-                unsafe {
-                    winograd_input_tile_sse(&input, &mut vectorized_output);
-                }
-            }
-
-            assert_eq!(scalar_output, vectorized_output);
-        }
-    }
 
     fn assert_winograd_matches_indirect_padded(with_bias: bool, activation: Activation) {
         let batch = 2;
