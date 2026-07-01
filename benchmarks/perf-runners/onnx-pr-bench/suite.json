@@ -3,12 +3,12 @@
     {
       "path": "yolov8n.onnx",
       "env": "YSCV_BENCH_YOLOV8N_URL",
-      "url": "https://huggingface.co/unity/inference-engine-yolo/resolve/6c8bec2eab5fef018527d76285c92b18ac4fd0aa/models/yolov8n.onnx?download=true"
+      "url": "https://huggingface.co/deepghs/yolos/resolve/main/yolov8n/model.onnx"
     },
     {
       "path": "yolo11n.onnx",
       "env": "YSCV_BENCH_YOLO11N_URL",
-      "url": "https://huggingface.co/unity/inference-engine-yolo/resolve/6c8bec2eab5fef018527d76285c92b18ac4fd0aa/models/yolo11n.onnx?download=true"
+      "url": "https://huggingface.co/deepghs/yolos/resolve/main/yolo11n/model.onnx"
     },
     {
       "path": "people.jpg",
