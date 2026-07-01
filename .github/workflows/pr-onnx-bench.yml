@@ -122,7 +122,7 @@ jobs:
             --output "${{ runner.temp }}/onnx-pr-bench-comment.md"
 
       - name: Comment on PR
-        run: gh pr comment "$PR_NUMBER" --body-file "${{ runner.temp }}/onnx-pr-bench-comment.md"
+        run: gh pr comment "$PR_NUMBER" -F "${{ runner.temp }}/onnx-pr-bench-comment.md"
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
