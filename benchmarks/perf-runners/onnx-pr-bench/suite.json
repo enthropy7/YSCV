@@ -13,7 +13,7 @@
     {
       "path": "people.jpg",
       "env": "YSCV_BENCH_PEOPLE_IMAGE_URL",
-      "url": "https://raw.githubusercontent.com/ultralytics/assets/main/bus.jpg"
+      "url": "https://raw.githubusercontent.com/ultralytics/ultralytics/refs/heads/main/ultralytics/assets/bus.jpg"
     }
   ],
   "defaults": {
