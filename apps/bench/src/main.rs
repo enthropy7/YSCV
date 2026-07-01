@@ -211,6 +211,19 @@ fn main() {
         let _c = yscv_kernels::conv2d_nhwc(&conv_input, &conv_kernel, None, 1, 1).unwrap();
     });
 
+    let yolo_stem_input = Tensor::zeros(vec![1, 640, 640, 3]).unwrap();
+    let yolo_stem_kernel = Tensor::zeros(vec![3, 3, 3, 32]).unwrap();
+    bench_n("conv2d_nhwc_yolo_640x640_3x3_32", 100, || {
+        let _c =
+            yscv_kernels::conv2d_nhwc(&yolo_stem_input, &yolo_stem_kernel, None, 1, 1).unwrap();
+    });
+
+    let yolo_p3_input = Tensor::zeros(vec![1, 80, 80, 128]).unwrap();
+    let yolo_p3_kernel = Tensor::zeros(vec![3, 3, 128, 256]).unwrap();
+    bench_n("conv2d_nhwc_yolo_p3_80x80_3x3_256", 100, || {
+        let _c = yscv_kernels::conv2d_nhwc(&yolo_p3_input, &yolo_p3_kernel, None, 1, 1).unwrap();
+    });
+
     // --- Activations (vs PyTorch) ---
     bench_n("sigmoid_1M", 100, || {
         let _s = yscv_kernels::sigmoid(&a1m);

@@ -4,9 +4,10 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use yscv_kernels::{
     Backend, BatchNorm2dParams, LayerNormLastDimParams, ParallelElementwiseConfig,
     ParallelMatmulConfig, SeparableConv2dParams, ThreadedCpuBackend, ThreadedCpuBackendConfig, add,
-    avg_pool2d_nhwc, batch_norm2d_nhwc, conv2d_nhwc, depthwise_conv2d_nhwc, layer_norm_last_dim,
-    log_softmax_last_dim, logsumexp_last_dim, matmul_2d, matmul_2d_sequential, max_pool2d_nhwc,
-    relu, separable_conv2d_nhwc, sigmoid, softmax_last_dim,
+    avg_pool2d_nhwc, batch_norm2d_nhwc, conv2d_nhwc, conv2d_nhwc_indirect_padded,
+    conv2d_nhwc_padded, depthwise_conv2d_nhwc, layer_norm_last_dim, log_softmax_last_dim,
+    logsumexp_last_dim, matmul_2d, matmul_2d_sequential, max_pool2d_nhwc, relu,
+    separable_conv2d_nhwc, sigmoid, softmax_last_dim,
 };
 use yscv_tensor::Tensor;
 
@@ -276,6 +277,73 @@ fn bench_conv_modes(c: &mut Criterion) {
                     1,
                 )
                 .expect("conv2d threaded");
+            black_box(out);
+        });
+    });
+    group.finish();
+}
+
+fn bench_winograd_conv_modes(c: &mut Criterion) {
+    let small_input = build_tensor(&[1, 32, 32, 8], 0.43);
+    let small_kernel = build_tensor(&[3, 3, 8, 16], 0.87);
+    let small_bias = build_tensor(&[16], 0.21);
+
+    let yolo_p3_input = build_tensor(&[1, 80, 80, 128], 0.49);
+    let yolo_p3_kernel = build_tensor(&[3, 3, 128, 256], 0.83);
+    let yolo_p3_bias = build_tensor(&[256], 0.27);
+
+    let mut group = c.benchmark_group("kernels_winograd_conv_modes");
+    group.bench_function("winograd_3x3_s1_32x32x8_to16", |b| {
+        b.iter(|| {
+            let out = conv2d_nhwc_padded(
+                black_box(&small_input),
+                black_box(&small_kernel),
+                Some(black_box(&small_bias)),
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                yscv_kernels::Activation::Relu,
+            )
+            .expect("winograd conv2d small");
+            black_box(out);
+        });
+    });
+    group.bench_function("winograd_3x3_s1_yolo_p3_80x80x128_to256", |b| {
+        b.iter(|| {
+            let out = conv2d_nhwc_padded(
+                black_box(&yolo_p3_input),
+                black_box(&yolo_p3_kernel),
+                Some(black_box(&yolo_p3_bias)),
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                yscv_kernels::Activation::Relu,
+            )
+            .expect("winograd conv2d yolo p3");
+            black_box(out);
+        });
+    });
+    group.bench_function("indirect_3x3_s1_yolo_p3_80x80x128_to256", |b| {
+        b.iter(|| {
+            let out = conv2d_nhwc_indirect_padded(
+                black_box(&yolo_p3_input),
+                black_box(&yolo_p3_kernel),
+                Some(black_box(&yolo_p3_bias)),
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                yscv_kernels::Activation::Relu,
+            )
+            .expect("indirect conv2d yolo p3");
             black_box(out);
         });
     });
@@ -593,6 +661,7 @@ criterion_group!(
     bench_elementwise_modes,
     bench_pool_modes,
     bench_conv_modes,
+    bench_winograd_conv_modes,
     bench_depthwise_conv_modes,
     bench_separable_conv_modes,
     bench_batch_norm_modes,
