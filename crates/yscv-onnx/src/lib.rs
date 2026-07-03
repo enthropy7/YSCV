@@ -11,7 +11,6 @@ mod exporter;
 pub mod generate;
 #[path = "loader/mod.rs"]
 mod loader;
-#[path = "optimizer.rs"]
 mod optimizer;
 mod proto;
 pub mod quantize;
