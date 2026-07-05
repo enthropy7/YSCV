@@ -1,4 +1,4 @@
-# Important: Current state of framework is not stable. It is in development. WIP, to be clear. If you found any issues, please report them. You can connect with me via Telegram on my GitHub page or open an issue on GitHub. Stable version will be released soon. Milestone is 0.2.0. 
+# Important: Current state of framework is WIP. It's ready to use for small inputs and special models. Also crates like tensors/kernels etc are self-sufficient. If you found any issues, please report them. You can connect with me via Telegram on my GitHub page or open an issue on GitHub. Stable version will be released soon. Milestone is 0.2.0. 
 
 # yscv
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/enthropy7/YSCV)
