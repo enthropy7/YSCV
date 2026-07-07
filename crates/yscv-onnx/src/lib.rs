@@ -15,6 +15,7 @@ mod optimizer;
 mod proto;
 pub mod quantize;
 mod runner;
+pub mod shape_infer;
 
 pub use dtype::{OnnxDtype, OnnxTensorData};
 pub use error::OnnxError;
@@ -27,8 +28,9 @@ pub use loader::{
     OnnxAttribute, OnnxModel, OnnxNode, OnnxTensor, load_onnx_model, load_onnx_model_from_file,
 };
 pub use optimizer::{
-    GraphStats, fold_constants, fold_conv_bn, fuse_bn_relu, fuse_conv_relu, graph_stats,
-    optimize_onnx_graph, strip_qdq_within_fusion_chains,
+    GraphCost, GraphCostDiff, GraphStats, NodeCost, fold_constants, fold_conv_bn, fuse_bn_relu,
+    fuse_conv_relu, graph_cost, graph_cost_diff, graph_stats, optimize_onnx_graph,
+    strip_qdq_within_fusion_chains,
 };
 pub use quantize::quantize_weights_int4;
 pub use quantize::{CalibrationCollector, CalibrationScope, MinMax};
