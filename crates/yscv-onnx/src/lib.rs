@@ -63,6 +63,10 @@ pub use runner::run_onnx_model;
 pub use runner::run_onnx_model_borrowed;
 pub use runner::run_onnx_model_borrowed_slice;
 pub use runner::{QuantRuntimeStats, quant_runtime_stats, reset_quant_runtime_stats};
+pub use shape_infer::{
+    Dim, ShapeDiagnostic, ShapeInference, ShapeMap, TensorShape, infer_shapes,
+    infer_shapes_from_tensors,
+};
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 pub use runner::metal_runner::{
