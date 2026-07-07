@@ -58,3 +58,7 @@ scripts/sgemm_baseline_*.csv
 *.tmp
 .env
 private/
+
+# Nix
+**/.direnv
+**/result
