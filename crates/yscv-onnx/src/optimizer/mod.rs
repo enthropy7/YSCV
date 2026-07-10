@@ -12,7 +12,15 @@ mod remove_dropout_nodes;
 mod reorder_nodes_for_fusion;
 mod strip_qdq_within_fusion_chains;
 
-use crate::{loader::OnnxModel, optimizer::{eliminate_dead_code::eliminate_dead_code, eliminate_squeeze_unsqueeze_pairs::eliminate_squeeze_unsqueeze_pairs, remove_dropout_nodes::remove_dropout_nodes, reorder_nodes_for_fusion::reorder_nodes_for_fusion}};
+use crate::{
+    loader::OnnxModel,
+    optimizer::{
+        eliminate_dead_code::eliminate_dead_code,
+        eliminate_squeeze_unsqueeze_pairs::eliminate_squeeze_unsqueeze_pairs,
+        remove_dropout_nodes::remove_dropout_nodes,
+        reorder_nodes_for_fusion::reorder_nodes_for_fusion,
+    },
+};
 
 pub use analyze_nchwc::analyze_nchwc;
 pub use fold_constants::fold_constants;
