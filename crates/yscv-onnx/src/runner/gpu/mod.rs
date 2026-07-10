@@ -24,7 +24,7 @@ struct GpuTensor {
 }
 
 /// GPU tensor cache — maps tensor names to device-resident buffers.
-type GpuCache = HashMap<String, GpuTensor>;
+type GpuCache = FxHashMap<String, GpuTensor>;
 
 /// Opaque weight cache that persists transformed weights on GPU across
 /// inference runs. Create with `GpuWeightCache::new()` and pass to
@@ -32,7 +32,7 @@ type GpuCache = HashMap<String, GpuTensor>;
 pub struct GpuWeightCache(GpuCache);
 impl GpuWeightCache {
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self(FxHashMap::default())
     }
 }
 
@@ -96,7 +96,7 @@ pub enum GpuExecAction {
 pub struct GpuExecPlan {
     /// For each tensor name, the last node index that consumes it.
     /// Model outputs are mapped to `usize::MAX` so they are never recycled.
-    pub last_use: HashMap<String, usize>,
+    pub last_use: FxHashMap<String, usize>,
     /// Precomputed action for every node index.
     pub actions: Vec<GpuExecAction>,
     /// Precomputed per-node recycle lists: `recycle_at[i]` = tensor names to
@@ -112,7 +112,7 @@ pub fn plan_gpu_execution(model: &OnnxModel) -> GpuExecPlan {
     let nodes = &model.nodes;
 
     // ── Precompute tensor last-use index ────────────────────────────
-    let mut last_use: HashMap<String, usize> = HashMap::new();
+    let mut last_use: FxHashMap<String, usize> = FxHashMap::default();
     for (i, node) in nodes.iter().enumerate() {
         for inp in &node.inputs {
             if !inp.is_empty() {
@@ -298,8 +298,8 @@ pub fn plan_gpu_execution(model: &OnnxModel) -> GpuExecPlan {
     // ── Diagnostic: print action breakdown ─────────────────────────
     #[cfg(feature = "profile")]
     {
-        let mut op_counts: HashMap<String, u32> = HashMap::new();
-        let mut fusion_counts: HashMap<&str, u32> = HashMap::new();
+        let mut op_counts: FxHashMap<String, u32> = FxHashMap::default();
+        let mut fusion_counts: FxHashMap<&str, u32> = FxHashMap::default();
         for (i, action) in actions.iter().enumerate() {
             match action {
                 GpuExecAction::Skip => {}
@@ -384,8 +384,8 @@ fn gc_insert(gpu: &GpuBackend, gc: &mut GpuCache, name: String, gt: GpuTensor) {
 /// eliminating the per-op device sync that dominates naive GPU dispatch.
 pub fn run_onnx_model_gpu(
     model: &OnnxModel,
-    inputs: HashMap<String, Tensor>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+    inputs: FxHashMap<String, Tensor>,
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let gpu = GpuBackend::new().map_err(|e| OnnxError::DecodeFailed {
         message: format!("GPU init: {e}"),
     })?;
@@ -398,8 +398,8 @@ pub fn run_onnx_model_gpu(
 pub fn run_onnx_model_gpu_with(
     gpu: &GpuBackend,
     model: &OnnxModel,
-    inputs: HashMap<String, Tensor>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+    inputs: FxHashMap<String, Tensor>,
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     run_onnx_model_gpu_cached(gpu, model, inputs, &mut GpuWeightCache::new(), None)
 }
 
@@ -413,10 +413,10 @@ pub fn run_onnx_model_gpu_with(
 pub fn run_onnx_model_gpu_cached(
     gpu: &GpuBackend,
     model: &OnnxModel,
-    inputs: HashMap<String, Tensor>,
+    inputs: FxHashMap<String, Tensor>,
     weight_cache: &mut GpuWeightCache,
     plan: Option<&GpuExecPlan>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     // If no plan was provided, compute one on the fly (original behavior).
     let owned_plan;
     let plan = match plan {
@@ -617,7 +617,7 @@ pub fn run_onnx_model_gpu_cached(
     }
 
     // ── Collect outputs ──────────────────────────────────────────
-    let mut result = HashMap::new();
+    let mut result = FxHashMap::default();
     for name in &model.outputs {
         to_cpu(gpu, name, &mut env, &mut gc)?;
         if let Some(t) = env.get(name) {
@@ -916,8 +916,8 @@ pub fn compile_gpu_plan(
     }
 
     // Separate weight cache entries from activation entries
-    let mut weights = GpuCache::new();
-    let mut pinned = GpuCache::new();
+    let mut weights = GpuCache::default();
+    let mut pinned = GpuCache::default();
     let keys: Vec<String> = gc.keys().cloned().collect();
     for k in keys {
         if let Some(v) = gc.remove(&k) {
@@ -946,7 +946,7 @@ pub fn run_compiled_gpu(
     gpu: &GpuBackend,
     compiled: &CompiledGpuPlan,
     input_data: &[f32],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     // Write new input data to the pre-allocated input buffer
     gpu.write_buffer(compiled.input_buf.raw_buffer(), input_data);
 
@@ -957,7 +957,7 @@ pub fn run_compiled_gpu(
     gpu.flush();
 
     // Download outputs
-    let mut result = HashMap::new();
+    let mut result = FxHashMap::default();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
             let t = gpu.download(out_buf)?;
@@ -1000,7 +1000,7 @@ pub fn run_compiled_gpu_fused(
     gpu: &GpuBackend,
     compiled: &CompiledGpuPlan,
     input_data: &[f32],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     // Write new input data to the pre-allocated input buffer
     gpu.write_buffer(compiled.input_buf.raw_buffer(), input_data);
 
@@ -1008,7 +1008,7 @@ pub fn run_compiled_gpu_fused(
     gpu.replay_recording_fused(&compiled.ops);
 
     // Download outputs
-    let mut result = HashMap::new();
+    let mut result = FxHashMap::default();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
             let t = gpu.download(out_buf)?;
@@ -1044,7 +1044,7 @@ pub fn run_compiled_gpu_fused_timed(
     gpu: &GpuBackend,
     compiled: &CompiledGpuPlan,
     input_data: &[f32],
-) -> Result<(HashMap<String, Tensor>, f64, f64, f64, f64), OnnxError> {
+) -> Result<(FxHashMap<String, Tensor>, f64, f64, f64, f64), OnnxError> {
     let t0 = std::time::Instant::now();
     gpu.write_buffer(compiled.input_buf.raw_buffer(), input_data);
     let t1 = std::time::Instant::now();
@@ -1057,7 +1057,7 @@ pub fn run_compiled_gpu_fused_timed(
     let t3 = std::time::Instant::now();
 
     // Download outputs
-    let mut result = HashMap::new();
+    let mut result = FxHashMap::default();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
             let t = gpu.download(out_buf)?;
@@ -1247,8 +1247,8 @@ fn dispatch(
 /// Returns map of action_label → (total_ms, count).
 pub fn profile_onnx_model_gpu(
     model: &OnnxModel,
-    inputs: HashMap<String, Tensor>,
-) -> Result<HashMap<String, (f64, usize)>, OnnxError> {
+    inputs: FxHashMap<String, Tensor>,
+) -> Result<FxHashMap<String, (f64, usize)>, OnnxError> {
     let gpu = GpuBackend::new().map_err(|e| OnnxError::DecodeFailed {
         message: format!("GPU init: {e}"),
     })?;
@@ -1257,7 +1257,7 @@ pub fn profile_onnx_model_gpu(
 
     // Warm-up run to populate weight cache
     {
-        let mut inputs_warm = HashMap::new();
+        let mut inputs_warm = FxHashMap::default();
         for (k, v) in &inputs {
             inputs_warm.insert(k.clone(), v.clone());
         }
@@ -1267,7 +1267,7 @@ pub fn profile_onnx_model_gpu(
     // Now profile with cached weights
     let mut env = TensorEnv::from_model(model);
     let mut gc: GpuCache = std::mem::take(&mut wc.0);
-    let mut stats: HashMap<String, (f64, usize)> = HashMap::new();
+    let mut stats: FxHashMap<String, (f64, usize)> = FxHashMap::default();
 
     for (name, tensor) in &model.initializers {
         env.insert(name.clone(), tensor.clone());

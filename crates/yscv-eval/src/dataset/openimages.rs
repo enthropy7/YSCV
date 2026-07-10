@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use csv::StringRecord;
 use yscv_detect::{BoundingBox, Detection};
@@ -117,8 +117,8 @@ pub(crate) fn parse_and_build_openimages(
     let predictions = parse_openimages_predictions(predictions_csv)?;
 
     let mut frames = Vec::new();
-    let mut image_index_by_id = HashMap::new();
-    let mut class_id_by_label = HashMap::new();
+    let mut image_index_by_id = FxHashMap::default();
+    let mut class_id_by_label = FxHashMap::default();
 
     for entry in ground_truth {
         let frame_idx = ensure_detection_frame_index(
@@ -154,7 +154,7 @@ pub(crate) fn parse_and_build_openimages(
 
 fn resolve_openimages_class_id(
     label_name: &str,
-    class_id_by_label: &mut HashMap<String, usize>,
+    class_id_by_label: &mut FxHashMap<String, usize>,
 ) -> usize {
     if let Some(class_id) = class_id_by_label.get(label_name) {
         return *class_id;

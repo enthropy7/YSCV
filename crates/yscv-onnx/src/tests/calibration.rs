@@ -74,7 +74,7 @@ fn collector_captures_runner_activations() {
     //   relu_out:  min=0,  max=4
     //   output:    min=0,  max=12
     let input = Tensor::from_vec(vec![1, 1, 2, 2], vec![-1.0, 0.0, 1.0, 2.0]).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("calib_test_input_xyz".to_string(), input);
 
     let collector = CalibrationCollector::new();
@@ -159,7 +159,7 @@ fn no_recording_outside_scope() {
     );
     let model = load_onnx_model(&bytes).unwrap();
     let input = Tensor::from_vec(vec![1, 1, 1, 1], vec![1.0_f32]).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("calib_test_input_xyz".to_string(), input);
 
     let collector = CalibrationCollector::new();
@@ -217,7 +217,7 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
     let input = Tensor::from_vec(vec![1, 4, 2, 2], input_data).unwrap();
 
     // 1) Reference fp32 run.
-    let mut feed_fp32 = HashMap::new();
+    let mut feed_fp32 = FxHashMap::default();
     feed_fp32.insert(input_name.to_string(), input.clone());
     let result_fp32 = run_onnx_model(&model_fp32, feed_fp32).unwrap();
     let y_fp32 = result_fp32[output_name].clone();
@@ -227,7 +227,7 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
     let collector = CalibrationCollector::new();
     {
         let _scope = collector.scope();
-        let mut feed_cal = HashMap::new();
+        let mut feed_cal = FxHashMap::default();
         feed_cal.insert(input_name.to_string(), input.clone());
         let _ = run_onnx_model(&model_fp32, feed_cal).unwrap();
     }
@@ -258,7 +258,7 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
     );
 
     // 4) Run rewritten model.
-    let mut feed_qdq = HashMap::new();
+    let mut feed_qdq = FxHashMap::default();
     feed_qdq.insert(input_name.to_string(), input);
     let result_qdq = run_onnx_model(&model_qdq, feed_qdq).unwrap();
     let y_qdq = &result_qdq[output_name];

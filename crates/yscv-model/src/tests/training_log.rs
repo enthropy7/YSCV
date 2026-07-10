@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::TrainingLog;
 
@@ -6,7 +6,7 @@ use crate::TrainingLog;
 fn test_training_log_records_epochs() {
     let mut log = TrainingLog::new();
     for i in 0..3 {
-        let mut m = HashMap::new();
+        let mut m = FxHashMap::default();
         m.insert("loss".to_string(), 1.0 - i as f32 * 0.1);
         log.log_epoch(m);
     }
@@ -19,7 +19,7 @@ fn test_training_log_get_metric_history() {
     let mut log = TrainingLog::new();
     let losses = [0.9, 0.7, 0.5];
     for &l in &losses {
-        let mut m = HashMap::new();
+        let mut m = FxHashMap::default();
         m.insert("loss".to_string(), l);
         m.insert("acc".to_string(), 1.0 - l);
         log.log_epoch(m);
@@ -41,12 +41,12 @@ fn test_training_log_get_metric_history() {
 fn test_training_log_to_csv() {
     let mut log = TrainingLog::new();
 
-    let mut m1 = HashMap::new();
+    let mut m1 = FxHashMap::default();
     m1.insert("acc".to_string(), 0.8);
     m1.insert("loss".to_string(), 0.5);
     log.log_epoch(m1);
 
-    let mut m2 = HashMap::new();
+    let mut m2 = FxHashMap::default();
     m2.insert("acc".to_string(), 0.9);
     m2.insert("loss".to_string(), 0.3);
     log.log_epoch(m2);

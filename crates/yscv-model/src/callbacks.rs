@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -149,7 +149,7 @@ impl BestModelCheckpoint {
 /// Trait for training callbacks invoked after each epoch.
 pub trait TrainingCallback {
     /// Called after each epoch. Returns true if training should stop.
-    fn on_epoch_end(&mut self, epoch: usize, metrics: &HashMap<String, f32>) -> bool;
+    fn on_epoch_end(&mut self, epoch: usize, metrics: &FxHashMap<String, f32>) -> bool;
 
     /// Called after each batch within an epoch. Default implementation does nothing.
     fn on_batch_end(&mut self, _epoch: usize, _batch: usize, _loss: f32) {}
@@ -164,7 +164,7 @@ impl EarlyStopping {
 }
 
 impl TrainingCallback for EarlyStopping {
-    fn on_epoch_end(&mut self, _epoch: usize, metrics: &HashMap<String, f32>) -> bool {
+    fn on_epoch_end(&mut self, _epoch: usize, metrics: &FxHashMap<String, f32>) -> bool {
         if let Some(&value) = metrics.get(&self.monitor) {
             self.check(value)
         } else {
@@ -182,7 +182,7 @@ impl BestModelCheckpoint {
 }
 
 impl TrainingCallback for BestModelCheckpoint {
-    fn on_epoch_end(&mut self, _epoch: usize, metrics: &HashMap<String, f32>) -> bool {
+    fn on_epoch_end(&mut self, _epoch: usize, metrics: &FxHashMap<String, f32>) -> bool {
         if let Some(&value) = metrics.get(&self.monitor) {
             self.check(value);
         }
@@ -233,7 +233,7 @@ impl MetricsLogger {
 }
 
 impl TrainingCallback for MetricsLogger {
-    fn on_epoch_end(&mut self, epoch: usize, metrics: &HashMap<String, f32>) -> bool {
+    fn on_epoch_end(&mut self, epoch: usize, metrics: &FxHashMap<String, f32>) -> bool {
         let train_loss = metrics
             .get("train_loss")
             .or_else(|| metrics.get("loss"))
@@ -274,7 +274,7 @@ pub fn train_epochs_with_callbacks<F>(
     callbacks: &mut [&mut dyn TrainingCallback],
 ) -> usize
 where
-    F: FnMut(usize) -> HashMap<String, f32>,
+    F: FnMut(usize) -> FxHashMap<String, f32>,
 {
     for epoch in 0..epochs {
         let metrics = train_fn(epoch);

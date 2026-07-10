@@ -27,6 +27,7 @@
 //!   yolo export model=yolov8n.pt format=onnx   # YOLOv8
 //!   yolo export model=yolo11n.pt format=onnx   # YOLOv11
 
+use rustc_hash::FxHashMap;
 use yscv_detect::{
     Detection, coco_labels, decode_yolov8_output, decode_yolov11_output, letterbox_preprocess,
     yolov8_coco_config,
@@ -131,7 +132,7 @@ fn main() {
     {
         println!("\n=== CPU ===");
         println!("Running inference...");
-        let mut inputs = std::collections::HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let outputs = yscv_onnx::run_onnx_model(&model, inputs).expect("Inference failed");
         let output = outputs.values().next().expect("no output");

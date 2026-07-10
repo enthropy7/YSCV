@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashSet;
 
 use prost::Message;
+use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
 use crate::error::OnnxError;
@@ -20,7 +21,7 @@ pub struct OnnxNode {
     pub name: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
-    pub attributes: HashMap<String, OnnxAttribute>,
+    pub attributes: FxHashMap<String, OnnxAttribute>,
 }
 
 /// Supported ONNX attribute value types.
@@ -38,15 +39,15 @@ pub enum OnnxAttribute {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RuntimeModelIndex {
     /// Dense slot id per tensor name for TensorEnv hot-path lookups.
-    pub(crate) name_to_id: HashMap<String, usize>,
+    pub(crate) name_to_id: FxHashMap<String, usize>,
     /// Slot ids for weights pre-permuted OIHW -> KHWC.
-    pub(crate) khwc_weight_ids: HashSet<usize>,
+    pub(crate) khwc_weight_ids: FxHashSet<usize>,
     /// Slot ids for depthwise weights pre-permuted [O,1,KH,KW] -> [KH,KW,C,dm].
-    pub(crate) dw_khwc_weight_ids: HashSet<usize>,
+    pub(crate) dw_khwc_weight_ids: FxHashSet<usize>,
     /// Slot ids for grouped-conv weights pre-permuted [O,I/G,KH,KW] -> [O,KH,KW,I/G].
-    pub(crate) group_khwc_weight_ids: HashSet<usize>,
+    pub(crate) group_khwc_weight_ids: FxHashSet<usize>,
     /// Number of graph uses per value name (input edge count).
-    pub(crate) use_counts: HashMap<String, usize>,
+    pub(crate) use_counts: FxHashMap<String, usize>,
     /// Dense use-count table indexed by runtime slot id.
     pub(crate) use_counts_by_id: Vec<usize>,
     /// Lightweight op tags for fast fusion pattern matching at runtime.
@@ -71,23 +72,23 @@ pub(crate) struct RuntimeModelIndex {
     /// inference, skipping both the fingerprint cache lookup AND the pack
     /// itself on the hot path. Only populated for weights whose dispatch
     /// routes through blocked GEMM (pointwise Conv with KHWC layout, MatMul).
-    pub(crate) prepacked_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
+    pub(crate) prepacked_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
     /// Same pre-packed weights, but indexed by dense runtime slot id.
     /// Lets hot paths bypass string hashing by using `node_input_ids`.
     pub(crate) prepacked_weights_by_id: Vec<Option<std::sync::Arc<yscv_kernels::PackedB>>>,
     /// Load-time packed RHS matrices for symmetric-int8 QLinearConv /
     /// QLinearMatMul / MatMulInteger fast paths. Keyed by the ONNX
     /// weight tensor input name; shared by every inference.
-    pub(crate) prepacked_i8_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
+    pub(crate) prepacked_i8_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
     /// QLinear depthwise 3x3/5x5 weights packed once as KHWC i8 so runtime can
     /// call the NHWC int8 depthwise kernel without per-inference weight repack.
-    pub(crate) prepacked_i8_depthwise: HashMap<String, std::sync::Arc<Vec<i8>>>,
+    pub(crate) prepacked_i8_depthwise: FxHashMap<String, std::sync::Arc<Vec<i8>>>,
     /// Pre-packed PW-reduce weights and biases for `FusedPwDwPwReduce` actions.
     /// Keyed by `pw_reduce_idx` (the original PW reduce node index). Built at
     /// load time after fusion detection so the runner can call
     /// `fused_pw_expand_dw_pw_reduce_3x3` without per-call weight transposing.
     pub(crate) prepacked_fused_pw_dw_pw_reduce:
-        HashMap<usize, std::sync::Arc<FusedPwDwPwReduceWeights>>,
+        FxHashMap<usize, std::sync::Arc<FusedPwDwPwReduceWeights>>,
     /// NHWC-passthrough eligibility: output tensor names of
     /// `Reshape` nodes whose single consumer is a `Transpose(perm=[0,2,1])`
     /// followed by `MatMul` (i.e. a `FusedTransposeMatMul` chain). For
@@ -95,7 +96,7 @@ pub(crate) struct RuntimeModelIndex {
     /// keep the NHWC tag, since `exec_fused_transpose_matmul` handles
     /// NHWC-flagged inputs via the non-trans matmul path. Built once at
     /// load time after `FusedTransposeMatMul` detection.
-    pub(crate) reshape_nhwc_passthrough_safe: HashSet<String>,
+    pub(crate) reshape_nhwc_passthrough_safe: FxHashSet<String>,
 }
 
 /// Residual-Add metadata for the `FusedPwDwPwReduce` action.
@@ -205,7 +206,7 @@ pub(crate) enum NodeAction {
     /// tensor). The Transpose node is elided at dispatch time: the
     /// MatMul reads the pre-transpose input via a `transA=1` kernel
     /// (`matmul_2d_slices_trans_a`), so no intermediate transposed
-    /// tensor hits the env HashMap or memory. Mirrors ORT's
+    /// tensor hits the env FxHashMap or memory. Mirrors ORT's
     /// `MatmulTransposeFusion` contrib op.
     ///
     /// `transpose_idx` is the Transpose node's index (for profile
@@ -360,19 +361,19 @@ pub struct OnnxModel {
     pub graph_name: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
-    pub initializers: HashMap<String, Tensor>,
+    pub initializers: FxHashMap<String, Tensor>,
     pub nodes: Vec<OnnxNode>,
     /// Conv weight names that were pre-permuted OIHW → KHWC at load time.
-    pub(crate) khwc_weights: HashSet<String>,
+    pub(crate) khwc_weights: FxHashSet<String>,
     /// Depthwise conv weight names pre-permuted [O,1,KH,KW] → [KH,KW,C,dm] at load time.
-    pub(crate) dw_khwc_weights: HashSet<String>,
+    pub(crate) dw_khwc_weights: FxHashSet<String>,
     /// Grouped conv weight names pre-permuted [O,I/G,KH,KW] → [O,KH,KW,I/G] at load time.
-    pub(crate) group_khwc_weights: HashSet<String>,
+    pub(crate) group_khwc_weights: FxHashSet<String>,
     /// MatMul/Gemm weights packed to INT4 with per-group fp32 scales for
     /// the LLM decode hot path. Keyed by the original initializer name;
     /// the original `initializers` entry is removed when a weight is
     /// packed so dispatch routes through `packed_int4_gemv_dispatch`.
-    pub(crate) packed_int4_weights: HashMap<String, crate::quantize::PackedInt4Weight>,
+    pub(crate) packed_int4_weights: FxHashMap<String, crate::quantize::PackedInt4Weight>,
     /// Precomputed runtime metadata for fast per-inference environment setup.
     pub(crate) runtime_index: RuntimeModelIndex,
 }
@@ -428,7 +429,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         .map(|v| v.name.clone().unwrap_or_default())
         .collect();
 
-    let mut initializers = HashMap::new();
+    let mut initializers = FxHashMap::default();
     for init in &graph.initializer {
         let name = init.name.clone().unwrap_or_default();
         let tensor = convert_tensor_proto(init)?;
@@ -437,7 +438,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
 
     let mut nodes = Vec::new();
     for node_proto in &graph.node {
-        let mut attributes = HashMap::new();
+        let mut attributes = FxHashMap::default();
         for attr in &node_proto.attribute {
             let attr_name = attr.name.clone().unwrap_or_default();
             let value = convert_attribute(attr);
@@ -454,12 +455,12 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         });
     }
 
-    let matmul_rhs_inputs: HashSet<String> = nodes
+    let matmul_rhs_inputs: FxHashSet<String> = nodes
         .iter()
         .filter(|node| node.op_type == "MatMul")
         .filter_map(|node| node.inputs.get(1).cloned())
         .collect();
-    let graph_outputs: HashSet<String> = outputs.iter().cloned().collect();
+    let graph_outputs: FxHashSet<String> = outputs.iter().cloned().collect();
     let mut folded_nodes = Vec::with_capacity(nodes.len());
     for node in nodes {
         let can_fold_const_transpose = node.op_type == "Transpose"
@@ -487,7 +488,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
 
     // Pre-permute group=1 Conv weights OIHW → KHWC at load time
     // so we don't pay the ~11ms permutation cost on every inference call.
-    let mut khwc_weights = HashSet::new();
+    let mut khwc_weights = FxHashSet::default();
     for node in &nodes {
         if node.op_type != "Conv" || node.inputs.len() < 2 {
             continue;
@@ -526,9 +527,9 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
     // feed both CPU and accelerator runners; the accelerator handles its
     // own pre-permute internally if any.
     #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    let mut dw_khwc_weights = HashSet::new();
+    let mut dw_khwc_weights = FxHashSet::default();
     #[cfg(any(feature = "metal-backend", feature = "gpu"))]
-    let dw_khwc_weights = HashSet::new();
+    let dw_khwc_weights = FxHashSet::default();
     #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
     for node in &nodes {
         if node.op_type != "Conv" || node.inputs.len() < 2 {
@@ -586,9 +587,9 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
     // CPU-only builds. This removes per-inference OIHW reordering in grouped
     // fallback path.
     #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    let mut group_khwc_weights = HashSet::new();
+    let mut group_khwc_weights = FxHashSet::default();
     #[cfg(any(feature = "metal-backend", feature = "gpu"))]
-    let group_khwc_weights = HashSet::new();
+    let group_khwc_weights = FxHashSet::default();
     #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
     for node in &nodes {
         if node.op_type != "Conv" || node.inputs.len() < 2 {
@@ -666,7 +667,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         khwc_weights,
         dw_khwc_weights,
         group_khwc_weights,
-        packed_int4_weights: HashMap::new(),
+        packed_int4_weights: FxHashMap::default(),
         runtime_index,
     })
 }

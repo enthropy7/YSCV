@@ -18,6 +18,7 @@ yscv-onnx = { version = "0.1", path = "../yscv-onnx", optional = true }
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 yscv-video = { version = "0.1", path = "../yscv-video" }
 thiserror.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

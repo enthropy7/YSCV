@@ -40,6 +40,7 @@ yscv-onnx = { version = "0.1", path = "../yscv-onnx" }
 # deps so we gate this on the feature.
 yscv-video = { version = "0.1", path = "../yscv-video", optional = true }
 thiserror.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 

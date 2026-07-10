@@ -20,6 +20,7 @@ yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror.workspace = true
+rustc-hash.workspace = true
 
 [lints]
 workspace = true

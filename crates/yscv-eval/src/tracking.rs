@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use yscv_detect::{BoundingBox, iou};
 use yscv_track::TrackedDetection;
@@ -114,9 +114,9 @@ pub fn idf1(frames: &[TrackingFrame<'_>], config: TrackingEvalConfig) -> Result<
     config.validate()?;
 
     // Count co-occurrences of (gt_object_id, pred_track_id) pairs
-    let mut cooccurrence: HashMap<(u64, u64), u64> = HashMap::new();
-    let mut gt_appearances: HashMap<u64, u64> = HashMap::new();
-    let mut pred_appearances: HashMap<u64, u64> = HashMap::new();
+    let mut cooccurrence: FxHashMap<(u64, u64), u64> = FxHashMap::default();
+    let mut gt_appearances: FxHashMap<u64, u64> = FxHashMap::default();
+    let mut pred_appearances: FxHashMap<u64, u64> = FxHashMap::default();
 
     for frame in frames {
         for gt in frame.ground_truth {
@@ -142,7 +142,7 @@ pub fn idf1(frames: &[TrackingFrame<'_>], config: TrackingEvalConfig) -> Result<
     }
 
     // For each GT object, find the best-matching predicted track (most co-occurrences)
-    let mut best_for_gt: HashMap<u64, (u64, u64)> = HashMap::new(); // gt_id -> (pred_id, count)
+    let mut best_for_gt: FxHashMap<u64, (u64, u64)> = FxHashMap::default(); // gt_id -> (pred_id, count)
     for (&(gt_id, pred_id), &count) in &cooccurrence {
         let entry = best_for_gt.entry(gt_id).or_insert((pred_id, 0));
         if count > entry.1 {
@@ -173,8 +173,8 @@ pub fn hota(frames: &[TrackingFrame<'_>], config: TrackingEvalConfig) -> Result<
     let mut total_fn = 0u64;
 
     // Track which pred_id maps to which gt_id per frame (for association computation)
-    let mut pred_to_gt_per_frame: Vec<HashMap<u64, u64>> = Vec::new();
-    let mut gt_to_pred_per_frame: Vec<HashMap<u64, u64>> = Vec::new();
+    let mut pred_to_gt_per_frame: Vec<FxHashMap<u64, u64>> = Vec::new();
+    let mut gt_to_pred_per_frame: Vec<FxHashMap<u64, u64>> = Vec::new();
 
     for frame in frames {
         let matches = greedy_iou_match(frame, config.iou_threshold);
@@ -186,8 +186,8 @@ pub fn hota(frames: &[TrackingFrame<'_>], config: TrackingEvalConfig) -> Result<
         total_fp += fp_count;
         total_fn += fn_count;
 
-        let mut pred_to_gt = HashMap::new();
-        let mut gt_to_pred = HashMap::new();
+        let mut pred_to_gt = FxHashMap::default();
+        let mut gt_to_pred = FxHashMap::default();
         for &(gt_idx, pred_idx, _) in &matches {
             let gt_id = frame.ground_truth[gt_idx].object_id;
             let pred_id = frame.predictions[pred_idx].track_id;
@@ -263,7 +263,7 @@ pub fn evaluate_tracking(
     let mut false_negatives = 0u64;
     let mut id_switches = 0u64;
     let mut iou_sum = 0.0f32;
-    let mut last_assignment: HashMap<u64, u64> = HashMap::new();
+    let mut last_assignment: FxHashMap<u64, u64> = FxHashMap::default();
 
     for frame in frames {
         total_ground_truth += frame.ground_truth.len() as u64;

@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use yscv_onnx::quantize::{
     CalibrationCollector, fold_constant_qdq_weights_for_yscv_fast, prune_unused_initializers,
@@ -385,8 +386,8 @@ struct TrackingDelta {
 /// the output maps by shape, then compare argmax cell + the box at the fp32
 /// peak cell. Returns `None` if no 1-channel score map is present.
 fn decoded_tracking_delta(
-    out_fp32: &HashMap<String, Tensor>,
-    out_qdq: &HashMap<String, Tensor>,
+    out_fp32: &FxHashMap<String, Tensor>,
+    out_qdq: &FxHashMap<String, Tensor>,
 ) -> Option<TrackingDelta> {
     let mut score: Option<(&Tensor, &Tensor)> = None;
     let mut bbox: Option<(&Tensor, &Tensor)> = None;

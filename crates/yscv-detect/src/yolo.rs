@@ -360,7 +360,7 @@ pub fn detect_yolov8_onnx(
     img_width: usize,
     config: &YoloConfig,
 ) -> Result<Vec<Detection>, crate::DetectError> {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     let input_name = model
         .inputs
@@ -373,7 +373,7 @@ pub fn detect_yolov8_onnx(
         image_data.to_vec(),
     )?;
 
-    let mut inputs = HashMap::new();
+    let mut inputs = FxHashMap::default();
     inputs.insert(input_name, tensor);
 
     let outputs = yscv_onnx::run_onnx_model(model, inputs)?;

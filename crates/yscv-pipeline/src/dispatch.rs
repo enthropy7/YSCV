@@ -29,7 +29,7 @@
 //! **config-driven** path, optimised for correctness and uniformity,
 //! not for sub-millisecond hot loops.
 
-use std::collections::HashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::accelerator::Accelerator;
 use crate::config::InferenceTask;
@@ -139,7 +139,7 @@ struct CpuDispatcher {
     model: yscv_onnx::OnnxModel,
     /// Per-input shape snapshot (from the model's `input_info`), so
     /// `dispatch` can reshape raw bytes into proper tensors.
-    input_shapes: HashMap<String, Vec<usize>>,
+    input_shapes: FxHashMap<String, Vec<usize>>,
 }
 
 impl CpuDispatcher {
@@ -157,7 +157,7 @@ impl CpuDispatcher {
         Ok(Self {
             label: format!("cpu ({})", task.name),
             model,
-            input_shapes: HashMap::new(),
+            input_shapes: FxHashMap::default(),
         })
     }
 }
@@ -168,7 +168,8 @@ impl AcceleratorDispatcher for CpuDispatcher {
     }
 
     fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
-        let mut feed: HashMap<String, yscv_tensor::Tensor> = HashMap::with_capacity(inputs.len());
+        let mut feed: FxHashMap<String, yscv_tensor::Tensor> =
+            FxHashMap::with_capacity_and_hasher(inputs.len(), FxBuildHasher);
         for &(name, bytes) in inputs {
             if bytes.len() % 4 != 0 {
                 return Err(Error::Other(format!(
@@ -671,8 +672,8 @@ impl AcceleratorDispatcher for GpuDispatcher {
 
     fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
         // Same f32-LE byte contract as the other dispatchers.
-        let mut feed: std::collections::HashMap<String, yscv_tensor::Tensor> =
-            std::collections::HashMap::with_capacity(inputs.len());
+        let mut feed: FxHashMap<String, yscv_tensor::Tensor> =
+            FxHashMap::with_capacity_and_hasher(inputs.len(), FxBuildHasher);
         for &(name, bytes) in inputs {
             if bytes.len() % 4 != 0 {
                 return Err(Error::Other(format!(

@@ -1586,7 +1586,7 @@ pub fn hough_circles(
         // Generate circle points using angular discretisation
         let circumference = (2.0 * std::f32::consts::PI * r as f32).ceil() as usize;
         let num_steps = circumference.max(36);
-        let mut visited = std::collections::HashSet::new();
+        let mut visited = rustc_hash::FxHashSet::default();
 
         for step in 0..num_steps {
             let angle = 2.0 * std::f32::consts::PI * step as f32 / num_steps as f32;

@@ -125,7 +125,7 @@ fn run_conv_silu_graph(
     let model = load_onnx_model(&bytes).unwrap();
 
     let input_tensor = Tensor::from_vec(input_shape.to_vec(), input_data.clone()).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input_tensor);
     let result = run_onnx_model(&model, feed).unwrap();
     let actual = result["y"].data().to_vec();

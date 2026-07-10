@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::loader::OnnxModel;
 
@@ -12,7 +12,7 @@ pub struct GraphStats {
 
 /// Computes summary statistics for an ONNX model graph.
 pub fn graph_stats(model: &OnnxModel) -> GraphStats {
-    let mut op_counts = HashMap::new();
+    let mut op_counts = FxHashMap::default();
     for node in &model.nodes {
         *op_counts.entry(node.op_type.clone()).or_insert(0usize) += 1;
     }

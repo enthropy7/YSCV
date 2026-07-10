@@ -191,7 +191,7 @@ fn quantize_dequantize_round_trip_is_close_to_identity() {
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let _ = scale; // explicitly unused: initializer is the source of truth
     let _ = zp;
@@ -223,7 +223,7 @@ fn dynamic_quantize_linear_three_outputs() {
     let bytes =
         build_minimal_onnx_model(vec![node], vec![], vec!["x"], vec!["y", "y_scale", "y_zp"]);
     let model = load_onnx_model(&bytes).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input.clone());
     let result = run_onnx_model(&model, feed).unwrap();
 
@@ -292,7 +292,7 @@ fn qlinear_conv_dequant_conv_quant_round_trip() {
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
     // With unit scales and identity weight, output == clamp(input, -128, 127).
@@ -339,7 +339,7 @@ fn qlinear_matmul_dequant_matmul_quant_round_trip() {
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
     // Reference: plain 2×3 × 3×2 matmul, clamped.
@@ -383,7 +383,7 @@ fn matmul_integer_treats_inputs_as_offset_quantized_int_matmul() {
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     // After zero-point subtraction A becomes [[0,1],[2,3]], B is identity.
     // Result: [[0,1],[2,3]].
     assert_close(result["y"].data(), &[0.0, 1.0, 2.0, 3.0], 1e-5);
@@ -572,7 +572,7 @@ fn resize_nearest_neighbour_doubles_spatial() {
     let bytes =
         build_minimal_onnx_model(vec![node], vec![sizes_init], vec!["x", "sizes"], vec!["y"]);
     let model = load_onnx_model(&bytes).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
     let out = result["y"].data();
@@ -601,7 +601,7 @@ fn upsample_dispatches_through_resize() {
     let bytes =
         build_minimal_onnx_model(vec![node], vec![sizes_init], vec!["x", "sizes"], vec!["y"]);
     let model = load_onnx_model(&bytes).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
     assert_eq!(result["y"].shape(), &[1, 1, 4, 4]);
@@ -627,7 +627,7 @@ fn conv_transpose_doubles_spatial_with_stride2() {
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![weight], vec!["x", "w"], vec!["y"]);
     let model = load_onnx_model(&bytes).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
     assert_eq!(result["y"].shape(), &[1, 1, 2, 2]);
@@ -1554,7 +1554,7 @@ fn conv_integer_treats_inputs_as_offset_quantized_int_conv() {
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     // After x_zp subtraction the input is [0,1,2,3], 1×1 identity conv yields
     // exactly that.
     assert_close(result["y"].data(), &[0.0, 1.0, 2.0, 3.0], 1e-5);

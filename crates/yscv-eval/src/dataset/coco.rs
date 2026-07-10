@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use yscv_detect::{BoundingBox, Detection};
 
@@ -11,7 +11,8 @@ pub(crate) fn build_detection_dataset_from_coco(
     predictions: Vec<CocoPredictionWire>,
 ) -> Result<Vec<DetectionDatasetFrame>, EvalError> {
     let mut frames = Vec::with_capacity(ground_truth.images.len());
-    let mut image_index_by_id = HashMap::with_capacity(ground_truth.images.len());
+    let mut image_index_by_id =
+        FxHashMap::with_capacity_and_hasher(ground_truth.images.len(), FxBuildHasher);
 
     for (frame_idx, image) in ground_truth.images.into_iter().enumerate() {
         if image_index_by_id.insert(image.id, frame_idx).is_some() {

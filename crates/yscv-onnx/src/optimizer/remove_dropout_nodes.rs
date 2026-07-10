@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 
 use crate::loader::OnnxModel;
 
@@ -31,7 +31,7 @@ pub fn remove_dropout_nodes(model: &mut OnnxModel) {
         }
     }
 
-    let dropout_names: HashSet<String> = model
+    let dropout_names: FxHashSet<String> = model
         .nodes
         .iter()
         .filter(|n| n.op_type == "Dropout")

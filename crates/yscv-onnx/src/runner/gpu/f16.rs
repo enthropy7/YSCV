@@ -804,8 +804,8 @@ pub fn compile_gpu_plan_f16(
     }
 
     // Separate weight cache entries from activation entries
-    let mut weights = GpuCache::new();
-    let mut pinned = GpuCache::new();
+    let mut weights = GpuCache::default();
+    let mut pinned = GpuCache::default();
     let keys: Vec<String> = gc.keys().cloned().collect();
     for k in keys {
         if let Some(v) = gc.remove(&k) {
@@ -833,7 +833,7 @@ pub fn run_compiled_gpu_f16_fused(
     gpu: &GpuBackend,
     compiled: &CompiledGpuPlan,
     input_data: &[f32],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     // Write input data as f16
     gpu.write_buffer_f16(compiled.input_buf.raw_buffer(), input_data);
 
@@ -841,7 +841,7 @@ pub fn run_compiled_gpu_f16_fused(
     gpu.replay_recording_fused(&compiled.ops);
 
     // Download outputs — handle f16 and f32 buffers based on f16_io flag
-    let mut result = HashMap::new();
+    let mut result = FxHashMap::default();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, f16_io)) = compiled.output_bufs.get(i) {
             let shape = out_buf.shape();

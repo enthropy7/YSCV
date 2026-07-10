@@ -3,9 +3,9 @@
 //! Usage:
 //!   cargo run --release --example bench_vball_cpu -- /path/to/model.onnx [iterations]
 
-use std::collections::HashMap;
 use std::time::Instant;
 
+use rustc_hash::FxHashMap;
 use yscv_onnx::{load_onnx_model_from_file, profile_onnx_model_cpu, run_onnx_model};
 use yscv_tensor::Tensor;
 
@@ -30,14 +30,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Profile
     if std::env::var("PROFILE").is_ok() {
         println!("Profiling...");
-        let mut pinputs = HashMap::new();
+        let mut pinputs = FxHashMap::default();
         pinputs.insert(input_name.clone(), input.clone());
         let _ = profile_onnx_model_cpu(&model, pinputs);
     }
 
     // Warmup
     println!("Warmup...");
-    let mut inputs = HashMap::new();
+    let mut inputs = FxHashMap::default();
     inputs.insert(input_name.clone(), input.clone());
     let _ = run_onnx_model(&model, inputs)?;
 
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running {iterations} iterations...");
     let mut times = Vec::with_capacity(iterations);
     for i in 0..iterations {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input.clone());
         let t0 = Instant::now();
         let _ = run_onnx_model(&model, inputs)?;

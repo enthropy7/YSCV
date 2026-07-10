@@ -23,7 +23,7 @@ use super::*;
 /// would otherwise contend on a shared lock inside per-op timing.
 #[derive(Default)]
 struct RunnerProfileStore {
-    per_node: HashMap<String, RunnerNodeStat>,
+    per_node: FxHashMap<String, RunnerNodeStat>,
 }
 
 #[derive(Clone, Default)]
@@ -142,7 +142,7 @@ pub fn dump_runner_profile(path: &str) -> Result<(), OnnxError> {
             .map_err(|e| OnnxError::DecodeFailed {
                 message: format!("runner profile registry poisoned: {e}"),
             })?;
-        let mut merged: HashMap<String, RunnerNodeStat> = HashMap::new();
+        let mut merged: FxHashMap<String, RunnerNodeStat> = FxHashMap::default();
         for thread_store in registry.iter() {
             let store = thread_store.lock().map_err(|e| OnnxError::DecodeFailed {
                 message: format!("runner profile per-thread mutex poisoned: {e}"),
@@ -356,7 +356,7 @@ impl ProfileFilter {
 /// unfiltered JSON.
 pub fn profile_onnx_model_cpu(
     model: &OnnxModel,
-    inputs: HashMap<String, Tensor>,
+    inputs: FxHashMap<String, Tensor>,
 ) -> Result<(), OnnxError> {
     use std::time::Instant;
 
@@ -368,7 +368,7 @@ pub fn profile_onnx_model_cpu(
     let nodes = &model.nodes;
     let node_kinds = &model.runtime_index.node_kinds;
     let mut skip = vec![false; nodes.len()];
-    let mut timings: HashMap<String, (f64, usize)> = HashMap::new();
+    let mut timings: FxHashMap<String, (f64, usize)> = FxHashMap::default();
     let filter = ProfileFilter::from_env();
     // Per-instance timings — feed the detail table and `YSCV_PROFILE_JSON`.
     let mut instance_timings: Vec<NodeTiming> = Vec::with_capacity(nodes.len());

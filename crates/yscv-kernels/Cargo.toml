@@ -30,6 +30,7 @@ thiserror.workspace = true
 wgpu = { version = "29", optional = true }
 libc = { version = "0.2", optional = true }
 tempfile = { version = "3", optional = true }
+rustc-hash.workspace = true
 # cblas-sys gives us battle-tested Windows-compatible FFI for cblas_sgemm.
 # Our previous hand-rolled `extern "C"` declaration worked on macOS
 # (Accelerate) and Linux (OpenBLAS) but triggered a numerical bug on

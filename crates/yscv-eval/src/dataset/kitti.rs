@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::Path;
 
 use yscv_detect::{BoundingBox, Detection};
@@ -14,7 +14,7 @@ pub(crate) fn load_kitti_label_dirs(
 ) -> Result<Vec<DetectionDatasetFrame>, EvalError> {
     let image_ids = parse_image_id_manifest(manifest_text, "kitti")?;
     let mut frames = Vec::with_capacity(image_ids.len());
-    let mut class_map = HashMap::new();
+    let mut class_map = FxHashMap::default();
 
     for image_id in image_ids {
         let gt_path = kitti_label_path(ground_truth_labels_dir, &image_id);
@@ -51,7 +51,7 @@ fn kitti_label_path(labels_dir: &Path, image_id: &str) -> std::path::PathBuf {
 fn parse_kitti_ground_truth_labels(
     text: &str,
     source: &str,
-    class_map: &mut HashMap<String, usize>,
+    class_map: &mut FxHashMap<String, usize>,
 ) -> Result<Vec<LabeledBox>, EvalError> {
     let mut boxes = Vec::new();
     for (line_idx, raw_line) in text.lines().enumerate() {
@@ -83,7 +83,7 @@ fn parse_kitti_ground_truth_labels(
 fn parse_kitti_predictions(
     text: &str,
     source: &str,
-    class_map: &mut HashMap<String, usize>,
+    class_map: &mut FxHashMap<String, usize>,
 ) -> Result<Vec<Detection>, EvalError> {
     let mut detections = Vec::new();
     for (line_idx, raw_line) in text.lines().enumerate() {
@@ -174,7 +174,7 @@ fn parse_kitti_score(token: &str, source: &str, line_no: usize) -> Result<f32, E
     Ok(score)
 }
 
-fn resolve_kitti_class_id(class_name: &str, class_map: &mut HashMap<String, usize>) -> usize {
+fn resolve_kitti_class_id(class_name: &str, class_map: &mut FxHashMap<String, usize>) -> usize {
     if let Some(&class_id) = class_map.get(class_name) {
         return class_id;
     }

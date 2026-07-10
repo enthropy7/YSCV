@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 
 use yscv_tensor::Tensor;
 
@@ -59,17 +60,17 @@ pub fn fold_constants(model: &mut OnnxModel) {
             graph_name: String::new(),
             inputs: node.inputs.clone(),
             outputs: node.outputs.clone(),
-            initializers: HashMap::new(),
+            initializers: FxHashMap::default(),
             nodes: vec![node.clone()],
-            khwc_weights: HashSet::new(),
-            dw_khwc_weights: HashSet::new(),
-            group_khwc_weights: HashSet::new(),
+            khwc_weights: FxHashSet::default(),
+            dw_khwc_weights: FxHashSet::default(),
+            group_khwc_weights: FxHashSet::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };
         mini_model.rebuild_runtime_index();
 
-        let mut inputs: HashMap<String, Tensor> = HashMap::new();
+        let mut inputs: FxHashMap<String, Tensor> = FxHashMap::default();
         for inp in &node.inputs {
             if !inp.is_empty()
                 && let Some(t) = model.initializers.get(inp)

@@ -1,5 +1,5 @@
 use prost::Message;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 use yscv_tensor::Tensor;
 
 use crate::error::OnnxError;
@@ -273,8 +273,8 @@ pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExpor
     }
 }
 
-fn infer_int64_tensor_names(nodes: &[crate::loader::OnnxNode]) -> HashSet<String> {
-    let mut names = HashSet::new();
+fn infer_int64_tensor_names(nodes: &[crate::loader::OnnxNode]) -> FxHashSet<String> {
+    let mut names = FxHashSet::default();
     for node in nodes {
         match node.op_type.as_str() {
             "Reshape" | "Expand" | "Tile" | "Gather" | "GatherElements" | "GatherND" => {

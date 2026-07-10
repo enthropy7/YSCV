@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -213,7 +213,7 @@ impl TensorBoardCallback {
 }
 
 impl TrainingCallback for TensorBoardCallback {
-    fn on_epoch_end(&mut self, _epoch: usize, metrics: &HashMap<String, f32>) -> bool {
+    fn on_epoch_end(&mut self, _epoch: usize, metrics: &FxHashMap<String, f32>) -> bool {
         self.global_step += 1;
         for (tag, &value) in metrics {
             let _ = self.writer.add_scalar(tag, value, self.global_step);
@@ -277,7 +277,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         {
             let mut cb = TensorBoardCallback::new(&dir).unwrap();
-            let mut metrics = HashMap::new();
+            let mut metrics = FxHashMap::default();
             metrics.insert("train_loss".to_string(), 0.42f32);
             let stop = cb.on_epoch_end(0, &metrics);
             assert!(!stop);

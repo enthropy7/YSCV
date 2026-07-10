@@ -7,7 +7,7 @@
 
 use ::metal::*;
 use ::objc::rc::autoreleasepool;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::dispatch::{dispatch_compute_op, dispatch_with_mps};
 use super::types::*;
@@ -24,7 +24,7 @@ use crate::error::OnnxError;
 pub fn run_metal_plan(
     plan: &MetalPlan,
     input_data: &[f32],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let t0 = std::time::Instant::now();
     // Upload input — CPU-side or GPU-side conversion depending on plan
     match &plan.input_upload {
@@ -62,7 +62,7 @@ pub fn run_metal_plan(
         .any(|op| matches!(op, MetalOp::MpsConv { .. }));
 
     // Encode all ops in a single command buffer
-    let result: Result<HashMap<String, Tensor>, KernelError> = autoreleasepool(|| {
+    let result: Result<FxHashMap<String, Tensor>, KernelError> = autoreleasepool(|| {
         let cmd = plan.inf.queue.new_command_buffer();
 
         if has_mps {
@@ -1009,8 +1009,8 @@ pub fn run_metal_plan(
                 }
             };
             // Measure per-op by encoding each in its own command buffer
-            let mut type_times: std::collections::HashMap<&str, (f64, usize)> =
-                std::collections::HashMap::new();
+            let mut type_times: rustc_hash::FxHashMap<&str, (f64, usize)> =
+                rustc_hash::FxHashMap::default();
             let mut individual_ops: Vec<(String, f64)> = Vec::new();
             for (idx, op) in plan.ops.iter().enumerate() {
                 let pcmd = plan.inf.queue.new_command_buffer();
@@ -1593,7 +1593,7 @@ pub fn run_metal_plan(
         }
 
         // Download outputs inside autoreleasepool (read from _f32out buffers cast from f16)
-        let mut result = HashMap::new();
+        let mut result = FxHashMap::default();
         #[cfg(feature = "profile")]
         let debug_dl = std::env::var("METAL_DEBUG_DL").is_ok();
         #[cfg(not(feature = "profile"))]

@@ -25,6 +25,7 @@ yscv-kernels = { path = "../crates/yscv-kernels" }
 yscv-onnx = { path = "../crates/yscv-onnx" }
 yscv-pipeline = { path = "../crates/yscv-pipeline" }
 thiserror.workspace = true
+rustc-hash.workspace = true
 
 [[example]]
 name = "classify_image"

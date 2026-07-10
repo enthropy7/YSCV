@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::Path;
 
 use yscv_tensor::Tensor;
@@ -19,8 +19,8 @@ struct TensorMeta {
 /// Saves a named set of tensors to a binary file (safetensors-like format).
 ///
 /// Format: [8 bytes: header_len as u64 LE] [header JSON bytes] [raw f32 data].
-pub fn save_weights(path: &Path, tensors: &HashMap<String, Tensor>) -> Result<(), ModelError> {
-    let mut meta_map: HashMap<String, TensorMeta> = HashMap::new();
+pub fn save_weights(path: &Path, tensors: &FxHashMap<String, Tensor>) -> Result<(), ModelError> {
+    let mut meta_map: FxHashMap<String, TensorMeta> = FxHashMap::default();
     let mut raw_data: Vec<u8> = Vec::new();
 
     let mut names: Vec<&String> = tensors.keys().collect();
@@ -64,7 +64,7 @@ pub fn save_weights(path: &Path, tensors: &HashMap<String, Tensor>) -> Result<()
 ///
 /// Reads the entire file into memory. For very large models (>RAM),
 /// consider using memory-mapped I/O or streaming instead.
-pub fn load_weights(path: &Path) -> Result<HashMap<String, Tensor>, ModelError> {
+pub fn load_weights(path: &Path) -> Result<FxHashMap<String, Tensor>, ModelError> {
     let file_data = std::fs::read(path).map_err(|e| ModelError::DatasetLoadIo {
         path: path.display().to_string(),
         message: e.to_string(),
@@ -88,7 +88,7 @@ pub fn load_weights(path: &Path) -> Result<HashMap<String, Tensor>, ModelError> 
             message: e.to_string(),
         }
     })?;
-    let meta_map: HashMap<String, TensorMeta> =
+    let meta_map: FxHashMap<String, TensorMeta> =
         serde_json::from_str(header_str).map_err(|e| ModelError::CheckpointSerialization {
             message: e.to_string(),
         })?;
@@ -96,7 +96,7 @@ pub fn load_weights(path: &Path) -> Result<HashMap<String, Tensor>, ModelError> 
     let data_start = 8 + header_len;
     let raw = &file_data[data_start..];
 
-    let mut tensors = HashMap::new();
+    let mut tensors = FxHashMap::default();
     for (name, meta) in &meta_map {
         if meta.offset + meta.length > raw.len() {
             return Err(ModelError::CheckpointSerialization {
@@ -113,7 +113,7 @@ pub fn load_weights(path: &Path) -> Result<HashMap<String, Tensor>, ModelError> 
 }
 
 /// Lists tensor names and shapes from a weight file without loading data.
-pub fn inspect_weights(path: &Path) -> Result<HashMap<String, Vec<usize>>, ModelError> {
+pub fn inspect_weights(path: &Path) -> Result<FxHashMap<String, Vec<usize>>, ModelError> {
     let file_data = std::fs::read(path).map_err(|e| ModelError::DatasetLoadIo {
         path: path.display().to_string(),
         message: e.to_string(),
@@ -129,7 +129,7 @@ pub fn inspect_weights(path: &Path) -> Result<HashMap<String, Vec<usize>>, Model
             message: e.to_string(),
         }
     })?;
-    let meta_map: HashMap<String, TensorMeta> =
+    let meta_map: FxHashMap<String, TensorMeta> =
         serde_json::from_str(header_str).map_err(|e| ModelError::CheckpointSerialization {
             message: e.to_string(),
         })?;

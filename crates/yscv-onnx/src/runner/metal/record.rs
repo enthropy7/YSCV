@@ -1,5 +1,6 @@
 use ::metal::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 
 use super::compile::{cpu_fallback, ensure_nhwc_metal, ensure_on_metal};
 use super::types::*;
@@ -24,11 +25,11 @@ fn resolve_attn_input(
     inf: &MetalInference,
     name: &str,
     is_attn: bool,
-    bufs: &mut HashMap<String, Buffer>,
-    shapes: &mut HashMap<String, Vec<usize>>,
-    nhwc_map: &mut HashMap<String, bool>,
+    bufs: &mut FxHashMap<String, Buffer>,
+    shapes: &mut FxHashMap<String, Vec<usize>>,
+    nhwc_map: &mut FxHashMap<String, bool>,
     ops: &mut Vec<MetalOp>,
-    f32_bufs: &mut HashSet<String>,
+    f32_bufs: &mut FxHashSet<String>,
 ) -> String {
     if name.is_empty() || !bufs.contains_key(name) {
         return name.to_string();
@@ -89,9 +90,9 @@ pub(crate) fn record_conv(
     inf: &MetalInference,
     node: &OnnxNode,
     env: &TensorEnv,
-    bufs: &mut HashMap<String, Buffer>,
-    shapes: &mut HashMap<String, Vec<usize>>,
-    nhwc: &mut HashMap<String, bool>,
+    bufs: &mut FxHashMap<String, Buffer>,
+    shapes: &mut FxHashMap<String, Vec<usize>>,
+    nhwc: &mut FxHashMap<String, bool>,
     ops: &mut Vec<MetalOp>,
     act: u32,
 ) -> Result<(), OnnxError> {
@@ -390,13 +391,13 @@ pub(crate) fn record_node(
     inf: &MetalInference,
     node: &OnnxNode,
     env: &TensorEnv,
-    cpu_data: &HashMap<String, Vec<f32>>,
-    cpu_shapes: &HashMap<String, Vec<usize>>,
-    bufs: &mut HashMap<String, Buffer>,
-    shapes: &mut HashMap<String, Vec<usize>>,
-    nhwc: &mut HashMap<String, bool>,
+    cpu_data: &FxHashMap<String, Vec<f32>>,
+    cpu_shapes: &FxHashMap<String, Vec<usize>>,
+    bufs: &mut FxHashMap<String, Buffer>,
+    shapes: &mut FxHashMap<String, Vec<usize>>,
+    nhwc: &mut FxHashMap<String, bool>,
     ops: &mut Vec<MetalOp>,
-    f32_bufs: &mut HashSet<String>,
+    f32_bufs: &mut FxHashSet<String>,
 ) -> Result<(), OnnxError> {
     // Ensure all inputs are available
     for input_name in &node.inputs {
@@ -1102,8 +1103,8 @@ pub(crate) fn record_node(
 
             // Helper: allocate output buffer (f32 if input was f32, f16 otherwise)
             let alloc_out = |inf: &MetalInference,
-                             bufs: &mut HashMap<String, Buffer>,
-                             f32_bufs: &mut HashSet<String>,
+                             bufs: &mut FxHashMap<String, Buffer>,
+                             f32_bufs: &mut FxHashSet<String>,
                              name: &str,
                              n: usize| {
                 if in_is_f32 {

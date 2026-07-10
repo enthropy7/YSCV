@@ -118,9 +118,9 @@ pub fn soft_nms(detections: &mut Vec<Detection>, sigma: f32, score_threshold: f3
 /// each group independently, then merges and returns results sorted by score
 /// descending.
 pub fn batched_nms(detections: &[Detection], iou_threshold: f32) -> Vec<Detection> {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
-    let mut by_class: HashMap<usize, Vec<Detection>> = HashMap::new();
+    let mut by_class: FxHashMap<usize, Vec<Detection>> = FxHashMap::default();
     for det in detections {
         by_class.entry(det.class_id).or_default().push(*det);
     }

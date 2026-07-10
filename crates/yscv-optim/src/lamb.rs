@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 
 use yscv_autograd::{Graph, NodeId};
@@ -40,7 +40,7 @@ pub struct Lamb {
     beta2: f32,
     epsilon: f32,
     weight_decay: f32,
-    state: HashMap<u64, LambState>,
+    state: FxHashMap<u64, LambState>,
 }
 
 impl Lamb {
@@ -53,7 +53,7 @@ impl Lamb {
             beta2: 0.999,
             epsilon: 1e-6,
             weight_decay: 0.0,
-            state: HashMap::new(),
+            state: FxHashMap::default(),
         })
     }
 

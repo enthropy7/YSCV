@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 use std::path::Path;
 
 use yscv_detect::{BoundingBox, Detection};
@@ -42,7 +42,7 @@ pub(crate) fn load_yolo_label_dirs(
 
 fn parse_yolo_manifest(text: &str) -> Result<Vec<YoloManifestEntry>, EvalError> {
     let mut entries = Vec::new();
-    let mut seen_ids = HashSet::new();
+    let mut seen_ids = FxHashSet::default();
     for (line_idx, raw_line) in text.lines().enumerate() {
         let line_no = line_idx + 1;
         let line = raw_line.trim();

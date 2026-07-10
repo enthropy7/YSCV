@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 
 use yscv_autograd::{Graph, NodeId};
@@ -15,7 +15,7 @@ pub struct Sgd {
     dampening: f32,
     weight_decay: f32,
     nesterov: bool,
-    velocity: HashMap<u64, Tensor>,
+    velocity: FxHashMap<u64, Tensor>,
 }
 
 impl Sgd {
@@ -28,7 +28,7 @@ impl Sgd {
             dampening: 0.0,
             weight_decay: 0.0,
             nesterov: false,
-            velocity: HashMap::new(),
+            velocity: FxHashMap::default(),
         })
     }
 

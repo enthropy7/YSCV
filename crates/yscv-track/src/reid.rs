@@ -1,6 +1,6 @@
 //! Re-identification feature extraction for DeepSORT appearance matching.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use yscv_tensor::Tensor;
 
@@ -58,7 +58,7 @@ impl ReIdExtractor for ColorHistogramReId {
 /// Re-id feature gallery that stores per-track appearance features
 /// and computes cosine distance for matching.
 pub struct ReIdGallery {
-    features: HashMap<u64, Vec<Vec<f32>>>,
+    features: FxHashMap<u64, Vec<Vec<f32>>>,
     max_features: usize,
 }
 
@@ -66,7 +66,7 @@ impl ReIdGallery {
     /// Create a new gallery that keeps at most `max_features` per track.
     pub fn new(max_features: usize) -> Self {
         Self {
-            features: HashMap::new(),
+            features: FxHashMap::default(),
             max_features,
         }
     }

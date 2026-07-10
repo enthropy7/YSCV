@@ -10,9 +10,9 @@ use super::*;
 /// Model initializers (weights) are referenced without cloning. Only when
 /// mutation is needed (get_mut/remove) is a clone-on-write performed.
 pub(crate) struct TensorEnv<'m, 'i> {
-    static_name_to_id: &'m HashMap<String, usize>,
+    static_name_to_id: &'m FxHashMap<String, usize>,
     pub(crate) use_counts_by_id: &'m [usize],
-    dynamic_name_to_id: HashMap<String, usize>,
+    dynamic_name_to_id: FxHashMap<String, usize>,
     slots: Vec<Option<Tensor>>,
     quant_slots: Vec<Option<QuantTensor>>,
     /// Per-slot flag: true if the tensor is stored in NHWC layout.
@@ -22,45 +22,45 @@ pub(crate) struct TensorEnv<'m, 'i> {
     /// adjacent FusedDwPw_AVX512 ops share NCHWc layout.
     nchwc_block_flags: Vec<u8>,
     /// Slot IDs whose tensors have been pre-permuted from OIHW to KHWC.
-    khwc_weights: &'m HashSet<usize>,
+    khwc_weights: &'m FxHashSet<usize>,
     /// Slot IDs whose depthwise weights were pre-permuted [O,1,KH,KW] → [KH,KW,C,dm].
-    dw_khwc_weights: &'m HashSet<usize>,
+    dw_khwc_weights: &'m FxHashSet<usize>,
     /// Slot IDs whose grouped-conv weights were pre-permuted [O,I/G,KH,KW] → [O,KH,KW,I/G].
-    group_khwc_weights: &'m HashSet<usize>,
+    group_khwc_weights: &'m FxHashSet<usize>,
     /// Pre-packed blocked-GEMM B-matrices keyed by weight tensor name. Built
     /// once at model load (`build_runtime_index`). Hot path looks up by the
     /// Conv/MatMul's weight input name and hands the shared `Arc<PackedB>`
     /// straight into the GEMM layer, skipping fingerprint cache + repack.
-    prepacked_weights: &'m HashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
+    prepacked_weights: &'m FxHashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
     /// Symmetric-int8 RHS matrices packed once at model load for
     /// QLinearConv/QLinearMatMul/MatMulInteger fast paths.
-    prepacked_i8_weights: &'m HashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
+    prepacked_i8_weights: &'m FxHashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
     /// QLinear depthwise 3x3/5x5 weights packed once as KHWC i8.
-    prepacked_i8_depthwise: &'m HashMap<String, std::sync::Arc<Vec<i8>>>,
+    prepacked_i8_depthwise: &'m FxHashMap<String, std::sync::Arc<Vec<i8>>>,
     scratch_i8_a: Vec<i8>,
     scratch_i32: Vec<i32>,
     /// Counter for dynamically allocated temporary names that were not in
     /// the pre-built mapping (e.g., "__qa", "__qb_mat").
     next_dynamic: usize,
     /// Reference to model initializers for zero-copy weight access.
-    initializers: &'m HashMap<String, Tensor>,
+    initializers: &'m FxHashMap<String, Tensor>,
     /// Side-table of MatMul/Gemm weights packed as symmetric INT4 with
     /// per-group fp32 scales. Hot-path GEMV dispatch consults this map
     /// before falling back to the fp32 path.
-    pub(crate) packed_int4_weights: &'m HashMap<String, crate::quantize::PackedInt4Weight>,
+    pub(crate) packed_int4_weights: &'m FxHashMap<String, crate::quantize::PackedInt4Weight>,
     /// Shared reference to the loader-computed set of Reshape output tensor
     /// names whose single consumer is a `FusedTransposeMatMul` (perm=[0,2,1]).
     /// Used by
     /// `execute_node_with_layout_kind_inner` to gate the NHWC-passthrough
     /// fast path.
-    pub(crate) reshape_nhwc_passthrough_safe: &'m HashSet<String>,
+    pub(crate) reshape_nhwc_passthrough_safe: &'m FxHashSet<String>,
     /// Optional borrowed runtime inputs for zero-copy inference entry.
     runtime_inputs: Option<RuntimeInputs<'i>>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum RuntimeInputs<'i> {
-    Map(&'i HashMap<String, Tensor>),
+    Map(&'i FxHashMap<String, Tensor>),
     Slice(&'i [(&'i str, &'i Tensor)]),
 }
 
@@ -81,7 +81,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             next_dynamic: num_slots,
             static_name_to_id: &model.runtime_index.name_to_id,
             use_counts_by_id: &model.runtime_index.use_counts_by_id,
-            dynamic_name_to_id: HashMap::new(),
+            dynamic_name_to_id: FxHashMap::default(),
             slots: vec![None; num_slots],
             quant_slots: vec![None; num_slots],
             nhwc_flags: vec![false; num_slots],
@@ -184,7 +184,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             .or_else(|| self.runtime_input(name))
     }
 
-    /// Direct slot removal by pre-resolved ID — O(1), no HashMap lookup.
+    /// Direct slot removal by pre-resolved ID — O(1), no FxHashMap lookup.
     #[inline]
     pub(crate) fn remove_by_id(&mut self, id: usize) {
         if id < self.slots.len() {
@@ -253,7 +253,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     }
 
     /// direct slot insertion by pre-resolved ID, skipping
-    /// the HashMap lookup inside `resolve_id`. Caller (runner hot path)
+    /// the FxHashMap lookup inside `resolve_id`. Caller (runner hot path)
     /// passes the slot ID from `node_output_ids` table. Mirrors
     /// `remove_by_id` for output path.
     #[inline]

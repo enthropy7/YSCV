@@ -302,7 +302,7 @@ pub(super) fn exec_conv(
 }
 
 /// Resolves `(stride, group, pads, has_padding)` from either precomputed
-/// `ConvParams` or the ONNX attribute HashMap. Shared between the thin
+/// `ConvParams` or the ONNX attribute FxHashMap. Shared between the thin
 /// env-binding wrapper `exec_conv_with_params` and the fused-pair path
 /// `exec_fused_dw_pw`.
 #[inline]
@@ -337,14 +337,14 @@ fn resolve_conv_params(
     }
 }
 
-/// Conv with optional pre-computed params (skips HashMap attr lookups).
+/// Conv with optional pre-computed params (skips FxHashMap attr lookups).
 ///
 /// Thin wrapper around [`conv_compute_nhwc`]: resolves input/weight/bias
 /// from `env`, converts input to NHWC if needed, calls the pure-compute
 /// path, then binds the result back into `env`. The split lets the
 /// DW+PW fused path (`exec_fused_dw_pw`) chain two conv computes with
 /// the DW intermediate kept as a local `Tensor` — never touching the
-/// env HashMap.
+/// env FxHashMap.
 pub(super) fn exec_conv_with_params(
     node: &OnnxNode,
     env: &mut TensorEnv,

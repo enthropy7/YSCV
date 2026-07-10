@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use yscv_tensor::Tensor;
 
@@ -57,7 +57,7 @@ pub struct Lookahead<O> {
     alpha: f32,
     k: usize,
     step_count: usize,
-    slow_weights: HashMap<u64, Vec<f32>>,
+    slow_weights: FxHashMap<u64, Vec<f32>>,
 }
 
 impl<O: StepOptimizer> Lookahead<O> {
@@ -71,7 +71,7 @@ impl<O: StepOptimizer> Lookahead<O> {
             alpha,
             k,
             step_count: 0,
-            slow_weights: HashMap::new(),
+            slow_weights: FxHashMap::default(),
         }
     }
 

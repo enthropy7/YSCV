@@ -1,8 +1,9 @@
 //! TOML config schema + parsing + validation.
 
 use crate::{Accelerator, ConfigError};
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Top-level pipeline configuration parsed from a `boards/*.toml` file.
@@ -120,10 +121,10 @@ pub struct RtSpec {
     /// Per-stage SCHED_FIFO priority. Keys: "capture", "dispatch", "wait",
     /// "encode", "output". Values: 1..=99.
     #[serde(default)]
-    pub prio: HashMap<String, u8>,
+    pub prio: FxHashMap<String, u8>,
     /// Per-stage CPU affinity. Keys same as `prio`; values list of CPU ids.
     #[serde(default)]
-    pub affinity: HashMap<String, Vec<u32>>,
+    pub affinity: FxHashMap<String, Vec<u32>>,
     /// CPU frequency governor to write to every
     /// `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`. Leave
     /// unset (or `None` in code) to leave the system default. Most
@@ -185,7 +186,7 @@ impl PipelineConfig {
         }
 
         // Task name uniqueness.
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: FxHashSet<&str> = FxHashSet::default();
         for task in &self.tasks {
             if !seen.insert(task.name.as_str()) {
                 return Err(ConfigError::InvalidField(format!(
@@ -197,7 +198,7 @@ impl PipelineConfig {
 
         // Dangling input refs: every input source must be either the literal
         // "camera" or "<existing_task>.<anything>".
-        let task_names: HashSet<&str> = self.tasks.iter().map(|t| t.name.as_str()).collect();
+        let task_names: FxHashSet<&str> = self.tasks.iter().map(|t| t.name.as_str()).collect();
         for task in &self.tasks {
             for binding in &task.inputs {
                 let src = binding.source.as_str();
@@ -395,14 +396,14 @@ fn validate_onnx_model(
 fn detect_cycles(tasks: &[InferenceTask]) -> Result<(), ConfigError> {
     // Build adjacency: task name → list of upstream tasks (those whose
     // outputs we depend on).
-    let by_name: HashMap<&str, &InferenceTask> =
+    let by_name: FxHashMap<&str, &InferenceTask> =
         tasks.iter().map(|t| (t.name.as_str(), t)).collect();
-    let mut state: HashMap<&str, u8> = HashMap::new(); // 0=white, 1=gray, 2=black
+    let mut state: FxHashMap<&str, u8> = FxHashMap::default(); // 0=white, 1=gray, 2=black
 
     fn visit<'a>(
         node: &'a str,
-        by_name: &HashMap<&'a str, &'a InferenceTask>,
-        state: &mut HashMap<&'a str, u8>,
+        by_name: &FxHashMap<&'a str, &'a InferenceTask>,
+        state: &mut FxHashMap<&'a str, u8>,
     ) -> Result<(), ConfigError> {
         match state.get(node) {
             Some(&2) => return Ok(()),
