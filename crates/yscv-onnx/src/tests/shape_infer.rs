@@ -147,3 +147,37 @@ fn infers_shapes_from_initializer_inputs() {
     let inferred = infer_shapes(&model, &HashMap::new());
     assert_eq!(inferred.shapes["y"].as_known_dims(), Some(vec![2]));
 }
+
+#[test]
+fn global_average_pool_cost_reads_spatial_from_inferred_shape() {
+    // The pooled input is an activation, never an initializer, so the cost of
+    // averaging every input pixel has to come from shape inference. A [1,8,4,4]
+    // input pools to [1,8,1,1]: 8 output elements each averaging 16 pixels.
+    let node = onnx::NodeProto {
+        op_type: Some("GlobalAveragePool".into()),
+        name: Some("gap".into()),
+        input: vec!["x".into()],
+        output: vec!["y".into()],
+        ..Default::default()
+    };
+    let model = load_onnx_model(&build_minimal_onnx_model(
+        vec![node],
+        vec![],
+        vec!["x"],
+        vec!["y"],
+    ))
+    .unwrap();
+    let input_shapes = HashMap::from([("x".to_string(), TensorShape::known(vec![1, 8, 4, 4]))]);
+
+    let inferred = infer_shapes(&model, &input_shapes);
+    assert!(
+        inferred.diagnostics.is_empty(),
+        "{:?}",
+        inferred.diagnostics
+    );
+    assert_eq!(inferred.shapes["y"].as_known_dims(), Some(vec![1, 8, 1, 1]));
+
+    let cost = graph_cost(&model, &inferred);
+    assert_eq!(cost.unknown_nodes, 0);
+    assert_eq!(cost.nodes[0].element_ops, 8 * 16);
+}

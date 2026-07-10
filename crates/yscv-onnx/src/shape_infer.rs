@@ -579,8 +579,9 @@ fn infer_unsqueeze(
         .ok_or_else(|| ShapeError::MissingInputShape {
             name: input_name.clone(),
         })?;
-    let out_rank = input.rank().saturating_add(node_axes(model, node)?.len());
-    let mut axes: Vec<usize> = node_axes(model, node)?
+    let raw_axes = node_axes(model, node)?;
+    let out_rank = input.rank().saturating_add(raw_axes.len());
+    let mut axes: Vec<usize> = raw_axes
         .into_iter()
         .map(|a| normalize_axis(a, out_rank))
         .collect::<Result<_, _>>()?;

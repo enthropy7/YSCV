@@ -26,7 +26,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
 
     env:
       ASSET_DIR: /home/runner/.cache/yscv-onnx-pr-bench/assets

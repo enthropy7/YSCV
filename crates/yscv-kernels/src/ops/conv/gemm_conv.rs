@@ -428,10 +428,32 @@ struct WinogradCachedWeights {
     packed: Vec<std::sync::Arc<crate::PackedB>>,
 }
 
-/// Memoise the weight transform `U = GgGᵀ` and the per-α GEMM packing by kernel
-/// pointer. Both depend only on the (constant) conv weights, so this turns
-/// per-inference work into a one-time cost. Keyed on the weight data pointer
-/// plus shape — fine for ONNX initializers, which outlive the session.
+/// FNV-1a over the raw weight bytes. The Winograd cache is content-addressed on
+/// this rather than on the buffer address: a fingerprint moves with the data, so
+/// a freed weight whose heap slot is later reused by a *different* weight of the
+/// same shape can never alias onto the stale entry. The scan is `O(weight)`,
+/// which is a fraction of a percent of the `O(n_tiles·c_in·c_out)` GEMM it gates,
+/// so paying it once per call is free in practice.
+#[cfg(not(target_os = "macos"))]
+fn winograd_weight_fingerprint(kernel: &[f32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV-1a offset basis
+    for &v in kernel {
+        for b in v.to_le_bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3); // FNV-1a prime
+        }
+    }
+    hash
+}
+
+/// Memoise the weight transform `U = GgGᵀ` and the per-α GEMM packing. Both
+/// depend only on the (constant) conv weights, so this turns per-inference work
+/// into a one-time cost. The cache is keyed on a content fingerprint plus shape,
+/// so it stays correct across model reloads and for any caller of the public
+/// `conv2d_nhwc_padded` — identical weights share an entry no matter where they
+/// live, and distinct weights never collide even when the allocator recycles an
+/// address. Entries are `Arc`s that live for the process; the working set is
+/// bounded by the number of distinct 3×3 conv weights actually run.
 #[cfg(not(target_os = "macos"))]
 fn winograd_cached_weights(
     kernel: &[f32],
@@ -441,11 +463,15 @@ fn winograd_cached_weights(
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
 
-    static CACHE: OnceLock<
-        Mutex<HashMap<(usize, usize, usize, usize), Arc<WinogradCachedWeights>>>,
-    > = OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<(u64, usize, usize, usize), Arc<WinogradCachedWeights>>>> =
+        OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (kernel.as_ptr() as usize, kernel.len(), c_in, c_out);
+    let key = (
+        winograd_weight_fingerprint(kernel),
+        kernel.len(),
+        c_in,
+        c_out,
+    );
     let mut guard = cache.lock().expect("winograd weight cache poisoned");
     Arc::clone(guard.entry(key).or_insert_with(|| {
         let u = winograd_transform_weights_f32(kernel, c_in, c_out);

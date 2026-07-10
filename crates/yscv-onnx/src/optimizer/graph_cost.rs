@@ -1,5 +1,5 @@
 use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
-use crate::shape_infer::{Dim, ShapeInference, TensorShape};
+use crate::shape_infer::{Dim, ShapeInference, ShapeMap, TensorShape};
 use std::fmt::Write as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +64,7 @@ pub fn graph_cost(model: &OnnxModel, shapes: &ShapeInference) -> GraphCost {
             .first()
             .and_then(|name| shapes.shapes.get(name))
             .cloned();
-        let mut cost = cost_node(model, node, output_shape.as_ref());
+        let mut cost = cost_node(model, &shapes.shapes, node, output_shape.as_ref());
         cost.index = index;
         cost.name = node.name.clone();
         cost.op_type = node.op_type.clone();
@@ -178,7 +178,12 @@ pub fn graph_cost_report(cost: &GraphCost) -> String {
     out
 }
 
-fn cost_node(model: &OnnxModel, node: &OnnxNode, output_shape: Option<&TensorShape>) -> NodeCost {
+fn cost_node(
+    model: &OnnxModel,
+    shapes: &ShapeMap,
+    node: &OnnxNode,
+    output_shape: Option<&TensorShape>,
+) -> NodeCost {
     let mut cost = NodeCost {
         index: 0,
         name: String::new(),
@@ -196,7 +201,7 @@ fn cost_node(model: &OnnxModel, node: &OnnxNode, output_shape: Option<&TensorSha
 
     match node.op_type.as_str() {
         "Conv" | "Conv_Relu" | "Conv_SiLU" => cost_conv(model, node, output_shape, &mut cost),
-        "MatMul" => cost_matmul(model, node, output_shape, &mut cost),
+        "MatMul" => cost_matmul(model, shapes, node, output_shape, &mut cost),
         "Gemm" => cost_gemm(model, node, output_shape, &mut cost),
         "Relu"
         | "Clip"
@@ -222,7 +227,7 @@ fn cost_node(model: &OnnxModel, node: &OnnxNode, output_shape: Option<&TensorSha
         }
         "Concat" => cost_concat(output_shape, &mut cost),
         "MaxPool" | "AveragePool" => cost_pool(node, output_shape, &mut cost),
-        "GlobalAveragePool" => cost_global_pool(model, node, output_shape, &mut cost),
+        "GlobalAveragePool" => cost_global_pool(shapes, node, output_shape, &mut cost),
         _ => cost.reason = Some("unsupported cost rule".to_string()),
     }
 
@@ -285,6 +290,7 @@ fn cost_conv(
 
 fn cost_matmul(
     model: &OnnxModel,
+    shapes: &ShapeMap,
     node: &OnnxNode,
     output_shape: Option<&TensorShape>,
     cost: &mut NodeCost,
@@ -301,17 +307,7 @@ fn cost_matmul(
         cost.reason = Some("MatMul output has unknown dimensions".to_string());
         return;
     };
-    let k = model
-        .initializers
-        .get(a)
-        .and_then(|t| t.shape().last().copied())
-        .or_else(|| {
-            model
-                .initializers
-                .get(b)
-                .and_then(|t| t.shape().first().copied())
-        });
-    let Some(k) = k else {
+    let Some(k) = matmul_reduction_dim(model, shapes, a, b) else {
         cost.reason = Some("MatMul reduction dimension unknown".to_string());
         return;
     };
@@ -405,7 +401,7 @@ fn cost_pool(node: &OnnxNode, output_shape: Option<&TensorShape>, cost: &mut Nod
 }
 
 fn cost_global_pool(
-    model: &OnnxModel,
+    shapes: &ShapeMap,
     node: &OnnxNode,
     output_shape: Option<&TensorShape>,
     cost: &mut NodeCost,
@@ -414,20 +410,43 @@ fn cost_global_pool(
         cost.reason = Some("global pool output shape unknown".to_string());
         return;
     };
+    // The pooled input is an activation, so its spatial extent comes from shape
+    // inference, not the initializer table — every element of every input pixel
+    // is read once to form the average.
     let input_spatial = node
         .inputs
         .first()
-        .and_then(|name| model.initializers.get(name))
-        .and_then(|t| {
-            t.shape()
-                .get(2)
-                .zip(t.shape().get(3))
-                .map(|(h, w)| h.saturating_mul(*w))
-        })
+        .and_then(|name| shapes.get(name))
+        .and_then(|s| s.dim(2).zip(s.dim(3)).map(|(h, w)| h.saturating_mul(w)))
         .unwrap_or(1) as u64;
     cost.element_ops = out_numel.saturating_mul(input_spatial);
     cost.bytes_read = cost.element_ops.saturating_mul(4);
     cost.bytes_written = out_numel.saturating_mul(4);
+}
+
+/// Resolves the MatMul contraction dimension `K`. Prefers exact initializer
+/// shapes (`A[..,K]` last dim, `B[K,..]` first dim), then falls back to inferred
+/// activation shapes so activation×activation MatMuls — attention scores and the
+/// like — are costed instead of written off as unknown.
+fn matmul_reduction_dim(
+    model: &OnnxModel,
+    shapes: &ShapeMap,
+    a: &str,
+    b: &str,
+) -> Option<usize> {
+    if let Some(k) = model.initializers.get(a).and_then(|t| t.shape().last().copied()) {
+        return Some(k);
+    }
+    if let Some(k) = model.initializers.get(b).and_then(|t| t.shape().first().copied()) {
+        return Some(k);
+    }
+    if let Some(Dim::Known(k)) = shapes.get(a).and_then(|s| s.dims.last().copied()) {
+        return Some(k);
+    }
+    shapes.get(b).and_then(|s| match s.dims.get(s.rank().checked_sub(2)?)? {
+        Dim::Known(k) => Some(*k),
+        Dim::Unknown => None,
+    })
 }
 
 fn int_attr(node: &OnnxNode, name: &str) -> Option<i64> {
