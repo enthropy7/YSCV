@@ -11,6 +11,7 @@ mod normalization;
 mod optimizer;
 mod qlinear;
 mod reshape;
+mod shape_infer;
 
 use prost::Message;
 

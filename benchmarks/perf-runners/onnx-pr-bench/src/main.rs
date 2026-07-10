@@ -8,8 +8,9 @@ use std::time::Instant;
 
 use serde_json::json;
 use yscv_onnx::{
-    OnnxExportAttr, OnnxExportGraph, OnnxExportNode, OnnxExportValueInfo, OnnxRunner,
-    export_onnx_model_to_file, load_onnx_model_from_file, optimize_onnx_graph,
+    export_onnx_model_to_file, graph_cost, graph_cost_report, infer_shapes_from_tensors,
+    load_onnx_model_from_file, optimize_onnx_graph, OnnxExportAttr, OnnxExportGraph,
+    OnnxExportNode, OnnxExportValueInfo, OnnxRunner,
 };
 use yscv_tensor::Tensor;
 
@@ -685,6 +686,10 @@ fn run_case(
         })
         .collect::<Result<_, _>>()?;
     let feed: Vec<(&str, &Tensor)> = inputs.iter().map(|(n, t)| (n.as_str(), t)).collect();
+    let input_map: std::collections::HashMap<String, Tensor> = inputs.iter().cloned().collect();
+    let shape_inference = infer_shapes_from_tensors(&model, &input_map);
+    let graph_cost = graph_cost(&model, &shape_inference);
+    let graph_cost_text = graph_cost_report(&graph_cost);
 
     let mut run_summaries = Vec::with_capacity(runs);
     for run_idx in 0..runs {
@@ -723,6 +728,16 @@ fn run_case(
         "median_p50_us": median_p50_us,
         "nodes_before_opt": nodes_before,
         "nodes_after_opt": nodes_after,
+        "graph_cost": {
+            "node_count": graph_cost.node_count,
+            "known_nodes": graph_cost.known_nodes,
+            "unknown_nodes": graph_cost.unknown_nodes,
+            "estimated_macs": graph_cost.estimated_macs,
+            "estimated_element_ops": graph_cost.estimated_element_ops,
+            "estimated_bytes_read": graph_cost.estimated_bytes_read,
+            "estimated_bytes_written": graph_cost.estimated_bytes_written,
+            "score": graph_cost.score,
+        },
         "dispatch": yscv_kernels::runtime_dispatch_report().to_string(),
         "profile_summary": profile_summary,
     });
@@ -733,7 +748,10 @@ fn run_case(
         output,
         serde_json::to_vec_pretty(&report).map_err(|e| format!("encode json: {e}"))?,
     )
-    .map_err(|e| format!("write {}: {e}", output.display()))
+    .map_err(|e| format!("write {}: {e}", output.display()))?;
+    let graph_cost_path = output.with_extension("graph-cost.txt");
+    std::fs::write(&graph_cost_path, graph_cost_text)
+        .map_err(|e| format!("write {}: {e}", graph_cost_path.display()))
 }
 
 fn run() -> Result<(), String> {

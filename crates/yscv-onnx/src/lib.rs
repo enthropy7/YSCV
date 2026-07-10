@@ -15,6 +15,7 @@ mod optimizer;
 mod proto;
 pub mod quantize;
 mod runner;
+pub mod shape_infer;
 
 pub use dtype::{OnnxDtype, OnnxTensorData};
 pub use error::OnnxError;
@@ -27,7 +28,8 @@ pub use loader::{
     OnnxAttribute, OnnxModel, OnnxNode, OnnxTensor, load_onnx_model, load_onnx_model_from_file,
 };
 pub use optimizer::{
-    GraphStats, fold_constants, fold_conv_bn, fuse_bn_relu, fuse_conv_relu, graph_stats,
+    GraphCost, GraphCostDiff, GraphStats, NodeCost, fold_constants, fold_conv_bn, fuse_bn_relu,
+    fuse_conv_relu, graph_cost, graph_cost_diff, graph_cost_report, graph_stats,
     optimize_onnx_graph, strip_qdq_within_fusion_chains,
 };
 pub use quantize::quantize_weights_int4;
@@ -63,6 +65,10 @@ pub use runner::run_onnx_model;
 pub use runner::run_onnx_model_borrowed;
 pub use runner::run_onnx_model_borrowed_slice;
 pub use runner::{QuantRuntimeStats, quant_runtime_stats, reset_quant_runtime_stats};
+pub use shape_infer::{
+    Dim, ShapeDiagnostic, ShapeInference, ShapeMap, TensorShape, infer_shapes,
+    infer_shapes_from_tensors,
+};
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 pub use runner::metal_runner::{
