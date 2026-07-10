@@ -30,7 +30,9 @@ pub use fold_conv_bn::fold_conv_bn;
 pub use fold_conv_mul::fold_conv_mul;
 pub use fuse_bn_relu::fuse_bn_relu;
 pub use fuse_conv_relu::fuse_conv_relu;
-pub use graph_cost::{GraphCost, GraphCostDiff, NodeCost, graph_cost, graph_cost_diff};
+pub use graph_cost::{
+    GraphCost, GraphCostDiff, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
+};
 pub use graph_stats::{GraphStats, graph_stats};
 pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 

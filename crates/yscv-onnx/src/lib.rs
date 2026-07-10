@@ -29,8 +29,8 @@ pub use loader::{
 };
 pub use optimizer::{
     GraphCost, GraphCostDiff, GraphStats, NodeCost, fold_constants, fold_conv_bn, fuse_bn_relu,
-    fuse_conv_relu, graph_cost, graph_cost_diff, graph_stats, optimize_onnx_graph,
-    strip_qdq_within_fusion_chains,
+    fuse_conv_relu, graph_cost, graph_cost_diff, graph_cost_report, graph_stats,
+    optimize_onnx_graph, strip_qdq_within_fusion_chains,
 };
 pub use quantize::quantize_weights_int4;
 pub use quantize::{CalibrationCollector, CalibrationScope, MinMax};

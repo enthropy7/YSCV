@@ -1,11 +1,14 @@
 use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
-use crate::shape_infer::{ShapeInference, TensorShape};
+use crate::shape_infer::{Dim, ShapeInference, TensorShape};
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeCost {
     pub index: usize,
     pub name: String,
     pub op_type: String,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
     pub output_shape: Option<TensorShape>,
     pub macs: u64,
     pub element_ops: u64,
@@ -65,6 +68,8 @@ pub fn graph_cost(model: &OnnxModel, shapes: &ShapeInference) -> GraphCost {
         cost.index = index;
         cost.name = node.name.clone();
         cost.op_type = node.op_type.clone();
+        cost.inputs = node.inputs.clone();
+        cost.outputs = node.outputs.clone();
         if cost.reason.is_none() {
             cost.reason = diagnostic_by_index.get(&index).cloned();
         }
@@ -111,11 +116,75 @@ pub fn graph_cost_diff(before: &GraphCost, after: &GraphCost) -> GraphCostDiff {
     }
 }
 
+/// Formats a deterministic text snapshot of graph-cost estimates.
+///
+/// Intended for benchmarking and review workflows where the output is saved
+/// and diffed across commits to check whether optimizer changes make the graph
+/// lighter. The per-node section is sorted by a stable textual key rather than
+/// execution order so incidental reordering produces less diff noise.
+pub fn graph_cost_report(cost: &GraphCost) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "graph_cost v1");
+    let _ = writeln!(out, "summary.node_count={}", cost.node_count);
+    let _ = writeln!(out, "summary.known_nodes={}", cost.known_nodes);
+    let _ = writeln!(out, "summary.unknown_nodes={}", cost.unknown_nodes);
+    let _ = writeln!(out, "summary.estimated_macs={}", cost.estimated_macs);
+    let _ = writeln!(
+        out,
+        "summary.estimated_element_ops={}",
+        cost.estimated_element_ops
+    );
+    let _ = writeln!(
+        out,
+        "summary.estimated_bytes_read={}",
+        cost.estimated_bytes_read
+    );
+    let _ = writeln!(
+        out,
+        "summary.estimated_bytes_written={}",
+        cost.estimated_bytes_written
+    );
+    let _ = writeln!(out, "summary.score={}", cost.score);
+    out.push('\n');
+    out.push_str("nodes\n");
+
+    let mut nodes: Vec<&NodeCost> = cost.nodes.iter().collect();
+    nodes.sort_by(|a, b| {
+        stable_node_key(a)
+            .cmp(&stable_node_key(b))
+            .then(a.index.cmp(&b.index))
+    });
+
+    for node in nodes {
+        let _ = writeln!(out, "- key={}", stable_node_key(node));
+        let _ = writeln!(out, "  index={}", node.index);
+        let _ = writeln!(out, "  op_type={}", node.op_type);
+        let _ = writeln!(out, "  name={}", printable_field(&node.name));
+        let _ = writeln!(out, "  inputs={}", join_fields(&node.inputs));
+        let _ = writeln!(out, "  outputs={}", join_fields(&node.outputs));
+        let _ = writeln!(
+            out,
+            "  output_shape={}",
+            format_output_shape(node.output_shape.as_ref())
+        );
+        let _ = writeln!(out, "  macs={}", node.macs);
+        let _ = writeln!(out, "  element_ops={}", node.element_ops);
+        let _ = writeln!(out, "  bytes_read={}", node.bytes_read);
+        let _ = writeln!(out, "  bytes_written={}", node.bytes_written);
+        let _ = writeln!(out, "  score={}", node.score);
+        let _ = writeln!(out, "  reason={}", format_reason(node.reason.as_deref()));
+    }
+
+    out
+}
+
 fn cost_node(model: &OnnxModel, node: &OnnxNode, output_shape: Option<&TensorShape>) -> NodeCost {
     let mut cost = NodeCost {
         index: 0,
         name: String::new(),
         op_type: String::new(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
         output_shape: output_shape.cloned(),
         macs: 0,
         element_ops: 0,
@@ -367,6 +436,56 @@ fn int_attr(node: &OnnxNode, name: &str) -> Option<i64> {
     } else {
         None
     }
+}
+
+fn stable_node_key(node: &NodeCost) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        node.op_type,
+        printable_field(&node.name),
+        join_fields(&node.outputs),
+        join_fields(&node.inputs)
+    )
+}
+
+fn printable_field(s: &str) -> &str {
+    if s.is_empty() { "-" } else { s }
+}
+
+fn join_fields(fields: &[String]) -> String {
+    if fields.is_empty() {
+        "-".to_string()
+    } else {
+        fields
+            .iter()
+            .map(|s| printable_field(s))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+fn format_output_shape(shape: Option<&TensorShape>) -> String {
+    let Some(shape) = shape else {
+        return "?".to_string();
+    };
+    let mut out = String::from("[");
+    for (i, dim) in shape.dims.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        match dim {
+            Dim::Known(v) => {
+                let _ = write!(out, "{v}");
+            }
+            Dim::Unknown => out.push('?'),
+        }
+    }
+    out.push(']');
+    out
+}
+
+fn format_reason(reason: Option<&str>) -> &str {
+    reason.unwrap_or("-")
 }
 
 fn ints_attr(node: &OnnxNode, name: &str) -> Option<Vec<i64>> {

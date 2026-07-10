@@ -1,5 +1,8 @@
 use super::*;
-use crate::optimizer::{fuse_conv_relu, graph_stats, optimize_onnx_graph};
+use crate::optimizer::{
+    fuse_conv_relu, graph_cost, graph_cost_report, graph_stats, optimize_onnx_graph,
+};
+use crate::{TensorShape, infer_shapes};
 
 #[test]
 fn optimize_removes_dropout_nodes() {
@@ -142,6 +145,114 @@ fn reorder_enables_fusion_on_interleaved_branches() {
             .map(|n| n.op_type.clone())
             .collect::<Vec<_>>()
     );
+}
+#[test]
+fn graph_cost_report_is_deterministic_and_sorted_by_stable_key() {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu_b".into()),
+            input: vec!["mid_b".into()],
+            output: vec!["out_b".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu_a".into()),
+            input: vec!["mid_a".into()],
+            output: vec!["out_a".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![],
+        vec!["mid_a", "mid_b"],
+        vec!["out_a", "out_b"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+    let shapes = infer_shapes(
+        &model,
+        &std::collections::HashMap::from([
+            ("mid_a".to_string(), TensorShape::known(vec![1, 4])),
+            ("mid_b".to_string(), TensorShape::known(vec![1, 4])),
+        ]),
+    );
+    let cost = graph_cost(&model, &shapes);
+    let report_a = graph_cost_report(&cost);
+    let report_b = graph_cost_report(&cost);
+
+    assert_eq!(
+        report_a, report_b,
+        "report formatting must be deterministic"
+    );
+    let pos_a = report_a.find("key=Relu|relu_a|out_a|mid_a").unwrap();
+    let pos_b = report_a.find("key=Relu|relu_b|out_b|mid_b").unwrap();
+    assert!(
+        pos_a < pos_b,
+        "nodes should be sorted by stable textual key"
+    );
+}
+
+#[test]
+fn graph_cost_report_shows_lighter_graph_after_optimization() {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv0".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["conv_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu0".into()),
+            input: vec!["conv_out".into()],
+            output: vec!["relu_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Dropout".into()),
+            name: Some("drop0".into()),
+            input: vec!["relu_out".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let w = onnx::TensorProto {
+        name: Some("w".into()),
+        dims: vec![8, 3, 3, 3],
+        data_type: Some(1),
+        float_data: vec![0.0; 8 * 3 * 3 * 3],
+        ..Default::default()
+    };
+    let bytes = build_minimal_onnx_model(nodes, vec![w], vec!["x"], vec!["y"]);
+    let mut model = load_onnx_model(&bytes).unwrap();
+    let input_shapes =
+        std::collections::HashMap::from([("x".to_string(), TensorShape::known(vec![1, 3, 8, 8]))]);
+
+    let before_shapes = infer_shapes(&model, &input_shapes);
+    let before = graph_cost(&model, &before_shapes);
+    let before_report = graph_cost_report(&before);
+
+    optimize_onnx_graph(&mut model);
+
+    let after_shapes = infer_shapes(&model, &input_shapes);
+    let after = graph_cost(&model, &after_shapes);
+    let after_report = graph_cost_report(&after);
+
+    assert!(
+        after.node_count < before.node_count,
+        "optimizer should remove/fuse nodes"
+    );
+    assert!(
+        after.score <= before.score,
+        "optimized graph should not get heavier in this case"
+    );
+    assert!(before_report.contains("summary.node_count=3"));
+    assert!(after_report.contains("summary.node_count=1"));
+    assert!(after_report.contains("op_type=Conv_Relu"));
+    assert!(!after_report.contains("op_type=Dropout"));
 }
 
 #[test]
