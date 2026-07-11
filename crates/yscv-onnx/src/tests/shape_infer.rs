@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use yscv_tensor::Tensor;
 
@@ -40,7 +40,8 @@ fn infers_conv_shape_and_cost() {
         vec!["y"],
     ))
     .unwrap();
-    let input_shapes = HashMap::from([("x".to_string(), TensorShape::known(vec![1, 3, 32, 32]))]);
+    let input_shapes =
+        FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 32, 32]))]);
 
     let inferred = infer_shapes(&model, &input_shapes);
     assert!(
@@ -84,7 +85,8 @@ fn infers_reshape_and_matmul_shapes() {
         vec!["y"],
     ))
     .unwrap();
-    let input_shapes = HashMap::from([("x".to_string(), TensorShape::known(vec![1, 3, 4, 4]))]);
+    let input_shapes =
+        FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 4, 4]))]);
 
     let inferred = infer_shapes(&model, &input_shapes);
     assert!(
@@ -116,7 +118,8 @@ fn reports_unknowns_without_guessing() {
         vec!["y"],
     ))
     .unwrap();
-    let input_shapes = HashMap::from([("x".to_string(), TensorShape::known(vec![1, 3, 8, 8]))]);
+    let input_shapes =
+        FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 8, 8]))]);
 
     let inferred = infer_shapes(&model, &input_shapes);
     assert_eq!(inferred.diagnostics.len(), 1);
@@ -144,7 +147,7 @@ fn infers_shapes_from_initializer_inputs() {
     ))
     .unwrap();
 
-    let inferred = infer_shapes(&model, &HashMap::new());
+    let inferred = infer_shapes(&model, &FxHashMap::default());
     assert_eq!(inferred.shapes["y"].as_known_dims(), Some(vec![2]));
 }
 
@@ -167,7 +170,8 @@ fn global_average_pool_cost_reads_spatial_from_inferred_shape() {
         vec!["y"],
     ))
     .unwrap();
-    let input_shapes = HashMap::from([("x".to_string(), TensorShape::known(vec![1, 8, 4, 4]))]);
+    let input_shapes =
+        FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 8, 4, 4]))]);
 
     let inferred = infer_shapes(&model, &input_shapes);
     assert!(

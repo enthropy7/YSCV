@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use thiserror::Error;
 use yscv_tensor::Tensor;
@@ -62,7 +62,7 @@ impl TensorShape {
     }
 }
 
-pub type ShapeMap = HashMap<String, TensorShape>;
+pub type ShapeMap = FxHashMap<String, TensorShape>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShapeDiagnostic {
@@ -157,7 +157,7 @@ pub fn infer_shapes(model: &OnnxModel, input_shapes: &ShapeMap) -> ShapeInferenc
 
 pub fn infer_shapes_from_tensors(
     model: &OnnxModel,
-    inputs: &HashMap<String, Tensor>,
+    inputs: &FxHashMap<String, Tensor>,
 ) -> ShapeInference {
     let input_shapes: ShapeMap = inputs
         .iter()

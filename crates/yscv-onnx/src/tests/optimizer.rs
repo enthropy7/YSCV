@@ -173,7 +173,7 @@ fn graph_cost_report_is_deterministic_and_sorted_by_stable_key() {
     let model = load_onnx_model(&bytes).unwrap();
     let shapes = infer_shapes(
         &model,
-        &std::collections::HashMap::from([
+        &rustc_hash::FxHashMap::from_iter([
             ("mid_a".to_string(), TensorShape::known(vec![1, 4])),
             ("mid_b".to_string(), TensorShape::known(vec![1, 4])),
         ]),
@@ -229,7 +229,7 @@ fn graph_cost_report_shows_lighter_graph_after_optimization() {
     let bytes = build_minimal_onnx_model(nodes, vec![w], vec!["x"], vec!["y"]);
     let mut model = load_onnx_model(&bytes).unwrap();
     let input_shapes =
-        std::collections::HashMap::from([("x".to_string(), TensorShape::known(vec![1, 3, 8, 8]))]);
+        rustc_hash::FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 8, 8]))]);
 
     let before_shapes = infer_shapes(&model, &input_shapes);
     let before = graph_cost(&model, &before_shapes);

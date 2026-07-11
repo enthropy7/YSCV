@@ -52,7 +52,7 @@ pub fn graph_cost(model: &OnnxModel, shapes: &ShapeInference) -> GraphCost {
     let mut estimated_element_ops = 0u64;
     let mut estimated_bytes_read = 0u64;
     let mut estimated_bytes_written = 0u64;
-    let diagnostic_by_index: std::collections::HashMap<usize, String> = shapes
+    let diagnostic_by_index: rustc_hash::FxHashMap<usize, String> = shapes
         .diagnostics
         .iter()
         .map(|d| (d.node_index, d.error.to_string()))
