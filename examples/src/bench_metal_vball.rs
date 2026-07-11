@@ -9,7 +9,7 @@ fn main() {
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::time::Instant;
 
@@ -42,14 +42,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── CPU baseline ──
     println!("\n--- CPU Inference ---");
     {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
         let _ = run_onnx_model(&model, inputs)?; // warmup
     }
     let n_cpu = 10;
     let mut cpu_times = Vec::new();
     for _ in 0..n_cpu {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
         let t0 = Instant::now();
         let _ = run_onnx_model(&model, inputs)?;
@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Verify vs CPU ──
     println!("\n--- Accuracy Check ---");
     let metal_out = run_metal_plan(&metal_plan, &input_data)?;
-    let mut cpu_inputs = HashMap::new();
+    let mut cpu_inputs = FxHashMap::default();
     cpu_inputs.insert(input_name.clone(), input_tensor.clone());
     let cpu_out = run_onnx_model(&model, cpu_inputs)?;
 

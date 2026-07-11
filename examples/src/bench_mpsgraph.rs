@@ -11,7 +11,7 @@ fn main() {
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::time::Instant;
 
@@ -44,14 +44,14 @@ fn bench_model(
     // ── CPU baseline (few runs) ──
     println!("\n--- CPU ---");
     {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
         let _ = run_onnx_model(&model, inputs)?;
     }
     let n_cpu = 5;
     let mut cpu_times = Vec::new();
     for _ in 0..n_cpu {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
         let t0 = Instant::now();
         let _ = run_onnx_model(&model, inputs)?;
@@ -133,7 +133,7 @@ fn bench_model(
     // ── Accuracy check: MPSGraph vs CPU ──
     println!("\n--- Accuracy (MPSGraph vs CPU) ---");
     let mpsg_out = run_mpsgraph_plan(&mpsg_plan, &mpsg_inputs)?;
-    let mut cpu_inputs = HashMap::new();
+    let mut cpu_inputs = FxHashMap::default();
     cpu_inputs.insert(input_name.clone(), input_tensor.clone());
     let cpu_out = run_onnx_model(&model, cpu_inputs)?;
 

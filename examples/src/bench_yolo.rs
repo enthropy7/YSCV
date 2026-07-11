@@ -3,7 +3,7 @@
 //! Set BENCH_COOLDOWN=<secs> to insert a cooldown pause between benchmarks
 //! (default: 20s). This prevents CPU thermal throttling from skewing results.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use yscv_onnx::load_onnx_model_from_file;
 use yscv_tensor::Tensor;
 
@@ -46,7 +46,7 @@ fn main() {
         println!("\n  [CPU]");
         #[allow(unused_variables)]
         let cpu_out = {
-            let mut inp = HashMap::new();
+            let mut inp = FxHashMap::default();
             inp.insert("images".to_string(), input_tensor.clone());
             yscv_onnx::run_onnx_model(&model, inp).expect("cpu fail")
         };
@@ -56,7 +56,7 @@ fn main() {
 
         {
             println!("\n  [CPU Profile]");
-            let mut inp = HashMap::new();
+            let mut inp = FxHashMap::default();
             inp.insert("images".to_string(), input_tensor.clone());
             let _ = yscv_onnx::profile_onnx_model_cpu(&model, inp);
         }
@@ -65,7 +65,7 @@ fn main() {
         #[cfg(feature = "gpu")]
         {
             cooldown("GPU profile");
-            let mut inp = HashMap::new();
+            let mut inp = FxHashMap::default();
             inp.insert("images".to_string(), input_tensor.clone());
             let _ = yscv_onnx::profile_onnx_model_gpu(&model, inp);
         }
@@ -81,7 +81,7 @@ fn main() {
             let plan = yscv_onnx::plan_gpu_execution(&model);
 
             // Warmup (populates weight cache)
-            let mut inputs = HashMap::new();
+            let mut inputs = FxHashMap::default();
             inputs.insert("images".to_string(), input_tensor.clone());
             let _ =
                 yscv_onnx::run_onnx_model_gpu_cached(&gpu, &model, inputs, &mut wc, Some(&plan));
@@ -91,7 +91,7 @@ fn main() {
             let n = 5;
             let mut times = Vec::new();
             for i in 0..n {
-                let mut inputs = HashMap::new();
+                let mut inputs = FxHashMap::default();
                 inputs.insert("images".to_string(), input_tensor.clone());
                 let start = std::time::Instant::now();
                 let result = yscv_onnx::run_onnx_model_gpu_cached(
@@ -401,18 +401,18 @@ fn bench_run(
     input_tensor: &Tensor,
     run_fn: impl Fn(
         &yscv_onnx::OnnxModel,
-        HashMap<String, Tensor>,
-    ) -> Result<HashMap<String, Tensor>, yscv_onnx::OnnxError>,
+        FxHashMap<String, Tensor>,
+    ) -> Result<FxHashMap<String, Tensor>, yscv_onnx::OnnxError>,
 ) {
     // Warmup
-    let mut inputs = HashMap::new();
+    let mut inputs = FxHashMap::default();
     inputs.insert("images".to_string(), input_tensor.clone());
     let _ = run_fn(model, inputs);
 
     let n = 5;
     let mut times = Vec::new();
     for i in 0..n {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let start = std::time::Instant::now();
         let result = run_fn(model, inputs);

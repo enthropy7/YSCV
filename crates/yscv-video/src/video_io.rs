@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -13,7 +13,7 @@ pub struct VideoMeta {
     pub height: u32,
     pub frame_count: u32,
     pub fps: f32,
-    pub properties: HashMap<String, String>,
+    pub properties: FxHashMap<String, String>,
 }
 
 /// Reads raw RGB8 frames from a simple uncompressed video file.
@@ -57,7 +57,7 @@ impl RawVideoReader {
                 height,
                 frame_count,
                 fps,
-                properties: HashMap::default(),
+                properties: FxHashMap::default(),
             },
             data,
             frame_offset: 24,

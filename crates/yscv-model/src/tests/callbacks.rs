@@ -1,7 +1,7 @@
 use crate::{
     BestModelCheckpoint, EarlyStopping, MonitorMode, TrainingCallback, train_epochs_with_callbacks,
 };
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::PathBuf;
 
 #[test]
@@ -106,7 +106,7 @@ fn test_early_stopping_callback_stops_training() {
     let losses = [1.0_f32, 0.9, 0.8, 0.85, 0.86, 0.87, 0.88, 0.89];
     let trained = train_epochs_with_callbacks(
         |epoch| {
-            let mut m = HashMap::default();
+            let mut m = FxHashMap::default();
             m.insert("loss".to_string(), losses[epoch]);
             m
         },
@@ -124,7 +124,7 @@ fn test_callbacks_full_training() {
     // Loss keeps decreasing every epoch, so early stopping never triggers.
     let trained = train_epochs_with_callbacks(
         |epoch| {
-            let mut m = HashMap::default();
+            let mut m = FxHashMap::default();
             m.insert("loss".to_string(), 1.0 - epoch as f32 * 0.1);
             m
         },
@@ -141,7 +141,7 @@ struct StopAfterCallback {
 }
 
 impl TrainingCallback for StopAfterCallback {
-    fn on_epoch_end(&mut self, epoch: usize, _metrics: &HashMap<String, f32>) -> bool {
+    fn on_epoch_end(&mut self, epoch: usize, _metrics: &FxHashMap<String, f32>) -> bool {
         epoch + 1 >= self.max_epochs
     }
 }
@@ -154,7 +154,7 @@ fn test_multiple_callbacks() {
     let mut stop_after = StopAfterCallback { max_epochs: 3 };
     let trained = train_epochs_with_callbacks(
         |epoch| {
-            let mut m = HashMap::default();
+            let mut m = FxHashMap::default();
             m.insert("loss".to_string(), 1.0 - epoch as f32 * 0.1);
             m
         },

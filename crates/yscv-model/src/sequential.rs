@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use yscv_autograd::{Graph, NodeId};
 use yscv_tensor::Tensor;
 
@@ -931,7 +931,7 @@ impl SequentialModel {
         graph: &'a Graph,
     ) -> Result<Vec<(String, &'a Tensor)>, ModelError> {
         let mut result = Vec::new();
-        let mut type_counts = HashMap::<&str, usize>::default();
+        let mut type_counts = FxHashMap::<&str, usize>::default();
 
         for layer in &self.layers {
             match layer {

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rustc_hash::FxHashMap;
 pub(crate) use rustc_hash::FxHashSet;
 
@@ -236,16 +234,16 @@ impl<'m> OnnxRunner<'m> {
     }
 
     /// Run inference with borrowed input pairs (zero-copy).
-    pub fn run(&self, inputs: &[(&str, &Tensor)]) -> Result<HashMap<String, Tensor>, OnnxError> {
+    pub fn run(&self, inputs: &[(&str, &Tensor)]) -> Result<FxHashMap<String, Tensor>, OnnxError> {
         let env = TensorEnv::from_model_with_inputs(self.model, Some(RuntimeInputs::Slice(inputs)));
         self.run_with_env(env)
     }
 
-    /// Run inference with owned inputs HashMap.
+    /// Run inference with owned inputs FxHashMap.
     pub fn run_owned(
         &self,
-        inputs: impl IntoIterator<Item = (String, Tensor)>,
-    ) -> Result<HashMap<String, Tensor>, OnnxError> {
+        inputs: FxHashMap<String, Tensor>,
+    ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
         let mut env = TensorEnv::from_model(self.model);
         for (name, tensor) in inputs {
             env.insert(name, tensor);
@@ -253,7 +251,7 @@ impl<'m> OnnxRunner<'m> {
         self.run_with_env(env)
     }
 
-    fn run_with_env(&self, env: TensorEnv<'_, '_>) -> Result<HashMap<String, Tensor>, OnnxError> {
+    fn run_with_env(&self, env: TensorEnv<'_, '_>) -> Result<FxHashMap<String, Tensor>, OnnxError> {
         // Install the active ParallelScope on the inference thread so
         // migrated kernel sites (see `yscv_kernels::with_scope`) pick it
         // up without a signature-threading refactor. Dropped
@@ -346,8 +344,8 @@ impl<'m> OnnxRunner<'m> {
 /// Returns a map of output-name -> tensor for the graph's declared outputs.
 pub fn run_onnx_model(
     model: &OnnxModel,
-    inputs: impl IntoIterator<Item = (String, Tensor)>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+    inputs: FxHashMap<String, Tensor>,
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let mut env = TensorEnv::from_model(model);
 
     // Initializers (weights) are accessed via zero-copy fallback reference
@@ -365,21 +363,21 @@ pub fn run_onnx_model(
 /// runtime performs clone-on-write into environment slots.
 pub fn run_onnx_model_borrowed(
     model: &OnnxModel,
-    inputs: &HashMap<String, Tensor>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+    inputs: &FxHashMap<String, Tensor>,
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let env = TensorEnv::from_model_with_inputs(model, Some(RuntimeInputs::Map(inputs)));
     run_onnx_model_inner(model, env)
 }
 
 /// Runs inference with borrowed input pairs (`name`, `tensor_ref`) without
-/// requiring a `HashMap` allocation at the call site.
+/// requiring a `FxHashMap` allocation at the call site.
 ///
 /// This is zero-copy at the API boundary. Runtime treats inputs as read-only and
 /// clones on write only when mutation is required internally.
 pub fn run_onnx_model_borrowed_slice(
     model: &OnnxModel,
     inputs: &[(&str, &Tensor)],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let env = TensorEnv::from_model_with_inputs(model, Some(RuntimeInputs::Slice(inputs)));
     run_onnx_model_inner(model, env)
 }
@@ -438,7 +436,7 @@ fn mark_skip_indices(skip: &mut [bool], indices: &[usize]) {
 fn run_onnx_model_inner(
     model: &OnnxModel,
     env: TensorEnv<'_, '_>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     // Use JIT execution plan if available (pre-compiled dispatch, no per-node matching)
     if !model.runtime_index.execution_plan.is_empty() {
         return run_onnx_model_jit(model, env);

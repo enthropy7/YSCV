@@ -9,7 +9,7 @@ fn main() {
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_detect::{
     Detection, coco_labels, decode_yolov8_output, decode_yolov11_output, letterbox_preprocess,
@@ -115,7 +115,7 @@ fn main() {
     // CPU
     println!("\n=== CPU ===");
     let cpu_dets = {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let outputs = yscv_onnx::run_onnx_model(&model, inputs).expect("CPU failed");
         let output = outputs.values().next().expect("no output");

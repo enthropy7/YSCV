@@ -2,9 +2,7 @@
 //! Builds an MPSGraph from the ONNX model, compiles it once,
 //! then executes as a single GPU dispatch — no per-op encoder transitions.
 
-use std::collections::HashMap;
-
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::cell::{Cell, RefCell};
 
 use metal::*;
@@ -645,7 +643,7 @@ pub fn submit_mpsgraph_plan(
 pub fn wait_mpsgraph_plan(
     plan: &MpsGraphPlan,
     handle: InferenceHandle,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let slot = &plan.slots[handle.slot_idx];
 
     // Drain the in-flight command buffer. `take` leaves `None` so a
@@ -656,7 +654,7 @@ pub fn wait_mpsgraph_plan(
     }
 
     // Widen f16 outputs → f32 Tensors.
-    let mut result = HashMap::with_capacity(plan.output_names.len());
+    let mut result = FxHashMap::with_capacity_and_hasher(plan.output_names.len(), FxBuildHasher);
     for (idx, name) in plan.output_names.iter().enumerate() {
         let buf = &slot.output_bufs[idx];
         let shape = &plan.output_shapes[idx];
@@ -686,7 +684,7 @@ pub fn wait_mpsgraph_plan(
 pub fn run_mpsgraph_plan(
     plan: &MpsGraphPlan,
     inputs: &[(&str, &[f32])],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let handle = submit_mpsgraph_plan(plan, inputs)?;
     wait_mpsgraph_plan(plan, handle)
 }

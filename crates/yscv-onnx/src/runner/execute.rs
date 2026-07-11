@@ -1,7 +1,7 @@
 //! Top-level inference drivers: the JIT (timed-loop) and sequential
 //! single-pass executors that walk the optimized plan via execute_plan_branch.
 
-use std::collections::HashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use super::*;
 
@@ -10,7 +10,7 @@ use super::*;
 pub(crate) fn run_onnx_model_jit(
     model: &OnnxModel,
     mut env: TensorEnv<'_, '_>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let branches = &model.runtime_index.node_branches;
     let use_counts_by_id = &model.runtime_index.use_counts_by_id;
     let output_id_mask = build_output_id_mask(model, &env, use_counts_by_id.len());
@@ -167,7 +167,7 @@ pub(crate) fn run_onnx_model_jit(
         env.materialize_quant_i8_raw(name)?;
         ensure_nchw(&mut env, name)?;
     }
-    let mut result = HashMap::with_capacity(model.outputs.len());
+    let mut result = FxHashMap::with_capacity_and_hasher(model.outputs.len(), FxBuildHasher);
     for name in &model.outputs {
         if let Some(t) = env.remove(name) {
             result.insert(name.clone(), t);
@@ -181,7 +181,7 @@ pub(crate) fn run_onnx_model_jit(
 pub(crate) fn run_onnx_model_sequential(
     model: &OnnxModel,
     mut env: TensorEnv<'_, '_>,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     // --- Operator fusion: scan for fusible patterns ---
     // Build a set of node indices that should be skipped because they were
     // fused into the preceding node.  We also create synthetic "fused" nodes
@@ -768,7 +768,7 @@ pub(crate) fn run_onnx_model_sequential(
         ensure_nchw(&mut env, name)?;
     }
 
-    let mut result = HashMap::with_capacity(model.outputs.len());
+    let mut result = FxHashMap::with_capacity_and_hasher(model.outputs.len(), FxBuildHasher);
     for name in &model.outputs {
         if let Some(t) = env.remove(name) {
             result.insert(name.clone(), t);
