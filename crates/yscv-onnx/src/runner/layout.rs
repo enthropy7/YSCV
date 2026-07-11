@@ -63,7 +63,7 @@ pub(crate) fn reshape_nhwc_passthrough_disabled() -> bool {
 pub(crate) fn try_reshape_nhwc_passthrough(
     node: &OnnxNode,
     env: &mut TensorEnv,
-    use_counts: &HashMap<String, usize>,
+    use_counts: &FxHashMap<String, usize>,
 ) -> Result<bool, OnnxError> {
     if node.inputs.len() < 2 || node.inputs[0].is_empty() {
         return Ok(false);

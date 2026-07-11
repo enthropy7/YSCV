@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use yscv_autograd::Graph;
 use yscv_optim::{Adam, AdamW, Sgd};
@@ -101,7 +101,7 @@ impl Default for TrainerConfig {
 pub struct TrainResult {
     pub epochs_trained: usize,
     pub final_loss: f32,
-    pub history: Vec<HashMap<String, f32>>,
+    pub history: Vec<FxHashMap<String, f32>>,
     /// Structured training log with CSV export and per-metric history queries.
     pub log: TrainingLog,
 }
@@ -176,7 +176,7 @@ impl Trainer {
             ..EpochTrainOptions::default()
         };
 
-        let mut history: Vec<HashMap<String, f32>> = Vec::with_capacity(self.config.epochs);
+        let mut history: Vec<FxHashMap<String, f32>> = Vec::with_capacity(self.config.epochs);
         let mut log = TrainingLog::new();
         let mut epochs_trained = 0usize;
         let mut final_loss = f32::NAN;
@@ -185,7 +185,7 @@ impl Trainer {
             ($epoch:expr, $metrics:expr) => {{
                 final_loss = $metrics.mean_loss;
                 epochs_trained = $epoch + 1;
-                let mut epoch_metrics = HashMap::new();
+                let mut epoch_metrics = FxHashMap::default();
                 epoch_metrics.insert("loss".to_string(), $metrics.mean_loss);
                 if let Some((ref val_inputs, ref val_targets)) = val_data {
                     // Use graph-based forward pass (works for all layer types).

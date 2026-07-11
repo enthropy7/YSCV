@@ -1,18 +1,20 @@
 //! build_runtime_index: the load-time graph optimizer that classifies
 //! each node (NodeKind), plans fusions (NodeAction), and prepacks weights.
 
+use rustc_hash::FxBuildHasher;
+
 use super::*;
 
 pub(super) fn build_runtime_index(
     inputs: &[String],
     outputs: &[String],
-    initializers: &HashMap<String, Tensor>,
+    initializers: &FxHashMap<String, Tensor>,
     nodes: &[OnnxNode],
-    khwc_weights: &HashSet<String>,
-    dw_khwc_weights: &HashSet<String>,
-    group_khwc_weights: &HashSet<String>,
+    khwc_weights: &FxHashSet<String>,
+    dw_khwc_weights: &FxHashSet<String>,
+    group_khwc_weights: &FxHashSet<String>,
 ) -> RuntimeModelIndex {
-    let mut names: HashSet<&str> = HashSet::new();
+    let mut names: FxHashSet<&str> = FxHashSet::default();
     for name in inputs {
         names.insert(name.as_str());
     }
@@ -30,26 +32,26 @@ pub(super) fn build_runtime_index(
             names.insert(name.as_str());
         }
     }
-    let name_to_id: HashMap<String, usize> = names
+    let name_to_id: FxHashMap<String, usize> = names
         .into_iter()
         .enumerate()
         .map(|(id, name)| (name.to_string(), id))
         .collect();
 
-    let khwc_weight_ids: HashSet<usize> = khwc_weights
+    let khwc_weight_ids: FxHashSet<usize> = khwc_weights
         .iter()
         .filter_map(|name| name_to_id.get(name.as_str()).copied())
         .collect();
-    let dw_khwc_weight_ids: HashSet<usize> = dw_khwc_weights
+    let dw_khwc_weight_ids: FxHashSet<usize> = dw_khwc_weights
         .iter()
         .filter_map(|name| name_to_id.get(name.as_str()).copied())
         .collect();
-    let group_khwc_weight_ids: HashSet<usize> = group_khwc_weights
+    let group_khwc_weight_ids: FxHashSet<usize> = group_khwc_weights
         .iter()
         .filter_map(|name| name_to_id.get(name.as_str()).copied())
         .collect();
 
-    let mut use_counts: HashMap<String, usize> = HashMap::new();
+    let mut use_counts: FxHashMap<String, usize> = FxHashMap::default();
     for node in nodes {
         for inp in &node.inputs {
             if !inp.is_empty() {
@@ -80,7 +82,7 @@ pub(super) fn build_runtime_index(
             .filter(|s| !initializers.contains_key(*s))
             .collect();
         if dyn_inputs.len() >= 2 {
-            let mut tensor_branch: HashMap<&str, u8> = HashMap::new();
+            let mut tensor_branch: FxHashMap<&str, u8> = FxHashMap::default();
             tensor_branch.insert(dyn_inputs[0], 0);
             tensor_branch.insert(dyn_inputs[1], 1);
             let mut branches = Vec::with_capacity(nodes.len());
@@ -140,7 +142,7 @@ pub(super) fn build_runtime_index(
         .collect();
 
     // pre-resolve output names to slot IDs. Used by
-    // `env.insert_by_id` on the hot path to skip the HashMap lookup
+    // `env.insert_by_id` on the hot path to skip the FxHashMap lookup
     // inside `resolve_id`. `node_input_ids` was already cached; this
     // extends the same optimisation to output slots.
     let node_output_ids: Vec<Vec<Option<usize>>> = nodes
@@ -159,7 +161,7 @@ pub(super) fn build_runtime_index(
         })
         .collect();
 
-    // Pre-parse Conv attributes to avoid HashMap lookups in hot path.
+    // Pre-parse Conv attributes to avoid FxHashMap lookups in hot path.
     let conv_params: Vec<Option<ConvParams>> = nodes
         .iter()
         .zip(node_kinds.iter())
@@ -284,7 +286,7 @@ pub(super) fn build_runtime_index(
         matches!(perm.as_slice(), [0, 2, 1])
     }
 
-    fn init_scalar(initializers: &HashMap<String, Tensor>, name: &str) -> Option<f32> {
+    fn init_scalar(initializers: &FxHashMap<String, Tensor>, name: &str) -> Option<f32> {
         initializers
             .get(name)
             .and_then(|t| t.data().first())
@@ -294,7 +296,7 @@ pub(super) fn build_runtime_index(
     fn matching_zero_qparams(
         dequant: &OnnxNode,
         quant: &OnnxNode,
-        initializers: &HashMap<String, Tensor>,
+        initializers: &FxHashMap<String, Tensor>,
     ) -> bool {
         if dequant.inputs.len() < 3 || quant.inputs.len() < 3 {
             return false;
@@ -321,7 +323,7 @@ pub(super) fn build_runtime_index(
     /// `Some("dw")` for 3×3/5×5 depthwise (group=c_out=c_in*group), and
     /// `None` otherwise. Mirrors `bench_tracker::qlinear_conv_kind` so the
     /// load-time detector and the static counter agree node-for-node.
-    fn qlc_kind(node: &OnnxNode, initializers: &HashMap<String, Tensor>) -> Option<&'static str> {
+    fn qlc_kind(node: &OnnxNode, initializers: &FxHashMap<String, Tensor>) -> Option<&'static str> {
         if node.op_type != "QLinearConv" {
             return None;
         }
@@ -389,7 +391,7 @@ pub(super) fn build_runtime_index(
     /// chain output zero-point and may be non-zero.
     fn qlc_zps_match_chain(
         node: &OnnxNode,
-        initializers: &HashMap<String, Tensor>,
+        initializers: &FxHashMap<String, Tensor>,
         require_y_zp_zero: bool,
     ) -> bool {
         let x_zp = init_scalar(initializers, &node.inputs[2]);
@@ -408,8 +410,9 @@ pub(super) fn build_runtime_index(
     // Map tensor name → producing node index. Used by the
     // `FusedTransposeMatMul` detection below to walk from a MatMul
     // left-input back to its Transpose producer in O(1).
-    let producers: HashMap<String, usize> = {
-        let mut m: HashMap<String, usize> = HashMap::with_capacity(nodes.len());
+    let producers: FxHashMap<String, usize> = {
+        let mut m: FxHashMap<String, usize> =
+            FxHashMap::with_capacity_and_hasher(nodes.len(), FxBuildHasher);
         for (idx, node) in nodes.iter().enumerate() {
             for out in &node.outputs {
                 if !out.is_empty() {
@@ -1111,13 +1114,13 @@ pub(super) fn build_runtime_index(
     // transpose output's total graph-use count (input edges + model
     // output membership). When every consumer was absorbed, the
     // original Transpose does no useful work and becomes `Skip`.
-    let model_outputs: HashSet<&str> = outputs.iter().map(|s| s.as_str()).collect();
+    let model_outputs: FxHashSet<&str> = outputs.iter().map(|s| s.as_str()).collect();
     let mut fused_refs: Vec<usize> = vec![0; nodes.len()];
     // Plan position of the last `FusedTransposeMatMul` referencing each
     // transpose idx. Used to mark exactly one variant as the cleanup
     // owner so the pre-transpose tensor stays in `env` until every
     // consumer has read it.
-    let mut last_fused_pos: HashMap<usize, usize> = HashMap::new();
+    let mut last_fused_pos: FxHashMap<usize, usize> = FxHashMap::default();
     for (pos, action) in execution_plan.iter().enumerate() {
         if let NodeAction::FusedTransposeMatMul { transpose_idx, .. } = action {
             fused_refs[*transpose_idx] += 1;
@@ -1157,7 +1160,7 @@ pub(super) fn build_runtime_index(
     // set before deciding whether to skip the NHWC→NCHW permute for a
     // Reshape input. Only NHWC-passthrough-safe Reshapes get the
     // optimisation; others continue paying the legacy `ensure_nchw`.
-    let mut reshape_nhwc_passthrough_safe: HashSet<String> = HashSet::new();
+    let mut reshape_nhwc_passthrough_safe: FxHashSet<String> = FxHashSet::default();
     for action in &execution_plan {
         let NodeAction::FusedTransposeMatMul { transpose_idx, .. } = action else {
             continue;
@@ -1202,8 +1205,8 @@ pub(super) fn build_runtime_index(
     // all pointwise Conv weights at model-load, so this check is typically
     // true. Non-pointwise Convs go through 3×3 direct / im2col paths that
     // don't consume packed B — prepack isn't useful there.
-    let mut prepacked_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedB>> =
-        HashMap::new();
+    let mut prepacked_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedB>> =
+        FxHashMap::default();
     for (i, node) in nodes.iter().enumerate() {
         let Some(cp) = conv_params[i].as_ref() else {
             continue;
@@ -1296,9 +1299,10 @@ pub(super) fn build_runtime_index(
         (k >= 4 && n.is_multiple_of(16)) || (k >= 512 && n >= 1024)
     }
 
-    let mut prepacked_i8_weights: HashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>> =
-        HashMap::new();
-    let mut prepacked_i8_depthwise: HashMap<String, std::sync::Arc<Vec<i8>>> = HashMap::new();
+    let mut prepacked_i8_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>> =
+        FxHashMap::default();
+    let mut prepacked_i8_depthwise: FxHashMap<String, std::sync::Arc<Vec<i8>>> =
+        FxHashMap::default();
     // Closing-pair `QuantizedDwPw` chains always need the PW weight
     // prepacked because the kernel reads `env.prepacked_i8_b` directly
     // and there is no per-iteration packing fallback. The default
@@ -1309,7 +1313,7 @@ pub(super) fn build_runtime_index(
     // fallback inside `pack_i8_b_for_matmul` handles non-multiples of
     // 16 — the VNNI 4×16 path is just unavailable; the kernel's
     // `int8_matmul_prepacked_dispatch` picks the next-best variant.
-    let chain_pw_weights: std::collections::HashSet<String> = execution_plan
+    let chain_pw_weights: rustc_hash::FxHashSet<String> = execution_plan
         .iter()
         .filter_map(|action| match action {
             NodeAction::QuantizedDwPw { pw_idx, .. } => nodes[*pw_idx].inputs.get(3).cloned(),
@@ -1481,17 +1485,17 @@ pub(super) fn build_runtime_index(
     //
     // Kill switch: `YSCV_FUSED_PW_DW_PW_REDUCE_OFF=1` keeps everything as
     // FusedPwDw and lets the PW reduce stay a separate Conv action.
-    let mut prepacked_fused_pw_dw_pw_reduce: HashMap<
+    let mut prepacked_fused_pw_dw_pw_reduce: FxHashMap<
         usize,
         std::sync::Arc<FusedPwDwPwReduceWeights>,
-    > = HashMap::new();
+    > = FxHashMap::default();
     let fusion_off = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_OFF").is_some();
     let fusion_debug = std::env::var_os("YSCV_FUSED_PW_DW_PW_REDUCE_DEBUG").is_some();
     if !fusion_off {
         // Walk the execution plan; replace FusedPwDw actions in-place when
         // the next live node is a fusable PW reduce.
         let mut new_plan: Vec<NodeAction> = Vec::with_capacity(execution_plan.len());
-        let mut skip_pw_reduce_actions: HashSet<usize> = HashSet::new();
+        let mut skip_pw_reduce_actions: FxHashSet<usize> = FxHashSet::default();
         let mut fused_count = 0usize;
         let mut pwdw_total = 0usize;
         for action in execution_plan.iter() {

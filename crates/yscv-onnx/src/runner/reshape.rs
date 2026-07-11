@@ -27,7 +27,7 @@ pub(super) fn exec_reshape(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
 pub(super) fn exec_reshape_zerocopy(
     node: &OnnxNode,
     env: &mut TensorEnv,
-    use_counts: &HashMap<String, usize>,
+    use_counts: &FxHashMap<String, usize>,
 ) -> Result<(), OnnxError> {
     exec_reshape_inner(node, env, Some(use_counts))
 }
@@ -35,7 +35,7 @@ pub(super) fn exec_reshape_zerocopy(
 fn exec_reshape_inner(
     node: &OnnxNode,
     env: &mut TensorEnv,
-    use_counts: Option<&HashMap<String, usize>>,
+    use_counts: Option<&FxHashMap<String, usize>>,
 ) -> Result<(), OnnxError> {
     // Compute new_shape without cloning the shape tensor data. We iterate the
     // shape-tensor slice directly inside the borrow scope, then drop the

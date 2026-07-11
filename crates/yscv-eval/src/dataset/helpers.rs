@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -18,7 +18,7 @@ pub(crate) fn read_optional_text_file(path: &Path) -> Result<Option<String>, Eva
 
 pub(crate) fn ensure_detection_frame_index(
     frames: &mut Vec<DetectionDatasetFrame>,
-    image_index_by_id: &mut HashMap<String, usize>,
+    image_index_by_id: &mut FxHashMap<String, usize>,
     image_id: &str,
 ) -> usize {
     if let Some(frame_idx) = image_index_by_id.get(image_id) {
@@ -43,9 +43,9 @@ pub(crate) fn parse_image_id_manifest(
     text: &str,
     format: &'static str,
 ) -> Result<Vec<String>, EvalError> {
-    use std::collections::HashSet;
+    use rustc_hash::FxHashSet;
     let mut image_ids = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = FxHashSet::default();
     for (line_idx, raw_line) in text.lines().enumerate() {
         let line_no = line_idx + 1;
         let line = raw_line.trim();

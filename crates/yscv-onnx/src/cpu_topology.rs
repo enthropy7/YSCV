@@ -106,8 +106,8 @@ fn detect_linux_big_cores() -> Option<Vec<usize>> {
 
 #[cfg(target_os = "linux")]
 fn detect_linux_physical_cores() -> Option<usize> {
-    use std::collections::HashSet;
-    let mut cores: HashSet<(usize, usize)> = HashSet::new();
+    use rustc_hash::FxHashSet;
+    let mut cores: FxHashSet<(usize, usize)> = FxHashSet::default();
     for id in 0..1024usize {
         let cpu_dir = format!("/sys/devices/system/cpu/cpu{id}");
         if !std::path::Path::new(&cpu_dir).exists() {

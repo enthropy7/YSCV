@@ -1,12 +1,12 @@
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 
 use crate::loader::OnnxModel;
 
 /// Removes nodes whose outputs are never consumed by any other node or graph output.
 pub fn eliminate_dead_code(model: &mut OnnxModel) {
     loop {
-        let consumed: HashSet<String> = {
-            let mut set: HashSet<String> = model.outputs.iter().cloned().collect();
+        let consumed: FxHashSet<String> = {
+            let mut set: FxHashSet<String> = model.outputs.iter().cloned().collect();
             for node in &model.nodes {
                 for inp in &node.inputs {
                     if !inp.is_empty() {

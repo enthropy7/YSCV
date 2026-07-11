@@ -2,8 +2,8 @@
 //! Builds an MPSGraph from the ONNX model, compiles it once,
 //! then executes as a single GPU dispatch — no per-op encoder transitions.
 
+use rustc_hash::{FxHashMap, FxBuildHasher};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 
 use metal::*;
 
@@ -75,7 +75,7 @@ pub struct MpsGraphPlan {
 /// Opaque handle returned by `submit_mpsgraph_plan`. Identifies which
 /// pipeline slot's buffers hold (or will hold) the result. Pass to
 /// `wait_mpsgraph_plan` to block until the GPU finishes and widen the
-/// outputs into a `HashMap<String, Tensor>`.
+/// outputs into a `FxHashMap<String, Tensor>`.
 #[must_use = "an InferenceHandle represents in-flight GPU work; wait on it or the next submit will back-pressure"]
 pub struct InferenceHandle {
     slot_idx: usize,
@@ -117,8 +117,8 @@ pub fn compile_mpsgraph_plan(
     })?;
     let queue = device.new_command_queue();
 
-    let mut tensors: HashMap<String, MpsGraphTensorRef> = HashMap::new();
-    let mut cpu_shapes: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut tensors: FxHashMap<String, MpsGraphTensorRef> = FxHashMap::default();
+    let mut cpu_shapes: FxHashMap<String, Vec<usize>> = FxHashMap::default();
 
     // One f32 placeholder + f16-cast per user input. These go into the graph
     // once; per-pipeline-slot backing buffers are allocated after compile.
@@ -186,7 +186,7 @@ pub fn compile_mpsgraph_plan(
 
     // Constant values map for compile-time shape ops (Shape, Gather, etc.)
     // These produce integer/metadata tensors that don't go into the GPU graph.
-    let mut const_values: HashMap<String, Vec<f32>> = HashMap::new();
+    let mut const_values: FxHashMap<String, Vec<f32>> = FxHashMap::default();
     // Seed with initializer data
     for (name, tensor) in &model.initializers {
         const_values.insert(name.clone(), tensor.data().to_vec());
@@ -643,7 +643,7 @@ pub fn submit_mpsgraph_plan(
 pub fn wait_mpsgraph_plan(
     plan: &MpsGraphPlan,
     handle: InferenceHandle,
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let slot = &plan.slots[handle.slot_idx];
 
     // Drain the in-flight command buffer. `take` leaves `None` so a
@@ -654,7 +654,7 @@ pub fn wait_mpsgraph_plan(
     }
 
     // Widen f16 outputs → f32 Tensors.
-    let mut result = HashMap::with_capacity(plan.output_names.len());
+    let mut result = FxHashMap::with_capacity_and_hasher(plan.output_names.len(), FxBuildHasher);
     for (idx, name) in plan.output_names.iter().enumerate() {
         let buf = &slot.output_bufs[idx];
         let shape = &plan.output_shapes[idx];
@@ -684,7 +684,7 @@ pub fn wait_mpsgraph_plan(
 pub fn run_mpsgraph_plan(
     plan: &MpsGraphPlan,
     inputs: &[(&str, &[f32])],
-) -> Result<HashMap<String, Tensor>, OnnxError> {
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let handle = submit_mpsgraph_plan(plan, inputs)?;
     wait_mpsgraph_plan(plan, handle)
 }
@@ -759,10 +759,10 @@ fn f16_bits_to_f32_scalar(bits: u16) -> f32 {
 fn build_graph_node(
     graph: &MpsGraph,
     node: &OnnxNode,
-    tensors: &HashMap<String, MpsGraphTensorRef>,
-    shapes: &HashMap<String, Vec<usize>>,
+    tensors: &FxHashMap<String, MpsGraphTensorRef>,
+    shapes: &FxHashMap<String, Vec<usize>>,
     model: &OnnxModel,
-    const_values: &HashMap<String, Vec<f32>>,
+    const_values: &FxHashMap<String, Vec<f32>>,
 ) -> Result<Option<Vec<(String, MpsGraphTensorRef, Vec<usize>)>>, KernelError> {
     // Helper: return Ok(None) when an input tensor is not found (unsupported path)
     macro_rules! try_get {
@@ -1428,7 +1428,7 @@ fn build_graph_node(
             let mut out_shape = Vec::new();
             let rank = in_shape.len() as i64;
             if let Some(axes) = axes {
-                let ax_set: std::collections::HashSet<usize> = axes
+                let ax_set: rustc_hash::FxHashSet<usize> = axes
                     .iter()
                     .map(|&a| {
                         if a < 0 {

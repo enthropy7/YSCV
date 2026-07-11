@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 
 use yscv_autograd::{Graph, NodeId};
@@ -37,7 +37,7 @@ pub struct AdamW {
     beta2: f32,
     epsilon: f32,
     weight_decay: f32,
-    state: HashMap<u64, AdamWState>,
+    state: FxHashMap<u64, AdamWState>,
 }
 
 impl AdamW {
@@ -50,7 +50,7 @@ impl AdamW {
             beta2: 0.999,
             epsilon: 1e-8,
             weight_decay: 0.0,
-            state: HashMap::new(),
+            state: FxHashMap::default(),
         })
     }
 

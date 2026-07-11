@@ -31,6 +31,7 @@ rayon = "1.11"
 yscv-cpu = { version = "0.1", path = "../yscv-cpu" }
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
+rustc-hash.workspace = true
 
 # Platform-specific HW decode (linked via system frameworks, no crate deps needed)
 # VideoToolbox: uses raw FFI to CoreMedia/VideoToolbox frameworks (macOS)

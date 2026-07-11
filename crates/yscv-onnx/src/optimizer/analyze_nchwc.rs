@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::loader::OnnxModel;
 
@@ -43,7 +43,7 @@ fn is_nchwc_capable_op(op_type: &str) -> bool {
 
 pub fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
     let total_nodes = model.nodes.len();
-    let mut op_counts: HashMap<String, usize> = HashMap::new();
+    let mut op_counts: FxHashMap<String, usize> = FxHashMap::default();
     let mut capable_nodes = 0usize;
     let mut chain_lengths: Vec<usize> = Vec::new();
     let mut current_chain = 0usize;
@@ -84,7 +84,7 @@ pub fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
 
 #[cfg(test)]
 mod nchwc_stats_tests {
-    use std::collections::HashSet;
+    use rustc_hash::FxHashSet;
 
     use super::*;
     use crate::loader::OnnxNode;
@@ -95,7 +95,7 @@ mod nchwc_stats_tests {
             name: name.to_string(),
             inputs: vec![],
             outputs: vec![],
-            attributes: HashMap::new(),
+            attributes: FxHashMap::default(),
         }
     }
 
@@ -107,11 +107,11 @@ mod nchwc_stats_tests {
             graph_name: String::new(),
             inputs: vec![],
             outputs: vec![],
-            initializers: HashMap::new(),
+            initializers: FxHashMap::default(),
             nodes: vec![],
-            khwc_weights: HashSet::new(),
-            dw_khwc_weights: HashSet::new(),
-            group_khwc_weights: HashSet::new(),
+            khwc_weights: FxHashSet::default(),
+            dw_khwc_weights: FxHashSet::default(),
+            group_khwc_weights: FxHashSet::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };

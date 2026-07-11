@@ -460,12 +460,13 @@ fn winograd_cached_weights(
     c_in: usize,
     c_out: usize,
 ) -> std::sync::Arc<WinogradCachedWeights> {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     use std::sync::{Arc, Mutex, OnceLock};
 
-    static CACHE: OnceLock<Mutex<HashMap<(u64, usize, usize, usize), Arc<WinogradCachedWeights>>>> =
-        OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    static CACHE: OnceLock<
+        Mutex<FxHashMap<(u64, usize, usize, usize), Arc<WinogradCachedWeights>>>,
+    > = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(FxHashMap::default()));
     let key = (
         winograd_weight_fingerprint(kernel),
         kernel.len(),

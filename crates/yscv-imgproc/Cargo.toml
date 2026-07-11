@@ -15,6 +15,7 @@ yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 yscv-cpu = { version = "0.1", path = "../yscv-cpu" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
 thiserror.workspace = true
+rustc-hash.workspace = true
 rayon = "1.11"
 
 [dev-dependencies]

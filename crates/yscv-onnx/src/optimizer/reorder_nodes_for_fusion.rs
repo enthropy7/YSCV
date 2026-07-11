@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::loader::OnnxModel;
 
@@ -27,7 +27,8 @@ pub fn reorder_nodes_for_fusion(model: &mut OnnxModel) {
         return;
     }
 
-    let mut producer: HashMap<&str, usize> = HashMap::with_capacity(n);
+    let mut producer: FxHashMap<&str, usize> =
+        FxHashMap::with_capacity_and_hasher(n, FxBuildHasher);
     for (i, node) in model.nodes.iter().enumerate() {
         for out in &node.outputs {
             producer.insert(out.as_str(), i);

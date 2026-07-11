@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 
 use yscv_autograd::{Graph, NodeId};
@@ -17,7 +17,7 @@ pub struct Lars {
     momentum: f32,
     weight_decay: f32,
     trust_coefficient: f32,
-    velocity: HashMap<u64, Tensor>,
+    velocity: FxHashMap<u64, Tensor>,
 }
 
 impl Lars {
@@ -29,7 +29,7 @@ impl Lars {
             momentum: 0.0,
             weight_decay: 0.0,
             trust_coefficient: 0.001,
-            velocity: HashMap::new(),
+            velocity: FxHashMap::default(),
         })
     }
 

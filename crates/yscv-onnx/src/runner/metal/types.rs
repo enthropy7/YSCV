@@ -1,5 +1,5 @@
 use ::metal::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use yscv_kernels::metal_backend::metal_conv::{ConvParams, MetalInference, WinogradParams};
 
@@ -21,18 +21,18 @@ pub struct MetalPlan {
     pub(crate) inf: MetalInference,
     pub(crate) ops: Vec<MetalOp>,
     /// All named buffers (weights + intermediates).
-    pub(crate) bufs: HashMap<String, Buffer>,
-    pub(crate) buf_shapes: HashMap<String, Vec<usize>>,
-    pub(crate) buf_nhwc: HashMap<String, bool>,
+    pub(crate) bufs: FxHashMap<String, Buffer>,
+    pub(crate) buf_shapes: FxHashMap<String, Vec<usize>>,
+    pub(crate) buf_nhwc: FxHashMap<String, bool>,
     pub(crate) input_buf_name: String,
     pub(crate) input_upload: InputUploadMode,
     pub(crate) output_names: Vec<String>,
     /// Debug: CPU reference data for per-buffer comparison (only when METAL_COMPARE is set)
     #[allow(dead_code)]
-    pub(crate) cpu_ref: HashMap<String, Vec<f32>>,
+    pub(crate) cpu_ref: FxHashMap<String, Vec<f32>>,
     /// Buffers that hold f32 data (for attention chain)
     #[cfg_attr(not(feature = "profile"), allow(dead_code))]
-    pub(crate) buf_f32: HashSet<String>,
+    pub(crate) buf_f32: FxHashSet<String>,
 }
 
 #[allow(dead_code)]
@@ -282,7 +282,7 @@ impl MetalPlan {
     /// Print op distribution and key dimensions for diagnostics.
     #[cfg(feature = "profile")]
     pub fn dump_op_stats(&self) {
-        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut counts: rustc_hash::FxHashMap<&str, usize> = rustc_hash::FxHashMap::default();
         for op in &self.ops {
             let name = match op {
                 MetalOp::ConvGemm { .. } => "ConvGemm",

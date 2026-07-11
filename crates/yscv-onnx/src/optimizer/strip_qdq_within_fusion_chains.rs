@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::loader::{OnnxModel, OnnxNode};
 
@@ -21,7 +21,7 @@ pub fn strip_qdq_within_fusion_chains(model: &mut OnnxModel) -> usize {
     let conv_like = |op: &str| matches!(op, "Conv" | "Conv_Relu" | "MatMul" | "Gemm");
 
     let mut to_remove: Vec<usize> = Vec::new();
-    let mut renames: HashMap<String, String> = HashMap::new();
+    let mut renames: FxHashMap<String, String> = FxHashMap::default();
 
     for (i, dq) in model.nodes.iter().enumerate() {
         if dq.op_type != "DequantizeLinear" || dq.inputs.is_empty() || dq.outputs.is_empty() {
@@ -102,7 +102,7 @@ pub fn strip_qdq_within_fusion_chains(model: &mut OnnxModel) -> usize {
 
 #[cfg(test)]
 mod strip_qdq_tests {
-    use std::collections::HashSet;
+    use rustc_hash::FxHashSet;
 
     use super::*;
 
@@ -112,7 +112,7 @@ mod strip_qdq_tests {
             name: name.to_string(),
             inputs: ins.iter().map(|s| s.to_string()).collect(),
             outputs: outs.iter().map(|s| s.to_string()).collect(),
-            attributes: HashMap::new(),
+            attributes: FxHashMap::default(),
         }
     }
 
@@ -124,11 +124,11 @@ mod strip_qdq_tests {
             graph_name: String::new(),
             inputs: vec!["x".into()],
             outputs: vec!["y".into()],
-            initializers: HashMap::new(),
+            initializers: FxHashMap::default(),
             nodes,
-            khwc_weights: HashSet::new(),
-            dw_khwc_weights: HashSet::new(),
-            group_khwc_weights: HashSet::new(),
+            khwc_weights: FxHashSet::default(),
+            dw_khwc_weights: FxHashSet::default(),
+            group_khwc_weights: FxHashSet::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         }

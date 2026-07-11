@@ -523,8 +523,8 @@ thread_local! {
     /// fingerprint samples of the B buffer so we don't return a stale pack
     /// when a temporary buffer is reallocated at the same address.
     static PACKED_B_CACHE: std::cell::RefCell<
-        std::collections::HashMap<(usize, usize, usize, u32, u32, u32), std::rc::Rc<PackedB>>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+        rustc_hash::FxHashMap<(usize, usize, usize, u32, u32, u32), std::rc::Rc<PackedB>>,
+    > = std::cell::RefCell::new(rustc_hash::FxHashMap::default());
 }
 
 /// aarch64-only NR=12 packed B companion to `PackedB`. Shares the
@@ -590,11 +590,11 @@ pub(super) fn full_pack_b_nr12(b: &[f32], k: usize, n: usize) -> PackedBNr12 {
 #[cfg(target_arch = "aarch64")]
 thread_local! {
     static PACKED_B_NR12_CACHE: std::cell::RefCell<
-        std::collections::HashMap<
+        rustc_hash::FxHashMap<
             (usize, usize, usize, u32, u32, u32),
             std::rc::Rc<PackedBNr12>,
         >,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    > = std::cell::RefCell::new(rustc_hash::FxHashMap::default());
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -686,8 +686,8 @@ pub(super) fn get_or_pack_b(b: &[f32], k: usize, n: usize) -> std::rc::Rc<Packed
 #[cfg(target_arch = "aarch64")]
 thread_local! {
     static PACKED_B_8X8_CACHE: std::cell::RefCell<
-        std::collections::HashMap<(usize, usize, usize, u32, u32, u32), std::rc::Rc<Vec<f32>>>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+       rustc_hash::FxHashMap<(usize, usize, usize, u32, u32, u32), std::rc::Rc<Vec<f32>>>,
+    > = std::cell::RefCell::new(rustc_hash::FxHashMap::default());
 }
 
 #[cfg(target_arch = "aarch64")]

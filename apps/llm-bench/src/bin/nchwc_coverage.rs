@@ -1,3 +1,4 @@
+use rustc_hash::FxHashMap;
 /// NCHWc layout coverage probe — Step 0 of NCHWc-everywhere plan.
 ///
 /// Loads a tracker ONNX model and classifies every Conv op as NCHWc-eligible
@@ -7,8 +8,7 @@
 /// Usage:
 ///   cargo run --release --no-default-features -p yscv-llm-bench --bin nchwc_coverage \
 ///     -- private/private/model.onnx
-use std::collections::{HashMap, HashSet};
-
+use rustc_hash::FxHashSet;
 use yscv_onnx::{OnnxAttribute, OnnxModel, OnnxNode, load_onnx_model_from_file};
 
 fn main() {
@@ -76,8 +76,8 @@ fn is_passthrough(op_type: &str) -> bool {
 /// Build a map: tensor_name → shape, tracing through Identity nodes to
 /// resolve weight-sharing aliases. In Siamese networks, branch1 weights
 /// are Identity(branch0_initializer) — treat them as static weights.
-fn build_effective_initializers(model: &OnnxModel) -> HashMap<String, Vec<usize>> {
-    let mut effective: HashMap<String, Vec<usize>> = model
+fn build_effective_initializers(model: &OnnxModel) -> FxHashMap<String, Vec<usize>> {
+    let mut effective: FxHashMap<String, Vec<usize>> = model
         .initializers
         .iter()
         .map(|(k, v)| (k.clone(), v.shape().to_vec()))
@@ -139,8 +139,8 @@ fn run_coverage_probe(model: &OnnxModel) {
     // Classify each conv op
     let mut eligible = 0usize;
     let mut rejected = 0usize;
-    let mut kind_counts: HashMap<String, usize> = HashMap::new();
-    let mut reject_reasons: HashMap<String, usize> = HashMap::new();
+    let mut kind_counts: FxHashMap<String, usize> = FxHashMap::default();
+    let mut reject_reasons: FxHashMap<String, usize> = FxHashMap::default();
 
     for (_, node) in &conv_ops {
         let weight_name = node.inputs.get(1).map(|s| s.as_str()).unwrap_or("");
@@ -331,7 +331,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     println!();
     println!("QLinearConv ops in model: {}", qlinear_conv.len());
     // Show all non-Conv node op types and counts
-    let mut op_counts: HashMap<&str, usize> = HashMap::new();
+    let mut op_counts: FxHashMap<&str, usize> = FxHashMap::default();
     for node in &model.nodes {
         *op_counts.entry(node.op_type.as_str()).or_default() += 1;
     }
@@ -349,7 +349,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     // Non-passthrough, non-Conv ops require NHWC → insert converter at boundary
 
     // Build tensor → producing node index
-    let mut tensor_producer: HashMap<&str, usize> = HashMap::new();
+    let mut tensor_producer: FxHashMap<&str, usize> = FxHashMap::default();
     for (i, node) in model.nodes.iter().enumerate() {
         for out in &node.outputs {
             if !out.is_empty() {
@@ -421,8 +421,8 @@ fn run_coverage_probe(model: &OnnxModel) {
     // And number of exit converters (nchwc tensors consumed by non-nchwc non-Conv nodes)
 
     // Use effective_weights keys as the "static" set (includes Identity-aliased weights)
-    let static_names: HashSet<&str> = effective_weights.keys().map(|s| s.as_str()).collect();
-    let initializer_names: HashSet<&str> = static_names.clone();
+    let static_names: FxHashSet<&str> = effective_weights.keys().map(|s| s.as_str()).collect();
+    let initializer_names: FxHashSet<&str> = static_names.clone();
     let dynamic_inputs: Vec<&str> = model
         .inputs
         .iter()
@@ -437,7 +437,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     }
 
     // Mark which tensors are in nchwc domain (after potential converter)
-    let mut nchwc_tensors: HashSet<String> = HashSet::new();
+    let mut nchwc_tensors: FxHashSet<String> = FxHashSet::default();
     // Graph inputs start as NHWC; we will count converters needed for them
     // if any eligible node consumes them directly.
 
@@ -446,7 +446,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     let mut internal_boundaries = 0usize;
 
     // Track which dynamic inputs get a converter
-    let mut converted_inputs: HashSet<String> = HashSet::new();
+    let mut converted_inputs: FxHashSet<String> = FxHashSet::default();
 
     for (i, node) in model.nodes.iter().enumerate() {
         if !node_eligible[i] && !matches!(node.op_type.as_str(), "Conv" | "Conv_Relu" | "Conv_SiLU")

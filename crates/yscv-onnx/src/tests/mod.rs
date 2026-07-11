@@ -18,7 +18,7 @@ use prost::Message;
 use super::loader::{OnnxAttribute, load_onnx_model};
 use super::proto::onnx;
 use super::runner::run_onnx_model;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
 pub(super) fn build_minimal_onnx_model(
@@ -90,7 +90,7 @@ pub(super) fn run_single_op(
     let bytes =
         build_minimal_onnx_model(vec![node], init_protos, all_input_names, vec![output_name]);
     let model = load_onnx_model(&bytes).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     for (name, tensor) in inputs {
         feed.insert(name.to_string(), tensor);
     }

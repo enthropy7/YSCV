@@ -14,6 +14,7 @@ keywords.workspace = true
 yscv-detect = { version = "0.1", path = "../yscv-detect" }
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 thiserror.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

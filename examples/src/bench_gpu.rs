@@ -3,6 +3,7 @@
 //! Usage:
 //!   cargo run --release --example bench_gpu --features gpu -- <model.onnx>
 
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use yscv_kernels::GpuBackend;
 use yscv_onnx::{
@@ -59,7 +60,7 @@ fn main() {
     // Warm-up
     eprintln!("Warm-up...");
     for _ in 0..3 {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let _ = run_onnx_model_gpu_cached(&gpu, &model, inputs, &mut wc, Some(&exec_plan))
             .expect("fail");
@@ -70,7 +71,7 @@ fn main() {
     eprintln!("\nBenchmark (cached):");
     let mut times = Vec::new();
     for i in 0..n_runs {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let t0 = std::time::Instant::now();
         let _ = run_onnx_model_gpu_cached(&gpu, &model, inputs, &mut wc, Some(&exec_plan))
@@ -91,7 +92,7 @@ fn main() {
     eprintln!("\nBenchmark (uncached, reusing GpuBackend):");
     let mut times2 = Vec::new();
     for i in 0..5 {
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let t0 = std::time::Instant::now();
         let _ = run_onnx_model_gpu_with(&gpu, &model, inputs).expect("fail");
@@ -106,7 +107,7 @@ fn main() {
 
     if do_profile {
         eprintln!("\nProfiling (sync per op)...");
-        let mut inputs = HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let _ = profile_onnx_model_gpu(&model, inputs).expect("profile failed");
     }

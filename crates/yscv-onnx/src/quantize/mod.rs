@@ -25,7 +25,7 @@ pub use rewriter::{
     rewrite_to_qlinear,
 };
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use yscv_tensor::Tensor;
 
@@ -63,7 +63,7 @@ pub fn quantize_weights_int4(model: &mut OnnxModel) -> Result<(), OnnxError> {
         return Ok(());
     }
 
-    let mut new_initializers: HashMap<String, Tensor> = HashMap::new();
+    let mut new_initializers: FxHashMap<String, Tensor> = FxHashMap::default();
     let mut dequant_nodes: Vec<(String, OnnxNode)> = Vec::new();
 
     for name in &weight_names {
@@ -158,7 +158,7 @@ pub fn quantize_weights_int4(model: &mut OnnxModel) -> Result<(), OnnxError> {
             inputs: vec![quant_name, scale_name, zp_name],
             outputs: vec![name.clone()],
             attributes: {
-                let mut attrs = HashMap::new();
+                let mut attrs = FxHashMap::default();
                 // axis=0 for per-channel dequantization
                 attrs.insert("axis".to_string(), OnnxAttribute::Int(0));
                 attrs
@@ -202,7 +202,7 @@ mod tests {
             inputs: vec!["input".to_string()],
             outputs: vec!["output".to_string()],
             initializers: {
-                let mut m = HashMap::new();
+                let mut m = FxHashMap::default();
                 m.insert("conv_weight".to_string(), weight);
                 m
             },
@@ -211,7 +211,7 @@ mod tests {
                 name: "conv0".to_string(),
                 inputs: vec!["input".to_string(), "conv_weight".to_string()],
                 outputs: vec!["output".to_string()],
-                attributes: HashMap::new(),
+                attributes: FxHashMap::default(),
             }],
             khwc_weights: Default::default(),
             dw_khwc_weights: Default::default(),
@@ -266,7 +266,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             initializers: {
-                let mut m = HashMap::new();
+                let mut m = FxHashMap::default();
                 m.insert("bias".to_string(), bias);
                 m
             },

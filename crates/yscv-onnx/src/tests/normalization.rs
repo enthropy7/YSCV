@@ -52,7 +52,7 @@ fn exec_batch_norm_identity() {
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input.clone());
     let result = run_onnx_model(&model, feed).unwrap();
     let output = &result["y"];

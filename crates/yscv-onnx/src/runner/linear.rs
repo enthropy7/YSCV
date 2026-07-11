@@ -463,7 +463,7 @@ pub(super) fn exec_qlinear_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Resul
         op_type: "MatMul".to_string(),
         inputs: vec!["__qa".into(), "__qb_mat".into()],
         outputs: vec!["__qmm_out".into()],
-        attributes: HashMap::new(),
+        attributes: FxHashMap::default(),
     };
     env.insert("__qa".into(), deq_a_t);
     env.insert("__qb_mat".into(), deq_b_t);
@@ -667,7 +667,7 @@ pub(super) fn exec_matmul_integer(node: &OnnxNode, env: &mut TensorEnv) -> Resul
         op_type: "MatMul".to_string(),
         inputs: vec!["__mmi_a".into(), "__mmi_b".into()],
         outputs: vec!["__mmi_out".into()],
-        attributes: HashMap::new(),
+        attributes: FxHashMap::default(),
     };
     env.insert("__mmi_a".into(), t_a);
     env.insert("__mmi_b".into(), t_b);

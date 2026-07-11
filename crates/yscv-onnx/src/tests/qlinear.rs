@@ -135,7 +135,7 @@ fn qlinear_matching_dq_relu_q_runs_in_quant_domain() {
         "matching DQ->Relu->Q should be represented as a quant-domain runtime action"
     );
 
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     assert_eq!(
         result["yq"].data(),
         &[0.0, 0.0, 0.0, 3.0, 7.0, 0.0, 2.0, 1.0]
@@ -168,7 +168,7 @@ fn qlinear_matmul_symmetric_fast_path_with_nontrivial_scales() {
         0.0,
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
     let composite = 0.05_f32 * 0.1 / 0.25;
@@ -268,7 +268,7 @@ fn qlinear_conv_symmetric_fast_path_with_bias() {
     );
     let model = load_onnx_model(&bytes).unwrap();
     crate::runner::reset_quant_runtime_stats();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let stats = crate::runner::quant_runtime_stats();
     assert_eq!(stats.qlinear_conv_fast, 1);
     assert_eq!(stats.qlinear_conv_fallback, 0);
@@ -398,7 +398,7 @@ fn check_qlinear_depthwise_with_bias(
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
     let composite = x_scale * w_scale / y_scale;
@@ -457,7 +457,7 @@ fn matmul_integer_symmetric_fast_path() {
     };
     let bytes = build_minimal_onnx_model(vec![node], inits, vec!["a", "b"], vec!["y"]);
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
     let mut expected = [0.0_f32; 9];
@@ -517,7 +517,7 @@ fn conv_integer_symmetric_fast_path() {
     };
     let bytes = build_minimal_onnx_model(vec![node], inits, vec!["x", "w"], vec!["y"]);
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
     let mut expected = vec![0.0_f32; c_out * h * w];
@@ -578,7 +578,7 @@ fn packed_int4_matmul_routes_through_gemv() {
 
     // Reference fp32 forward.
     let activation: Vec<f32> = (0..k).map(|i| ((i as f32) - 32.0) * 0.05).collect();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert(
         "x".to_string(),
         Tensor::from_vec(vec![1, k], activation.clone()).unwrap(),
@@ -593,7 +593,7 @@ fn packed_int4_matmul_routes_through_gemv() {
     assert!(!model.initializers.contains_key("w"));
     assert!(model.packed_int4_weights.contains_key("w"));
 
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert(
         "x".to_string(),
         Tensor::from_vec(vec![1, k], activation).unwrap(),
@@ -792,7 +792,7 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
         );
 
         let x_tensor = Tensor::from_vec(vec![1, c_in, h, w], x_data.clone()).unwrap();
-        let mut feed = HashMap::new();
+        let mut feed = FxHashMap::default();
         feed.insert("x".to_string(), x_tensor);
 
         // Toggle the fast-path env var around two model runs. This
@@ -1018,7 +1018,7 @@ fn quantized_dw_pw_chain_bitwise_matches_unfused() {
         );
 
         let x_tensor = Tensor::from_vec(vec![1, c_in, h, w], x_data.clone()).unwrap();
-        let mut feed = HashMap::new();
+        let mut feed = FxHashMap::default();
         feed.insert("x".to_string(), x_tensor);
 
         #[allow(unsafe_code)]
@@ -1084,7 +1084,7 @@ fn qlinear_matmul_asymmetric_uses_fp32_fallback() {
         0.0,
     );
     let model = load_onnx_model(&bytes).unwrap();
-    let result = run_onnx_model(&model, HashMap::new()).unwrap();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     assert_eq!(result["y"].shape(), &[2, 2]);
     // Verify finite output — the asymmetric path's exact numerics are
     // covered by the orphan coverage suite; here we only confirm the

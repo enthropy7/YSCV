@@ -91,7 +91,7 @@ fn exec_synthetic_cnn_conv_relu_pool_flatten_gemm() {
 
     let input_data: Vec<f32> = (0..16).map(|v| v as f32 / 16.0).collect();
     let input = Tensor::from_vec(vec![1, 1, 4, 4], input_data).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("input".to_string(), input);
 
     let result = run_onnx_model(&model, feed).unwrap();
@@ -155,7 +155,7 @@ fn conv_identity_relu_bridge_fuses_and_matches_relu_output() {
     let model = load_onnx_model(&bytes).unwrap();
 
     let input = Tensor::from_vec(vec![1, 1, 2, 2], vec![0.0, 0.4, 1.0, -2.0]).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("input".to_string(), input);
 
     let result = run_onnx_model(&model, feed).unwrap();
@@ -245,7 +245,7 @@ fn constant_tensor_proto_value_attribute() {
     let model = load_onnx_model(&bytes).unwrap();
 
     let input = Tensor::from_vec(vec![1, 8], (0..8).map(|i| i as f32).collect()).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("input".to_string(), input);
 
     let result = run_onnx_model(&model, feed).unwrap();
@@ -285,7 +285,7 @@ fn split_opset13_input_tensor_sizes() {
     let model = load_onnx_model(&bytes).unwrap();
 
     let input = Tensor::from_vec(vec![1, 6], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("input".to_string(), input);
 
     let result = run_onnx_model(&model, feed).unwrap();
@@ -397,7 +397,7 @@ fn scalar_initializer_gather_unsqueeze_concat() {
     // Concat with [4.0] → [2.0, 4.0]
     // Reshape [1, 2, 2, 2] (8 elements) as [2, 4]
     let input = Tensor::from_vec(vec![1, 2, 2, 2], (0..8).map(|i| i as f32).collect()).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("input".to_string(), input);
 
     let result = run_onnx_model(&model, feed).unwrap();
@@ -485,7 +485,7 @@ fn yolo_like_conv_silu_reshape_transpose() {
 
     let input_data: Vec<f32> = (0..16).map(|v| v as f32 / 16.0).collect();
     let input = Tensor::from_vec(vec![1, 1, 4, 4], input_data).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("input".to_string(), input);
 
     let result = run_onnx_model(&model, feed).unwrap();

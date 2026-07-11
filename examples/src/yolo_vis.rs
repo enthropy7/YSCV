@@ -113,7 +113,7 @@ fn main() {
     // CPU
     println!("\n=== CPU ===");
     let cpu_dets = {
-        let mut inputs = std::collections::HashMap::new();
+        let mut inputs = FxHashMap::default();
         inputs.insert("images".to_string(), input_tensor.clone());
         let outputs = yscv_onnx::run_onnx_model(&model, inputs).expect("CPU failed");
         let output = outputs.values().next().expect("no output");

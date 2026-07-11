@@ -26,7 +26,7 @@
 //! load, so non-calibration inference pays only that one branch in the
 //! tensor-insertion path.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -172,8 +172,8 @@ impl Histogram {
 }
 
 struct Inner {
-    per_tensor: Mutex<HashMap<String, MinMax>>,
-    histograms: Mutex<HashMap<String, Histogram>>,
+    per_tensor: Mutex<FxHashMap<String, MinMax>>,
+    histograms: Mutex<FxHashMap<String, Histogram>>,
     histogram_enabled: AtomicBool,
 }
 
@@ -194,8 +194,8 @@ impl CalibrationCollector {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Inner {
-                per_tensor: Mutex::new(HashMap::new()),
-                histograms: Mutex::new(HashMap::new()),
+                per_tensor: Mutex::new(FxHashMap::default()),
+                histograms: Mutex::new(FxHashMap::default()),
                 histogram_enabled: AtomicBool::new(false),
             }),
         }
@@ -213,7 +213,7 @@ impl CalibrationCollector {
 
     /// Snapshot of aggregated per-tensor histograms. Empty when
     /// [`Self::enable_histograms`] was never set.
-    pub fn histograms(&self) -> HashMap<String, Histogram> {
+    pub fn histograms(&self) -> FxHashMap<String, Histogram> {
         self.inner
             .histograms
             .lock()
@@ -239,7 +239,7 @@ impl CalibrationCollector {
     /// Snapshot of aggregated per-tensor statistics. Cheap clone of the
     /// internal map; the collector continues recording into the same
     /// state if a scope is still active.
-    pub fn snapshot(&self) -> HashMap<String, MinMax> {
+    pub fn snapshot(&self) -> FxHashMap<String, MinMax> {
         self.inner
             .per_tensor
             .lock()

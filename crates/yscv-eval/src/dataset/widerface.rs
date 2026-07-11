@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashSet;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use yscv_detect::{BoundingBox, CLASS_ID_FACE, Detection};
 
@@ -23,7 +24,8 @@ pub(crate) fn parse_and_build_widerface(
     let ground_truth_frames = parse_widerface_ground_truth(ground_truth_text)?;
     let prediction_frames = parse_widerface_predictions(predictions_text)?;
 
-    let mut predictions_by_image = HashMap::with_capacity(prediction_frames.len());
+    let mut predictions_by_image =
+        FxHashMap::with_capacity_and_hasher(prediction_frames.len(), FxBuildHasher);
     for frame in prediction_frames {
         if predictions_by_image
             .insert(frame.image_id.clone(), frame.predictions)
@@ -61,7 +63,7 @@ fn parse_widerface_ground_truth(text: &str) -> Result<Vec<WiderFaceGroundTruthFr
     let lines = widerface_significant_lines(text);
     let mut cursor = 0usize;
     let mut frames = Vec::new();
-    let mut seen_ids = HashSet::new();
+    let mut seen_ids = FxHashSet::default();
 
     while cursor < lines.len() {
         let (image_line_no, image_id_raw) = lines[cursor];
@@ -158,7 +160,7 @@ fn parse_widerface_predictions(text: &str) -> Result<Vec<WiderFacePredictionFram
     let lines = widerface_significant_lines(text);
     let mut cursor = 0usize;
     let mut frames = Vec::new();
-    let mut seen_ids = HashSet::new();
+    let mut seen_ids = FxHashSet::default();
 
     while cursor < lines.len() {
         let (image_line_no, image_id_raw) = lines[cursor];

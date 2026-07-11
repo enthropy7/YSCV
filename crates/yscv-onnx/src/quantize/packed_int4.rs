@@ -176,16 +176,16 @@ fn collect_packing_candidates(nodes: &[OnnxNode]) -> Vec<Candidate> {
 mod tests {
     use super::*;
     use crate::loader::{OnnxAttribute, OnnxNode};
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     use yscv_tensor::Tensor;
 
     fn synth_model(weight_shape: Vec<usize>, weight_data: Vec<f32>, op: &str) -> OnnxModel {
-        let mut initializers = HashMap::new();
+        let mut initializers = FxHashMap::default();
         initializers.insert(
             "w".to_string(),
             Tensor::from_vec(weight_shape, weight_data).unwrap(),
         );
-        let mut attrs = HashMap::new();
+        let mut attrs = FxHashMap::default();
         if op == "Gemm" {
             attrs.insert("transB".to_string(), OnnxAttribute::Int(1));
         }

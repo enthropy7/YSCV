@@ -3,7 +3,7 @@ use crate::exporter::{
     OnnxExportAttr, OnnxExportGraph, OnnxExportNode, OnnxExportValueInfo, export_onnx_model,
 };
 use crate::loader::{OnnxModel, OnnxNode};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 #[test]
 fn export_roundtrip_relu_graph() {
@@ -33,7 +33,7 @@ fn export_roundtrip_relu_graph() {
     assert_eq!(model.nodes[0].op_type, "Relu");
 
     let input = Tensor::from_vec(vec![1, 4], vec![-1.0, 2.0, -3.0, 4.0]).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
     assert_eq!(result["y"].data(), &[0.0, 2.0, 0.0, 4.0]);
@@ -68,7 +68,7 @@ fn export_roundtrip_gemm_with_weights() {
     let model = load_onnx_model(&bytes).unwrap();
 
     let input = Tensor::from_vec(vec![1, 3], vec![1.0, 2.0, 3.0]).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
     let out = &result["y"];
@@ -110,7 +110,7 @@ fn export_to_file_roundtrip() {
 
 #[test]
 fn onnx_model_export_unpermutes_internal_conv_layouts() {
-    let mut initializers = HashMap::new();
+    let mut initializers = FxHashMap::default();
     // Regular Conv internal KHWC [KH, KW, IC, OC] -> ONNX OIHW [OC, IC, KH, KW].
     initializers.insert(
         "regular".to_string(),
@@ -140,7 +140,7 @@ fn onnx_model_export_unpermutes_internal_conv_layouts() {
             name: "conv".to_string(),
             inputs: vec!["x".to_string(), "regular".to_string()],
             outputs: vec!["y".to_string()],
-            attributes: HashMap::new(),
+            attributes: FxHashMap::default(),
         }],
         khwc_weights: Default::default(),
         dw_khwc_weights: Default::default(),
@@ -189,7 +189,7 @@ fn onnx_model_export_unpermutes_internal_conv_layouts() {
 
 #[test]
 fn export_graph_defuses_relu_annotations_and_loads_int8_initializers() {
-    let mut initializers = HashMap::new();
+    let mut initializers = FxHashMap::default();
     initializers.insert(
         "w_q".to_string(),
         Tensor::from_vec(vec![4], vec![-128.0, -2.0, 3.0, 127.0]).unwrap(),
@@ -211,7 +211,7 @@ fn export_graph_defuses_relu_annotations_and_loads_int8_initializers() {
             name: "conv_relu".to_string(),
             inputs: vec!["x".to_string(), "w_q".to_string()],
             outputs: vec!["y".to_string()],
-            attributes: HashMap::new(),
+            attributes: FxHashMap::default(),
         }],
         khwc_weights: Default::default(),
         dw_khwc_weights: Default::default(),

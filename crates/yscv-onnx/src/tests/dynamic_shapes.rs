@@ -85,7 +85,7 @@ fn run_dynamic_cnn(model: &crate::loader::OnnxModel, batch: usize) -> Tensor {
     // Input: [batch, 1, 4, 4]
     let input_data: Vec<f32> = (0..batch * 16).map(|v| (v % 16) as f32 / 16.0).collect();
     let input = Tensor::from_vec(vec![batch, 1, 4, 4], input_data).unwrap();
-    let mut feed = HashMap::new();
+    let mut feed = FxHashMap::default();
     feed.insert("input".to_string(), input);
     let result = run_onnx_model(model, feed).unwrap();
     result["output"].clone()
@@ -213,7 +213,7 @@ fn dynamic_batch_conv_bn_pool() {
 
     // batch=1: input [1,1,4,4] -> conv same-pad [1,2,4,4] -> bn [1,2,4,4] -> pool [1,2,2,2]
     let input1 = Tensor::from_vec(vec![1, 1, 4, 4], (0..16).map(|i| i as f32).collect()).unwrap();
-    let mut feed1 = HashMap::new();
+    let mut feed1 = FxHashMap::default();
     feed1.insert("x".to_string(), input1);
     let r1 = run_onnx_model(&model, feed1).unwrap();
     let y1 = &r1["y"];
@@ -222,7 +222,7 @@ fn dynamic_batch_conv_bn_pool() {
     // batch=3
     let input3 =
         Tensor::from_vec(vec![3, 1, 4, 4], (0..48).map(|i| (i % 16) as f32).collect()).unwrap();
-    let mut feed3 = HashMap::new();
+    let mut feed3 = FxHashMap::default();
     feed3.insert("x".to_string(), input3);
     let r3 = run_onnx_model(&model, feed3).unwrap();
     let y3 = &r3["y"];

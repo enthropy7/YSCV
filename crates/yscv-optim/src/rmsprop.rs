@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 
 use yscv_autograd::{Graph, NodeId};
@@ -38,7 +38,7 @@ pub struct RmsProp {
     weight_decay: f32,
     momentum: f32,
     centered: bool,
-    state: HashMap<u64, RmsPropState>,
+    state: FxHashMap<u64, RmsPropState>,
 }
 
 impl RmsProp {
@@ -52,7 +52,7 @@ impl RmsProp {
             weight_decay: 0.0,
             momentum: 0.0,
             centered: false,
-            state: HashMap::new(),
+            state: FxHashMap::default(),
         })
     }
 

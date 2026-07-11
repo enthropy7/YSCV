@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 
 use yscv_autograd::{Graph, NodeId};
@@ -31,7 +31,7 @@ pub struct Adagrad {
     lr: f32,
     epsilon: f32,
     weight_decay: f32,
-    state: HashMap<u64, AdagradState>,
+    state: FxHashMap<u64, AdagradState>,
 }
 
 impl Adagrad {
@@ -42,7 +42,7 @@ impl Adagrad {
             lr,
             epsilon: 1e-10,
             weight_decay: 0.0,
-            state: HashMap::new(),
+            state: FxHashMap::default(),
         })
     }
 

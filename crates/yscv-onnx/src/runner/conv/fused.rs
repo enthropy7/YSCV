@@ -11,10 +11,10 @@ use super::*;
 /// Executes DW first, then PW immediately while DW output is hot in L1 cache.
 /// Skips intermediate tensor early-deallocation check to keep it cached.
 /// True-fuse DW → PW by keeping the DW output as a local `Tensor`,
-/// never touching the env HashMap for the intermediate. Chains two
+/// never touching the env FxHashMap for the intermediate. Chains two
 /// `conv_compute_nhwc` calls and only binds the final PW result to env.
 /// Saves one `env.insert` + one `env.get` + one `env.remove` + the
-/// associated HashMap lookups per fused pair vs the previous "call
+/// associated FxHashMap lookups per fused pair vs the previous "call
 /// exec_conv_with_params twice" implementation.
 ///
 /// Also does early cleanup of DW's input refs between DW and PW so
@@ -419,7 +419,7 @@ pub(crate) fn exec_fused_dw_pw(
         dw_has_pad,
     )?;
     // `dw_output` is a local owned `Tensor` — NOT inserted into env.
-    // That's the whole point of true fusion: zero env-HashMap traffic
+    // That's the whole point of true fusion: zero env-FxHashMap traffic
     // for the intermediate.
 
     // Drop borrowed tensors so env can be mutated below.
@@ -490,7 +490,7 @@ pub(crate) fn exec_fused_dw_pw(
 
 /// Mirror of `exec_fused_dw_pw` for the inverted-bottleneck opening:
 /// chains `PW_expand → DW` through a local intermediate `Tensor` so the
-/// PW output never touches the env HashMap. Same early DW-input
+/// PW output never touches the env FxHashMap. Same early DW-input
 /// cleanup (here DW's only input is the PW output, which is owned
 /// locally and dropped after DW compute, so the explicit early-cleanup
 /// loop touches only the PW's inputs to free the original activation
@@ -948,14 +948,14 @@ fn try_fused_pw_dw_pw_reduce_nchwc(
     pw_reduce_activation: yscv_kernels::Activation,
     leave_nchwc: bool,
 ) -> Option<Tensor> {
+    use rustc_hash::FxHashMap;
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::sync::Arc;
     // Lazy NCHWc DW-weight pack, cached by weight pointer (packed once, reused
     // across all inferences — the bench timing loop never re-packs).
     thread_local! {
-        static DW_PACK: RefCell<HashMap<usize, Arc<yscv_kernels::PackedNChwBc>>> =
-            RefCell::new(HashMap::new());
+        static DW_PACK: RefCell<FxHashMap<usize, Arc<yscv_kernels::PackedNChwBc>>> =
+            RefCell::new(FxHashMap::default());
     }
     let cfg = yscv_kernels::ParallelElementwiseConfig::default();
     let reduce_w = env.get(&pw_reduce_node.inputs[1])?.clone();
@@ -1078,12 +1078,12 @@ fn try_fused_pw_dw_nchwc(
     dw_activation: yscv_kernels::Activation,
     leave_nchwc: bool,
 ) -> Option<Tensor> {
+    use rustc_hash::FxHashMap;
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::sync::Arc;
     thread_local! {
-        static DW_PACK: RefCell<HashMap<usize, Arc<yscv_kernels::PackedNChwBc>>> =
-            RefCell::new(HashMap::new());
+        static DW_PACK: RefCell<FxHashMap<usize, Arc<yscv_kernels::PackedNChwBc>>> =
+            RefCell::new(FxHashMap::default());
     }
     let cfg = yscv_kernels::ParallelElementwiseConfig::default();
     let dw_key = dw_weight_tensor.data().as_ptr() as usize;
@@ -1465,12 +1465,12 @@ pub(crate) fn exec_fused_pw_dw_pw_reduce(
             #[cfg(target_arch = "x86_64")]
             {
                 // Lazy DW-weight pack into NCHWc-blocked layout.
+                use rustc_hash::FxHashMap;
                 use std::cell::RefCell;
-                use std::collections::HashMap;
                 use std::sync::Arc;
                 thread_local! {
-                    static DW_BLOCK_PACK: RefCell<HashMap<usize, Arc<Vec<f32>>>> =
-                        RefCell::new(HashMap::new());
+                    static DW_BLOCK_PACK: RefCell<FxHashMap<usize, Arc<Vec<f32>>>> =
+                        RefCell::new(FxHashMap::default());
                 }
                 let dw_key = dw_weight_tensor.data().as_ptr() as usize;
                 let dw_packed = DW_BLOCK_PACK.with(|c| {

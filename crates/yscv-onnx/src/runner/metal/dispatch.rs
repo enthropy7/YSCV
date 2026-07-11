@@ -1,5 +1,5 @@
 use ::metal::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::types::*;
 
@@ -118,7 +118,7 @@ pub(crate) fn dispatch_compute_op(
     plan: &MetalPlan,
     enc: &MetalEncoder,
     op: &MetalOp,
-    bufs: &HashMap<String, Buffer>,
+    bufs: &FxHashMap<String, Buffer>,
 ) {
     let gb = |name: &str| -> &Buffer {
         bufs.get(name).unwrap_or_else(|| {

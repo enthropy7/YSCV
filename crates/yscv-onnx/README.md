@@ -23,9 +23,9 @@ let outputs = runner.run(&[("images", &input)])?;
 ## Capabilities
 
 - **Inference API variants**:
-  - `run_onnx_model` (owned `HashMap<String, Tensor>`)
-  - `run_onnx_model_borrowed` (borrowed `HashMap`)
-  - `run_onnx_model_borrowed_slice` (borrowed `&[(&str, &Tensor)]`, no `HashMap` required)
+  - `run_onnx_model` (owned `FxHashMap<String, Tensor>`)
+  - `run_onnx_model_borrowed` (borrowed `FxHashMap`)
+  - `run_onnx_model_borrowed_slice` (borrowed `&[(&str, &Tensor)]`, no `FxHashMap` required)
 - **122 ONNX CPU operators**: Conv, MatMul, Gemm, Relu/LeakyRelu/Sigmoid/Tanh/Gelu/Erf/Mish/HardSwish/Softmax/LogSoftmax, BatchNormalization/LayerNormalization/InstanceNormalization, MaxPool/AveragePool/GlobalAveragePool, Resize/Upsample, Concat/Split/Reshape/Flatten/Transpose/Gather/GatherElements/GatherND/ScatterElements/ScatterND/Slice/Tile/Expand, Cast/Pad/Clip/Where/Identity/CumSum/ArgMax/ArgMin/TopK, DepthToSpace/SpaceToDepth, GridSample/RoiAlign/NonMaxSuppression, full quantized stack (QuantizeLinear/DequantizeLinear/QLinearConv/QLinearMatMul/MatMulInteger/ConvInteger/DynamicQuantizeLinear), trig + hyperbolic, logical, fused `Conv_Relu` / `BatchNormalization_Relu`, … (see the op dispatch in `src/runner/dispatch.rs`)
 - **Graph optimizations**: constant folding, Conv+BN fusion, Conv+Relu fusion, dead node elimination
 - **Runtime fusion**: Conv+SiLU (Conv→Sigmoid→Mul pattern), Conv+Relu, BN+Relu, Gemm+Relu, Add+Relu (in-place with buffer reuse), Conv+Add residual (in-place, buffer reuse), in-place Add (same-shape last-use)

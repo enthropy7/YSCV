@@ -1,5 +1,5 @@
 use ::metal::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::record::{record_conv, record_node};
 use super::types::*;
@@ -34,8 +34,8 @@ pub fn compile_metal_plan(
     // We need tensor shapes AND data for fallback ops. Some ops (Split) consume
     // their inputs, so we snapshot shapes + data for fallback-eligible outputs
     // immediately after each node executes.
-    let mut cpu_shapes: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut cpu_data: HashMap<String, Vec<f32>> = HashMap::new();
+    let mut cpu_shapes: FxHashMap<String, Vec<usize>> = FxHashMap::default();
+    let mut cpu_data: FxHashMap<String, Vec<f32>> = FxHashMap::default();
     for (ni, node) in model.nodes.iter().enumerate() {
         if let Err(e) = execute_node_cpu_for_metal_compile(node, &mut env)
             && debug_metal
@@ -66,12 +66,12 @@ pub fn compile_metal_plan(
     }
 
     // Now we know all tensor shapes. Build Metal buffers and ops.
-    let mut bufs: HashMap<String, Buffer> = HashMap::new();
-    let mut buf_shapes: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut buf_nhwc: HashMap<String, bool> = HashMap::new();
+    let mut bufs: FxHashMap<String, Buffer> = FxHashMap::default();
+    let mut buf_shapes: FxHashMap<String, Vec<usize>> = FxHashMap::default();
+    let mut buf_nhwc: FxHashMap<String, bool> = FxHashMap::default();
     let mut ops = Vec::new();
     // Track buffers that are in f32 format (for attention precision chain)
-    let mut f32_bufs: HashSet<String> = HashSet::new();
+    let mut f32_bufs: FxHashSet<String> = FxHashSet::default();
 
     // Upload input: for 4D NCHW, do f32→f16 + NCHW→NHWC on CPU (avoids GPU cast op).
     let input_shape = input_tensor.shape();
@@ -126,7 +126,7 @@ pub fn compile_metal_plan(
     let nodes = &model.nodes;
 
     // Build a set of node indices to skip (fused into a previous node)
-    let mut skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut skip: rustc_hash::FxHashSet<usize> = rustc_hash::FxHashSet::default();
 
     #[cfg(feature = "profile")]
     let debug_metal = std::env::var("METAL_DEBUG").is_ok();
@@ -535,7 +535,7 @@ pub fn compile_metal_plan(
     // the concat copy entirely.
     if std::env::var("METAL_NO_CONV_CONCAT").is_err() {
         // Map conv output name → op index (only for kernels with strided output support)
-        let mut conv_out_idx: HashMap<&str, usize> = HashMap::new();
+        let mut conv_out_idx: FxHashMap<&str, usize> = FxHashMap::default();
         for (i, op) in ops.iter().enumerate() {
             match op {
                 MetalOp::ConvGemm { output, .. }
@@ -548,7 +548,7 @@ pub fn compile_metal_plan(
         }
 
         // Count how many ops read each buffer
-        let mut consumers: HashMap<&str, usize> = HashMap::new();
+        let mut consumers: FxHashMap<&str, usize> = FxHashMap::default();
         for op in &ops {
             let inputs: Vec<&str> = match op {
                 MetalOp::ConvGemm {
@@ -652,7 +652,7 @@ pub fn compile_metal_plan(
         }
 
         // Apply fusions
-        let mut removed_indices: HashSet<usize> = HashSet::new();
+        let mut removed_indices: FxHashSet<usize> = FxHashSet::default();
         for (concat_idx, concat_out, conv_ops, total_c) in &fusions {
             if let Some(concat_buf) = bufs.get(concat_out).cloned() {
                 for &(conv_idx, ch_offset) in conv_ops {
@@ -700,7 +700,8 @@ pub fn compile_metal_plan(
     // Replaces separate NHWC→NCHW permutations + flat copy with a single fused kernel.
     if std::env::var("METAL_NO_FUSION").is_err() {
         // Map CpuReshape output name → (op_idx, nhwc_input_name, (n,h,w,c))
-        let mut reshape_info: HashMap<&str, (usize, &str, (u32, u32, u32, u32))> = HashMap::new();
+        let mut reshape_info: FxHashMap<&str, (usize, &str, (u32, u32, u32, u32))> =
+            FxHashMap::default();
         for (i, op) in ops.iter().enumerate() {
             if let MetalOp::CpuReshape {
                 input,
@@ -714,7 +715,7 @@ pub fn compile_metal_plan(
         }
 
         // Count consumers of each buffer
-        let mut buf_consumers: HashMap<&str, usize> = HashMap::new();
+        let mut buf_consumers: FxHashMap<&str, usize> = FxHashMap::default();
         for op in &ops {
             let ins: Vec<&str> = match op {
                 MetalOp::FlatConcat { inputs, .. } => inputs.iter().map(|s| s.as_str()).collect(),
@@ -750,7 +751,7 @@ pub fn compile_metal_plan(
             }
         }
 
-        let mut removed_indices: HashSet<usize> = HashSet::new();
+        let mut removed_indices: FxHashSet<usize> = FxHashSet::default();
         let mut replacements: Vec<(usize, MetalOp)> = Vec::new();
 
         for (i, op) in ops.iter().enumerate() {
@@ -839,7 +840,7 @@ pub fn compile_metal_plan(
 
         if !removed_indices.is_empty() {
             // Build new ops list: replace FlatConcat with fused op, remove CpuReshape ops
-            let mut repl_map: HashMap<usize, MetalOp> = replacements.into_iter().collect();
+            let mut repl_map: FxHashMap<usize, MetalOp> = replacements.into_iter().collect();
             let old_ops = std::mem::take(&mut ops);
             ops = old_ops
                 .into_iter()
@@ -862,7 +863,7 @@ pub fn compile_metal_plan(
     // This saves both a buffer allocation and a full read+write round-trip.
     if std::env::var("METAL_NO_INPLACE").is_err() {
         // Compute last_use: buffer_name → last op index that reads it
-        let mut last_use: HashMap<String, usize> = HashMap::new();
+        let mut last_use: FxHashMap<String, usize> = FxHashMap::default();
         for (i, op) in ops.iter().enumerate() {
             let inputs: Vec<&str> = match op {
                 MetalOp::ConvGemm {
@@ -969,7 +970,7 @@ pub fn compile_metal_plan(
     let cpu_ref = if std::env::var("METAL_COMPARE").is_ok() {
         cpu_data.clone()
     } else {
-        HashMap::new()
+        FxHashMap::default()
     };
     Ok(MetalPlan {
         inf,
@@ -991,9 +992,9 @@ pub(crate) fn ensure_on_metal(
     inf: &MetalInference,
     name: &str,
     env: &TensorEnv,
-    bufs: &mut HashMap<String, Buffer>,
-    shapes: &mut HashMap<String, Vec<usize>>,
-    nhwc: &mut HashMap<String, bool>,
+    bufs: &mut FxHashMap<String, Buffer>,
+    shapes: &mut FxHashMap<String, Vec<usize>>,
+    nhwc: &mut FxHashMap<String, bool>,
 ) {
     if bufs.contains_key(name) {
         return;
@@ -1019,9 +1020,9 @@ pub(crate) fn ensure_on_metal(
 pub(crate) fn ensure_nhwc_metal(
     inf: &MetalInference,
     name: &str,
-    bufs: &mut HashMap<String, Buffer>,
-    shapes: &mut HashMap<String, Vec<usize>>,
-    nhwc: &mut HashMap<String, bool>,
+    bufs: &mut FxHashMap<String, Buffer>,
+    shapes: &mut FxHashMap<String, Vec<usize>>,
+    nhwc: &mut FxHashMap<String, bool>,
     ops: &mut Vec<MetalOp>,
 ) -> String {
     // Already NHWC natively (e.g. output of a previous Conv)
@@ -1075,11 +1076,11 @@ pub(crate) fn ensure_nhwc_metal(
 pub(crate) fn cpu_fallback(
     node: &OnnxNode,
     env: &TensorEnv,
-    cpu_data: &HashMap<String, Vec<f32>>,
-    cpu_shapes: &HashMap<String, Vec<usize>>,
-    bufs: &mut HashMap<String, Buffer>,
-    shapes: &mut HashMap<String, Vec<usize>>,
-    nhwc: &mut HashMap<String, bool>,
+    cpu_data: &FxHashMap<String, Vec<f32>>,
+    cpu_shapes: &FxHashMap<String, Vec<usize>>,
+    bufs: &mut FxHashMap<String, Buffer>,
+    shapes: &mut FxHashMap<String, Vec<usize>>,
+    nhwc: &mut FxHashMap<String, bool>,
     inf: &MetalInference,
 ) {
     for out_name in &node.outputs {

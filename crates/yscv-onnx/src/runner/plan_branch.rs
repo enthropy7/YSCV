@@ -648,7 +648,7 @@ pub(crate) fn execute_plan_branch(
 
                 if let Some(fused_out) = fused_result {
                     let add_out = &add_node.outputs[0];
-                    // cached add_out slot ID avoids a HashMap
+                    // cached add_out slot ID avoids a FxHashMap
                     // lookup inside insert + mark_nhwc. On tracker this fires
                     // 24× per inference (one per residual block).
                     let add_out_id = model
