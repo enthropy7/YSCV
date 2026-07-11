@@ -1544,7 +1544,7 @@ unsafe fn sobel_row_neon(
 
     let mut x = 1usize;
 
-    while x + 16 <= w - 1 {
+    while x + 16 < w {
         // Load 16 u8 at offsets x-1, x, x+1 for each row
         let t_l = vld1q_u8(row0.add(x - 1));
         let t_c = vld1q_u8(row0.add(x));
