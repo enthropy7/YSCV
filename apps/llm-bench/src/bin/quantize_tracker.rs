@@ -31,7 +31,6 @@
 //! `calib_accuracy --model`. Without `--output` the QDQ save+reload step
 //! is skipped — useful when iterating on the calibration count alone.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -189,7 +188,7 @@ fn read_single_tensor_stream(name: &str, path: &PathBuf) -> Result<Vec<Tensor>, 
         let sample: SampleTensor = match serde_json::from_str(line) {
             Ok(sample) => sample,
             Err(_) => {
-                let wrapped: HashMap<String, SampleTensor> =
+                let wrapped: FxHashMap<String, SampleTensor> =
                     serde_json::from_str(line).map_err(|e| {
                         format!("{}:{line_no}: invalid tensor JSONL: {e}", path.display())
                     })?;
@@ -237,7 +236,7 @@ fn read_jsonl_samples(
                 ));
             }
         }
-        let mut by_name: HashMap<String, Vec<Tensor>> = streams.into_iter().collect();
+        let mut by_name: FxHashMap<String, Vec<Tensor>> = streams.into_iter().collect();
         let mut samples = Vec::with_capacity(expected_len);
         for idx in 0..expected_len {
             let mut row = Vec::with_capacity(inputs.len());
@@ -262,7 +261,7 @@ fn read_jsonl_samples(
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let mut parsed: HashMap<String, SampleTensor> = serde_json::from_str(line)
+        let mut parsed: FxHashMap<String, SampleTensor> = serde_json::from_str(line)
             .map_err(|e| format!("{}:{line_no}: invalid sample JSONL: {e}", path.display()))?;
         let mut row = Vec::with_capacity(inputs.len());
         for (name, _) in inputs {

@@ -4,7 +4,6 @@
 //!   cargo run --release --example bench_gpu --features gpu -- <model.onnx>
 
 use rustc_hash::FxHashMap;
-use std::collections::HashMap;
 use yscv_kernels::GpuBackend;
 use yscv_onnx::{
     GpuWeightCache, load_onnx_model_from_file, plan_gpu_execution, profile_onnx_model_gpu,
@@ -36,7 +35,7 @@ fn main() {
 
     // Print fusion stats
     {
-        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut counts: FxHashMap<String, usize> = FxHashMap::default();
         for a in &exec_plan.actions {
             let key = match a {
                 yscv_onnx::GpuExecAction::ConvSiLU { .. } => "ConvSiLU",
