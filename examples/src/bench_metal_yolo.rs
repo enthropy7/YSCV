@@ -7,6 +7,8 @@ fn main() {
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
+use std::collections::HashMap;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_onnx::load_onnx_model_from_file;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
@@ -35,7 +37,7 @@ fn main() {
 
         // ── CPU baseline ──
         let cpu_out = {
-            let mut inp = FxHashMap::default();
+            let mut inp = HashMap::new();
             inp.insert("images".to_string(), input_tensor.clone());
             yscv_onnx::run_onnx_model(&model, inp).expect("cpu fail")
         };
