@@ -71,7 +71,7 @@ fn test_data_loader_multi_worker() {
     assert_eq!(batches.len(), 8);
 
     // Verify all samples are covered (each sample has a unique fill value).
-    let mut seen = rustc_hash::FxHashSet::default();
+    let mut seen = std::collections::HashSet::new();
     for batch in &batches {
         let batch_size = batch.inputs.shape()[0];
         let sample_len = 3;

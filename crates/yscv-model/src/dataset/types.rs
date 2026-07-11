@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use yscv_tensor::Tensor;
 
 use crate::{ImageAugmentationPipeline, ModelError};
@@ -154,7 +154,7 @@ impl SupervisedDataset {
         validate_split_ratios(train_ratio, validation_ratio)?;
 
         let class_labels = class_labels_from_targets(self.targets())?;
-        let mut indices_by_class = FxHashMap::<usize, Vec<usize>>::default();
+        let mut indices_by_class = HashMap::<usize, Vec<usize>>::default();
         for (sample_index, class_id) in class_labels.into_iter().enumerate() {
             indices_by_class
                 .entry(class_id)

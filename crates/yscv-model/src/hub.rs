@@ -5,7 +5,7 @@
 //! `$YSCV_CACHE_DIR` (or `~/.yscv/models/` by default) and validated
 //! by expected file size.
 
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,7 +31,7 @@ pub struct HubEntry {
 /// Model hub for downloading and caching pretrained weights.
 pub struct ModelHub {
     cache_dir: PathBuf,
-    registry: FxHashMap<String, HubEntry>,
+    registry: HashMap<String, HubEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -56,8 +56,8 @@ pub fn default_cache_dir() -> PathBuf {
 // Registry population
 // ---------------------------------------------------------------------------
 
-fn build_registry() -> FxHashMap<String, HubEntry> {
-    let mut m = FxHashMap::default();
+fn build_registry() -> HashMap<String, HubEntry> {
+    let mut m = HashMap::default();
 
     m.insert(
         "resnet18".into(),
@@ -199,7 +199,7 @@ impl ModelHub {
     }
 
     /// Returns a reference to the internal registry.
-    pub fn registry(&self) -> &FxHashMap<String, HubEntry> {
+    pub fn registry(&self) -> &HashMap<String, HubEntry> {
         &self.registry
     }
 
@@ -260,7 +260,7 @@ impl ModelHub {
 
     /// Downloads (if needed) and loads all tensors from the safetensors
     /// weight file for the given model name.
-    pub fn load_weights(&self, name: &str) -> Result<FxHashMap<String, Tensor>, ModelError> {
+    pub fn load_weights(&self, name: &str) -> Result<HashMap<String, Tensor>, ModelError> {
         let path = self.download_if_missing(name)?;
         load_state_dict(&path)
     }

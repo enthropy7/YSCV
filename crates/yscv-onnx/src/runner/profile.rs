@@ -356,7 +356,7 @@ impl ProfileFilter {
 /// unfiltered JSON.
 pub fn profile_onnx_model_cpu(
     model: &OnnxModel,
-    inputs: FxHashMap<String, Tensor>,
+    inputs: impl IntoIterator<Item = (String, Tensor)>,
 ) -> Result<(), OnnxError> {
     use std::time::Instant;
 

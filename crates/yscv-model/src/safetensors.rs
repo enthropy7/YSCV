@@ -8,7 +8,7 @@
 //! 3. Remaining bytes — contiguous raw tensor data
 
 use crate::ModelError;
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::path::Path;
 use yscv_tensor::Tensor;
 
@@ -64,7 +64,7 @@ pub struct TensorInfo {
 /// A parsed SafeTensors file backed by an in-memory byte buffer.
 pub struct SafeTensorFile {
     /// Parsed tensor metadata, keyed by name.
-    tensors: FxHashMap<String, TensorInfo>,
+    tensors: HashMap<String, TensorInfo>,
     /// The raw data section (everything after the JSON header).
     data: Vec<u8>,
 }
@@ -122,7 +122,7 @@ impl SafeTensorFile {
                 message: format!("invalid JSON header: {e}"),
             })?;
 
-        let mut tensors = FxHashMap::default();
+        let mut tensors = HashMap::default();
         for (name, value) in &header_map {
             if name == "__metadata__" {
                 continue;
@@ -300,9 +300,9 @@ impl SafeTensorFile {
 /// Load all tensors from a SafeTensors file into a name-to-tensor map.
 ///
 /// All tensors are converted to F32.
-pub fn load_state_dict(path: &Path) -> Result<FxHashMap<String, Tensor>, ModelError> {
+pub fn load_state_dict(path: &Path) -> Result<HashMap<String, Tensor>, ModelError> {
     let file = SafeTensorFile::from_file(path)?;
-    let mut map = FxHashMap::default();
+    let mut map = HashMap::default();
     for name in file.tensor_names() {
         let name_owned = name.to_string();
         let tensor = file.load_tensor(name)?;

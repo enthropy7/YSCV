@@ -100,7 +100,7 @@ fn checkpoint_roundtrip_cnn_layers() {
 
 #[test]
 fn save_load_weights_roundtrip() {
-    let mut tensors = rustc_hash::FxHashMap::default();
+    let mut tensors = std::collections::HashMap::default();
     tensors.insert(
         "layer1.weight".to_string(),
         Tensor::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap(),

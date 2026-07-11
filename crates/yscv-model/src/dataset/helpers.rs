@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use yscv_tensor::{Tensor, TensorError};
@@ -300,7 +300,7 @@ pub(super) fn class_balanced_sampling_weights(targets: &Tensor) -> Result<Vec<f3
         return Ok(Vec::new());
     }
 
-    let mut class_counts = FxHashMap::<usize, usize>::default();
+    let mut class_counts = HashMap::<usize, usize>::default();
     for class_id in &class_ids {
         let next_count = class_counts
             .get(class_id)

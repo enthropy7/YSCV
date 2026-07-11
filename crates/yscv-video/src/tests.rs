@@ -729,7 +729,7 @@ fn nv12_to_rgb8_non_trivial_values() {
     assert!(sum > 0, "output should not be all zeros");
 
     // Verify output contains distinct values (not all same, indicating real conversion)
-    let distinct: rustc_hash::FxHashSet<u8> = out.iter().copied().collect();
+    let distinct: std::collections::HashSet<u8> = out.iter().copied().collect();
     assert!(distinct.len() > 1, "output should contain distinct values");
 }
 

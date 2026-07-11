@@ -60,7 +60,7 @@ pub(crate) struct TensorEnv<'m, 'i> {
 
 #[derive(Clone, Copy)]
 pub(crate) enum RuntimeInputs<'i> {
-    Map(&'i FxHashMap<String, Tensor>),
+    Map(&'i HashMap<String, Tensor>),
     Slice(&'i [(&'i str, &'i Tensor)]),
 }
 

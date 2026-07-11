@@ -3,7 +3,7 @@
 //! A training checkpoint bundles model parameters and optimizer state into a
 //! single binary file so training can be resumed exactly where it left off.
 
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::path::Path;
 
 use yscv_tensor::Tensor;
@@ -20,8 +20,8 @@ const OPT_PREFIX: &str = "__opt__.";
 /// to avoid collisions with model weight names.
 pub fn save_training_checkpoint(
     path: &Path,
-    model_weights: &FxHashMap<String, Tensor>,
-    optimizer_state: &FxHashMap<String, Tensor>,
+    model_weights: &HashMap<String, Tensor>,
+    optimizer_state: &HashMap<String, Tensor>,
 ) -> Result<(), ModelError> {
     let mut combined = model_weights.clone();
     for (key, tensor) in optimizer_state {
@@ -35,10 +35,10 @@ pub fn save_training_checkpoint(
 /// Returns `(model_weights, optimizer_state)`.
 pub fn load_training_checkpoint(
     path: &Path,
-) -> Result<(FxHashMap<String, Tensor>, FxHashMap<String, Tensor>), ModelError> {
+) -> Result<(HashMap<String, Tensor>, HashMap<String, Tensor>), ModelError> {
     let all = load_weights(path)?;
-    let mut model_weights = FxHashMap::default();
-    let mut optimizer_state = FxHashMap::default();
+    let mut model_weights = HashMap::default();
+    let mut optimizer_state = HashMap::default();
 
     for (key, tensor) in all {
         if let Some(stripped) = key.strip_prefix(OPT_PREFIX) {
@@ -54,7 +54,7 @@ pub fn load_training_checkpoint(
 /// Flatten SGD velocity buffers into a string-keyed map for serialization.
 ///
 /// Keys: `"sgd.{param_id}.velocity"`
-pub fn sgd_state_to_map(velocity: &FxHashMap<u64, Tensor>) -> FxHashMap<String, Tensor> {
+pub fn sgd_state_to_map(velocity: &HashMap<u64, Tensor>) -> HashMap<String, Tensor> {
     velocity
         .iter()
         .map(|(id, t)| (format!("sgd.{id}.velocity"), t.clone()))
@@ -62,8 +62,8 @@ pub fn sgd_state_to_map(velocity: &FxHashMap<u64, Tensor>) -> FxHashMap<String, 
 }
 
 /// Restore SGD velocity buffers from a string-keyed map.
-pub fn sgd_state_from_map(map: &FxHashMap<String, Tensor>) -> FxHashMap<u64, Tensor> {
-    let mut velocity = FxHashMap::default();
+pub fn sgd_state_from_map(map: &HashMap<String, Tensor>) -> HashMap<u64, Tensor> {
+    let mut velocity = HashMap::default();
     for (key, tensor) in map {
         if let Some(rest) = key.strip_prefix("sgd.")
             && let Some(id_str) = rest.strip_suffix(".velocity")
@@ -78,8 +78,8 @@ pub fn sgd_state_from_map(map: &FxHashMap<String, Tensor>) -> FxHashMap<u64, Ten
 /// Flatten Adam/AdamW state into a string-keyed map for serialization.
 ///
 /// Keys: `"adam.{param_id}.m"`, `"adam.{param_id}.v"`, `"adam.{param_id}.step"`
-pub fn adam_state_to_map(state: &[(u64, Tensor, Tensor, u64)]) -> FxHashMap<String, Tensor> {
-    let mut map = FxHashMap::default();
+pub fn adam_state_to_map(state: &[(u64, Tensor, Tensor, u64)]) -> HashMap<String, Tensor> {
+    let mut map = HashMap::default();
     for (id, m, v, step) in state {
         map.insert(format!("adam.{id}.m"), m.clone());
         map.insert(format!("adam.{id}.v"), v.clone());
@@ -95,7 +95,7 @@ pub fn adam_state_to_map(state: &[(u64, Tensor, Tensor, u64)]) -> FxHashMap<Stri
 /// Restore Adam/AdamW state from a string-keyed map.
 ///
 /// Returns `Vec<(param_id, first_moment, second_moment, step)>`.
-pub fn adam_state_from_map(map: &FxHashMap<String, Tensor>) -> Vec<(u64, Tensor, Tensor, u64)> {
+pub fn adam_state_from_map(map: &HashMap<String, Tensor>) -> Vec<(u64, Tensor, Tensor, u64)> {
     // Collect unique param IDs from "adam.{id}.m" keys.
     let mut ids: Vec<u64> = map
         .keys()
@@ -131,13 +131,13 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("checkpoint.bin");
 
-        let mut model_weights = FxHashMap::default();
+        let mut model_weights = HashMap::default();
         model_weights.insert(
             "layer.0.weight".to_string(),
             Tensor::from_vec(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap(),
         );
 
-        let mut opt_state = FxHashMap::default();
+        let mut opt_state = HashMap::default();
         opt_state.insert(
             "sgd.0.velocity".to_string(),
             Tensor::from_vec(vec![2, 2], vec![0.1, 0.2, 0.3, 0.4]).unwrap(),
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_sgd_state_roundtrip() {
-        let mut velocity = FxHashMap::default();
+        let mut velocity = HashMap::default();
         velocity.insert(
             42u64,
             Tensor::from_vec(vec![3], vec![1.0, 2.0, 3.0]).unwrap(),

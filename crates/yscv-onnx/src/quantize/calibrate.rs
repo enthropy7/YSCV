@@ -26,6 +26,8 @@
 //! load, so non-calibration inference pays only that one branch in the
 //! tensor-insertion path.
 
+use std::collections::HashMap;
+
 use rustc_hash::FxHashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -213,12 +215,14 @@ impl CalibrationCollector {
 
     /// Snapshot of aggregated per-tensor histograms. Empty when
     /// [`Self::enable_histograms`] was never set.
-    pub fn histograms(&self) -> FxHashMap<String, Histogram> {
+    pub fn histograms(&self) -> HashMap<String, Histogram> {
         self.inner
             .histograms
             .lock()
             .expect("calibration histograms mutex poisoned")
-            .clone()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// Install this collector globally. Returned scope uninstalls on drop.
@@ -239,12 +243,14 @@ impl CalibrationCollector {
     /// Snapshot of aggregated per-tensor statistics. Cheap clone of the
     /// internal map; the collector continues recording into the same
     /// state if a scope is still active.
-    pub fn snapshot(&self) -> FxHashMap<String, MinMax> {
+    pub fn snapshot(&self) -> HashMap<String, MinMax> {
         self.inner
             .per_tensor
             .lock()
             .expect("calibration map mutex poisoned")
-            .clone()
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect()
     }
 
     /// Number of tensors with at least one recorded value.

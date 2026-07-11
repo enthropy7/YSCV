@@ -5,7 +5,7 @@
 //! translates those names to the yscv `layer.{idx}.*` convention used by
 //! [`crate::zoo::apply_weights`].
 
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 
 use crate::ModelArchitecture;
 
@@ -21,11 +21,11 @@ pub fn timm_to_yscv_name(timm_name: &str, arch: ModelArchitecture) -> Option<Str
 ///
 /// Unknown keys are silently dropped.
 pub fn remap_state_dict<T: Clone>(
-    state_dict: &FxHashMap<String, T>,
+    state_dict: &HashMap<String, T>,
     arch: ModelArchitecture,
-) -> FxHashMap<String, T> {
+) -> HashMap<String, T> {
     let table = build_mapping_table(arch);
-    let mut out = FxHashMap::default();
+    let mut out = HashMap::default();
     for (timm_name, value) in state_dict {
         if let Some(yscv_name) = table.get(timm_name.as_str()) {
             out.insert(yscv_name.clone(), value.clone());
@@ -38,7 +38,7 @@ pub fn remap_state_dict<T: Clone>(
 // Mapping tables per architecture
 // ---------------------------------------------------------------------------
 
-fn build_mapping_table(arch: ModelArchitecture) -> FxHashMap<&'static str, String> {
+fn build_mapping_table(arch: ModelArchitecture) -> HashMap<&'static str, String> {
     match arch {
         ModelArchitecture::ResNet18 => build_resnet_basic_mapping(&[2, 2, 2, 2]),
         ModelArchitecture::ResNet34 => build_resnet_basic_mapping(&[3, 4, 6, 3]),
@@ -56,7 +56,7 @@ fn build_mapping_table(arch: ModelArchitecture) -> FxHashMap<&'static str, Strin
         | ModelArchitecture::ClipViTB32
         | ModelArchitecture::DINOv2ViTS14
         | ModelArchitecture::WhisperTiny
-        | ModelArchitecture::SAMViTB => FxHashMap::default(),
+        | ModelArchitecture::SAMViTB => HashMap::default(),
     }
 }
 
@@ -68,8 +68,8 @@ fn build_mapping_table(arch: ModelArchitecture) -> FxHashMap<&'static str, Strin
 ///
 /// timm structure: conv1 -> bn1 -> layer{1..4}.{block}.{conv1,bn1,conv2,bn2} -> fc
 /// yscv structure: layer.{idx}.{conv2d,bn,...}
-fn build_resnet_basic_mapping(blocks_per_stage: &[usize]) -> FxHashMap<&'static str, String> {
-    let mut m = FxHashMap::default();
+fn build_resnet_basic_mapping(blocks_per_stage: &[usize]) -> HashMap<&'static str, String> {
+    let mut m = HashMap::default();
 
     // Stem: conv1(7x7) + bn1  →  layer.0 (Conv2d) + layer.1 (BN) + layer.2 (ReLU) + layer.3 (MaxPool)
     insert_static(&mut m, "conv1.weight", "layer.0.conv2d.weight");
@@ -124,8 +124,8 @@ fn build_resnet_basic_mapping(blocks_per_stage: &[usize]) -> FxHashMap<&'static 
 // ResNet (bottleneck blocks: ResNet50, ResNet101)
 // ---------------------------------------------------------------------------
 
-fn build_resnet_bottleneck_mapping(blocks_per_stage: &[usize]) -> FxHashMap<&'static str, String> {
-    let mut m = FxHashMap::default();
+fn build_resnet_bottleneck_mapping(blocks_per_stage: &[usize]) -> HashMap<&'static str, String> {
+    let mut m = HashMap::default();
 
     // Stem
     insert_static(&mut m, "conv1.weight", "layer.0.conv2d.weight");
@@ -184,8 +184,8 @@ fn build_resnet_bottleneck_mapping(blocks_per_stage: &[usize]) -> FxHashMap<&'st
 // VGG
 // ---------------------------------------------------------------------------
 
-fn build_vgg_mapping(blocks_per_stage: &[usize]) -> FxHashMap<&'static str, String> {
-    let mut m = FxHashMap::default();
+fn build_vgg_mapping(blocks_per_stage: &[usize]) -> HashMap<&'static str, String> {
+    let mut m = HashMap::default();
     let mut idx = 0usize;
     let mut timm_feat_idx = 0usize;
 
@@ -232,8 +232,8 @@ fn build_vgg_mapping(blocks_per_stage: &[usize]) -> FxHashMap<&'static str, Stri
 // AlexNet
 // ---------------------------------------------------------------------------
 
-fn build_alexnet_mapping() -> FxHashMap<&'static str, String> {
-    let mut m = FxHashMap::default();
+fn build_alexnet_mapping() -> HashMap<&'static str, String> {
+    let mut m = HashMap::default();
 
     // AlexNet timm: features.{0,3,6,8,10} are Conv2d layers
     // yscv build order from zoo.rs: conv→relu→maxpool → conv→relu→maxpool → conv→relu → conv→relu → conv→relu→maxpool → gap→flatten→linear
@@ -276,10 +276,10 @@ fn build_alexnet_mapping() -> FxHashMap<&'static str, String> {
 // MobileNetV2 (simplified)
 // ---------------------------------------------------------------------------
 
-fn build_mobilenet_v2_mapping() -> FxHashMap<&'static str, String> {
+fn build_mobilenet_v2_mapping() -> HashMap<&'static str, String> {
     // MobileNetV2 has complex inverted residual blocks. Provide stem/head mapping
     // and a generic numbered pattern for the rest.
-    let mut m = FxHashMap::default();
+    let mut m = HashMap::default();
 
     // Stem: conv_stem + bn1
     insert_static(&mut m, "conv_stem.weight", "layer.0.conv2d.weight");
@@ -296,8 +296,8 @@ fn build_mobilenet_v2_mapping() -> FxHashMap<&'static str, String> {
 // EfficientNet-B0 (simplified)
 // ---------------------------------------------------------------------------
 
-fn build_efficientnet_b0_mapping() -> FxHashMap<&'static str, String> {
-    let mut m = FxHashMap::default();
+fn build_efficientnet_b0_mapping() -> HashMap<&'static str, String> {
+    let mut m = HashMap::default();
 
     // Stem
     insert_static(&mut m, "conv_stem.weight", "layer.0.conv2d.weight");
@@ -310,21 +310,17 @@ fn build_efficientnet_b0_mapping() -> FxHashMap<&'static str, String> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Leak a String to get a `&'static str` for use as FxHashMap key.
+/// Leak a String to get a `&'static str` for use as HashMap key.
 /// This is acceptable for a build-once mapping table.
 fn leak(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-fn insert_static(m: &mut FxHashMap<&'static str, String>, timm: &'static str, yscv: &str) {
+fn insert_static(m: &mut HashMap<&'static str, String>, timm: &'static str, yscv: &str) {
     m.insert(timm, yscv.to_string());
 }
 
-fn insert_bn_static(
-    m: &mut FxHashMap<&'static str, String>,
-    timm_prefix: &'static str,
-    idx: usize,
-) {
+fn insert_bn_static(m: &mut HashMap<&'static str, String>, timm_prefix: &'static str, idx: usize) {
     m.insert(
         Box::leak(format!("{timm_prefix}.weight").into_boxed_str()),
         format!("layer.{idx}.bn.gamma"),
@@ -343,7 +339,7 @@ fn insert_bn_static(
     );
 }
 
-fn insert_bn_dynamic(m: &mut FxHashMap<&'static str, String>, timm_prefix: &str, idx: usize) {
+fn insert_bn_dynamic(m: &mut HashMap<&'static str, String>, timm_prefix: &str, idx: usize) {
     m.insert(
         leak(&format!("{timm_prefix}.weight")),
         format!("layer.{idx}.bn.gamma"),
@@ -406,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_remap_state_dict() {
-        let mut sd: FxHashMap<String, i32> = FxHashMap::default();
+        let mut sd: HashMap<String, i32> = HashMap::default();
         sd.insert("conv1.weight".into(), 42);
         sd.insert("bn1.weight".into(), 7);
         sd.insert("unknown.key".into(), 99);

@@ -384,8 +384,8 @@ fn gc_insert(gpu: &GpuBackend, gc: &mut GpuCache, name: String, gt: GpuTensor) {
 /// eliminating the per-op device sync that dominates naive GPU dispatch.
 pub fn run_onnx_model_gpu(
     model: &OnnxModel,
-    inputs: FxHashMap<String, Tensor>,
-) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+    inputs: impl IntoIterator<Item = (String, Tensor)>,
+) -> Result<HashMap<String, Tensor>, OnnxError> {
     let gpu = GpuBackend::new().map_err(|e| OnnxError::DecodeFailed {
         message: format!("GPU init: {e}"),
     })?;
@@ -398,8 +398,8 @@ pub fn run_onnx_model_gpu(
 pub fn run_onnx_model_gpu_with(
     gpu: &GpuBackend,
     model: &OnnxModel,
-    inputs: FxHashMap<String, Tensor>,
-) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+    inputs: impl IntoIterator<Item = (String, Tensor)>,
+) -> Result<HashMap<String, Tensor>, OnnxError> {
     run_onnx_model_gpu_cached(gpu, model, inputs, &mut GpuWeightCache::new(), None)
 }
 
@@ -413,10 +413,10 @@ pub fn run_onnx_model_gpu_with(
 pub fn run_onnx_model_gpu_cached(
     gpu: &GpuBackend,
     model: &OnnxModel,
-    inputs: FxHashMap<String, Tensor>,
+    inputs: impl IntoIterator<Item = (String, Tensor)>,
     weight_cache: &mut GpuWeightCache,
     plan: Option<&GpuExecPlan>,
-) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+) -> Result<HashMap<String, Tensor>, OnnxError> {
     // If no plan was provided, compute one on the fly (original behavior).
     let owned_plan;
     let plan = match plan {
@@ -617,7 +617,7 @@ pub fn run_onnx_model_gpu_cached(
     }
 
     // ── Collect outputs ──────────────────────────────────────────
-    let mut result = FxHashMap::default();
+    let mut result = HashMap::default();
     for name in &model.outputs {
         to_cpu(gpu, name, &mut env, &mut gc)?;
         if let Some(t) = env.get(name) {
@@ -946,7 +946,7 @@ pub fn run_compiled_gpu(
     gpu: &GpuBackend,
     compiled: &CompiledGpuPlan,
     input_data: &[f32],
-) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+) -> Result<HashMap<String, Tensor>, OnnxError> {
     // Write new input data to the pre-allocated input buffer
     gpu.write_buffer(compiled.input_buf.raw_buffer(), input_data);
 
@@ -957,7 +957,7 @@ pub fn run_compiled_gpu(
     gpu.flush();
 
     // Download outputs
-    let mut result = FxHashMap::default();
+    let mut result = HashMap::default();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
             let t = gpu.download(out_buf)?;
@@ -1000,7 +1000,7 @@ pub fn run_compiled_gpu_fused(
     gpu: &GpuBackend,
     compiled: &CompiledGpuPlan,
     input_data: &[f32],
-) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+) -> Result<HashMap<String, Tensor>, OnnxError> {
     // Write new input data to the pre-allocated input buffer
     gpu.write_buffer(compiled.input_buf.raw_buffer(), input_data);
 
@@ -1008,7 +1008,7 @@ pub fn run_compiled_gpu_fused(
     gpu.replay_recording_fused(&compiled.ops);
 
     // Download outputs
-    let mut result = FxHashMap::default();
+    let mut result = HashMap::default();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
             let t = gpu.download(out_buf)?;
@@ -1044,7 +1044,7 @@ pub fn run_compiled_gpu_fused_timed(
     gpu: &GpuBackend,
     compiled: &CompiledGpuPlan,
     input_data: &[f32],
-) -> Result<(FxHashMap<String, Tensor>, f64, f64, f64, f64), OnnxError> {
+) -> Result<(HashMap<String, Tensor>, f64, f64, f64, f64), OnnxError> {
     let t0 = std::time::Instant::now();
     gpu.write_buffer(compiled.input_buf.raw_buffer(), input_data);
     let t1 = std::time::Instant::now();
@@ -1057,7 +1057,7 @@ pub fn run_compiled_gpu_fused_timed(
     let t3 = std::time::Instant::now();
 
     // Download outputs
-    let mut result = FxHashMap::default();
+    let mut result = HashMap::default();
     for (i, name) in compiled.output_names.iter().enumerate() {
         if let Some((out_buf, nhwc, _f16_io)) = compiled.output_bufs.get(i) {
             let t = gpu.download(out_buf)?;
@@ -1247,8 +1247,11 @@ fn dispatch(
 /// Returns map of action_label → (total_ms, count).
 pub fn profile_onnx_model_gpu(
     model: &OnnxModel,
-    inputs: FxHashMap<String, Tensor>,
-) -> Result<FxHashMap<String, (f64, usize)>, OnnxError> {
+    inputs: impl IntoIterator<Item = (String, Tensor)>,
+) -> Result<HashMap<String, (f64, usize)>, OnnxError> {
+    // Materialize once: profiling reuses the inputs for both the warm-up run and
+    // the timed run, so they cannot be a consume-once iterator.
+    let inputs: HashMap<String, Tensor> = inputs.into_iter().collect();
     let gpu = GpuBackend::new().map_err(|e| OnnxError::DecodeFailed {
         message: format!("GPU init: {e}"),
     })?;
@@ -1267,7 +1270,7 @@ pub fn profile_onnx_model_gpu(
     // Now profile with cached weights
     let mut env = TensorEnv::from_model(model);
     let mut gc: GpuCache = std::mem::take(&mut wc.0);
-    let mut stats: FxHashMap<String, (f64, usize)> = FxHashMap::default();
+    let mut stats: HashMap<String, (f64, usize)> = HashMap::default();
 
     for (name, tensor) in &model.initializers {
         env.insert(name.clone(), tensor.clone());

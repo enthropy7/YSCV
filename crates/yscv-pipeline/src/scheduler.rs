@@ -8,8 +8,8 @@
 use crate::config::{InferenceTask, PipelineConfig};
 use crate::dispatch::{AcceleratorDispatcher, dispatcher_for};
 use crate::error::{ConfigError, Error};
-use rustc_hash::FxHashSet;
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Topologically-sorted task list: produces an execution order such that
 /// every task appears after all its dependencies.
@@ -20,7 +20,7 @@ pub struct TaskScheduler {
     pub order: Vec<String>,
     /// Per-task list of upstream task names (inputs whose source is
     /// `<task>.<output>`).
-    pub deps: FxHashMap<String, Vec<String>>,
+    pub deps: HashMap<String, Vec<String>>,
 }
 
 impl TaskScheduler {
@@ -29,7 +29,7 @@ impl TaskScheduler {
     /// `PipelineConfig::validate_self` was called first, but cheap to
     /// double-check).
     pub fn from_config(cfg: &PipelineConfig) -> Result<Self, ConfigError> {
-        let mut deps: FxHashMap<String, Vec<String>> = FxHashMap::default();
+        let mut deps: HashMap<String, Vec<String>> = HashMap::default();
         for task in &cfg.tasks {
             let mut up: Vec<String> = Vec::new();
             for binding in &task.inputs {
@@ -53,7 +53,7 @@ impl TaskScheduler {
 
     /// Identifies tasks safe to run in parallel — those with all
     /// dependencies already satisfied. Used by a future parallel runtime.
-    pub fn ready_tasks(&self, completed: &FxHashSet<String>) -> Vec<String> {
+    pub fn ready_tasks(&self, completed: &HashSet<String>) -> Vec<String> {
         self.order
             .iter()
             .filter(|name| {
@@ -73,15 +73,15 @@ impl TaskScheduler {
 /// every task follows all its dependencies.
 fn topo_sort(
     tasks: &[InferenceTask],
-    deps: &FxHashMap<String, Vec<String>>,
+    deps: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<String>, ConfigError> {
-    let mut state: FxHashMap<String, u8> = FxHashMap::default();
+    let mut state: HashMap<String, u8> = HashMap::default();
     let mut order = Vec::with_capacity(tasks.len());
 
     fn visit(
         node: &str,
-        deps: &FxHashMap<String, Vec<String>>,
-        state: &mut FxHashMap<String, u8>,
+        deps: &HashMap<String, Vec<String>>,
+        state: &mut HashMap<String, u8>,
         order: &mut Vec<String>,
     ) -> Result<(), ConfigError> {
         match state.get(node) {
@@ -116,11 +116,11 @@ pub struct PipelineHandle {
     /// Computed execution order at construction.
     pub order: Vec<String>,
     /// One dispatcher per task, keyed by task name.
-    dispatchers: FxHashMap<String, Box<dyn AcceleratorDispatcher>>,
+    dispatchers: HashMap<String, Box<dyn AcceleratorDispatcher>>,
     /// Canonical task metadata (inputs + outputs bindings) so
     /// `dispatch_frame` can route tensor names from upstream task
     /// outputs into downstream task inputs.
-    tasks: FxHashMap<String, InferenceTask>,
+    tasks: HashMap<String, InferenceTask>,
 }
 
 impl PipelineHandle {
@@ -137,13 +137,12 @@ impl PipelineHandle {
     pub fn dispatch_frame(
         &self,
         camera_inputs: &[(&str, &[u8])],
-    ) -> Result<FxHashMap<String, Vec<u8>>, Error> {
+    ) -> Result<HashMap<String, Vec<u8>>, Error> {
         // Accumulator: scratch buffer of every tensor produced so far.
         // Key format:
         //   - "camera.<name>" for camera ingress
         //   - "<task>.<output_name>" for task outputs
-        let mut world: FxHashMap<String, Vec<u8>> =
-            FxHashMap::with_capacity_and_hasher(camera_inputs.len() * 2, FxBuildHasher);
+        let mut world: HashMap<String, Vec<u8>> = HashMap::with_capacity(camera_inputs.len() * 2);
         for (name, bytes) in camera_inputs {
             world.insert(format!("camera.{name}"), bytes.to_vec());
             // Also expose under bare "camera" so single-input tasks
@@ -340,10 +339,9 @@ pub fn run_pipeline(cfg: PipelineConfig) -> Result<PipelineHandle, Error> {
         );
     }
 
-    let mut dispatchers: FxHashMap<String, Box<dyn AcceleratorDispatcher>> =
-        FxHashMap::with_capacity_and_hasher(cfg.tasks.len(), FxBuildHasher);
-    let mut tasks: FxHashMap<String, InferenceTask> =
-        FxHashMap::with_capacity_and_hasher(cfg.tasks.len(), FxBuildHasher);
+    let mut dispatchers: HashMap<String, Box<dyn AcceleratorDispatcher>> =
+        HashMap::with_capacity(cfg.tasks.len());
+    let mut tasks: HashMap<String, InferenceTask> = HashMap::with_capacity(cfg.tasks.len());
     for task in &cfg.tasks {
         let d = dispatcher_for(task)?;
         dispatchers.insert(task.name.clone(), d);
@@ -506,7 +504,7 @@ mod tests {
             },
         ];
         let sched = TaskScheduler::from_config(&cfg_with(tasks)).unwrap();
-        let mut done: FxHashSet<String> = FxHashSet::default();
+        let mut done: HashSet<String> = HashSet::default();
         let ready_initial = sched.ready_tasks(&done);
         assert!(ready_initial.contains(&"a".to_string()));
         assert!(!ready_initial.contains(&"b".to_string()));

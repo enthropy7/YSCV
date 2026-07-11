@@ -34,7 +34,7 @@
 //! {"input": {"shape": [1, 3, 224, 224], "values": [0.1, 0.2, ...]}}
 //! ```
 
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -166,8 +166,8 @@ struct SampleTensor {
 }
 
 /// Read calibration samples from a JSONL file. Each line is a
-/// `FxHashMap<String, SampleTensor>` mapping graph-input names to tensors.
-fn read_calibration(path: &PathBuf) -> Result<Vec<FxHashMap<String, Tensor>>, CliError> {
+/// `HashMap<String, SampleTensor>` mapping graph-input names to tensors.
+fn read_calibration(path: &PathBuf) -> Result<Vec<HashMap<String, Tensor>>, CliError> {
     let text = std::fs::read_to_string(path).map_err(|e| CliError::Io {
         path: path.clone(),
         source: e,
@@ -178,12 +178,12 @@ fn read_calibration(path: &PathBuf) -> Result<Vec<FxHashMap<String, Tensor>>, Cl
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let parsed: FxHashMap<String, SampleTensor> =
+        let parsed: HashMap<String, SampleTensor> =
             serde_json::from_str(line).map_err(|e| CliError::BadSample {
                 line: idx + 1,
                 message: e.to_string(),
             })?;
-        let mut sample = FxHashMap::default();
+        let mut sample = HashMap::default();
         for (name, st) in parsed {
             let expected: usize = st.shape.iter().product();
             if expected != st.values.len() {
@@ -208,7 +208,7 @@ fn read_calibration(path: &PathBuf) -> Result<Vec<FxHashMap<String, Tensor>>, Cl
     Ok(samples)
 }
 
-fn read_calibration_spec(spec: &str) -> Result<Vec<FxHashMap<String, Tensor>>, CliError> {
+fn read_calibration_spec(spec: &str) -> Result<Vec<HashMap<String, Tensor>>, CliError> {
     if spec.contains('=') {
         read_paired_calibration(spec)
     } else {
@@ -216,7 +216,7 @@ fn read_calibration_spec(spec: &str) -> Result<Vec<FxHashMap<String, Tensor>>, C
     }
 }
 
-fn read_paired_calibration(spec: &str) -> Result<Vec<FxHashMap<String, Tensor>>, CliError> {
+fn read_paired_calibration(spec: &str) -> Result<Vec<HashMap<String, Tensor>>, CliError> {
     let streams: Vec<(String, PathBuf)> = spec
         .split(',')
         .map(|pair| {
@@ -255,7 +255,7 @@ fn read_paired_calibration(spec: &str) -> Result<Vec<FxHashMap<String, Tensor>>,
 
     let mut samples = Vec::with_capacity(expected_len);
     for idx in 0..expected_len {
-        let mut sample = FxHashMap::with_capacity_and_hasher(parsed.len(), FxBuildHasher);
+        let mut sample = HashMap::with_capacity(parsed.len());
         for (name, tensors) in &parsed {
             sample.insert(name.clone(), tensors[idx].clone());
         }
@@ -278,7 +278,7 @@ fn read_single_tensor_stream(name: &str, path: &PathBuf) -> Result<Vec<Tensor>, 
         let st: SampleTensor = match serde_json::from_str(line) {
             Ok(st) => st,
             Err(_) => {
-                let wrapped: FxHashMap<String, SampleTensor> =
+                let wrapped: HashMap<String, SampleTensor> =
                     serde_json::from_str(line).map_err(|e| CliError::BadSample {
                         line: idx + 1,
                         message: e.to_string(),
@@ -355,7 +355,7 @@ fn run(args: Args) -> Result<(), CliError> {
         snap
     } else {
         eprintln!("calibration: weights-only mode, no activation stats collected");
-        FxHashMap::default()
+        HashMap::default()
     };
 
     eprintln!(

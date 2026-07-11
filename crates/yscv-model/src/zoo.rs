@@ -1,6 +1,6 @@
 //! Pretrained model zoo: architecture registry, builders, and weight management.
 
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -454,8 +454,8 @@ impl ModelZoo {
 fn collect_model_tensors(
     model: &SequentialModel,
     graph: &Graph,
-) -> Result<FxHashMap<String, yscv_tensor::Tensor>, ModelError> {
-    let mut tensors = FxHashMap::default();
+) -> Result<HashMap<String, yscv_tensor::Tensor>, ModelError> {
+    let mut tensors = HashMap::default();
     for (idx, layer) in model.layers().iter().enumerate() {
         match layer {
             crate::ModelLayer::Conv2d(l) => {
@@ -500,7 +500,7 @@ fn collect_model_tensors(
 fn apply_weights(
     model: &mut SequentialModel,
     graph: &mut Graph,
-    weights: &FxHashMap<String, Tensor>,
+    weights: &HashMap<String, Tensor>,
 ) -> Result<(), ModelError> {
     for (idx, layer) in model.layers_mut().iter_mut().enumerate() {
         match layer {

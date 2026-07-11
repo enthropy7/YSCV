@@ -1,9 +1,9 @@
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 
 /// Records per-epoch training metrics.
 #[derive(Debug, Clone, Default)]
 pub struct TrainingLog {
-    entries: Vec<FxHashMap<String, f32>>,
+    entries: Vec<HashMap<String, f32>>,
 }
 
 impl TrainingLog {
@@ -13,12 +13,12 @@ impl TrainingLog {
     }
 
     /// Record one epoch's metrics.
-    pub fn log_epoch(&mut self, metrics: FxHashMap<String, f32>) {
+    pub fn log_epoch(&mut self, metrics: HashMap<String, f32>) {
         self.entries.push(metrics);
     }
 
     /// All logged entries.
-    pub fn entries(&self) -> &[FxHashMap<String, f32>] {
+    pub fn entries(&self) -> &[HashMap<String, f32>] {
         &self.entries
     }
 
@@ -109,7 +109,7 @@ impl TrainingLog {
     pub fn append_epoch_jsonl(
         path: &std::path::Path,
         epoch: usize,
-        metrics: &FxHashMap<String, f32>,
+        metrics: &HashMap<String, f32>,
     ) -> std::io::Result<()> {
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
