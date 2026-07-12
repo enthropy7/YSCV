@@ -25,9 +25,8 @@ use std::arch::x86_64::{
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m512, _mm512_add_epi32, _mm512_add_ps, _mm512_castsi512_ps, _mm512_cvtepi32_ps,
-    _mm512_cvtps_epi32, _mm512_div_ps, _mm512_fmadd_ps, _mm512_loadu_ps, _mm512_max_ps,
-    _mm512_min_ps, _mm512_mul_ps, _mm512_scalef_ps, _mm512_set1_epi32, _mm512_set1_ps,
+    __m512, _mm512_add_ps, _mm512_cvtepi32_ps, _mm512_cvtps_epi32, _mm512_div_ps, _mm512_fmadd_ps,
+    _mm512_loadu_ps, _mm512_max_ps, _mm512_min_ps, _mm512_mul_ps, _mm512_scalef_ps, _mm512_set1_ps,
     _mm512_storeu_ps, _mm512_sub_ps,
 };
 
@@ -291,22 +290,6 @@ pub(crate) unsafe fn fast_exp_sigmoid_avx(x: __m256) -> __m256 {
 // ===========================================================================
 // AVX-512 fast-exp helper (16-wide)
 // ===========================================================================
-
-/// Schraudolph 1999 bit-trick exp for AVX-512.
-#[cfg(target_arch = "x86_64")]
-#[allow(unsafe_code)]
-#[allow(unsafe_op_in_unsafe_fn)]
-#[target_feature(enable = "avx512f")]
-#[inline]
-pub(crate) unsafe fn fast_exp_bittrick_avx512(x: __m512) -> __m512 {
-    let scale = _mm512_set1_ps(12102203.0);
-    let offset = _mm512_set1_epi32(1065353216);
-    let clamp_lo = _mm512_set1_ps(-87.0);
-    let clamp_hi = _mm512_set1_ps(88.0);
-    let x_clamped = _mm512_max_ps(_mm512_min_ps(x, clamp_hi), clamp_lo);
-    let val = _mm512_cvtps_epi32(_mm512_mul_ps(x_clamped, scale));
-    _mm512_castsi512_ps(_mm512_add_epi32(val, offset))
-}
 
 /// Polynomial exp for AVX-512: same range reduction and coefficients as AVX.
 #[cfg(target_arch = "x86_64")]

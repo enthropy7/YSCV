@@ -1210,9 +1210,9 @@ unsafe fn sigmoid_slice_neon(input: &[f32], output: &mut [f32]) {
     let len = input.len();
     let in_ptr = input.as_ptr();
     let out_ptr = output.as_mut_ptr();
-    let one = vdupq_n_f32(1.0);
     let mut i = 0usize;
     unsafe {
+        let one = vdupq_n_f32(1.0);
         while i + 16 <= len {
             let x0 = vld1q_f32(in_ptr.add(i));
             let x1 = vld1q_f32(in_ptr.add(i + 4));

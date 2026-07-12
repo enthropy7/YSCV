@@ -422,7 +422,11 @@ fn binary_box_matches_generic_ones_kernel() {
         state = state
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        data.push(if (state >> 33) % 3 == 0 { 1.0f32 } else { 0.0 });
+        data.push(if (state >> 33).is_multiple_of(3) {
+            1.0f32
+        } else {
+            0.0
+        });
     }
     let img = Tensor::from_vec(vec![h, w, 1], data).unwrap();
     for ksize in [1usize, 3, 5, 9] {
