@@ -152,9 +152,14 @@ pub(crate) unsafe fn fast_exp_sigmoid_sse(x: __m128) -> __m128 {
     let n_f = _mm_cvtepi32_ps(n_i);
     let r = _mm_sub_ps(x, _mm_mul_ps(n_f, _mm_set1_ps(std::f32::consts::LN_2)));
 
-    let mut poly = _mm_add_ps(_mm_set1_ps(0.5), _mm_mul_ps(r, _mm_set1_ps(1.0 / 6.0)));
-    poly = _mm_add_ps(_mm_set1_ps(1.0), _mm_mul_ps(r, poly));
-    poly = _mm_add_ps(_mm_set1_ps(1.0), _mm_mul_ps(r, poly));
+    // minimax deg-4 — точность сигмоиды важна для conf-логитов (см. NEON)
+    let mut poly = _mm_add_ps(
+        _mm_set1_ps(0.167_781_98),
+        _mm_mul_ps(r, _mm_set1_ps(0.041_894_704)),
+    );
+    poly = _mm_add_ps(_mm_set1_ps(0.499_990_85), _mm_mul_ps(r, poly));
+    poly = _mm_add_ps(_mm_set1_ps(0.999_971_3), _mm_mul_ps(r, poly));
+    poly = _mm_add_ps(_mm_set1_ps(1.000_000_1), _mm_mul_ps(r, poly));
 
     let pow2n = {
         #[cfg(target_arch = "x86")]
@@ -261,12 +266,14 @@ pub(crate) unsafe fn fast_exp_sigmoid_avx(x: __m256) -> __m256 {
         _mm256_mul_ps(n_f, _mm256_set1_ps(std::f32::consts::LN_2)),
     );
 
+    // minimax deg-4 — точность сигмоиды важна для conf-логитов (см. NEON)
     let mut poly = _mm256_add_ps(
-        _mm256_set1_ps(0.5),
-        _mm256_mul_ps(r, _mm256_set1_ps(1.0 / 6.0)),
+        _mm256_set1_ps(0.167_781_98),
+        _mm256_mul_ps(r, _mm256_set1_ps(0.041_894_704)),
     );
-    poly = _mm256_add_ps(_mm256_set1_ps(1.0), _mm256_mul_ps(r, poly));
-    poly = _mm256_add_ps(_mm256_set1_ps(1.0), _mm256_mul_ps(r, poly));
+    poly = _mm256_add_ps(_mm256_set1_ps(0.499_990_85), _mm256_mul_ps(r, poly));
+    poly = _mm256_add_ps(_mm256_set1_ps(0.999_971_3), _mm256_mul_ps(r, poly));
+    poly = _mm256_add_ps(_mm256_set1_ps(1.000_000_1), _mm256_mul_ps(r, poly));
 
     let pow2n = {
         #[cfg(target_arch = "x86")]
@@ -355,9 +362,15 @@ pub(crate) unsafe fn fast_exp_sigmoid_avx512(x: __m512) -> __m512 {
         _mm512_mul_ps(n_f, _mm512_set1_ps(std::f32::consts::LN_2)),
     );
 
-    let mut poly = _mm512_fmadd_ps(r, _mm512_set1_ps(1.0 / 6.0), _mm512_set1_ps(0.5));
-    poly = _mm512_fmadd_ps(r, poly, _mm512_set1_ps(1.0));
-    poly = _mm512_fmadd_ps(r, poly, _mm512_set1_ps(1.0));
+    // minimax deg-4 — точность сигмоиды важна для conf-логитов (см. NEON)
+    let mut poly = _mm512_fmadd_ps(
+        r,
+        _mm512_set1_ps(0.041_894_704),
+        _mm512_set1_ps(0.167_781_98),
+    );
+    poly = _mm512_fmadd_ps(r, poly, _mm512_set1_ps(0.499_990_85));
+    poly = _mm512_fmadd_ps(r, poly, _mm512_set1_ps(0.999_971_3));
+    poly = _mm512_fmadd_ps(r, poly, _mm512_set1_ps(1.000_000_1));
 
     _mm512_scalef_ps(poly, n_f)
 }
@@ -425,9 +438,12 @@ pub(crate) unsafe fn fast_exp_sigmoid_neon(x: float32x4_t) -> float32x4_t {
         vmulq_f32(vcvtq_f32_s32(n_i), vdupq_n_f32(std::f32::consts::LN_2)),
     );
     let pow2n = vreinterpretq_f32_s32(vshlq_n_s32::<23>(vaddq_s32(n_i, vdupq_n_s32(127))));
-    let p = vfmaq_f32(vdupq_n_f32(0.5), r, vdupq_n_f32(1.0 / 6.0));
-    let p = vfmaq_f32(vdupq_n_f32(1.0), r, p);
-    vmulq_f32(vfmaq_f32(vdupq_n_f32(1.0), r, p), pow2n)
+    // minimax deg-4 (как fast_exp_neon): обрезанный кубический Тейлор давал
+    // ~6e-4 отн. ошибки, что заметно копится через десятки SiLU-слоёв
+    let p = vfmaq_f32(vdupq_n_f32(0.167_781_98), r, vdupq_n_f32(0.041_894_704));
+    let p = vfmaq_f32(vdupq_n_f32(0.499_990_85), r, p);
+    let p = vfmaq_f32(vdupq_n_f32(0.999_971_3), r, p);
+    vmulq_f32(vfmaq_f32(vdupq_n_f32(1.000_000_1), r, p), pow2n)
 }
 
 // ===========================================================================
