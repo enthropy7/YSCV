@@ -237,3 +237,59 @@ fn hu_moments_seven_elements() {
         hu[1]
     );
 }
+
+#[test]
+fn connected_components_8_joins_diagonal_bridge() {
+    use super::super::{connected_components_with_stats, connected_components_with_stats_8};
+    // Две "капли", соединённые только диагональю: 8-связность видит один
+    // компонент, 4-связность — два.
+    let mut data = vec![0.0f32; 25];
+    data[0] = 1.0; // (0,0)
+    data[6] = 1.0; // (1,1) — диагональный мост
+    data[12] = 1.0; // (2,2)
+    let img = Tensor::from_vec(vec![5, 5, 1], data).unwrap();
+
+    let (_, stats4) = connected_components_with_stats(&img).unwrap();
+    let (labels8, stats8) = connected_components_with_stats_8(&img).unwrap();
+    assert_eq!(stats4.len(), 3);
+    assert_eq!(stats8.len(), 1);
+    assert_eq!(stats8[0].area, 3);
+    assert_eq!(stats8[0].bbox, (0, 0, 3, 3));
+    // все три пикселя получили метку 1
+    let ld = labels8.data();
+    assert_eq!(ld[0], 1.0);
+    assert_eq!(ld[6], 1.0);
+    assert_eq!(ld[12], 1.0);
+}
+
+#[test]
+fn min_enclosing_circle_exact_cases() {
+    use super::super::min_enclosing_circle;
+    // один пункт — нулевой радиус
+    let ((cx, cy), r) = min_enclosing_circle(&[(2.0, 3.0)]).unwrap();
+    assert!((cx - 2.0).abs() < 1e-6 && (cy - 3.0).abs() < 1e-6 && r < 1e-6);
+
+    // две точки — диаметр
+    let ((cx, cy), r) = min_enclosing_circle(&[(0.0, 0.0), (4.0, 0.0)]).unwrap();
+    assert!((cx - 2.0).abs() < 1e-5 && cy.abs() < 1e-5);
+    assert!((r - 2.0).abs() < 1e-5);
+
+    // квадрат — окружность через противоположные углы
+    let ((cx, cy), r) =
+        min_enclosing_circle(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]).unwrap();
+    assert!((cx - 1.0).abs() < 1e-5 && (cy - 1.0).abs() < 1e-5);
+    assert!((r - std::f32::consts::SQRT_2).abs() < 1e-5);
+
+    // точка внутри не влияет
+    let ((_, _), r2) = min_enclosing_circle(&[
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (2.0, 2.0),
+        (0.0, 2.0),
+        (1.0, 1.0),
+    ])
+    .unwrap();
+    assert!((r2 - std::f32::consts::SQRT_2).abs() < 1e-5);
+
+    assert!(min_enclosing_circle(&[]).is_none());
+}

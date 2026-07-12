@@ -103,6 +103,10 @@ pub use ops::compute_surf_descriptors;
 pub use ops::connected_components_4;
 /// Connected components with statistics (area, bounding box, centroid).
 pub use ops::connected_components_with_stats;
+/// Connected-component labelling with statistics (8-connectivity).
+pub use ops::connected_components_with_stats_8;
+/// Minimum enclosing circle of a 2D point set (Welzl, exact).
+pub use ops::min_enclosing_circle;
 /// Compute contour area (signed, using shoelace formula).
 pub use ops::contour_area;
 /// Compute the convex hull of a set of 2D points.

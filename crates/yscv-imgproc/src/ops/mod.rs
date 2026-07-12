@@ -71,7 +71,8 @@ pub use color::{
 };
 pub use contours::{
     ComponentStats, Contour, RegionProp, approx_poly_dp, arc_length, bounding_rect,
-    connected_components_with_stats, contour_area, convex_hull, find_contours, fit_ellipse,
+    connected_components_with_stats, connected_components_with_stats_8, contour_area,
+    convex_hull, find_contours, fit_ellipse, min_enclosing_circle,
     homography_4pt, hu_moments, min_area_rect, ransac_homography, region_props,
 };
 pub use draw::{

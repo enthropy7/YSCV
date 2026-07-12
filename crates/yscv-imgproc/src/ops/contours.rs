@@ -537,6 +537,171 @@ pub fn connected_components_with_stats(
     Ok((label_tensor, stats_list))
 }
 
+/// Connected-component labelling with per-component statistics, 8-connectivity.
+///
+/// Same contract as [`connected_components_with_stats`], but diagonal
+/// neighbours join a component (OpenCV `connectivity=8` semantics) — the
+/// usual choice for object masks, where a 1-px diagonal bridge still means
+/// one object.
+pub fn connected_components_with_stats_8(
+    img: &Tensor,
+) -> Result<(Tensor, Vec<ComponentStats>), ImgProcError> {
+    let (h, w, c) = hwc_shape(img)?;
+    if c != 1 {
+        return Err(ImgProcError::InvalidChannelCount {
+            expected: 1,
+            got: c,
+        });
+    }
+    const NEIGHBOURS_8: [(isize, isize); 8] = [
+        (0, -1),
+        (0, 1),
+        (-1, 0),
+        (1, 0),
+        (-1, -1),
+        (1, -1),
+        (-1, 1),
+        (1, 1),
+    ];
+    let data = img.data();
+    let mut labels = vec![0u32; h * w];
+    let mut next_label = 1u32;
+    let mut stats_list: Vec<ComponentStats> = Vec::new();
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            if data[idx] <= 0.5 || labels[idx] != 0 {
+                continue;
+            }
+            let current_label = next_label;
+            next_label += 1;
+            labels[idx] = current_label;
+
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back((x, y));
+
+            let mut area = 0usize;
+            let mut sum_x = 0.0f64;
+            let mut sum_y = 0.0f64;
+            let (mut min_x, mut max_x, mut min_y, mut max_y) = (x, x, y, y);
+
+            while let Some((cx, cy)) = queue.pop_front() {
+                area += 1;
+                sum_x += cx as f64;
+                sum_y += cy as f64;
+                min_x = min_x.min(cx);
+                max_x = max_x.max(cx);
+                min_y = min_y.min(cy);
+                max_y = max_y.max(cy);
+
+                for &(dx, dy) in &NEIGHBOURS_8 {
+                    let nx = cx as isize + dx;
+                    let ny = cy as isize + dy;
+                    if nx >= 0 && nx < w as isize && ny >= 0 && ny < h as isize {
+                        let nidx = ny as usize * w + nx as usize;
+                        if data[nidx] > 0.5 && labels[nidx] == 0 {
+                            labels[nidx] = current_label;
+                            queue.push_back((nx as usize, ny as usize));
+                        }
+                    }
+                }
+            }
+
+            stats_list.push(ComponentStats {
+                label: current_label as usize,
+                area,
+                bbox: (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1),
+                centroid: ((sum_x / area as f64) as f32, (sum_y / area as f64) as f32),
+            });
+        }
+    }
+
+    let label_data: Vec<f32> = labels.iter().map(|&l| l as f32).collect();
+    let label_tensor = Tensor::from_vec(vec![h, w, 1], label_data)?;
+    Ok((label_tensor, stats_list))
+}
+
+/// Minimum enclosing circle of a point set (Welzl's algorithm, exact).
+///
+/// Returns `((cx, cy), radius)`, or `None` for an empty input. Runs in
+/// expected O(n) after a deterministic move-to-front shuffle; internal math
+/// is f64 for stability on clustered points.
+pub fn min_enclosing_circle(points: &[(f32, f32)]) -> Option<((f32, f32), f32)> {
+    if points.is_empty() {
+        return None;
+    }
+    let mut pts: Vec<(f64, f64)> = points
+        .iter()
+        .map(|&(x, y)| (f64::from(x), f64::from(y)))
+        .collect();
+    // Deterministic pseudo-shuffle (splitmix-стиль) — рандомизация Welzl
+    // без внешнего RNG, воспроизводимо между запусками.
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    for i in (1..pts.len()).rev() {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let j = (state >> 33) as usize % (i + 1);
+        pts.swap(i, j);
+    }
+
+    fn circle_from2(a: (f64, f64), b: (f64, f64)) -> ((f64, f64), f64) {
+        let c = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        (c, dist(c, a))
+    }
+    fn circle_from3(
+        a: (f64, f64),
+        b: (f64, f64),
+        c: (f64, f64),
+    ) -> Option<((f64, f64), f64)> {
+        let d = 2.0 * (a.0 * (b.1 - c.1) + b.0 * (c.1 - a.1) + c.0 * (a.1 - b.1));
+        if d.abs() < 1e-12 {
+            return None; // коллинеарны
+        }
+        let a2 = a.0 * a.0 + a.1 * a.1;
+        let b2 = b.0 * b.0 + b.1 * b.1;
+        let c2 = c.0 * c.0 + c.1 * c.1;
+        let ux = (a2 * (b.1 - c.1) + b2 * (c.1 - a.1) + c2 * (a.1 - b.1)) / d;
+        let uy = (a2 * (c.0 - b.0) + b2 * (a.0 - c.0) + c2 * (b.0 - a.0)) / d;
+        let center = (ux, uy);
+        Some((center, dist(center, a)))
+    }
+    fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
+        ((a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1)).sqrt()
+    }
+    fn inside(c: ((f64, f64), f64), p: (f64, f64)) -> bool {
+        dist(c.0, p) <= c.1 * (1.0 + 1e-10) + 1e-12
+    }
+
+    // Итеративный Welzl (move-to-front): без рекурсии, поддержка до 3 опор.
+    let mut circle: ((f64, f64), f64) = (pts[0], 0.0);
+    for i in 1..pts.len() {
+        if inside(circle, pts[i]) {
+            continue;
+        }
+        circle = (pts[i], 0.0);
+        for j in 0..i {
+            if inside(circle, pts[j]) {
+                continue;
+            }
+            circle = circle_from2(pts[i], pts[j]);
+            for k in 0..j {
+                if inside(circle, pts[k]) {
+                    continue;
+                }
+                if let Some(c3) = circle_from3(pts[i], pts[j], pts[k]) {
+                    circle = c3;
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    Some((
+        (circle.0.0 as f32, circle.0.1 as f32),
+        circle.1 as f32,
+    ))
+}
+
 /// Compute region properties from a label image.
 ///
 /// Input: label image `[H, W, 1]` (e.g. from `connected_components_with_stats`).
