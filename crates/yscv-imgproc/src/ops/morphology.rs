@@ -1227,7 +1227,7 @@ fn box_filter_2d(
             got: c,
         });
     }
-    if ksize == 0 || ksize % 2 == 0 {
+    if ksize == 0 || ksize.is_multiple_of(2) {
         return Err(ImgProcError::InvalidBlockSize { block_size: ksize });
     }
     let r = ksize / 2;
