@@ -126,6 +126,10 @@ pub use ops::detect_surf_keypoints;
 pub use ops::dilate;
 /// Dilation with an all-ones square kernel — separable, O(n) per pass.
 pub use ops::dilate_box;
+/// Binary dilation via sliding-window counts (~2 ops/pixel).
+pub use ops::dilate_binary_box;
+/// Binary erosion via sliding-window counts (~2 ops/pixel).
+pub use ops::erode_binary_box;
 /// Erosion with an all-ones square kernel — separable, O(n) per pass.
 pub use ops::erode_box;
 /// Morphological dilation with 3x3 square structuring element.

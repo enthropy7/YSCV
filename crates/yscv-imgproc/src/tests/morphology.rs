@@ -409,3 +409,29 @@ fn box_morphology_rejects_even_kernel() {
     assert!(dilate_box(&img, 4).is_err());
     assert!(dilate_box(&img, 0).is_err());
 }
+
+#[test]
+fn binary_box_matches_generic_ones_kernel() {
+    use super::super::{dilate, dilate_binary_box, erode, erode_binary_box};
+    let (h, w) = (19usize, 11usize);
+    let mut state = 0xDEAD_BEEF_u64;
+    let mut data = Vec::with_capacity(h * w);
+    for _ in 0..h * w {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        data.push(if (state >> 33) % 3 == 0 { 1.0f32 } else { 0.0 });
+    }
+    let img = Tensor::from_vec(vec![h, w, 1], data).unwrap();
+    for ksize in [1usize, 3, 5, 9] {
+        let kernel = Tensor::from_vec(vec![ksize, ksize, 1], vec![1.0f32; ksize * ksize]).unwrap();
+        assert_eq!(
+            dilate(&img, &kernel).unwrap().data(),
+            dilate_binary_box(&img, ksize).unwrap().data(),
+            "dilate ksize={ksize}"
+        );
+        assert_eq!(
+            erode(&img, &kernel).unwrap().data(),
+            erode_binary_box(&img, ksize).unwrap().data(),
+            "erode ksize={ksize}"
+        );
+    }
+}

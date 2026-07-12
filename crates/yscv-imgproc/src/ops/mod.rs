@@ -107,7 +107,7 @@ pub use intensity::{adjust_gamma, adjust_log, rescale_intensity};
 pub use io::{imread, imread_gray, imwrite};
 pub use morphology::{
     closing_3x3, dilate, dilate_3x3, erode, erode_3x3, morph_blackhat, morph_gradient_3x3,
-    morph_tophat, opening_3x3, remove_small_objects, skeletonize, dilate_box, erode_box,
+    morph_tophat, opening_3x3, remove_small_objects, skeletonize, dilate_binary_box, dilate_box, erode_binary_box, erode_box,
 };
 pub use nms::{BBox, TemplateMatchMethod, TemplateMatchResult, nms, template_match};
 pub use normalize::normalize;

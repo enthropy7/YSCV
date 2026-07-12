@@ -1314,3 +1314,92 @@ pub fn dilate_box(input: &Tensor, ksize: usize) -> Result<Tensor, ImgProcError> 
 pub fn erode_box(input: &Tensor, ksize: usize) -> Result<Tensor, ImgProcError> {
     box_filter_2d(input, ksize, f32::min, f32::INFINITY)
 }
+
+// ── Binary box morphology: sliding-window counts, ~2 ops/pixel ───────────
+
+/// Число foreground-пикселей (>0.5) в клампнутом окне ksize×ksize вокруг
+/// каждого пикселя — два прохода префиксных сумм, row-major.
+fn binary_box_counts(
+    input: &Tensor,
+    ksize: usize,
+) -> Result<(Vec<u32>, usize, usize), ImgProcError> {
+    let (h, w, c) = hwc_shape(input)?;
+    if c != 1 {
+        return Err(ImgProcError::InvalidChannelCount {
+            expected: 1,
+            got: c,
+        });
+    }
+    if ksize == 0 || ksize.is_multiple_of(2) {
+        return Err(ImgProcError::InvalidBlockSize { block_size: ksize });
+    }
+    let r = ksize / 2;
+    let data = input.data();
+
+    // горизонтальные оконные суммы через префикс по строке
+    let mut row_sums = vec![0u32; h * w];
+    let mut prefix = vec![0u32; w + 1];
+    for y in 0..h {
+        for x in 0..w {
+            prefix[x + 1] = prefix[x] + u32::from(data[y * w + x] > 0.5);
+        }
+        for x in 0..w {
+            let hi = (x + r + 1).min(w);
+            let lo = x.saturating_sub(r);
+            row_sums[y * w + x] = prefix[hi] - prefix[lo];
+        }
+    }
+    // вертикальное суммирование окном по столбцам — скользящий аккумулятор строк
+    let mut out = vec![0u32; h * w];
+    let mut acc = vec![0u32; w];
+    // стартовое окно для y=0: строки [0, r]
+    for row_sum in row_sums.chunks_exact(w).take(r + 1) {
+        for (a, &v) in acc.iter_mut().zip(row_sum) {
+            *a += v;
+        }
+    }
+    for y in 0..h {
+        out[y * w..(y + 1) * w].copy_from_slice(&acc);
+        // сдвиг окна: добавить строку y+r+1, убрать y-r
+        if y + r + 1 < h {
+            let add = &row_sums[(y + r + 1) * w..(y + r + 2) * w];
+            for (a, &v) in acc.iter_mut().zip(add) {
+                *a += v;
+            }
+        }
+        if y >= r {
+            let sub = &row_sums[(y - r) * w..(y - r + 1) * w];
+            for (a, &v) in acc.iter_mut().zip(sub) {
+                *a -= v;
+            }
+        }
+    }
+    Ok((out, h, w))
+}
+
+/// Binary dilation with a ksize×ksize ones kernel: pixel is set when the
+/// clamped window contains any foreground pixel. Input: `[H, W, 1]`,
+/// foreground > 0.5; output 0.0/1.0. ~2 ops per pixel via sliding counts —
+/// the fastest path for boolean masks.
+pub fn dilate_binary_box(input: &Tensor, ksize: usize) -> Result<Tensor, ImgProcError> {
+    let (counts, h, w) = binary_box_counts(input, ksize)?;
+    let out: Vec<f32> = counts.iter().map(|&c| f32::from(u8::from(c > 0))).collect();
+    Tensor::from_vec(vec![h, w, 1], out).map_err(Into::into)
+}
+
+/// Binary erosion with a ksize×ksize ones kernel: pixel survives when every
+/// in-bounds window pixel is foreground (OpenCV border semantics — the
+/// window is clamped at image edges). See [`dilate_binary_box`].
+pub fn erode_binary_box(input: &Tensor, ksize: usize) -> Result<Tensor, ImgProcError> {
+    let (counts, h, w) = binary_box_counts(input, ksize)?;
+    let r = ksize / 2;
+    let mut out = vec![0.0f32; h * w];
+    for y in 0..h {
+        let wy = (y + r + 1).min(h) - y.saturating_sub(r);
+        for x in 0..w {
+            let wx = (x + r + 1).min(w) - x.saturating_sub(r);
+            out[y * w + x] = f32::from(u8::from(counts[y * w + x] as usize == wx * wy));
+        }
+    }
+    Tensor::from_vec(vec![h, w, 1], out).map_err(Into::into)
+}
