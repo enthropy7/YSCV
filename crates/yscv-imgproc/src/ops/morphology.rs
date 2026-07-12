@@ -1336,17 +1336,36 @@ fn binary_box_counts(
     let r = ksize / 2;
     let data = input.data();
 
-    // горизонтальные оконные суммы через префикс по строке
+    // горизонтальные оконные суммы через префикс по строке; середина строки —
+    // безиндексные zip-итераторы (векторизуются), кромки — отдельно
     let mut row_sums = vec![0u32; h * w];
     let mut prefix = vec![0u32; w + 1];
     for y in 0..h {
-        for x in 0..w {
-            prefix[x + 1] = prefix[x] + u32::from(data[y * w + x] > 0.5);
+        let row = &data[y * w..(y + 1) * w];
+        let mut acc = 0u32;
+        for (p, &v) in prefix[1..].iter_mut().zip(row) {
+            acc += u32::from(v > 0.5);
+            *p = acc;
         }
-        for x in 0..w {
-            let hi = (x + r + 1).min(w);
-            let lo = x.saturating_sub(r);
-            row_sums[y * w + x] = prefix[hi] - prefix[lo];
+        let dst = &mut row_sums[y * w..(y + 1) * w];
+        if w > 2 * r {
+            for (x, d) in dst.iter_mut().enumerate().take(r) {
+                *d = prefix[(x + r + 1).min(w)];
+            }
+            let (hi_part, lo_part) = (&prefix[2 * r + 1..=w], &prefix[..w - 2 * r]);
+            for ((d, &hi), &lo) in dst[r..w - r].iter_mut().zip(hi_part).zip(lo_part) {
+                *d = hi - lo;
+            }
+            let total = prefix[w];
+            for (x, d) in dst.iter_mut().enumerate().skip(w - r) {
+                *d = total - prefix[x - r];
+            }
+        } else {
+            for (x, d) in dst.iter_mut().enumerate() {
+                let hi = (x + r + 1).min(w);
+                let lo = x.saturating_sub(r);
+                *d = prefix[hi] - prefix[lo];
+            }
         }
     }
     // вертикальное суммирование окном по столбцам — скользящий аккумулятор строк
@@ -1396,9 +1415,26 @@ pub fn erode_binary_box(input: &Tensor, ksize: usize) -> Result<Tensor, ImgProcE
     let mut out = vec![0.0f32; h * w];
     for y in 0..h {
         let wy = (y + r + 1).min(h) - y.saturating_sub(r);
-        for x in 0..w {
-            let wx = (x + r + 1).min(w) - x.saturating_sub(r);
-            out[y * w + x] = f32::from(u8::from(counts[y * w + x] as usize == wx * wy));
+        let row_counts = &counts[y * w..(y + 1) * w];
+        let out_row = &mut out[y * w..(y + 1) * w];
+        if w > 2 * r {
+            for (x, (o, &c)) in out_row.iter_mut().zip(row_counts).enumerate().take(r) {
+                let wx = (x + r + 1).min(w) - x.saturating_sub(r);
+                *o = f32::from(u8::from(c as usize == wx * wy));
+            }
+            let full = (ksize * wy) as u32;
+            for (o, &c) in out_row[r..w - r].iter_mut().zip(&row_counts[r..w - r]) {
+                *o = f32::from(u8::from(c == full));
+            }
+            for (x, (o, &c)) in out_row.iter_mut().zip(row_counts).enumerate().skip(w - r) {
+                let wx = (x + r + 1).min(w) - x.saturating_sub(r);
+                *o = f32::from(u8::from(c as usize == wx * wy));
+            }
+        } else {
+            for (x, (o, &c)) in out_row.iter_mut().zip(row_counts).enumerate() {
+                let wx = (x + r + 1).min(w) - x.saturating_sub(r);
+                *o = f32::from(u8::from(c as usize == wx * wy));
+            }
         }
     }
     Tensor::from_vec(vec![h, w, 1], out).map_err(Into::into)
