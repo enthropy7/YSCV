@@ -11,6 +11,7 @@ mod graph_cost;
 mod graph_stats;
 mod remove_dropout_nodes;
 mod reorder_nodes_for_fusion;
+mod rewrite_convtranspose_dts;
 mod strip_qdq_within_fusion_chains;
 
 use crate::{
@@ -34,12 +35,15 @@ pub use graph_cost::{
     GraphCost, GraphCostDiff, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
 };
 pub use graph_stats::{GraphStats, graph_stats};
+pub use rewrite_convtranspose_dts::rewrite_convtranspose_dts;
 pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 
 /// Optimizes an ONNX model graph in-place for inference.
 ///
 /// Applies load-time passes modeled after ORT's Level-1 optimizer:
 /// - Dropout removal (inference-only, rewire consumers to Dropout input)
+/// - ConvTranspose(k==s) rewrite to Conv1x1 + DepthToSpace (GEMM-backed path,
+///   also unlocks backends without a ConvTranspose kernel)
 /// - Conv-BatchNormalization folding (absorb BN γ/β/μ/σ into Conv weights)
 /// - Conv-Mul(const) scale absorption (absorb scalar/per-channel Mul into weights)
 /// - Conv-Add(const) bias absorption (absorb per-channel Add into Conv bias)
@@ -56,6 +60,7 @@ pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 pub fn optimize_onnx_graph(model: &mut OnnxModel) {
     reorder_nodes_for_fusion(model);
     remove_dropout_nodes(model);
+    rewrite_convtranspose_dts(model);
     fold_conv_bn(model);
     fold_conv_mul(model);
     fold_conv_add_const(model);
