@@ -124,6 +124,10 @@ pub use ops::detect_orb;
 pub use ops::detect_surf_keypoints;
 /// Morphological dilation with arbitrary structuring element.
 pub use ops::dilate;
+/// Dilation with an all-ones square kernel — separable, O(n) per pass.
+pub use ops::dilate_box;
+/// Erosion with an all-ones square kernel — separable, O(n) per pass.
+pub use ops::erode_box;
 /// Morphological dilation with 3x3 square structuring element.
 /// Input: `[H, W]` grayscale f32.
 pub use ops::dilate_3x3;

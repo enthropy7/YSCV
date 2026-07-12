@@ -378,3 +378,34 @@ fn dilate_3x3_rgb_large() {
     // Pixel far away should be 0
     assert!((od[0]).abs() < 1e-6);
 }
+
+#[test]
+fn box_morphology_matches_generic_ones_kernel() {
+    use super::super::{dilate, dilate_box, erode, erode_box};
+    // псевдослучайное изображение 17x13 — сверяем с generic-ядром единиц
+    let (h, w) = (17usize, 13usize);
+    let mut state = 0x1234_5678_u64;
+    let mut data = Vec::with_capacity(h * w);
+    for _ in 0..h * w {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        data.push(((state >> 33) % 1000) as f32 / 100.0);
+    }
+    let img = Tensor::from_vec(vec![h, w, 1], data).unwrap();
+    for ksize in [1usize, 3, 5, 7] {
+        let kernel = Tensor::from_vec(vec![ksize, ksize, 1], vec![1.0f32; ksize * ksize]).unwrap();
+        let d_ref = dilate(&img, &kernel).unwrap();
+        let d_box = dilate_box(&img, ksize).unwrap();
+        assert_eq!(d_ref.data(), d_box.data(), "dilate ksize={ksize}");
+        let e_ref = erode(&img, &kernel).unwrap();
+        let e_box = erode_box(&img, ksize).unwrap();
+        assert_eq!(e_ref.data(), e_box.data(), "erode ksize={ksize}");
+    }
+}
+
+#[test]
+fn box_morphology_rejects_even_kernel() {
+    use super::super::dilate_box;
+    let img = Tensor::from_vec(vec![4, 4, 1], vec![0.0f32; 16]).unwrap();
+    assert!(dilate_box(&img, 4).is_err());
+    assert!(dilate_box(&img, 0).is_err());
+}

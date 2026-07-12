@@ -1207,3 +1207,102 @@ pub fn erode(input: &Tensor, kernel: &Tensor) -> Result<Tensor, ImgProcError> {
 
     Tensor::from_vec(vec![h, w, 1], out).map_err(Into::into)
 }
+
+// ── Box-kernel morphology: separable sliding min/max, O(n) per pass ──────
+
+/// 1D sliding-window extremum over a clamped window (monotonic deque).
+/// `cmp(new, back)` returns true when `back` must be evicted (e.g. `new >= back` for max).
+fn sliding_extremum_1d(
+    src: &[f32],
+    dst: &mut [f32],
+    radius: usize,
+    keep_new: fn(f32, f32) -> bool,
+) {
+    let n = src.len();
+    // deque of indices; values monotone (front = current extremum)
+    let mut deque: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for x in 0..n + radius {
+        if x < n {
+            while let Some(&back) = deque.back() {
+                if keep_new(src[x], src[back]) {
+                    deque.pop_back();
+                } else {
+                    break;
+                }
+            }
+            deque.push_back(x);
+        }
+        // окно для выхода out = x - radius: [out - radius, out + radius] ∩ [0, n)
+        if x >= radius {
+            let out = x - radius;
+            while let Some(&front) = deque.front() {
+                if front + radius < out {
+                    deque.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if let Some(&front) = deque.front() {
+                dst[out] = src[front];
+            }
+        }
+    }
+}
+
+fn box_filter_2d(
+    input: &Tensor,
+    ksize: usize,
+    keep_new: fn(f32, f32) -> bool,
+) -> Result<Tensor, ImgProcError> {
+    let (h, w, c) = hwc_shape(input)?;
+    if c != 1 {
+        return Err(ImgProcError::InvalidChannelCount {
+            expected: 1,
+            got: c,
+        });
+    }
+    if ksize == 0 || ksize % 2 == 0 {
+        return Err(ImgProcError::InvalidBlockSize { block_size: ksize });
+    }
+    let radius = ksize / 2;
+    let data = input.data();
+    let mut tmp = vec![0.0f32; h * w];
+    // горизонтальный проход
+    for y in 0..h {
+        sliding_extremum_1d(
+            &data[y * w..(y + 1) * w],
+            &mut tmp[y * w..(y + 1) * w],
+            radius,
+            keep_new,
+        );
+    }
+    // вертикальный проход (колонка -> scratch -> 1D -> обратно)
+    let mut out = vec![0.0f32; h * w];
+    let mut col_src = vec![0.0f32; h];
+    let mut col_dst = vec![0.0f32; h];
+    for x in 0..w {
+        for y in 0..h {
+            col_src[y] = tmp[y * w + x];
+        }
+        sliding_extremum_1d(&col_src, &mut col_dst, radius, keep_new);
+        for y in 0..h {
+            out[y * w + x] = col_dst[y];
+        }
+    }
+    Tensor::from_vec(vec![h, w, 1], out).map_err(Into::into)
+}
+
+/// Dilation with an all-ones square kernel of odd size `ksize`.
+///
+/// Identical результату [`dilate`] с ones-ядром (границы клампятся), но
+/// сепарабельно и за O(n) на проход вместо O(n·k²) — на 720p и ядре 5×5
+/// это порядок с лишним разницы.
+pub fn dilate_box(input: &Tensor, ksize: usize) -> Result<Tensor, ImgProcError> {
+    box_filter_2d(input, ksize, |new, back| new >= back)
+}
+
+/// Erosion with an all-ones square kernel of odd size `ksize`.
+/// See [`dilate_box`] for semantics and complexity.
+pub fn erode_box(input: &Tensor, ksize: usize) -> Result<Tensor, ImgProcError> {
+    box_filter_2d(input, ksize, |new, back| new <= back)
+}
