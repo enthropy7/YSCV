@@ -27,9 +27,9 @@ use std::arch::x86_64::{
 #[cfg(target_arch = "aarch64")]
 use super::exp::fast_exp_sigmoid_neon;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use super::exp::{fast_exp_avx, fast_exp_bittrick_avx, fast_exp_bittrick_sse, fast_exp_sse};
+use super::exp::{fast_exp_avx, fast_exp_sigmoid_avx, fast_exp_sigmoid_sse, fast_exp_sse};
 #[cfg(target_arch = "x86_64")]
-use super::exp::{fast_exp_avx512, fast_exp_bittrick_avx512};
+use super::exp::{fast_exp_avx512, fast_exp_sigmoid_avx512};
 use super::{SimdDispatchPath, dispatch_path, x86_memory_simd_forces_avx2};
 
 // ===========================================================================
@@ -517,7 +517,7 @@ unsafe fn fused_row_epilogue_avx_fma(
                 // SiLU via fast bit-trick exp.
                 let one = _mm256_set1_ps(1.0);
                 let neg_x = _mm256_sub_ps(zero, v);
-                let exp_neg = fast_exp_bittrick_avx(neg_x);
+                let exp_neg = fast_exp_sigmoid_avx(neg_x);
                 let denom = _mm256_add_ps(one, exp_neg);
                 v = _mm256_div_ps(v, denom);
             }
@@ -1203,149 +1203,40 @@ unsafe fn relu_to_slice_neon(input: &[f32], output: &mut [f32]) {
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 unsafe fn sigmoid_slice_neon(input: &[f32], output: &mut [f32]) {
+    // Точный fast-exp (minimax deg-4) вместо сырого Schraudolph bit-trick:
+    // ~1e-3 ошибка бит-трика систематически смещала логиты уверенности
+    // детекционных голов (conf 0.75 против 0.93 на FastSAM-s).
+    use std::arch::aarch64::{vaddq_f32, vdivq_f32, vld1q_f32, vnegq_f32, vst1q_f32};
     let len = input.len();
-    let mut inp = input.as_ptr();
-    let mut out = output.as_mut_ptr();
-    let mut remaining = len;
-
-    // Load all constants ONCE before the loop, keep in NEON registers
-    if remaining >= 4 {
-        unsafe {
-            // Constants on stack for ld1r broadcast
-            let c_neg88: f32 = -88.0;
-            let c_pos88: f32 = 88.0;
-            // Schraudolph 1999 constants: exp(x) ~ reinterpret(int(x * C + B))
-            // C = 2^23 / ln(2) = 12102203.16, B = 127 * 2^23 = 1065353216
-            // WHY: 2^23/ln(2) maps float mantissa bits to IEEE 754 exponent field; 127*2^23 adds the exponent bias.
-            let c_schr_c: f32 = 12102203.0; // 2^23 / ln(2)
-            let c_schr_b: i32 = 127 << 23; // 1065353216 as integer
-            let c_sixth: f32 = 1.0 / 6.0;
-            let c_half: f32 = 0.5;
-            let c_one: f32 = 1.0;
-            let c_127: i32 = 127;
-
-            // Load constants into NEON registers (stays there for entire loop)
-            std::arch::asm!(
-                "ld1r {{v16.4s}}, [{p_neg88}]",
-                "ld1r {{v17.4s}}, [{p_pos88}]",
-                "ld1r {{v18.4s}}, [{p_schr_c}]",   // Schraudolph C (float)
-                "dup  v19.4s, {p_schr_b:w}",        // Schraudolph B (integer 127<<23)
-                "ld1r {{v20.4s}}, [{p_sixth}]",
-                "ld1r {{v21.4s}}, [{p_half}]",
-                "ld1r {{v22.4s}}, [{p_one}]",
-                "dup  v23.4s, {p_127:w}",
-                p_neg88 = in(reg) &c_neg88,
-                p_pos88 = in(reg) &c_pos88,
-                p_schr_c = in(reg) &c_schr_c,
-                p_schr_b = in(reg) c_schr_b,
-                p_sixth = in(reg) &c_sixth,
-                p_half = in(reg) &c_half,
-                p_one = in(reg) &c_one,
-                p_127 = in(reg) c_127,
-                out("v16") _, out("v17") _, out("v18") _, out("v19") _,
-                out("v20") _, out("v21") _, out("v22") _, out("v23") _,
-            );
-
-            // Schraudolph bit-trick: exp(x) ~ reinterpret_f32(int(x * 2^23/ln2) + 127<<23)
-            // Proper integer arithmetic: fcvtzs to get int, then add bias as int, then reinterpret
-            // 4x unrolled, 16 elements per iteration
-            while remaining >= 16 {
-                std::arch::asm!(
-                    "ldp q0, q1, [{inp}]",
-                    "ldp q2, q3, [{inp}, #32]",
-                    "add {inp}, {inp}, #64",
-                    "fneg v0.4s, v0.4s",
-                    "fneg v1.4s, v1.4s",
-                    "fneg v2.4s, v2.4s",
-                    "fneg v3.4s, v3.4s",
-                    "fmax v0.4s, v0.4s, v16.4s",
-                    "fmax v1.4s, v1.4s, v16.4s",
-                    "fmax v2.4s, v2.4s, v16.4s",
-                    "fmax v3.4s, v3.4s, v16.4s",
-                    "fmin v0.4s, v0.4s, v17.4s",
-                    "fmin v1.4s, v1.4s, v17.4s",
-                    "fmin v2.4s, v2.4s, v17.4s",
-                    "fmin v3.4s, v3.4s, v17.4s",
-                    // x * (2^23/ln2) -> convert to int
-                    "fmul v0.4s, v0.4s, v18.4s",
-                    "fmul v1.4s, v1.4s, v18.4s",
-                    "fmul v2.4s, v2.4s, v18.4s",
-                    "fmul v3.4s, v3.4s, v18.4s",
-                    "fcvtzs v0.4s, v0.4s",
-                    "fcvtzs v1.4s, v1.4s",
-                    "fcvtzs v2.4s, v2.4s",
-                    "fcvtzs v3.4s, v3.4s",
-                    // + 127*2^23 (integer add)
-                    "add v0.4s, v0.4s, v19.4s",
-                    "add v1.4s, v1.4s, v19.4s",
-                    "add v2.4s, v2.4s, v19.4s",
-                    "add v3.4s, v3.4s, v19.4s",
-                    // v0-v3 bits ARE exp(-x) when reinterpreted as float
-                    // sigmoid = 1 / (1 + exp)
-                    "fadd v0.4s, v22.4s, v0.4s",
-                    "fadd v1.4s, v22.4s, v1.4s",
-                    "fadd v2.4s, v22.4s, v2.4s",
-                    "fadd v3.4s, v22.4s, v3.4s",
-                    "fdiv v0.4s, v22.4s, v0.4s",
-                    "fdiv v1.4s, v22.4s, v1.4s",
-                    "fdiv v2.4s, v22.4s, v2.4s",
-                    "fdiv v3.4s, v22.4s, v3.4s",
-                    "stp q0, q1, [{out}]",
-                    "stp q2, q3, [{out}, #32]",
-                    "add {out}, {out}, #64",
-                    inp = inout(reg) inp,
-                    out = inout(reg) out,
-                    out("v0") _, out("v1") _, out("v2") _, out("v3") _,
-                );
-                remaining -= 16;
-            }
-            // 4-element tail -- Schraudolph
-            while remaining >= 4 {
-                std::arch::asm!(
-                    "ld1 {{v0.4s}}, [{inp}], #16",
-                    "fneg v0.4s, v0.4s",
-                    "fmax v0.4s, v0.4s, v16.4s",
-                    "fmin v0.4s, v0.4s, v17.4s",
-                    "fmul v0.4s, v0.4s, v18.4s",
-                    "fcvtzs v0.4s, v0.4s",
-                    "add v0.4s, v0.4s, v19.4s",
-                    "fadd v0.4s, v22.4s, v0.4s",
-                    "fdiv v0.4s, v22.4s, v0.4s",
-                    "st1 {{v0.4s}}, [{out}], #16",
-                    inp = inout(reg) inp,
-                    out = inout(reg) out,
-                    out("v0") _,
-                );
-                remaining -= 4;
-            }
-            // 4-element tail -- Schraudolph
-            while remaining >= 4 {
-                std::arch::asm!(
-                    "ld1 {{v0.4s}}, [{inp}], #16",
-                    "fneg v0.4s, v0.4s",
-                    "fmax v0.4s, v0.4s, v16.4s",
-                    "fmin v0.4s, v0.4s, v17.4s",
-                    "fmul v0.4s, v0.4s, v18.4s",
-                    "fcvtzs v0.4s, v0.4s",
-                    "add v0.4s, v0.4s, v19.4s",
-                    "fadd v0.4s, v22.4s, v0.4s",
-                    "fdiv v0.4s, v22.4s, v0.4s",
-                    "st1 {{v0.4s}}, [{out}], #16",
-                    inp = inout(reg) inp,
-                    out = inout(reg) out,
-                    out("v0") _,
-                );
-                remaining -= 4;
-            }
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let one = vdupq_n_f32(1.0);
+    let mut i = 0usize;
+    unsafe {
+        while i + 16 <= len {
+            let x0 = vld1q_f32(in_ptr.add(i));
+            let x1 = vld1q_f32(in_ptr.add(i + 4));
+            let x2 = vld1q_f32(in_ptr.add(i + 8));
+            let x3 = vld1q_f32(in_ptr.add(i + 12));
+            let e0 = fast_exp_sigmoid_neon(vnegq_f32(x0));
+            let e1 = fast_exp_sigmoid_neon(vnegq_f32(x1));
+            let e2 = fast_exp_sigmoid_neon(vnegq_f32(x2));
+            let e3 = fast_exp_sigmoid_neon(vnegq_f32(x3));
+            vst1q_f32(out_ptr.add(i), vdivq_f32(one, vaddq_f32(one, e0)));
+            vst1q_f32(out_ptr.add(i + 4), vdivq_f32(one, vaddq_f32(one, e1)));
+            vst1q_f32(out_ptr.add(i + 8), vdivq_f32(one, vaddq_f32(one, e2)));
+            vst1q_f32(out_ptr.add(i + 12), vdivq_f32(one, vaddq_f32(one, e3)));
+            i += 16;
+        }
+        while i + 4 <= len {
+            let x = vld1q_f32(in_ptr.add(i));
+            let e = fast_exp_sigmoid_neon(vnegq_f32(x));
+            vst1q_f32(out_ptr.add(i), vdivq_f32(one, vaddq_f32(one, e)));
+            i += 4;
         }
     }
-
-    // Scalar tail
-    for i in 0..remaining {
-        unsafe {
-            let x = *inp.add(i);
-            *out.add(i) = 1.0 / (1.0 + (-x).exp());
-        }
+    for k in i..len {
+        output[k] = 1.0 / (1.0 + (-input[k]).exp());
     }
 }
 
@@ -1376,10 +1267,10 @@ unsafe fn sigmoid_slice_sse(input: &[f32], output: &mut [f32]) {
         let x3 = _mm_loadu_ps(in_ptr.add(index + 12));
 
         // Bit-trick exp is sufficient for sigmoid (output clamped 0-1, errors wash out)
-        let e0 = fast_exp_bittrick_sse(_mm_sub_ps(zero, x0));
-        let e1 = fast_exp_bittrick_sse(_mm_sub_ps(zero, x1));
-        let e2 = fast_exp_bittrick_sse(_mm_sub_ps(zero, x2));
-        let e3 = fast_exp_bittrick_sse(_mm_sub_ps(zero, x3));
+        let e0 = fast_exp_sigmoid_sse(_mm_sub_ps(zero, x0));
+        let e1 = fast_exp_sigmoid_sse(_mm_sub_ps(zero, x1));
+        let e2 = fast_exp_sigmoid_sse(_mm_sub_ps(zero, x2));
+        let e3 = fast_exp_sigmoid_sse(_mm_sub_ps(zero, x3));
 
         let r0 = _mm_div_ps(one, _mm_add_ps(one, e0));
         let r1 = _mm_div_ps(one, _mm_add_ps(one, e1));
@@ -1398,7 +1289,7 @@ unsafe fn sigmoid_slice_sse(input: &[f32], output: &mut [f32]) {
     while index + 4 <= len {
         let x = _mm_loadu_ps(in_ptr.add(index));
         let neg_x = _mm_sub_ps(zero, x);
-        let exp_neg_x = fast_exp_bittrick_sse(neg_x);
+        let exp_neg_x = fast_exp_sigmoid_sse(neg_x);
         let denom = _mm_add_ps(one, exp_neg_x);
         let result = _mm_div_ps(one, denom);
         _mm_storeu_ps(out_ptr.add(index), result);
@@ -1436,10 +1327,10 @@ unsafe fn sigmoid_slice_avx(input: &[f32], output: &mut [f32]) {
         let x3 = _mm256_loadu_ps(in_ptr.add(index + 24));
 
         // Use Schraudolph bit-trick exp for ~3x speedup over polynomial
-        let e0 = fast_exp_bittrick_avx(_mm256_sub_ps(zero, x0));
-        let e1 = fast_exp_bittrick_avx(_mm256_sub_ps(zero, x1));
-        let e2 = fast_exp_bittrick_avx(_mm256_sub_ps(zero, x2));
-        let e3 = fast_exp_bittrick_avx(_mm256_sub_ps(zero, x3));
+        let e0 = fast_exp_sigmoid_avx(_mm256_sub_ps(zero, x0));
+        let e1 = fast_exp_sigmoid_avx(_mm256_sub_ps(zero, x1));
+        let e2 = fast_exp_sigmoid_avx(_mm256_sub_ps(zero, x2));
+        let e3 = fast_exp_sigmoid_avx(_mm256_sub_ps(zero, x3));
 
         let r0 = _mm256_div_ps(one, _mm256_add_ps(one, e0));
         let r1 = _mm256_div_ps(one, _mm256_add_ps(one, e1));
@@ -1458,7 +1349,7 @@ unsafe fn sigmoid_slice_avx(input: &[f32], output: &mut [f32]) {
     while index + 8 <= len {
         let x = _mm256_loadu_ps(in_ptr.add(index));
         let neg_x = _mm256_sub_ps(zero, x);
-        let exp_neg_x = fast_exp_bittrick_avx(neg_x);
+        let exp_neg_x = fast_exp_sigmoid_avx(neg_x);
         let denom = _mm256_add_ps(one, exp_neg_x);
         let result = _mm256_div_ps(one, denom);
         _mm256_storeu_ps(out_ptr.add(index), result);
@@ -1487,8 +1378,8 @@ unsafe fn sigmoid_slice_avx512(input: &[f32], output: &mut [f32]) {
     while index + 32 <= len {
         let x0 = _mm512_loadu_ps(in_ptr.add(index));
         let x1 = _mm512_loadu_ps(in_ptr.add(index + 16));
-        let e0 = fast_exp_bittrick_avx512(_mm512_sub_ps(zero, x0));
-        let e1 = fast_exp_bittrick_avx512(_mm512_sub_ps(zero, x1));
+        let e0 = fast_exp_sigmoid_avx512(_mm512_sub_ps(zero, x0));
+        let e1 = fast_exp_sigmoid_avx512(_mm512_sub_ps(zero, x1));
         let r0 = _mm512_div_ps(one, _mm512_add_ps(one, e0));
         let r1 = _mm512_div_ps(one, _mm512_add_ps(one, e1));
         _mm512_storeu_ps(out_ptr.add(index), r0);
@@ -1498,7 +1389,7 @@ unsafe fn sigmoid_slice_avx512(input: &[f32], output: &mut [f32]) {
 
     while index + 16 <= len {
         let x = _mm512_loadu_ps(in_ptr.add(index));
-        let exp_neg_x = fast_exp_bittrick_avx512(_mm512_sub_ps(zero, x));
+        let exp_neg_x = fast_exp_sigmoid_avx512(_mm512_sub_ps(zero, x));
         let result = _mm512_div_ps(one, _mm512_add_ps(one, exp_neg_x));
         _mm512_storeu_ps(out_ptr.add(index), result);
         index += 16;
