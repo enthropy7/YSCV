@@ -281,14 +281,9 @@ fn min_enclosing_circle_exact_cases() {
     assert!((r - std::f32::consts::SQRT_2).abs() < 1e-5);
 
     // точка внутри не влияет
-    let ((_, _), r2) = min_enclosing_circle(&[
-        (0.0, 0.0),
-        (2.0, 0.0),
-        (2.0, 2.0),
-        (0.0, 2.0),
-        (1.0, 1.0),
-    ])
-    .unwrap();
+    let ((_, _), r2) =
+        min_enclosing_circle(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (1.0, 1.0)])
+            .unwrap();
     assert!((r2 - std::f32::consts::SQRT_2).abs() < 1e-5);
 
     assert!(min_enclosing_circle(&[]).is_none());

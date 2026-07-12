@@ -71,9 +71,9 @@ pub use color::{
 };
 pub use contours::{
     ComponentStats, Contour, RegionProp, approx_poly_dp, arc_length, bounding_rect,
-    connected_components_with_stats, connected_components_with_stats_8, contour_area,
-    convex_hull, find_contours, fit_ellipse, min_enclosing_circle,
-    homography_4pt, hu_moments, min_area_rect, ransac_homography, region_props,
+    connected_components_with_stats, connected_components_with_stats_8, contour_area, convex_hull,
+    find_contours, fit_ellipse, homography_4pt, hu_moments, min_area_rect, min_enclosing_circle,
+    ransac_homography, region_props,
 };
 pub use draw::{
     Detection as DrawDetection, draw_circle, draw_detections, draw_line, draw_polylines, draw_rect,
@@ -106,8 +106,9 @@ pub use inpaint::inpaint_telea;
 pub use intensity::{adjust_gamma, adjust_log, rescale_intensity};
 pub use io::{imread, imread_gray, imwrite};
 pub use morphology::{
-    closing_3x3, dilate, dilate_3x3, erode, erode_3x3, morph_blackhat, morph_gradient_3x3,
-    morph_tophat, opening_3x3, remove_small_objects, skeletonize, dilate_binary_box, dilate_box, erode_binary_box, erode_box,
+    closing_3x3, dilate, dilate_3x3, dilate_binary_box, dilate_box, erode, erode_3x3,
+    erode_binary_box, erode_box, morph_blackhat, morph_gradient_3x3, morph_tophat, opening_3x3,
+    remove_small_objects, skeletonize,
 };
 pub use nms::{BBox, TemplateMatchMethod, TemplateMatchResult, nms, template_match};
 pub use normalize::normalize;

@@ -1242,7 +1242,11 @@ fn box_filter_2d(
     for y in 0..h {
         row[r..r + w].copy_from_slice(&data[y * w..(y + 1) * w]);
         for (i, &v) in row.iter().enumerate() {
-            left[i] = if i % ksize == 0 { v } else { pick(left[i - 1], v) };
+            left[i] = if i % ksize == 0 {
+                v
+            } else {
+                pick(left[i - 1], v)
+            };
         }
         for i in (0..padded_w).rev() {
             right[i] = if (i + 1) % ksize == 0 || i + 1 == padded_w {

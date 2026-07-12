@@ -387,7 +387,9 @@ fn box_morphology_matches_generic_ones_kernel() {
     let mut state = 0x1234_5678_u64;
     let mut data = Vec::with_capacity(h * w);
     for _ in 0..h * w {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         data.push(((state >> 33) % 1000) as f32 / 100.0);
     }
     let img = Tensor::from_vec(vec![h, w, 1], data).unwrap();
@@ -417,7 +419,9 @@ fn binary_box_matches_generic_ones_kernel() {
     let mut state = 0xDEAD_BEEF_u64;
     let mut data = Vec::with_capacity(h * w);
     for _ in 0..h * w {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         data.push(if (state >> 33) % 3 == 0 { 1.0f32 } else { 0.0 });
     }
     let img = Tensor::from_vec(vec![h, w, 1], data).unwrap();

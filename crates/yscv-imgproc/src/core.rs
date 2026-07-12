@@ -105,8 +105,6 @@ pub use ops::connected_components_4;
 pub use ops::connected_components_with_stats;
 /// Connected-component labelling with statistics (8-connectivity).
 pub use ops::connected_components_with_stats_8;
-/// Minimum enclosing circle of a 2D point set (Welzl, exact).
-pub use ops::min_enclosing_circle;
 /// Compute contour area (signed, using shoelace formula).
 pub use ops::contour_area;
 /// Compute the convex hull of a set of 2D points.
@@ -124,17 +122,13 @@ pub use ops::detect_orb;
 pub use ops::detect_surf_keypoints;
 /// Morphological dilation with arbitrary structuring element.
 pub use ops::dilate;
-/// Dilation with an all-ones square kernel — separable, O(n) per pass.
-pub use ops::dilate_box;
-/// Binary dilation via sliding-window counts (~2 ops/pixel).
-pub use ops::dilate_binary_box;
-/// Binary erosion via sliding-window counts (~2 ops/pixel).
-pub use ops::erode_binary_box;
-/// Erosion with an all-ones square kernel — separable, O(n) per pass.
-pub use ops::erode_box;
 /// Morphological dilation with 3x3 square structuring element.
 /// Input: `[H, W]` grayscale f32.
 pub use ops::dilate_3x3;
+/// Binary dilation via sliding-window counts (~2 ops/pixel).
+pub use ops::dilate_binary_box;
+/// Dilation with an all-ones square kernel — separable, O(n) per pass.
+pub use ops::dilate_box;
 /// Euclidean distance transform. Input: `[H, W]` binary f32.
 pub use ops::distance_transform;
 /// Morphological erosion with arbitrary structuring element.
@@ -142,6 +136,10 @@ pub use ops::erode;
 /// Morphological erosion with 3x3 square structuring element.
 /// Input: `[H, W]` grayscale f32.
 pub use ops::erode_3x3;
+/// Binary erosion via sliding-window counts (~2 ops/pixel).
+pub use ops::erode_binary_box;
+/// Erosion with an all-ones square kernel — separable, O(n) per pass.
+pub use ops::erode_box;
 /// Farneback dense optical flow between two frames.
 pub use ops::farneback_flow;
 /// FAST corner detection (configurable arc length).
@@ -208,6 +206,8 @@ pub use ops::median_blur_3x3;
 pub use ops::median_filter;
 /// Minimum area rotated rectangle of a set of 2D points.
 pub use ops::min_area_rect;
+/// Minimum enclosing circle of a 2D point set (Welzl, exact).
+pub use ops::min_enclosing_circle;
 /// Morphological black-hat transform (closing - input).
 pub use ops::morph_blackhat;
 /// Morphological gradient (dilation - erosion) with 3x3 element.

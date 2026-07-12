@@ -639,7 +639,9 @@ pub fn min_enclosing_circle(points: &[(f32, f32)]) -> Option<((f32, f32), f32)> 
     // без внешнего RNG, воспроизводимо между запусками.
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
     for i in (1..pts.len()).rev() {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let j = (state >> 33) as usize % (i + 1);
         pts.swap(i, j);
     }
@@ -648,11 +650,7 @@ pub fn min_enclosing_circle(points: &[(f32, f32)]) -> Option<((f32, f32), f32)> 
         let c = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
         (c, dist(c, a))
     }
-    fn circle_from3(
-        a: (f64, f64),
-        b: (f64, f64),
-        c: (f64, f64),
-    ) -> Option<((f64, f64), f64)> {
+    fn circle_from3(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> Option<((f64, f64), f64)> {
         let d = 2.0 * (a.0 * (b.1 - c.1) + b.0 * (c.1 - a.1) + c.0 * (a.1 - b.1));
         if d.abs() < 1e-12 {
             return None; // коллинеарны
@@ -696,10 +694,7 @@ pub fn min_enclosing_circle(points: &[(f32, f32)]) -> Option<((f32, f32), f32)> 
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    Some((
-        (circle.0.0 as f32, circle.0.1 as f32),
-        circle.1 as f32,
-    ))
+    Some(((circle.0.0 as f32, circle.0.1 as f32), circle.1 as f32))
 }
 
 /// Compute region properties from a label image.
