@@ -1070,7 +1070,10 @@ fn dt_l2_vertical3(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         let features = yscv_cpu::host_cpu().features;
-        if features.avx2 {
+        if features.avx512f {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_vertical3_avx512(dist, src, cur, w, a, b) };
+        } else if features.avx2 {
             // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_l2_vertical3_avx2(dist, src, cur, w, a, b) };
         } else if features.sse {
@@ -1221,7 +1224,10 @@ fn dt_l2_vertical5(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         let features = yscv_cpu::host_cpu().features;
-        if features.avx2 {
+        if features.avx512f {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_vertical5_avx512(dist, src, cur, w, a, b, c) };
+        } else if features.avx2 {
             // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_l2_vertical5_avx2(dist, src, cur, w, a, b, c) };
         } else if features.sse {
@@ -1334,7 +1340,10 @@ fn dt_l2_knight(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         let features = yscv_cpu::host_cpu().features;
-        if features.avx2 {
+        if features.avx512f {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_knight_avx512(dist, src2, cur, w, c) };
+        } else if features.avx2 {
             // SAFETY: ISA guard (feature detection) above.
             x = unsafe { dt_l2_knight_avx2(dist, src2, cur, w, c) };
         } else if features.sse {
@@ -1483,6 +1492,105 @@ unsafe fn dt_l2_knight_avx2(dist: &mut [f32], src2: usize, cur: usize, w: usize,
         let m = _mm256_min_ps(_mm256_loadu_ps(ptr.add(cur + x)), _mm256_min_ps(lo, hi));
         _mm256_storeu_ps(ptr.add(cur + x), m);
         x += 8;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn dt_l2_vertical3_avx512(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let av = _mm512_set1_ps(a);
+    let bv = _mm512_set1_ps(b);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 1usize;
+    while x + 16 < w {
+        let center = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x)), av);
+        let left = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x - 1)), bv);
+        let right = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x + 1)), bv);
+        let cur_v = _mm512_loadu_ps(ptr.add(cur + x));
+        let m = _mm512_min_ps(_mm512_min_ps(cur_v, center), _mm512_min_ps(left, right));
+        _mm512_storeu_ps(ptr.add(cur + x), m);
+        x += 16;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn dt_l2_vertical5_avx512(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+    c: f32,
+) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let av = _mm512_set1_ps(a);
+    let bv = _mm512_set1_ps(b);
+    let cv = _mm512_set1_ps(c);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 2usize;
+    while x + 18 <= w {
+        let center = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x)), av);
+        let b_lo = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x - 1)), bv);
+        let b_hi = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x + 1)), bv);
+        let c_lo = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x - 2)), cv);
+        let c_hi = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src + x + 2)), cv);
+        let cur_v = _mm512_loadu_ps(ptr.add(cur + x));
+        let m = _mm512_min_ps(
+            _mm512_min_ps(cur_v, center),
+            _mm512_min_ps(_mm512_min_ps(b_lo, b_hi), _mm512_min_ps(c_lo, c_hi)),
+        );
+        _mm512_storeu_ps(ptr.add(cur + x), m);
+        x += 16;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn dt_l2_knight_avx512(
+    dist: &mut [f32],
+    src2: usize,
+    cur: usize,
+    w: usize,
+    c: f32,
+) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let cv = _mm512_set1_ps(c);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 1usize;
+    while x + 16 < w {
+        let lo = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src2 + x - 1)), cv);
+        let hi = _mm512_add_ps(_mm512_loadu_ps(ptr.add(src2 + x + 1)), cv);
+        let m = _mm512_min_ps(_mm512_loadu_ps(ptr.add(cur + x)), _mm512_min_ps(lo, hi));
+        _mm512_storeu_ps(ptr.add(cur + x), m);
+        x += 16;
     }
     x
 }
