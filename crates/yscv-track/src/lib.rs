@@ -21,7 +21,7 @@ pub use config::TrackerConfig;
 pub use deep_sort::{DeepSortConfig, DeepSortTrack, DeepSortTracker, TrackState};
 pub use error::TrackError;
 pub use hungarian::hungarian_assignment;
-pub use kalman::KalmanFilter;
+pub use kalman::{ConstantVelocity2d, KalmanFilter, LinearKalman};
 pub use reid::{ColorHistogramReId, ReIdExtractor, ReIdGallery};
 pub use tracker::Tracker;
 pub use types::{Track, TrackedDetection};
