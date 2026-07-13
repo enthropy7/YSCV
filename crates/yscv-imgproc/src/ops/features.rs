@@ -1068,9 +1068,15 @@ fn dt_l2_vertical3(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
         x = unsafe { dt_l2_vertical3_neon(dist, src, cur, w, a, b) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if yscv_cpu::host_cpu().features.sse {
-        // SAFETY: ISA guard (feature detection) above.
-        x = unsafe { dt_l2_vertical3_sse(dist, src, cur, w, a, b) };
+    {
+        let features = yscv_cpu::host_cpu().features;
+        if features.avx2 {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_vertical3_avx2(dist, src, cur, w, a, b) };
+        } else if features.sse {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_vertical3_sse(dist, src, cur, w, a, b) };
+        }
     }
 
     // Scalar interior tail.
@@ -1213,9 +1219,15 @@ fn dt_l2_vertical5(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
         x = unsafe { dt_l2_vertical5_neon(dist, src, cur, w, a, b, c) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if yscv_cpu::host_cpu().features.sse {
-        // SAFETY: ISA guard (feature detection) above.
-        x = unsafe { dt_l2_vertical5_sse(dist, src, cur, w, a, b, c) };
+    {
+        let features = yscv_cpu::host_cpu().features;
+        if features.avx2 {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_vertical5_avx2(dist, src, cur, w, a, b, c) };
+        } else if features.sse {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_vertical5_sse(dist, src, cur, w, a, b, c) };
+        }
     }
 
     while x < w - 2 {
@@ -1320,9 +1332,15 @@ fn dt_l2_knight(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) {
         x = unsafe { dt_l2_knight_neon(dist, src2, cur, w, c) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if yscv_cpu::host_cpu().features.sse {
-        // SAFETY: ISA guard (feature detection) above.
-        x = unsafe { dt_l2_knight_sse(dist, src2, cur, w, c) };
+    {
+        let features = yscv_cpu::host_cpu().features;
+        if features.avx2 {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_knight_avx2(dist, src2, cur, w, c) };
+        } else if features.sse {
+            // SAFETY: ISA guard (feature detection) above.
+            x = unsafe { dt_l2_knight_sse(dist, src2, cur, w, c) };
+        }
     }
 
     while x < w - 1 {
@@ -1372,6 +1390,99 @@ unsafe fn dt_l2_knight_sse(dist: &mut [f32], src2: usize, cur: usize, w: usize, 
         let m = _mm_min_ps(_mm_loadu_ps(ptr.add(cur + x)), _mm_min_ps(lo, hi));
         _mm_storeu_ps(ptr.add(cur + x), m);
         x += 4;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx2")]
+unsafe fn dt_l2_vertical3_avx2(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let av = _mm256_set1_ps(a);
+    let bv = _mm256_set1_ps(b);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 1usize;
+    while x + 8 < w {
+        let center = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x)), av);
+        let left = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x - 1)), bv);
+        let right = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x + 1)), bv);
+        let cur_v = _mm256_loadu_ps(ptr.add(cur + x));
+        let m = _mm256_min_ps(_mm256_min_ps(cur_v, center), _mm256_min_ps(left, right));
+        _mm256_storeu_ps(ptr.add(cur + x), m);
+        x += 8;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx2")]
+unsafe fn dt_l2_vertical5_avx2(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+    c: f32,
+) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let av = _mm256_set1_ps(a);
+    let bv = _mm256_set1_ps(b);
+    let cv = _mm256_set1_ps(c);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 2usize;
+    while x + 10 <= w {
+        let center = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x)), av);
+        let b_lo = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x - 1)), bv);
+        let b_hi = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x + 1)), bv);
+        let c_lo = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x - 2)), cv);
+        let c_hi = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src + x + 2)), cv);
+        let cur_v = _mm256_loadu_ps(ptr.add(cur + x));
+        let m = _mm256_min_ps(
+            _mm256_min_ps(cur_v, center),
+            _mm256_min_ps(_mm256_min_ps(b_lo, b_hi), _mm256_min_ps(c_lo, c_hi)),
+        );
+        _mm256_storeu_ps(ptr.add(cur + x), m);
+        x += 8;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx2")]
+unsafe fn dt_l2_knight_avx2(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let cv = _mm256_set1_ps(c);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 1usize;
+    while x + 8 < w {
+        let lo = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src2 + x - 1)), cv);
+        let hi = _mm256_add_ps(_mm256_loadu_ps(ptr.add(src2 + x + 1)), cv);
+        let m = _mm256_min_ps(_mm256_loadu_ps(ptr.add(cur + x)), _mm256_min_ps(lo, hi));
+        _mm256_storeu_ps(ptr.add(cur + x), m);
+        x += 8;
     }
     x
 }
