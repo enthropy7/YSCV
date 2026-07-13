@@ -39,6 +39,26 @@ def compact_counts(counts, limit=6):
     return ", ".join(shown) if shown else "-"
 
 
+def fmt_cost_delta(base, head):
+    return f"{base:,} → {head:,} ({pct(head, base):+.1f}%)"
+
+
+def graph_cost_changed(base, head):
+    fields = (
+        "node_count",
+        "known_nodes",
+        "unknown_nodes",
+        "estimated_macs",
+        "estimated_element_ops",
+        "estimated_bytes_read",
+        "estimated_bytes_written",
+        "score",
+    )
+    return all(field in base and field in head for field in fields) and any(
+        base[field] != head[field] for field in fields
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact-root", required=True, type=Path)
@@ -50,10 +70,44 @@ def main():
         "## ONNX CPU benchmark",
         "",
         "GitHub-hosted runner signal, advisory only. Base and head are compared within the same architecture job.",
-        "",
-        "| arch | case | base p50 | head p50 | delta |",
-        "|---|---|---:|---:|---:|",
     ]
+
+    graph_cost_lines = []
+    for (arch, case), pair in sorted(results.items()):
+        base = pair.get("base", {}).get("graph_cost")
+        head = pair.get("head", {}).get("graph_cost")
+        if (
+            not isinstance(base, dict)
+            or not isinstance(head, dict)
+            or not graph_cost_changed(base, head)
+        ):
+            continue
+        graph_cost_lines.append(
+            f"| `{arch}` | `{case}` | {fmt_cost_delta(base['node_count'], head['node_count'])} | "
+            f"{fmt_cost_delta(base['estimated_macs'], head['estimated_macs'])} | "
+            f"{fmt_cost_delta(base['estimated_element_ops'], head['estimated_element_ops'])} | "
+            f"{fmt_cost_delta(base['estimated_bytes_read'] + base['estimated_bytes_written'], head['estimated_bytes_read'] + head['estimated_bytes_written'])} | "
+            f"{fmt_cost_delta(base['score'], head['score'])} |"
+        )
+    if graph_cost_lines:
+        lines.extend(
+            [
+                "",
+                "### Graph-cost changes",
+                "",
+                "| arch | case | nodes | MACs | element ops | bytes | score |",
+                "|---|---|---:|---:|---:|---:|---:|",
+                *graph_cost_lines,
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "| arch | case | base p50 | head p50 | delta |",
+            "|---|---|---:|---:|---:|",
+        ]
+    )
     missing = []
     for (arch, case), pair in sorted(results.items()):
         if "base" not in pair or "head" not in pair:
@@ -90,7 +144,7 @@ def main():
     lines.extend(
         [
             "",
-            "Raw JSON artifacts include per-run min/p50/avg/p95/p99, optimized node counts, yscv CPU dispatch report, and per-node runner profile summaries.",
+            "Raw JSON artifacts include per-run min/p50/avg/p95/p99, optimized node counts, graph-cost summaries, yscv CPU dispatch report, and per-node runner profile summaries.",
         ]
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
