@@ -334,3 +334,132 @@ fn hough_circles_empty_image() {
     let circles = hough_circles(&img, 3, 8, 5).unwrap();
     assert!(circles.is_empty(), "empty image should produce no circles");
 }
+
+// ── Chamfer L2 distance transform ───────────────────────────────────
+
+use crate::{DistanceTransformMask, distance_transform_l2};
+
+/// Naive per-pixel reference: the textbook two-sweep chamfer DT, one pixel
+/// at a time. The production kernel must match it bit-for-bit.
+fn dt_l2_reference(fg: &[bool], w: usize, h: usize, mask: DistanceTransformMask) -> Vec<f32> {
+    const INF: f32 = f32::MAX / 4.0;
+    let offsets: &[(i64, i64, f32)] = match mask {
+        // Forward half of the 3×3 mask: left + upper row.
+        DistanceTransformMask::Mask3 => &[
+            (-1, 0, 0.955),
+            (-1, -1, 1.3693),
+            (0, -1, 0.955),
+            (1, -1, 1.3693),
+        ],
+        // Forward half of the 5×5 mask: left + two upper rows incl. knights.
+        DistanceTransformMask::Mask5 => &[
+            (-1, 0, 1.0),
+            (-1, -1, 1.4),
+            (0, -1, 1.0),
+            (1, -1, 1.4),
+            (-2, -1, 2.1969),
+            (2, -1, 2.1969),
+            (-1, -2, 2.1969),
+            (1, -2, 2.1969),
+        ],
+    };
+    let mut dist: Vec<f32> = fg.iter().map(|&f| if f { INF } else { 0.0 }).collect();
+    for forward in [true, false] {
+        let ys: Vec<i64> = if forward {
+            (0..h as i64).collect()
+        } else {
+            (0..h as i64).rev().collect()
+        };
+        for &y in &ys {
+            let xs: Vec<i64> = if forward {
+                (0..w as i64).collect()
+            } else {
+                (0..w as i64).rev().collect()
+            };
+            for &x in &xs {
+                let i = (y * w as i64 + x) as usize;
+                if dist[i] == 0.0 {
+                    continue;
+                }
+                let mut best = dist[i];
+                for &(dx, dy, wt) in offsets {
+                    let (nx, ny) = if forward {
+                        (x + dx, y + dy)
+                    } else {
+                        (x - dx, y - dy)
+                    };
+                    if nx >= 0 && nx < w as i64 && ny >= 0 && ny < h as i64 {
+                        best = best.min(dist[(ny * w as i64 + nx) as usize] + wt);
+                    }
+                }
+                dist[i] = best;
+            }
+        }
+    }
+    dist
+}
+
+fn fg_to_tensor(fg: &[bool], w: usize, h: usize) -> Tensor {
+    let data: Vec<f32> = fg.iter().map(|&f| if f { 1.0 } else { 0.0 }).collect();
+    Tensor::from_vec(vec![h, w, 1], data).unwrap()
+}
+
+#[test]
+fn dt_l2_single_zero_known_values() {
+    // 5×5 all-foreground with a single background pixel in the center:
+    // neighbors get exactly the chamfer weights.
+    let mut fg = vec![true; 25];
+    fg[12] = false;
+    let t = fg_to_tensor(&fg, 5, 5);
+
+    let d3 = distance_transform_l2(&t, DistanceTransformMask::Mask3).unwrap();
+    let d3 = d3.data();
+    assert_eq!(d3[12], 0.0);
+    assert!((d3[11] - 0.955).abs() < 1e-6, "side {}", d3[11]);
+    assert!((d3[6] - 1.3693).abs() < 1e-6, "diagonal {}", d3[6]);
+
+    let d5 = distance_transform_l2(&t, DistanceTransformMask::Mask5).unwrap();
+    let d5 = d5.data();
+    assert!((d5[11] - 1.0).abs() < 1e-6, "side {}", d5[11]);
+    assert!((d5[6] - 1.4).abs() < 1e-6, "diagonal {}", d5[6]);
+    assert!((d5[1] - 2.1969).abs() < 1e-5, "knight {}", d5[1]);
+}
+
+#[test]
+fn dt_l2_matches_reference_bit_for_bit() {
+    // Random binary images (deterministic LCG), widths around the SIMD
+    // block boundaries; production output must equal the naive reference
+    // exactly — min/plus over identical operands has no rounding freedom.
+    let mut state = 0x1234_5678_u64;
+    let mut rand = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) as u32
+    };
+    for &(w, h) in &[
+        (3usize, 4usize),
+        (7, 5),
+        (16, 16),
+        (33, 21),
+        (64, 48),
+        (130, 17),
+    ] {
+        for density in [10u32, 50, 90] {
+            let fg: Vec<bool> = (0..w * h).map(|_| rand() % 100 < density).collect();
+            let t = fg_to_tensor(&fg, w, h);
+            for mask in [DistanceTransformMask::Mask3, DistanceTransformMask::Mask5] {
+                let got = distance_transform_l2(&t, mask).unwrap();
+                let want = dt_l2_reference(&fg, w, h, mask);
+                assert_eq!(got.data(), &want[..], "{w}x{h} density {density} {mask:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn dt_l2_all_background_is_zero() {
+    let t = Tensor::from_vec(vec![8, 8, 1], vec![0.0; 64]).unwrap();
+    let d = distance_transform_l2(&t, DistanceTransformMask::Mask3).unwrap();
+    assert!(d.data().iter().all(|&v| v == 0.0));
+}

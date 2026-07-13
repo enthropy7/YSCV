@@ -148,8 +148,63 @@ pub fn resize_nearest(input: &Tensor, out_h: usize, out_w: usize) -> Result<Tens
     Tensor::from_vec(vec![out_h, out_w, channels], out).map_err(Into::into)
 }
 
-/// Resizes HWC tensor with bilinear interpolation.
+/// Coordinate mapping of a bilinear resize, one entry per output index:
+/// `(lo, hi, frac)` — the two source indices and the interpolation weight.
+type BilinearLut = Vec<(usize, usize, f32)>;
+
+/// Align output samples to source corners: `src = out_idx * (in-1)/(out-1)`.
+fn bilinear_lut_corners(n_out: usize, n_in: usize) -> BilinearLut {
+    let scale = if n_out > 1 {
+        (n_in as f32 - 1.0) / (n_out as f32 - 1.0)
+    } else {
+        0.0
+    };
+    (0..n_out)
+        .map(|i| {
+            let src = i as f32 * scale;
+            let lo = src.floor() as usize;
+            let hi = (lo + 1).min(n_in - 1);
+            (lo, hi, src - lo as f32)
+        })
+        .collect()
+}
+
+/// Align output samples to pixel centers (OpenCV / ONNX `half_pixel`):
+/// `src = (out_idx + 0.5) * in/out − 0.5`, clamped to the valid range.
+fn bilinear_lut_half_pixel(n_out: usize, n_in: usize) -> BilinearLut {
+    let scale = n_in as f32 / n_out as f32;
+    (0..n_out)
+        .map(|i| {
+            let src = ((i as f32 + 0.5) * scale - 0.5).clamp(0.0, n_in as f32 - 1.0);
+            let lo = src.floor() as usize;
+            let hi = (lo + 1).min(n_in - 1);
+            (lo, hi, src - lo as f32)
+        })
+        .collect()
+}
+
+/// Resizes HWC tensor with bilinear interpolation (corner-aligned sampling).
 pub fn resize_bilinear(input: &Tensor, out_h: usize, out_w: usize) -> Result<Tensor, ImgProcError> {
+    resize_bilinear_luts(input, out_h, out_w, bilinear_lut_corners)
+}
+
+/// Resizes HWC tensor with bilinear interpolation using half-pixel-center
+/// sampling — the convention of `cv2.resize(..., INTER_LINEAR)`, PyTorch
+/// (`align_corners=False`) and ONNX Resize `half_pixel`.
+pub fn resize_bilinear_half_pixel(
+    input: &Tensor,
+    out_h: usize,
+    out_w: usize,
+) -> Result<Tensor, ImgProcError> {
+    resize_bilinear_luts(input, out_h, out_w, bilinear_lut_half_pixel)
+}
+
+fn resize_bilinear_luts(
+    input: &Tensor,
+    out_h: usize,
+    out_w: usize,
+    lut: fn(usize, usize) -> BilinearLut,
+) -> Result<Tensor, ImgProcError> {
     let (in_h, in_w, channels) = hwc_shape(input)?;
     if out_h == 0 || out_w == 0 {
         return Err(ImgProcError::InvalidSize {
@@ -159,37 +214,15 @@ pub fn resize_bilinear(input: &Tensor, out_h: usize, out_w: usize) -> Result<Ten
     }
 
     let mut out = vec![0.0f32; out_h * out_w * channels];
-    let scale_y = if out_h > 1 {
-        (in_h as f32 - 1.0) / (out_h as f32 - 1.0)
-    } else {
-        0.0
-    };
-    let scale_x = if out_w > 1 {
-        (in_w as f32 - 1.0) / (out_w as f32 - 1.0)
-    } else {
-        0.0
-    };
-
     let data = input.data();
     let row_len = out_w * channels;
 
-    // Precompute x-coordinate mapping: (x0, x1, fx) for each output column.
-    // Avoids repeated float multiply + floor per row.
-    let x_lut: Vec<(usize, usize, f32)> = (0..out_w)
-        .map(|x| {
-            let src_x = x as f32 * scale_x;
-            let x0 = src_x.floor() as usize;
-            let x1 = (x0 + 1).min(in_w - 1);
-            let fx = src_x - x0 as f32;
-            (x0, x1, fx)
-        })
-        .collect();
+    // Precomputed coordinate mappings: no float multiply + floor per pixel.
+    let x_lut = lut(out_w, in_w);
+    let y_lut = lut(out_h, in_h);
 
     let compute_row = |y: usize, row: &mut [f32]| {
-        let src_y = y as f32 * scale_y;
-        let y0 = src_y.floor() as usize;
-        let y1 = (y0 + 1).min(in_h - 1);
-        let fy = src_y - y0 as f32;
+        let (y0, y1, fy) = y_lut[y];
         let fy_inv = 1.0 - fy;
         let row0_off = y0 * in_w;
         let row1_off = y1 * in_w;

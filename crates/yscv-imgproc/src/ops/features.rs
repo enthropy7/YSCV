@@ -924,6 +924,458 @@ unsafe fn dt_vertical_sse(dist: &mut [f32], src_start: usize, cur_start: usize, 
     x
 }
 
+// ── Chamfer L2 distance transform (OpenCV-compatible) ───────────────
+
+/// Mask size for [`distance_transform_l2`], matching OpenCV's `maskSize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistanceTransformMask {
+    /// 3×3 chamfer mask (`DIST_L2`, `maskSize = 3`): a = 0.955, b = 1.3693.
+    Mask3,
+    /// 5×5 chamfer mask with knight moves (`maskSize = 5`):
+    /// a = 1.0, b = 1.4, c = 2.1969.
+    Mask5,
+}
+
+const DT_L2_INF: f32 = f32::MAX / 4.0;
+
+/// L2 chamfer distance transform on a binary single-channel `[H, W, 1]`
+/// image, bit-compatible with `cv2.distanceTransform(src, DIST_L2, maskSize)`
+/// (same chamfer coefficients, same two-sweep propagation).
+///
+/// Input pixels > 0.5 are foreground; the output is the chamfer distance
+/// from each foreground pixel to the nearest background pixel.
+///
+/// Two sweeps (top-left → bottom-right, then the reverse). Per row, the
+/// propagation from the previous row(s) — center, diagonal and knight
+/// offsets fused into one pass — is SIMD-accelerated (NEON/SSE); the in-row
+/// propagation is a serial register scan (loop-carried min-plus recurrence,
+/// inherently not vectorizable).
+pub fn distance_transform_l2(
+    input: &Tensor,
+    mask: DistanceTransformMask,
+) -> Result<Tensor, ImgProcError> {
+    let (h, w, c) = hwc_shape(input)?;
+    if c != 1 {
+        return Err(ImgProcError::InvalidChannelCount {
+            expected: 1,
+            got: c,
+        });
+    }
+    let data = input.data();
+    let mut dist: Vec<f32> = data
+        .iter()
+        .map(|&v| if v > 0.5 { DT_L2_INF } else { 0.0 })
+        .collect();
+    if w == 0 || h == 0 {
+        return Tensor::from_vec(vec![h, w, 1], dist).map_err(Into::into);
+    }
+
+    match mask {
+        DistanceTransformMask::Mask3 => {
+            const A: f32 = 0.955;
+            const B: f32 = 1.3693;
+            // Forward sweep (top-left → bottom-right).
+            dt_l2_row_scan(&mut dist[..w], A, true);
+            for y in 1..h {
+                dt_l2_vertical3(&mut dist, (y - 1) * w, y * w, w, A, B);
+                dt_l2_row_scan(&mut dist[y * w..(y + 1) * w], A, true);
+            }
+            // Backward sweep (bottom-right → top-left).
+            dt_l2_row_scan(&mut dist[(h - 1) * w..], A, false);
+            for y in (0..h - 1).rev() {
+                dt_l2_vertical3(&mut dist, (y + 1) * w, y * w, w, A, B);
+                dt_l2_row_scan(&mut dist[y * w..(y + 1) * w], A, false);
+            }
+        }
+        DistanceTransformMask::Mask5 => {
+            const A: f32 = 1.0;
+            const B: f32 = 1.4;
+            const C: f32 = 2.1969;
+            dt_l2_row_scan(&mut dist[..w], A, true);
+            for y in 1..h {
+                dt_l2_vertical5(&mut dist, (y - 1) * w, y * w, w, A, B, C);
+                if y >= 2 {
+                    dt_l2_knight(&mut dist, (y - 2) * w, y * w, w, C);
+                }
+                dt_l2_row_scan(&mut dist[y * w..(y + 1) * w], A, true);
+            }
+            dt_l2_row_scan(&mut dist[(h - 1) * w..], A, false);
+            for y in (0..h - 1).rev() {
+                dt_l2_vertical5(&mut dist, (y + 1) * w, y * w, w, A, B, C);
+                if y + 2 < h {
+                    dt_l2_knight(&mut dist, (y + 2) * w, y * w, w, C);
+                }
+                dt_l2_row_scan(&mut dist[y * w..(y + 1) * w], A, false);
+            }
+        }
+    }
+
+    Tensor::from_vec(vec![h, w, 1], dist).map_err(Into::into)
+}
+
+/// Serial in-row chamfer propagation, forward (L→R) or backward (R→L):
+/// `run = min(cur, run + a)`. The running min lives in a register — the
+/// recurrence is loop-carried, so this is scalar by design (same pattern as
+/// the L1 transform above).
+fn dt_l2_row_scan(row: &mut [f32], a: f32, forward: bool) {
+    if row.len() < 2 {
+        return;
+    }
+    if forward {
+        let mut run = row[0];
+        for v in &mut row[1..] {
+            run += a;
+            if run < *v {
+                *v = run;
+            } else {
+                run = *v;
+            }
+        }
+    } else {
+        let last = row.len() - 1;
+        let mut run = row[last];
+        for v in row[..last].iter_mut().rev() {
+            run += a;
+            if run < *v {
+                *v = run;
+            } else {
+                run = *v;
+            }
+        }
+    }
+}
+
+/// Fused 3×3 vertical step: `cur[x] = min(cur[x], src[x] + a,
+/// src[x−1] + b, src[x+1] + b)`. `src`/`cur` are distinct rows of `dist`.
+#[allow(unsafe_code)]
+fn dt_l2_vertical3(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b: f32) {
+    // x = 0 (no left diagonal).
+    {
+        let mut best = dist[cur].min(dist[src] + a);
+        if w > 1 {
+            best = best.min(dist[src + 1] + b);
+        }
+        dist[cur] = best;
+    }
+    if w < 2 {
+        return;
+    }
+    let mut x = 1usize;
+
+    #[cfg(target_arch = "aarch64")]
+    if yscv_cpu::host_cpu().features.neon {
+        // SAFETY: ISA guard (feature detection) above.
+        x = unsafe { dt_l2_vertical3_neon(dist, src, cur, w, a, b) };
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if yscv_cpu::host_cpu().features.sse {
+        // SAFETY: ISA guard (feature detection) above.
+        x = unsafe { dt_l2_vertical3_sse(dist, src, cur, w, a, b) };
+    }
+
+    // Scalar interior tail.
+    while x < w - 1 {
+        let best = dist[cur + x]
+            .min(dist[src + x] + a)
+            .min(dist[src + x - 1] + b)
+            .min(dist[src + x + 1] + b);
+        dist[cur + x] = best;
+        x += 1;
+    }
+    // x = w − 1 (no right diagonal).
+    let best = dist[cur + w - 1]
+        .min(dist[src + w - 1] + a)
+        .min(dist[src + w - 2] + b);
+    dist[cur + w - 1] = best;
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn dt_l2_vertical3_neon(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+) -> usize {
+    use std::arch::aarch64::*;
+    let av = vdupq_n_f32(a);
+    let bv = vdupq_n_f32(b);
+    let sp = dist.as_ptr().add(src);
+    let cp = dist.as_mut_ptr().add(cur);
+    let mut x = 1usize;
+    // 2× unrolled: 8 interior pixels per iteration.
+    while x + 8 < w {
+        let m0 = vminq_f32(
+            vminq_f32(vld1q_f32(cp.add(x)), vaddq_f32(vld1q_f32(sp.add(x)), av)),
+            vminq_f32(
+                vaddq_f32(vld1q_f32(sp.add(x - 1)), bv),
+                vaddq_f32(vld1q_f32(sp.add(x + 1)), bv),
+            ),
+        );
+        let m1 = vminq_f32(
+            vminq_f32(
+                vld1q_f32(cp.add(x + 4)),
+                vaddq_f32(vld1q_f32(sp.add(x + 4)), av),
+            ),
+            vminq_f32(
+                vaddq_f32(vld1q_f32(sp.add(x + 3)), bv),
+                vaddq_f32(vld1q_f32(sp.add(x + 5)), bv),
+            ),
+        );
+        vst1q_f32(cp.add(x), m0);
+        vst1q_f32(cp.add(x + 4), m1);
+        x += 8;
+    }
+    while x + 4 < w {
+        let m = vminq_f32(
+            vminq_f32(vld1q_f32(cp.add(x)), vaddq_f32(vld1q_f32(sp.add(x)), av)),
+            vminq_f32(
+                vaddq_f32(vld1q_f32(sp.add(x - 1)), bv),
+                vaddq_f32(vld1q_f32(sp.add(x + 1)), bv),
+            ),
+        );
+        vst1q_f32(cp.add(x), m);
+        x += 4;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+unsafe fn dt_l2_vertical3_sse(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let av = _mm_set1_ps(a);
+    let bv = _mm_set1_ps(b);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 1usize;
+    while x + 4 < w {
+        let center = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x)), av);
+        let left = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x - 1)), bv);
+        let right = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x + 1)), bv);
+        let cur_v = _mm_loadu_ps(ptr.add(cur + x));
+        let m = _mm_min_ps(_mm_min_ps(cur_v, center), _mm_min_ps(left, right));
+        _mm_storeu_ps(ptr.add(cur + x), m);
+        x += 4;
+    }
+    x
+}
+
+/// Fused 5×5 vertical step over the adjacent row: `cur[x] = min(cur[x],
+/// src[x] + a, src[x∓1] + b, src[x∓2] + c)`.
+#[allow(unsafe_code)]
+fn dt_l2_vertical5(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b: f32, c: f32) {
+    let scalar_at = |dist: &[f32], x: usize| -> f32 {
+        let mut best = dist[cur + x].min(dist[src + x] + a);
+        if x >= 1 {
+            best = best.min(dist[src + x - 1] + b);
+        }
+        if x >= 2 {
+            best = best.min(dist[src + x - 2] + c);
+        }
+        if x + 1 < w {
+            best = best.min(dist[src + x + 1] + b);
+        }
+        if x + 2 < w {
+            best = best.min(dist[src + x + 2] + c);
+        }
+        best
+    };
+    // Borders x = 0, 1 (missing left offsets).
+    for x in 0..w.min(2) {
+        dist[cur + x] = scalar_at(dist, x);
+    }
+    if w < 4 {
+        for x in 2..w {
+            dist[cur + x] = scalar_at(dist, x);
+        }
+        return;
+    }
+    let mut x = 2usize;
+
+    #[cfg(target_arch = "aarch64")]
+    if yscv_cpu::host_cpu().features.neon {
+        // SAFETY: ISA guard (feature detection) above.
+        x = unsafe { dt_l2_vertical5_neon(dist, src, cur, w, a, b, c) };
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if yscv_cpu::host_cpu().features.sse {
+        // SAFETY: ISA guard (feature detection) above.
+        x = unsafe { dt_l2_vertical5_sse(dist, src, cur, w, a, b, c) };
+    }
+
+    while x < w - 2 {
+        dist[cur + x] = scalar_at(dist, x);
+        x += 1;
+    }
+    // Borders x = w−2, w−1 (missing right offsets).
+    for x in w - 2..w {
+        dist[cur + x] = scalar_at(dist, x);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn dt_l2_vertical5_neon(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+    c: f32,
+) -> usize {
+    use std::arch::aarch64::*;
+    let av = vdupq_n_f32(a);
+    let bv = vdupq_n_f32(b);
+    let cv = vdupq_n_f32(c);
+    let sp = dist.as_ptr().add(src);
+    let cp = dist.as_mut_ptr().add(cur);
+    let mut x = 2usize;
+    while x + 4 <= w - 2 {
+        let center = vaddq_f32(vld1q_f32(sp.add(x)), av);
+        let b_lo = vaddq_f32(vld1q_f32(sp.add(x - 1)), bv);
+        let b_hi = vaddq_f32(vld1q_f32(sp.add(x + 1)), bv);
+        let c_lo = vaddq_f32(vld1q_f32(sp.add(x - 2)), cv);
+        let c_hi = vaddq_f32(vld1q_f32(sp.add(x + 2)), cv);
+        let m = vminq_f32(
+            vminq_f32(vld1q_f32(cp.add(x)), center),
+            vminq_f32(vminq_f32(b_lo, b_hi), vminq_f32(c_lo, c_hi)),
+        );
+        vst1q_f32(cp.add(x), m);
+        x += 4;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+unsafe fn dt_l2_vertical5_sse(
+    dist: &mut [f32],
+    src: usize,
+    cur: usize,
+    w: usize,
+    a: f32,
+    b: f32,
+    c: f32,
+) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let av = _mm_set1_ps(a);
+    let bv = _mm_set1_ps(b);
+    let cv = _mm_set1_ps(c);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 2usize;
+    while x + 4 <= w - 2 {
+        let center = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x)), av);
+        let b_lo = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x - 1)), bv);
+        let b_hi = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x + 1)), bv);
+        let c_lo = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x - 2)), cv);
+        let c_hi = _mm_add_ps(_mm_loadu_ps(ptr.add(src + x + 2)), cv);
+        let cur_v = _mm_loadu_ps(ptr.add(cur + x));
+        let m = _mm_min_ps(
+            _mm_min_ps(cur_v, center),
+            _mm_min_ps(_mm_min_ps(b_lo, b_hi), _mm_min_ps(c_lo, c_hi)),
+        );
+        _mm_storeu_ps(ptr.add(cur + x), m);
+        x += 4;
+    }
+    x
+}
+
+/// Knight-move step over the row two away: `cur[x] = min(cur[x],
+/// src2[x∓1] + c)`.
+#[allow(unsafe_code)]
+fn dt_l2_knight(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) {
+    if w > 1 {
+        dist[cur] = dist[cur].min(dist[src2 + 1] + c);
+    }
+    if w < 2 {
+        return;
+    }
+    let mut x = 1usize;
+
+    #[cfg(target_arch = "aarch64")]
+    if yscv_cpu::host_cpu().features.neon {
+        // SAFETY: ISA guard (feature detection) above.
+        x = unsafe { dt_l2_knight_neon(dist, src2, cur, w, c) };
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if yscv_cpu::host_cpu().features.sse {
+        // SAFETY: ISA guard (feature detection) above.
+        x = unsafe { dt_l2_knight_sse(dist, src2, cur, w, c) };
+    }
+
+    while x < w - 1 {
+        let best = dist[cur + x]
+            .min(dist[src2 + x - 1] + c)
+            .min(dist[src2 + x + 1] + c);
+        dist[cur + x] = best;
+        x += 1;
+    }
+    dist[cur + w - 1] = dist[cur + w - 1].min(dist[src2 + w - 2] + c);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn dt_l2_knight_neon(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) -> usize {
+    use std::arch::aarch64::*;
+    let cv = vdupq_n_f32(c);
+    let sp = dist.as_ptr().add(src2);
+    let cp = dist.as_mut_ptr().add(cur);
+    let mut x = 1usize;
+    while x + 4 < w {
+        let lo = vaddq_f32(vld1q_f32(sp.add(x - 1)), cv);
+        let hi = vaddq_f32(vld1q_f32(sp.add(x + 1)), cv);
+        let m = vminq_f32(vld1q_f32(cp.add(x)), vminq_f32(lo, hi));
+        vst1q_f32(cp.add(x), m);
+        x += 4;
+    }
+    x
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+unsafe fn dt_l2_knight_sse(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) -> usize {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let cv = _mm_set1_ps(c);
+    let ptr = dist.as_mut_ptr();
+    let mut x = 1usize;
+    while x + 4 < w {
+        let lo = _mm_add_ps(_mm_loadu_ps(ptr.add(src2 + x - 1)), cv);
+        let hi = _mm_add_ps(_mm_loadu_ps(ptr.add(src2 + x + 1)), cv);
+        let m = _mm_min_ps(_mm_loadu_ps(ptr.add(cur + x)), _mm_min_ps(lo, hi));
+        _mm_storeu_ps(ptr.add(cur + x), m);
+        x += 4;
+    }
+    x
+}
+
 // ── ORB feature descriptors ────────────────────────────────────────
 
 /// ORB descriptor: 256-bit binary descriptor stored as 32 bytes.

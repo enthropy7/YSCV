@@ -400,6 +400,65 @@ pub fn fit_ellipse(points: &[(f32, f32)]) -> Option<(f32, f32, f32, f32, f32)> {
     Some((cx, cy, a, b, angle))
 }
 
+/// Least-squares circle fit (Kåsa method).
+///
+/// Solves the linear system arising from `x² + y² = c₀x + c₁y + c₂` in
+/// closed form (3×3 normal equations, f64 accumulation for stability) and
+/// returns `(center_x, center_y, radius)`. Returns `None` for fewer than
+/// three points or a degenerate (collinear) configuration.
+pub fn fit_circle(points: &[(f32, f32)]) -> Option<(f32, f32, f32)> {
+    if points.len() < 3 {
+        return None;
+    }
+    // Normal equations AᵀA s = Aᵀb with A = [x, y, 1], b = x² + y².
+    let mut ata = [[0.0f64; 3]; 3];
+    let mut atb = [0.0f64; 3];
+    for &(px, py) in points {
+        let (x, y) = (f64::from(px), f64::from(py));
+        let row = [x, y, 1.0];
+        let b = x * x + y * y;
+        for (i, &ri) in row.iter().enumerate() {
+            atb[i] += ri * b;
+            for (v, &rj) in ata[i].iter_mut().zip(&row) {
+                *v += ri * rj;
+            }
+        }
+    }
+    // Gaussian elimination with partial pivoting.
+    let mut m = [[0.0f64; 4]; 3];
+    for (mr, (ar, &bv)) in m.iter_mut().zip(ata.iter().zip(&atb)) {
+        mr[..3].copy_from_slice(ar);
+        mr[3] = bv;
+    }
+    for col in 0..3 {
+        let pivot = (col..3).max_by(|&r1, &r2| m[r1][col].abs().total_cmp(&m[r2][col].abs()))?;
+        if m[pivot][col].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(col, pivot);
+        let piv_row = m[col];
+        for (row, mr) in m.iter_mut().enumerate() {
+            if row == col {
+                continue;
+            }
+            let f = mr[col] / piv_row[col];
+            for (v, &pv) in mr.iter_mut().zip(&piv_row).skip(col) {
+                *v -= f * pv;
+            }
+        }
+    }
+    let c0 = m[0][3] / m[0][0];
+    let c1 = m[1][3] / m[1][1];
+    let c2 = m[2][3] / m[2][2];
+    let cx = c0 / 2.0;
+    let cy = c1 / 2.0;
+    let r_sq = c2 + cx * cx + cy * cy;
+    if r_sq <= 0.0 || !r_sq.is_finite() {
+        return None;
+    }
+    Some((cx as f32, cy as f32, r_sq.sqrt() as f32))
+}
+
 /// Douglas-Peucker contour approximation.
 ///
 /// Simplifies a polyline by recursively removing points within `epsilon` distance

@@ -72,8 +72,8 @@ pub use color::{
 pub use contours::{
     ComponentStats, Contour, RegionProp, approx_poly_dp, arc_length, bounding_rect,
     connected_components_with_stats, connected_components_with_stats_8, contour_area, convex_hull,
-    find_contours, fit_ellipse, homography_4pt, hu_moments, min_area_rect, min_enclosing_circle,
-    ransac_homography, region_props,
+    find_contours, fit_circle, fit_ellipse, homography_4pt, hu_moments, min_area_rect,
+    min_enclosing_circle, ransac_homography, region_props,
 };
 pub use draw::{
     Detection as DrawDetection, draw_circle, draw_detections, draw_line, draw_polylines, draw_rect,
@@ -85,10 +85,11 @@ pub use f32_ops::{
 };
 pub use fast::{Keypoint, fast9_detect};
 pub use features::{
-    HarrisKeypoint, HoughLine, OrbDescriptor, blob_log, compute_gradient_orientation,
-    corner_sub_pix, distance_transform, fast_corners, gaussian_pyramid, good_features_to_track,
-    harris_corners, hog_cell_descriptor, hough_circles, hough_lines, orb_descriptors,
-    orb_hamming_distance, orb_match, sift_descriptor, sift_match,
+    DistanceTransformMask, HarrisKeypoint, HoughLine, OrbDescriptor, blob_log,
+    compute_gradient_orientation, corner_sub_pix, distance_transform, distance_transform_l2,
+    fast_corners, gaussian_pyramid, good_features_to_track, harris_corners, hog_cell_descriptor,
+    hough_circles, hough_lines, orb_descriptors, orb_hamming_distance, orb_match, sift_descriptor,
+    sift_match,
 };
 pub use filter::{
     bilateral_filter, box_blur_3x3, filter2d, gaussian_blur_3x3, gaussian_blur_5x5, laplacian_3x3,
@@ -114,7 +115,7 @@ pub use nms::{BBox, TemplateMatchMethod, TemplateMatchResult, nms, template_matc
 pub use normalize::normalize;
 pub use orb::{OrbConfig, OrbFeature, detect_orb, match_features};
 pub use preprocess::{center_crop, chw_to_hwc, hwc_to_chw, imagenet_preprocess, normalize_image};
-pub use resize::{resize_bilinear, resize_nearest};
+pub use resize::{resize_bilinear, resize_bilinear_half_pixel, resize_nearest};
 pub use stereo::{StereoConfig, stereo_block_matching};
 pub use surf::{
     SurfDescriptor, SurfKeypoint, build_integral_image, compute_surf_descriptors,

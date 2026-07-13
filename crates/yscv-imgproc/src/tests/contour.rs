@@ -288,3 +288,38 @@ fn min_enclosing_circle_exact_cases() {
 
     assert!(min_enclosing_circle(&[]).is_none());
 }
+
+// ── Least-squares circle fit (Kåsa) ─────────────────────────────────
+
+#[test]
+fn fit_circle_recovers_exact_circle() {
+    use super::super::fit_circle;
+    let pts: Vec<(f32, f32)> = (0..16)
+        .map(|i| {
+            let a = i as f32 / 16.0 * std::f32::consts::TAU;
+            (3.0 + 5.0 * a.cos(), -2.0 + 5.0 * a.sin())
+        })
+        .collect();
+    let (cx, cy, r) = fit_circle(&pts).unwrap();
+    assert!((cx - 3.0).abs() < 1e-4, "cx = {cx}");
+    assert!((cy + 2.0).abs() < 1e-4, "cy = {cy}");
+    assert!((r - 5.0).abs() < 1e-4, "r = {r}");
+}
+
+#[test]
+fn fit_circle_partial_arc_and_degenerate_cases() {
+    use super::super::fit_circle;
+    // Half arc still pins the circle.
+    let pts: Vec<(f32, f32)> = (0..12)
+        .map(|i| {
+            let a = i as f32 / 12.0 * std::f32::consts::PI;
+            (10.0 * a.cos(), 10.0 * a.sin())
+        })
+        .collect();
+    let (cx, cy, r) = fit_circle(&pts).unwrap();
+    assert!(cx.abs() < 1e-3 && cy.abs() < 1e-3 && (r - 10.0).abs() < 1e-3);
+
+    // Degenerate inputs refuse instead of inventing a circle.
+    assert!(fit_circle(&[(0.0, 0.0), (1.0, 1.0)]).is_none());
+    assert!(fit_circle(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]).is_none());
+}

@@ -61,6 +61,8 @@ pub use ops::TemplateMatchMethod;
 /// Result of template matching (location + score).
 pub use ops::TemplateMatchResult;
 
+/// Euclidean distance transform. Input: `[H, W]` binary f32.
+pub use ops::DistanceTransformMask;
 /// Adaptive threshold using Gaussian-weighted local mean. Input: `[H, W]` grayscale.
 pub use ops::adaptive_threshold_gaussian;
 /// Adaptive threshold using box-filter local mean. Input: `[H, W]` grayscale.
@@ -129,8 +131,8 @@ pub use ops::dilate_3x3;
 pub use ops::dilate_binary_box;
 /// Dilation with an all-ones square kernel — separable, O(n) per pass.
 pub use ops::dilate_box;
-/// Euclidean distance transform. Input: `[H, W]` binary f32.
 pub use ops::distance_transform;
+pub use ops::distance_transform_l2;
 /// Morphological erosion with arbitrary structuring element.
 pub use ops::erode;
 /// Morphological erosion with 3x3 square structuring element.
@@ -152,6 +154,7 @@ pub use ops::filter2d;
 /// Find contours in a binary image. Input: `[H, W]` binary.
 pub use ops::find_contours;
 /// Fit an ellipse to a set of 2D points (least-squares).
+pub use ops::fit_circle;
 pub use ops::fit_ellipse;
 /// Flip image horizontally. Input: `[H, W, C]` or `[H, W]`.
 pub use ops::flip_horizontal;
@@ -240,6 +243,7 @@ pub use ops::region_props;
 pub use ops::remove_small_objects;
 /// Resize using bilinear interpolation. Input: `[H, W, C]` or `[H, W]` f32.
 pub use ops::resize_bilinear;
+pub use ops::resize_bilinear_half_pixel;
 /// Resize using nearest-neighbor interpolation. Input: `[H, W, C]` or `[H, W]` f32.
 pub use ops::resize_nearest;
 /// Convert RGB to BGR channel order. Input/output: `[H, W, 3]`.
