@@ -1,20 +1,24 @@
 [package]
-name = "yscv-onnx-pr-bench"
+name = "yscv-onnx-model-bench"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [workspace]
 
+[features]
+default = []
+gpu = ["yscv-kernels/gpu", "yscv-onnx/gpu"]
+
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 mimalloc = { version = "0.1", default-features = false }
 rustc-hash = "2.1.3"
 serde_json = "1"
-yscv-detect = { path = "../../../crates/yscv-detect" }
-yscv-kernels = { path = "../../../crates/yscv-kernels", default-features = false }
-yscv-onnx = { path = "../../../crates/yscv-onnx", default-features = false }
-yscv-tensor = { path = "../../../crates/yscv-tensor" }
+yscv-detect = { path = "../../crates/yscv-detect" }
+yscv-kernels = { path = "../../crates/yscv-kernels", default-features = false }
+yscv-onnx = { path = "../../crates/yscv-onnx", default-features = false }
+yscv-tensor = { path = "../../crates/yscv-tensor" }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
@@ -22,6 +26,10 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 [[bench]]
 name = "onnx_models"
 harness = false
+
+[[example]]
+name = "bench_yolo"
+path = "examples/bench_yolo.rs"
 
 [profile.release]
 lto = "fat"

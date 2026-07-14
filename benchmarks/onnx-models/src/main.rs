@@ -8,19 +8,14 @@ use std::time::Instant;
 
 use serde_json::json;
 use yscv_onnx::{
+    OnnxExportAttr, OnnxExportGraph, OnnxExportNode, OnnxExportValueInfo, OnnxRunner,
     export_onnx_model_to_file, graph_cost, graph_cost_report, infer_shapes_from_tensors,
-    load_onnx_model_from_file, optimize_onnx_graph, OnnxExportAttr, OnnxExportGraph,
-    OnnxExportNode, OnnxExportValueInfo, OnnxRunner,
+    load_onnx_model_from_file, optimize_onnx_graph,
 };
+use yscv_onnx_model_bench::{FillMode, load_image_tensor, make_tensor};
 use yscv_tensor::Tensor;
 
 use rustc_hash::FxHashMap;
-
-#[derive(Clone, Copy)]
-enum FillMode {
-    Zero,
-    Random,
-}
 
 enum Command {
     PrepareSmall {
@@ -482,62 +477,6 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
         &asset_dir.join("gemm-relu-256x512x512.onnx"),
     )
     .map_err(|e| format!("export medium gemm: {e}"))
-}
-
-struct XorShift(u32);
-
-impl XorShift {
-    fn new(seed: u32) -> Self {
-        Self(seed.max(1))
-    }
-
-    fn next_f32(&mut self) -> f32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x as f32 / u32::MAX as f32
-    }
-}
-
-fn make_tensor(shape: &[usize], fill: FillMode, seed: u32) -> Result<Tensor, String> {
-    let len = shape.iter().product();
-    let data = match fill {
-        FillMode::Zero => vec![0.0; len],
-        FillMode::Random => {
-            let mut rng = XorShift::new(seed);
-            (0..len).map(|_| rng.next_f32()).collect()
-        }
-    };
-    Tensor::from_vec(shape.to_vec(), data).map_err(|e| format!("input tensor build failed: {e}"))
-}
-
-fn load_image_tensor(path: &Path, target_size: usize) -> Result<Tensor, String> {
-    let img = image::ImageReader::open(path)
-        .map_err(|e| format!("open image {}: {e}", path.display()))?
-        .decode()
-        .map_err(|e| format!("decode image {}: {e}", path.display()))?
-        .to_rgb8();
-    let (width, height) = img.dimensions();
-    let rgb: Vec<f32> = img.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
-    let hwc = Tensor::from_vec(vec![height as usize, width as usize, 3], rgb)
-        .map_err(|e| format!("image tensor build failed: {e}"))?;
-    let (letterboxed, _, _, _) = yscv_detect::letterbox_preprocess(&hwc, target_size);
-    let src = letterboxed.data();
-    let hw = target_size * target_size;
-    let mut nchw = vec![0.0; 3 * hw];
-    for y in 0..target_size {
-        for x in 0..target_size {
-            let s = (y * target_size + x) * 3;
-            let d = y * target_size + x;
-            nchw[d] = src[s];
-            nchw[hw + d] = src[s + 1];
-            nchw[2 * hw + d] = src[s + 2];
-        }
-    }
-    Tensor::from_vec(vec![1, 3, target_size, target_size], nchw)
-        .map_err(|e| format!("image NCHW tensor build failed: {e}"))
 }
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {

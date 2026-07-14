@@ -22,7 +22,7 @@ out_dir = Path(sys.argv[4])
 suite = json.loads(suite_path.read_text())
 
 manifest = runner_dir / "Cargo.toml"
-base_cmd = ["cargo", "run", "--release", "--manifest-path", str(manifest), "--"]
+base_cmd = ["cargo", "run", "--locked", "--release", "--manifest-path", str(manifest), "--"]
 
 subprocess.run(
     base_cmd + ["prepare-small", "--asset-dir", str(asset_dir)],

@@ -13,7 +13,7 @@ echo ""
 
 # ── 1. yscv CPU ──
 echo "▸ yscv CPU..."
-(cd "$REPO_ROOT" && cargo run --release --example bench_yolo 2>/dev/null) \
+(cd "$REPO_ROOT" && BENCH_COOLDOWN=20 cargo run --release --manifest-path benchmarks/onnx-models/Cargo.toml --example bench_yolo 2>/dev/null) \
   | tee "$OUT_DIR/yscv-cpu.txt"
 echo ""
 
