@@ -16,6 +16,13 @@ yscv-kernels = { path = "../../../crates/yscv-kernels", default-features = false
 yscv-onnx = { path = "../../../crates/yscv-onnx", default-features = false }
 yscv-tensor = { path = "../../../crates/yscv-tensor" }
 
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "onnx_models"
+harness = false
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
