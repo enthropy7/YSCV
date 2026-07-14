@@ -126,8 +126,8 @@ reverted on sight, regardless of benchmark numbers.
 6. Verify. Locally, run the exact gates CI runs in the same
    order:
    ```sh
-   cargo fmt --check
-   cargo clippy --workspace --all-targets -- -D warnings
+   cargo fmt
+   cargo clippy --workspace --all-targets --all-features -- -D warnings
    cargo test --workspace
    bash scripts/check-doc-counts.sh
    ```
