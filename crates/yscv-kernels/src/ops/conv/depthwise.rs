@@ -440,7 +440,7 @@ pub fn conv3d(
     // im2col: [out_spatial, kd*kh*kw*c_in]
     // kernel reshaped: [kd*kh*kw*c_in, c_out]
     // output = im2col @ kernel_2d → [out_spatial, c_out]
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     if !cfg!(miri) && batch == 1 {
         let k_spatial = kd * kh * kw;
         let col_k = k_spatial * c_in; // im2col column length

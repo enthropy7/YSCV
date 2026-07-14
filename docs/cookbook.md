@@ -835,9 +835,7 @@ scp target/aarch64-unknown-linux-gnu/release/my_app pi@192.168.1.100:~/
 | `gpu` | wgpu GPU compute (Vulkan/Metal/DX12) | Cross-platform GPU inference | All |
 | `metal-backend` | Metal-native GPU pipeline | yscv's fastest backend on Apple Silicon | macOS only |
 | `native-camera` | Real camera capture | Live video processing | All |
-| `blas` | Hardware BLAS | Enabled by default | All |
-| `mkl` | Intel MKL vectorized math | x86 servers with MKL installed | x86/x86_64 |
-| `armpl` | ARM Performance Libraries | ARM Linux servers (Graviton, Ampere) | aarch64 Linux |
+| `blas` | OpenBLAS matmul (macOS always uses Accelerate, no flag) | Big square GEMMs on Linux/Windows | Linux / Windows |
 
 Combine features as needed:
 
@@ -845,8 +843,8 @@ Combine features as needed:
 # Metal GPU + camera
 cargo build --release --features "metal-backend,native-camera"
 
-# wgpu GPU + Intel MKL
-cargo build --release --features "gpu,mkl"
+# wgpu GPU + OpenBLAS matmul (Linux/Windows)
+cargo build --release --features "gpu,blas"
 ```
 
 ---

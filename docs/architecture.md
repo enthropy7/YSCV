@@ -117,8 +117,8 @@ If you need to change something, these are the most important files:
 | SIMD f32 ops | NEON 4× unroll | NEON 4× unroll | AVX 4× unroll + SSE |
 | SIMD u8 ops | NEON | NEON | AVX2 + SSE2/SSSE3 |
 | Sigmoid/tanh | NEON 3-term poly | NEON 3-term poly | AVX/SSE poly |
-| Vectorized math | vDSP (Accelerate) | ARMPL (opt-in `armpl`) | MKL VML (opt-in `mkl`) |
-| MatMul BLAS | Accelerate cblas | OpenBLAS | OpenBLAS |
+| Vectorized math | vDSP (Accelerate) | NEON kernels | AVX/SSE kernels |
+| MatMul BLAS | Accelerate cblas (always on) | OpenBLAS (opt-in `blas`) | OpenBLAS (opt-in `blas`) |
 | Softmax | Fused NEON | Fused NEON | Fused AVX/SSE |
 | Median u8 | NEON sort network | NEON sort network | SSE2 sort network |
 | Allocator | mimalloc | mimalloc | mimalloc |

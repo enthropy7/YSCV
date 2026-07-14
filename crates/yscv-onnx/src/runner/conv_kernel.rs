@@ -40,7 +40,7 @@ pub(crate) enum ConvKernel {
     /// General grouped convolution (1 < group < channels).
     Grouped,
     /// Apple BNNS NCHW fast path (`YSCV_BNNS`).
-    #[cfg(all(target_os = "macos", feature = "blas"))]
+    #[cfg(target_os = "macos")]
     BnnsNchw,
 }
 
@@ -57,7 +57,7 @@ impl ConvKernel {
             ConvKernel::DepthwiseNhwcPadded => "dw-nhwc-padded",
             ConvKernel::DepthwiseNhwc => "dw-nhwc",
             ConvKernel::Grouped => "grouped",
-            #[cfg(all(target_os = "macos", feature = "blas"))]
+            #[cfg(target_os = "macos")]
             ConvKernel::BnnsNchw => "bnns-nchw",
         }
     }

@@ -13,8 +13,6 @@ keywords.workspace = true
 [features]
 default = []
 blas = ["dep:cblas-sys"]
-mkl = []
-armpl = []
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 metal-backend = ["dep:metal", "dep:objc", "dep:block", "dep:foreign-types"]
 rknn = ["dep:libc", "dep:tempfile"]
@@ -40,6 +38,9 @@ rustc-hash.workspace = true
 cblas-sys = { version = "0.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Accelerate sgemm is always on for macOS (framework ships with the OS),
+# so the CBLAS FFI decls are a hard dep there; elsewhere `blas` opts in.
+cblas-sys = "0.1"
 metal = { version = "0.18", optional = true }
 objc = { version = "0.2", optional = true }
 block = { version = "0.1", optional = true }

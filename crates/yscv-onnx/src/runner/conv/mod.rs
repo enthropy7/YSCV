@@ -356,7 +356,7 @@ pub(super) fn exec_conv_with_params(
 
     // BNNS NCHW fast path: when input is already NCHW, use Apple Accelerate
     // directly without any layout conversion. Opt-in via YSCV_BNNS=1.
-    #[cfg(all(target_os = "macos", feature = "blas"))]
+    #[cfg(target_os = "macos")]
     if !input_is_nhwc
         && std::env::var("YSCV_BNNS").is_ok()
         && let Some(result) = exec_conv_bnns_nchw(node, env, activation)?
@@ -939,7 +939,7 @@ pub(super) fn pad_nhwc_val(
 
 /// Try to execute conv via Apple BNNS on NCHW data.
 /// Returns `Ok(Some(tensor))` on success, `Ok(None)` if BNNS can't handle this op.
-#[cfg(all(target_os = "macos", feature = "blas"))]
+#[cfg(target_os = "macos")]
 fn exec_conv_bnns_nchw(
     node: &OnnxNode,
     env: &mut TensorEnv,

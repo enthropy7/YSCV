@@ -1,5 +1,5 @@
 pub(crate) mod attention;
-#[cfg(all(target_os = "macos", feature = "blas"))]
+#[cfg(all(target_os = "macos", yscv_blas))]
 pub mod bnns_conv;
 mod config;
 mod conv;

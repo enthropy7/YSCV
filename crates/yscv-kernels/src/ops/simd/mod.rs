@@ -26,8 +26,6 @@ mod tests;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimdDispatchPath {
     Accelerate,
-    Mkl,
-    Armpl,
     Avx512,
     Avx,
     Sse2,
@@ -40,8 +38,6 @@ impl fmt::Display for SimdDispatchPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             SimdDispatchPath::Accelerate => "accelerate",
-            SimdDispatchPath::Mkl => "mkl",
-            SimdDispatchPath::Armpl => "armpl",
             SimdDispatchPath::Avx512 => "avx512",
             SimdDispatchPath::Avx => "avx",
             SimdDispatchPath::Sse2 => "sse2",
@@ -163,29 +159,7 @@ fn exp_dispatch_path_uncached() -> SimdDispatchPath {
     {
         SimdDispatchPath::Accelerate
     }
-    #[cfg(all(
-        not(all(target_os = "macos", target_arch = "aarch64")),
-        feature = "mkl",
-        any(target_arch = "x86", target_arch = "x86_64")
-    ))]
-    {
-        SimdDispatchPath::Mkl
-    }
-    #[cfg(all(
-        not(all(target_os = "macos", target_arch = "aarch64")),
-        not(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64"))),
-        feature = "armpl",
-        target_arch = "aarch64",
-        not(target_os = "macos")
-    ))]
-    {
-        SimdDispatchPath::Armpl
-    }
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")),
-        all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos"))
-    )))]
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
         dispatch_path(true, false)
     }
@@ -204,29 +178,7 @@ fn binary_dispatch_path_uncached() -> SimdDispatchPath {
     {
         SimdDispatchPath::Accelerate
     }
-    #[cfg(all(
-        not(all(target_os = "macos", target_arch = "aarch64")),
-        feature = "mkl",
-        any(target_arch = "x86", target_arch = "x86_64")
-    ))]
-    {
-        SimdDispatchPath::Mkl
-    }
-    #[cfg(all(
-        not(all(target_os = "macos", target_arch = "aarch64")),
-        not(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64"))),
-        feature = "armpl",
-        target_arch = "aarch64",
-        not(target_os = "macos")
-    ))]
-    {
-        SimdDispatchPath::Armpl
-    }
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")),
-        all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos"))
-    )))]
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
         dispatch_path(!x86_memory_simd_forces_avx2(), false)
     }

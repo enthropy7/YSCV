@@ -28,24 +28,6 @@ pub(crate) fn exp_dispatch(data: &[f32], out: &mut [f32]) {
         return;
     }
 
-    // x86/x86_64 with MKL: use Intel VML vsExp (heavily optimized).
-    #[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        let count = data.len() as i32;
-        // SAFETY: vsExp reads `count` floats from `data` and writes to `out`.
-        unsafe { vsExp(count, data.as_ptr(), out.as_mut_ptr()) };
-        return;
-    }
-
-    // aarch64 Linux with ARMPL: use ARM Performance Libraries vectorized exp.
-    #[cfg(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos")))]
-    {
-        let count = data.len() as i32;
-        // SAFETY: armpl_svexp_f32 reads `count` floats from `data` and writes to `out`.
-        unsafe { armpl_svexp_f32(count, data.as_ptr(), out.as_mut_ptr()) };
-        return;
-    }
-
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if yscv_cpu::host_cpu().features.avx {

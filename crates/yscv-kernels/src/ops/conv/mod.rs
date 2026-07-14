@@ -861,7 +861,7 @@ pub fn conv2d_nhwc_with_activation_prepacked(
     // im2col + BLAS sgemm path — only beneficial with external BLAS whose highly
     // optimized GEMM offsets the im2col copy overhead.  Without BLAS, the row-FMA
     // path below is typically faster for the channel counts seen in mobile nets.
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     if !cfg!(miri) && plan.batch == 1 {
         let out = conv2d_im2col_gemm_fused(
             &plan,
@@ -2624,7 +2624,7 @@ pub use depthwise::conv3d;
 use depthwise::*;
 
 mod gemm_conv;
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 use gemm_conv::conv2d_im2col_gemm_fused;
 pub use gemm_conv::{conv2d_nhwc_indirect_padded, conv2d_nhwc_padded};
 

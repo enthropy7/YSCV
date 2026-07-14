@@ -25,22 +25,6 @@ use std::arch::x86_64::{
 use super::super::config::BinaryKind;
 use super::{SimdDispatchPath, dispatch_path, x86_memory_simd_forces_avx2};
 
-#[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
-#[allow(unsafe_code, dead_code)]
-unsafe extern "C" {
-    fn vsAdd(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    fn vsSub(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    fn vsMul(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-}
-
-#[cfg(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos")))]
-#[allow(unsafe_code, dead_code)]
-unsafe extern "C" {
-    fn armpl_svadd_f32(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    fn armpl_svsub_f32(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    fn armpl_svmul_f32(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-}
-
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code, dead_code)]
 unsafe extern "C" {
@@ -109,36 +93,6 @@ pub fn binary_same_shape_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kin
                 BinaryKind::Mul => {
                     vDSP_vmul(lhs.as_ptr(), 1, rhs.as_ptr(), 1, out.as_mut_ptr(), 1, n)
                 }
-            }
-        }
-        return;
-    }
-
-    // x86/x86_64 with MKL: use Intel VML for add/sub/mul (heavily optimized).
-    #[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        let n = lhs.len() as i32;
-        // SAFETY: VML functions read `n` floats from contiguous slices and write to `out`.
-        unsafe {
-            match kind {
-                BinaryKind::Add => vsAdd(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Sub => vsSub(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Mul => vsMul(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-            }
-        }
-        return;
-    }
-
-    // aarch64 Linux with ARMPL: use ARM Performance Libraries for add/sub/mul.
-    #[cfg(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos")))]
-    {
-        let n = lhs.len() as i32;
-        // SAFETY: ARMPL functions read `n` floats from contiguous slices and write to `out`.
-        unsafe {
-            match kind {
-                BinaryKind::Add => armpl_svadd_f32(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Sub => armpl_svsub_f32(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Mul => armpl_svmul_f32(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
             }
         }
         return;

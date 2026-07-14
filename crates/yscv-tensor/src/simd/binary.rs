@@ -45,38 +45,6 @@ pub(crate) fn binary_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind: B
         return;
     }
 
-    // x86/x86_64 with MKL: use Intel VML for add/sub/mul/div (heavily optimized).
-    #[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        let n = lhs.len() as i32;
-        // SAFETY: VML functions read `n` floats from contiguous slices and write to `out`.
-        unsafe {
-            match kind {
-                BinaryKind::Add => vsAdd(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Sub => vsSub(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Mul => vsMul(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Div => vsDiv(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-            }
-        }
-        return;
-    }
-
-    // aarch64 Linux with ARMPL: use ARM Performance Libraries for add/sub/mul/div.
-    #[cfg(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos")))]
-    {
-        let n = lhs.len() as i32;
-        // SAFETY: ARMPL functions read `n` floats from contiguous slices and write to `out`.
-        unsafe {
-            match kind {
-                BinaryKind::Add => armpl_svadd_f32(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Sub => armpl_svsub_f32(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Mul => armpl_svmul_f32(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-                BinaryKind::Div => armpl_svdiv_f32(n, lhs.as_ptr(), rhs.as_ptr(), out.as_mut_ptr()),
-            }
-        }
-        return;
-    }
-
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if yscv_cpu::host_cpu().features.avx {

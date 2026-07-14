@@ -160,12 +160,12 @@ fn matmul_primary_isa(features: crate::CpuFeatures) -> &'static str {
     }
 }
 
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 fn matmul_blas_status() -> &'static str {
     if use_blas() { "enabled" } else { "disabled" }
 }
 
-#[cfg(not(feature = "blas"))]
+#[cfg(not(yscv_blas))]
 fn matmul_blas_status() -> &'static str {
     "not-compiled"
 }
@@ -337,7 +337,7 @@ pub fn matmul_2d_slices(a: &[f32], m: usize, k: usize, b: &[f32], n: usize, out:
     debug_assert!(b.len() >= k * n);
     debug_assert!(out.len() >= m * n);
 
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     if use_blas() {
         blas_sgemm(a, b, out, m, k, n);
         return;
@@ -452,7 +452,7 @@ pub fn matmul_2d_slices_parallel(
     debug_assert!(b.len() >= k * n);
     debug_assert!(out.len() >= m * n);
 
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     if use_blas() {
         blas_sgemm(a, b, out, m, k, n);
         return;
@@ -559,7 +559,7 @@ pub fn matmul_2d_slices_fused_maybe_packed(
     // `use_blas()` without this check caused all tracker matmul to exit here
     // even though `blas_sgemm` internally calls `run_custom_gemm` (single-
     // threaded, no tile packing, no rayon), bypassing blocked_gemm_parallel.
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     if use_blas() && !prefer_custom_gemm(m, k, n) {
         blas_sgemm(a, b, out, m, k, n);
         apply_epilogue_fallback(out, m, n, &epilogue);
@@ -1035,15 +1035,15 @@ fn blocked_residual_has_unsupported_tail(_nc: usize) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Use BLAS when available and not under miri.
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 fn use_blas() -> bool {
     !cfg!(miri)
-        && cfg!(feature = "blas")
+        && cfg!(yscv_blas)
         && std::env::var_os("YSCV_FORCE_NO_BLAS").is_none()
         && !openblas_uses_64bit_int()
 }
 
-#[cfg(all(feature = "blas", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(yscv_blas, any(target_os = "linux", target_os = "windows")))]
 #[allow(unsafe_code)]
 fn openblas_uses_64bit_int() -> bool {
     use std::{ffi::CStr, os::raw::c_char, sync::OnceLock};
@@ -1066,13 +1066,13 @@ fn openblas_uses_64bit_int() -> bool {
     })
 }
 
-#[cfg(all(feature = "blas", not(any(target_os = "linux", target_os = "windows"))))]
+#[cfg(all(yscv_blas, not(any(target_os = "linux", target_os = "windows"))))]
 fn openblas_uses_64bit_int() -> bool {
     false
 }
 
 #[inline]
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 // Parameters are only consumed in the x86 cfg block; other targets ignore them.
 #[allow(unused_variables)]
 fn prefer_custom_gemm(m: usize, k: usize, n: usize) -> bool {
@@ -1102,7 +1102,7 @@ fn prefer_custom_gemm(m: usize, k: usize, n: usize) -> bool {
     false
 }
 
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 #[inline]
 fn run_custom_gemm(left: &[f32], right: &[f32], output: &mut [f32], m: usize, k: usize, n: usize) {
     let in_rayon_worker = rayon::current_thread_index().is_some();
@@ -1135,7 +1135,7 @@ fn run_custom_gemm(left: &[f32], right: &[f32], output: &mut [f32], m: usize, k:
     }
 }
 
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 #[allow(unsafe_code)]
 pub(crate) fn blas_sgemm(
     left: &[f32],
@@ -1164,7 +1164,7 @@ pub(crate) fn blas_sgemm(
         m * n
     );
 
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     {
         if use_blas() && !prefer_custom_gemm(m, k, n) {
             // Using `cblas-sys` gives us battle-tested FFI declarations with
@@ -1222,7 +1222,7 @@ pub(crate) fn blas_sgemm_fused(
     debug_assert!(right.len() >= k * n);
     debug_assert!(output.len() >= m * n);
 
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     {
         if use_blas() && !prefer_custom_gemm(m, k, n) {
             use cblas_sys::{CBLAS_LAYOUT, CBLAS_TRANSPOSE, cblas_sgemm};
@@ -1299,7 +1299,7 @@ fn matmul_2d_sequential_with_plan(
     let left = lhs.data();
     let right = rhs.data();
 
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     if use_blas() {
         blas_sgemm(left, right, &mut output, plan.m, plan.k, plan.n);
         note_matmul_kernel(MatmulKernel::BlasSgemm);
@@ -1337,7 +1337,7 @@ fn matmul_2d_parallel_with_plan(
     let left = lhs.data();
     let right = rhs.data();
 
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     if use_blas() {
         blas_sgemm(left, right, &mut output, plan.m, plan.k, plan.n);
         note_matmul_kernel(MatmulKernel::BlasSgemm);

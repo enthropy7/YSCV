@@ -213,9 +213,7 @@ Quick summary of the big ones:
 | `metal-backend` | Metal-native GPU pipeline (yscv's fastest backend on Apple Silicon) | macOS only |
 | `rknn` | Rockchip NPU via `librknnrt.so` (RK3588 / RK3576 / RV1106) — `dlopen` at runtime, full SDK 2.4.3a0 | Linux ARM64 (Rockchip device) |
 | `native-camera` | Real camera capture (V4L2 / AVFoundation / MediaFoundation) | All |
-| `blas` | Hardware BLAS — Accelerate on macOS, OpenBLAS on Linux/Windows (opt-in; default matmul is yscv's hand-tuned kernels) | All (opt-in) |
-| `mkl` | Intel MKL for vectorized math on x86 | x86/x86_64 |
-| `armpl` | ARM Performance Libraries on ARM Linux (Graviton, Ampere) | aarch64 Linux |
+| `blas` | OpenBLAS matmul on Linux/Windows (opt-in; default is yscv's hand-tuned kernels). macOS always uses Accelerate/AMX — no flag needed | Linux / Windows |
 
 ### Multi-architecture SIMD
 
@@ -226,8 +224,8 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **f32 tensor ops** | NEON 4× unroll | AVX 4× unroll → SSE fallback | NEON 4× unroll |
 | **u8 image ops** | NEON 16B/iter | AVX2 32B/iter → SSE2/SSSE3 16B/iter | NEON 16B/iter |
 | **Activations** | NEON 3-term poly | AVX/SSE poly | NEON 3-term poly |
-| **MatMul / Conv** | Hand-tuned NEON kernels (opt-in Accelerate) | Hand-tuned AVX/SSE kernels (opt-in OpenBLAS / MKL) | Hand-tuned NEON kernels (opt-in OpenBLAS / ARMPL) |
-| **Vectorized math** | vDSP (Accelerate) | MKL VML (opt-in) | ARMPL (opt-in) |
+| **MatMul / Conv** | Accelerate AMX (always on) + NEON kernels | Hand-tuned AVX/SSE kernels (opt-in OpenBLAS) | Hand-tuned NEON kernels (opt-in OpenBLAS) |
+| **Vectorized math** | vDSP (Accelerate) | AVX/SSE kernels | NEON kernels |
 | **Threading** | GCD dispatch_apply (~0.3µs) | std::thread::scope (~1µs) | std::thread::scope (~1µs) |
 | **GPU inference** | MPSGraph | wgpu/Vulkan | wgpu/Vulkan |
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |

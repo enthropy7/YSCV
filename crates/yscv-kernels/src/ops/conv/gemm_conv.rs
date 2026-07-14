@@ -116,7 +116,7 @@ pub fn conv2d_nhwc_indirect_padded(
 
 /// im2col for NHWC input without padding.
 /// Uses unsafe pointer arithmetic to avoid per-element bounds checks.
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 #[allow(unsafe_code)]
 fn im2col_nhwc(
     input: &[f32],
@@ -154,7 +154,7 @@ fn im2col_nhwc(
 
 /// im2col for a tile of output rows `[row_start .. row_start + tile_rows]`.
 /// Uses unsafe pointer arithmetic for tight inner loops.
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 #[allow(unsafe_code)]
 fn im2col_nhwc_tile(
     input: &[f32],
@@ -197,7 +197,7 @@ fn im2col_nhwc_tile(
 /// kernel (already contiguous in NHWC): [K, N] where N = C_out
 /// im2col + GEMM with fused bias+activation epilogue.
 /// Works without BLAS — uses our custom blocked GEMM when BLAS is unavailable.
-#[cfg(feature = "blas")]
+#[cfg(yscv_blas)]
 pub(super) fn conv2d_im2col_gemm_fused(
     plan: &Conv2dPlan,
     input: &[f32],

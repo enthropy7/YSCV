@@ -7,30 +7,6 @@
 
 // ── FFI declarations ────────────────────────────────────────────────
 
-#[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
-#[allow(dead_code)]
-unsafe extern "C" {
-    pub(super) fn vsAdd(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn vsSub(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn vsMul(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn vsDiv(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn vsExp(n: i32, a: *const f32, y: *mut f32);
-    pub(super) fn vsSqrt(n: i32, a: *const f32, y: *mut f32);
-    pub(super) fn vsLn(n: i32, a: *const f32, y: *mut f32);
-}
-
-#[cfg(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos")))]
-#[allow(dead_code)]
-unsafe extern "C" {
-    pub(super) fn armpl_svexp_f32(n: i32, x: *const f32, y: *mut f32);
-    pub(super) fn armpl_svadd_f32(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn armpl_svsub_f32(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn armpl_svmul_f32(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn armpl_svdiv_f32(n: i32, a: *const f32, b: *const f32, y: *mut f32);
-    pub(super) fn armpl_svlog_f32(n: i32, x: *const f32, y: *mut f32);
-    pub(super) fn armpl_svsqrt_f32(n: i32, x: *const f32, y: *mut f32);
-}
-
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 unsafe extern "C" {
     pub(super) fn vvexpf(result: *mut f32, input: *const f32, count: *const i32);

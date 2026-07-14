@@ -254,13 +254,10 @@ Check, in order:
    [target.aarch64-apple-darwin]
    rustflags = ["-C", "target-cpu=apple-m1"]
    ```
-4. **BLAS** is opt-in (the default matmul path is yscv's hand-tuned
-   kernels). If you want Accelerate / OpenBLAS matmul, build with
-   `--features blas` and verify it linked:
-   ```bash
-   otool -L target/release/your-binary | grep -i 'accelerate\|blas'
-   # macOS: should mention Accelerate.framework
-   ```
+4. **BLAS**: macOS always links Accelerate (no flag needed) — verify with
+   `otool -L target/release/your-binary | grep -i accelerate`. On
+   Linux/Windows the default matmul is yscv's hand-tuned kernels; for
+   OpenBLAS on large square GEMMs build with `--features blas`.
 
 ### "First inference is 100× slower than subsequent ones"
 

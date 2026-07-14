@@ -14,15 +14,14 @@ the dedicated guides linked inline.
 
 ```
 yscv (umbrella)
-├── blas            opt-in — external BLAS matmul (Accelerate / OpenBLAS)
+├── blas            opt-in OpenBLAS matmul (Linux/Windows); macOS always
+│                   links Accelerate — no flag needed
 ├── gpu             wgpu cross-platform GPU            → gpu-backend-guide.md
 ├── metal-backend   Apple MPSGraph (macOS GPU)         → mpsgraph-guide.md
 ├── rknn            Rockchip NPU                       → edge-deployment.md
 ├── rknn-validate   Dry-run RKNN load at config time
 ├── realtime        SCHED_FIFO + affinity + mlockall + governor
 ├── native-camera   V4L2 / AVFoundation / MediaFoundation
-├── mkl             Intel MKL for x86 matmul
-├── armpl           ARM Performance Libraries for aarch64 matmul
 ├── drm             Linux KMS display output (yscv-video)
 ├── mpp             Rockchip MPP hardware H.264/H.265 encoder (yscv-video-mpp)
 ├── videotoolbox    Apple VideoToolbox HW decode (macOS/iOS)
@@ -66,12 +65,17 @@ picks at runtime based on your TOML/API choice.
 
 ### `blas` — BLAS-accelerated matmul
 
-Opt-in (default OFF) across all crates — the default matmul path is
-yscv's own hand-tuned SIMD/asm GEMM. Enabling `blas` links a CBLAS
-implementation for SGEMM dispatch:
+The default matmul path is yscv's own hand-tuned SIMD/asm GEMM, with
+one platform exception:
 
-- **macOS** — `Accelerate.framework` (built into OS, zero setup). Uses
-  Apple's AMX matrix accelerator; ~2× faster than OpenBLAS here.
+- **macOS** — `Accelerate.framework` is linked **unconditionally** (it
+  ships with the OS, zero setup — no feature flag involved). Its AMX
+  matrix accelerator is 3–13× faster than any NEON kernel on raw sgemm
+  and ~1.6–1.9× faster end-to-end on YOLOv8n/YOLO11n, so opting out
+  would only slow you down.
+
+On Linux/Windows the `blas` feature (default OFF) opts in to OpenBLAS:
+
 - **Linux** — `libopenblas.so.0`. Install with
   `sudo apt install libopenblas-dev` (Debian/Ubuntu) or
   `sudo dnf install openblas-devel` (Fedora).
@@ -186,8 +190,8 @@ kernels enabled. This is a debug/measurement escape hatch, not a production
 tuning flag.
 
 On Transformer workloads the tradeoff inverts: one big sgemm per
-attention head is the bulk of the work, and `Accelerate` / `MKL`
-outperform yscv's hand-tuned blocked GEMM there.
+attention head is the bulk of the work, and an external BLAS
+(Accelerate, OpenBLAS) outperforms yscv's hand-tuned blocked GEMM there.
 
 ```toml
 # Library default — keeps BLAS on, good for Transformer / classifier
@@ -277,59 +281,6 @@ Adds ~100 ms to startup. Worth it in production.
 ```toml
 yscv-pipeline = { version = "0.1", features = ["rknn", "rknn-validate"] }
 ```
-
----
-
-## Platform-acceleration flags (silently faster if set)
-
-### `mkl` — Intel MKL for x86 matmul
-
-Replaces OpenBLAS with Intel's MKL library. 2-3× faster matmul on Intel
-CPUs (AVX-512 + per-cpu dispatched kernels).
-
-Setup:
-```bash
-# Install Intel oneAPI Base Toolkit (includes MKL)
-# https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html
-
-# Or on Debian/Ubuntu:
-sudo apt install intel-mkl
-
-# Point cargo at it:
-export MKLROOT=/opt/intel/oneapi/mkl/latest
-```
-
-Then:
-```toml
-yscv = { version = "0.1", features = ["mkl"] }
-```
-
-No code changes. Matmul and Conv silently take the MKL path.
-
-**When to use**: Intel servers (Xeon, Core i9), Windows/Linux x86 dev.
-**When NOT to use**: Apple Silicon (Accelerate beats MKL), AMD (MKL
-historically pessimises on non-Intel, set `MKL_DEBUG_CPU_TYPE=5` to
-force AVX2 path).
-
-### `armpl` — ARM Performance Libraries
-
-Same idea, for aarch64 Linux. Arm's hand-tuned NEON/SVE matmul kernels.
-Biggest win on AWS Graviton, Ampere, or any server ARM.
-
-Setup:
-```bash
-# Download from https://developer.arm.com/downloads/-/arm-performance-libraries
-# Install to /opt/arm/armpl-xxx
-export ARMPL_DIR=/opt/arm/armpl-23.10
-```
-
-```toml
-yscv = { version = "0.1", features = ["armpl"] }
-```
-
-**When to use**: aarch64 Linux servers.
-**When NOT to use**: Apple Silicon (use default Accelerate), Rockchip
-(use `rknn` for NPU instead of CPU matmul).
 
 ---
 
@@ -636,7 +587,7 @@ yscv = { version = "0.1", default-features = false }
 yscv = { version = "0.1", features = ["metal-backend", "videotoolbox", "native-camera"] }
 
 # Intel server — best CPU inference
-yscv = { version = "0.1", features = ["mkl", "gpu", "vaapi"] }
+yscv = { version = "0.1", features = ["blas", "gpu", "vaapi"] }
 
 # NVIDIA server
 yscv = { version = "0.1", features = ["gpu", "nvdec"] }

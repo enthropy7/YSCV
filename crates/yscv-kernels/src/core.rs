@@ -164,7 +164,7 @@ pub use multi_device::{
     enumerate_gpu_devices,
 };
 pub use ops::Activation;
-#[cfg(all(target_os = "macos", feature = "blas"))]
+#[cfg(all(target_os = "macos", yscv_blas))]
 pub use ops::bnns_conv;
 pub use ops::conv2d_nhwc_indirect_padded;
 pub use ops::dw_prof;

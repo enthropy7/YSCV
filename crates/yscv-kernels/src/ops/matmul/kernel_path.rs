@@ -19,7 +19,7 @@ use std::cell::Cell;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatmulKernel {
     /// External BLAS `sgemm`.
-    #[cfg(feature = "blas")]
+    #[cfg(yscv_blas)]
     BlasSgemm,
     /// NEON MR=8 / 8×12 blocked kernel.
     #[cfg(target_arch = "aarch64")]
@@ -43,7 +43,7 @@ impl MatmulKernel {
     /// Stable short label for profiler output.
     pub fn label(self) -> &'static str {
         match self {
-            #[cfg(feature = "blas")]
+            #[cfg(yscv_blas)]
             MatmulKernel::BlasSgemm => "blas-sgemm",
             #[cfg(target_arch = "aarch64")]
             MatmulKernel::BlockedMr8 => "blocked-mr8",

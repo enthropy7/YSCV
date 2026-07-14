@@ -36,18 +36,6 @@ unsafe extern "C" {
     fn vvexpf(result: *mut f32, input: *const f32, count: *const i32);
 }
 
-#[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
-#[allow(unsafe_code, dead_code)]
-unsafe extern "C" {
-    fn vsExp(n: i32, a: *const f32, y: *mut f32);
-}
-
-#[cfg(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos")))]
-#[allow(unsafe_code, dead_code)]
-unsafe extern "C" {
-    fn armpl_svexp_f32(n: i32, x: *const f32, y: *mut f32);
-}
-
 use super::{SimdDispatchPath, dispatch_path};
 
 // ===========================================================================
@@ -456,24 +444,6 @@ pub fn exp_slice_dispatch(input: &[f32], output: &mut [f32]) {
         unsafe {
             vvexpf(output.as_mut_ptr(), input.as_ptr(), &count);
         }
-        return;
-    }
-
-    // x86/x86_64 with MKL: use Intel VML vsExp (heavily optimized).
-    #[cfg(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        let count = input.len() as i32;
-        // SAFETY: vsExp reads `count` floats from `input` and writes to `output`.
-        unsafe { vsExp(count, input.as_ptr(), output.as_mut_ptr()) };
-        return;
-    }
-
-    // aarch64 Linux with ARMPL: use ARM Performance Libraries vectorized exp.
-    #[cfg(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos")))]
-    {
-        let count = input.len() as i32;
-        // SAFETY: armpl_svexp_f32 reads `count` floats from `input` and writes to `output`.
-        unsafe { armpl_svexp_f32(count, input.as_ptr(), output.as_mut_ptr()) };
         return;
     }
 

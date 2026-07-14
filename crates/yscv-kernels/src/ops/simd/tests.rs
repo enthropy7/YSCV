@@ -24,14 +24,6 @@ fn assert_path_matches_features(path: SimdDispatchPath, report: CpuDispatchRepor
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             panic!("Accelerate path outside macOS aarch64");
         }
-        SimdDispatchPath::Mkl => {
-            #[cfg(not(all(feature = "mkl", any(target_arch = "x86", target_arch = "x86_64"))))]
-            panic!("MKL path without the x86 mkl feature");
-        }
-        SimdDispatchPath::Armpl => {
-            #[cfg(not(all(feature = "armpl", target_arch = "aarch64", not(target_os = "macos"))))]
-            panic!("ARMPL path without the non-macOS aarch64 armpl feature");
-        }
         SimdDispatchPath::Scalar => {}
     }
 }
