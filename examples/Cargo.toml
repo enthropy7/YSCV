@@ -59,9 +59,7 @@ path = "src/yolo_detect.rs"
 name = "yolo_finetune"
 path = "src/yolo_finetune.rs"
 
-[[example]]
-name = "bench_yolo"
-path = "src/bench_yolo.rs"
+
 
 [[example]]
 name = "bench_gpu"

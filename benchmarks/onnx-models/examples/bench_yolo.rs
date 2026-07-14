@@ -1,17 +1,18 @@
 //! Quick benchmark: measure YOLO ONNX inference time (CPU vs GPU).
 //!
-//! Set BENCH_COOLDOWN=<secs> to insert a cooldown pause between benchmarks
-//! (default: 20s). This prevents CPU thermal throttling from skewing results.
+//! Set BENCH_COOLDOWN=<secs> to insert a cooldown pause between benchmarks.
+//! The default is 0; callers that need thermal control must opt in.
 
 use rustc_hash::FxHashMap;
 use yscv_onnx::load_onnx_model_from_file;
+use yscv_onnx_model_bench::{asset_dir, download_assets, make_inputs, model_cases};
 use yscv_tensor::Tensor;
 
 fn cooldown(label: &str) {
     let secs: u64 = std::env::var("BENCH_COOLDOWN")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(20);
+        .unwrap_or(0);
     if secs > 0 {
         println!("\n  --- cooldown {secs}s before {label} ---");
         std::thread::sleep(std::time::Duration::from_secs(secs));
@@ -19,21 +20,29 @@ fn cooldown(label: &str) {
 }
 
 fn main() {
-    let models = [
-        "examples/src/slowwork/yolov8n.onnx",
-        "examples/src/slowwork/yolo11n.onnx",
-    ];
+    let asset_dir = asset_dir();
+    download_assets(&asset_dir).expect("download benchmark assets");
+    let cases: Vec<_> = model_cases()
+        .expect("load benchmark cases")
+        .into_iter()
+        .filter(|case| case.name.starts_with("yolo"))
+        .collect();
 
-    let input_data = vec![0.5f32; 3 * 640 * 640];
-    let input_tensor = Tensor::from_vec(vec![1, 3, 640, 640], input_data).unwrap();
-
-    for (model_idx, model_path) in models.iter().enumerate() {
+    for (model_idx, case) in cases.iter().enumerate() {
         if model_idx > 0 {
             cooldown("next model");
         }
-        println!("\n{} {} {}", "=".repeat(20), model_path, "=".repeat(20));
+        let model_path = asset_dir.join(&case.model);
+        let inputs = make_inputs(case, &asset_dir).expect("build model inputs");
+        let (input_name, input_tensor) = inputs.first().expect("YOLO benchmark input");
+        println!(
+            "\n{} {} {}",
+            "=".repeat(20),
+            model_path.display(),
+            "=".repeat(20)
+        );
 
-        let model = match load_onnx_model_from_file(model_path) {
+        let model = match load_onnx_model_from_file(&model_path) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("  Failed to load: {e}");
@@ -47,17 +56,17 @@ fn main() {
         #[allow(unused_variables)]
         let cpu_out = {
             let mut inp = FxHashMap::default();
-            inp.insert("images".to_string(), input_tensor.clone());
+            inp.insert(input_name.clone(), input_tensor.clone());
             yscv_onnx::run_onnx_model(&model, inp).expect("cpu fail")
         };
-        bench_run(&model, &input_tensor, |m, inp| {
+        bench_run(&model, input_name, input_tensor, |m, inp| {
             yscv_onnx::run_onnx_model(m, inp)
         });
 
         {
             println!("\n  [CPU Profile]");
             let mut inp = FxHashMap::default();
-            inp.insert("images".to_string(), input_tensor.clone());
+            inp.insert(input_name.clone(), input_tensor.clone());
             let _ = yscv_onnx::profile_onnx_model_cpu(&model, inp);
         }
 
@@ -66,7 +75,7 @@ fn main() {
         {
             cooldown("GPU profile");
             let mut inp = FxHashMap::default();
-            inp.insert("images".to_string(), input_tensor.clone());
+            inp.insert(input_name.clone(), input_tensor.clone());
             let _ = yscv_onnx::profile_onnx_model_gpu(&model, inp);
         }
 
@@ -82,7 +91,7 @@ fn main() {
 
             // Warmup (populates weight cache)
             let mut inputs = FxHashMap::default();
-            inputs.insert("images".to_string(), input_tensor.clone());
+            inputs.insert(input_name.clone(), input_tensor.clone());
             let _ =
                 yscv_onnx::run_onnx_model_gpu_cached(&gpu, &model, inputs, &mut wc, Some(&plan));
             let dispatches = gpu.take_dispatch_count();
@@ -398,6 +407,7 @@ fn main() {
 
 fn bench_run(
     model: &yscv_onnx::OnnxModel,
+    input_name: &str,
     input_tensor: &Tensor,
     run_fn: impl Fn(
         &yscv_onnx::OnnxModel,
@@ -406,14 +416,14 @@ fn bench_run(
 ) {
     // Warmup
     let mut inputs = FxHashMap::default();
-    inputs.insert("images".to_string(), input_tensor.clone());
+    inputs.insert(input_name.to_string(), input_tensor.clone());
     let _ = run_fn(model, inputs);
 
     let n = 5;
     let mut times = Vec::new();
     for i in 0..n {
         let mut inputs = FxHashMap::default();
-        inputs.insert("images".to_string(), input_tensor.clone());
+        inputs.insert(input_name.to_string(), input_tensor.clone());
         let start = std::time::Instant::now();
         let result = run_fn(model, inputs);
         let elapsed = start.elapsed();
