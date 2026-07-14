@@ -14,6 +14,8 @@ use yscv_onnx::{
 };
 use yscv_tensor::Tensor;
 
+use rustc_hash::FxHashMap;
+
 #[derive(Clone, Copy)]
 enum FillMode {
     Zero,
@@ -686,7 +688,7 @@ fn run_case(
         })
         .collect::<Result<_, _>>()?;
     let feed: Vec<(&str, &Tensor)> = inputs.iter().map(|(n, t)| (n.as_str(), t)).collect();
-    let input_map: std::collections::HashMap<String, Tensor> = inputs.iter().cloned().collect();
+    let input_map: FxHashMap<String, Tensor> = inputs.iter().cloned().collect();
     let shape_inference = infer_shapes_from_tensors(&model, &input_map);
     let graph_cost = graph_cost(&model, &shape_inference);
     let graph_cost_text = graph_cost_report(&graph_cost);

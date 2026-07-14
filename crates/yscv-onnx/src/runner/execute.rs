@@ -10,7 +10,9 @@ use super::*;
 pub(crate) fn run_onnx_model_jit(
     model: &OnnxModel,
     mut env: TensorEnv<'_, '_>,
+    specialization: Option<&ShapeSpecialization>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+    let reshape_shapes = specialization.map(|plan| &plan.reshape_shapes);
     let branches = &model.runtime_index.node_branches;
     let use_counts_by_id = &model.runtime_index.use_counts_by_id;
     let output_id_mask = build_output_id_mask(model, &env, use_counts_by_id.len());
@@ -69,6 +71,7 @@ pub(crate) fn run_onnx_model_jit(
                     &mut env0,
                     &mut remaining0,
                     &output_id_mask,
+                    reshape_shapes,
                     |nidx| branches_ref.get(nidx).copied() == Some(0),
                     &mut c_ns,
                     &mut o_ns,
@@ -87,6 +90,7 @@ pub(crate) fn run_onnx_model_jit(
                     &mut env1,
                     &mut remaining1,
                     &output_id_mask,
+                    reshape_shapes,
                     |nidx| branches_ref.get(nidx).copied() == Some(1),
                     &mut c_ns,
                     &mut o_ns,
@@ -115,6 +119,7 @@ pub(crate) fn run_onnx_model_jit(
             &mut env,
             &mut remaining,
             &output_id_mask,
+            reshape_shapes,
             |nidx| {
                 branches_ref.get(nidx).copied() != Some(0)
                     && branches_ref.get(nidx).copied() != Some(1)
@@ -132,6 +137,7 @@ pub(crate) fn run_onnx_model_jit(
             &mut env,
             &mut remaining_uses,
             &output_id_mask,
+            reshape_shapes,
             |_| true,
             &mut conv_ns,
             &mut other_ns,

@@ -1,6 +1,8 @@
 use rustc_hash::FxHashMap;
 pub(crate) use rustc_hash::FxHashSet;
 
+use crate::shape_infer::{ShapeMap, TensorShape, infer_shapes};
+
 pub(crate) use yscv_kernels::{
     BatchNorm2dParams, add as kernel_add, avg_pool2d_nhwc, batch_norm2d_nhwc, matmul_2d,
     max_pool2d_nhwc, mul as kernel_mul, relu, relu_inplace, sigmoid, softmax_last_dim,
@@ -61,24 +63,62 @@ pub(crate) use tensor_env::*;
 // OnnxRunner — reusable inference session with configurable threading
 // ---------------------------------------------------------------------------
 
+pub(crate) struct ShapeSpecialization {
+    input_shapes: Vec<(String, Vec<usize>)>,
+    reshape_shapes: FxHashMap<usize, Vec<usize>>,
+}
+
+fn shape_specialization(
+    model: &OnnxModel,
+    input_shapes: Vec<(String, Vec<usize>)>,
+) -> ShapeSpecialization {
+    let shapes: ShapeMap = input_shapes
+        .iter()
+        .map(|(name, shape)| (name.clone(), TensorShape::known(shape.clone())))
+        .collect();
+    let inferred = infer_shapes(model, &shapes);
+    let reshape_shapes = model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.op_type == "Reshape")
+        .filter_map(|(idx, node)| {
+            node.outputs
+                .first()
+                .and_then(|name| inferred.shapes.get(name))
+                .and_then(TensorShape::as_known_dims)
+                .map(|shape| (idx, shape))
+        })
+        .collect();
+    ShapeSpecialization {
+        input_shapes,
+        reshape_shapes,
+    }
+}
+
+fn runtime_input_shapes(
+    model: &OnnxModel,
+    env: &TensorEnv<'_, '_>,
+) -> Option<Vec<(String, Vec<usize>)>> {
+    model
+        .inputs
+        .iter()
+        .filter(|name| !model.initializers.contains_key(*name))
+        .map(|name| {
+            env.get(name)
+                .map(|tensor| (name.clone(), tensor.shape().to_vec()))
+        })
+        .collect()
+}
+
 /// Reusable inference session with configurable threading.
 ///
 /// By default uses all CPU cores (like ONNX Runtime's `intra_op_num_threads`).
 /// Use `with_threads(1)` for single-threaded execution.
-///
-/// ```rust,ignore
-/// use yscv_onnx::*;
-///
-/// let model = load_onnx_model("model.onnx")?;
-/// let runner = OnnxRunner::new(&model)?;           // all cores (default)
-/// let runner_1t = OnnxRunner::with_threads(&model, 1)?; // single-thread
-///
-/// let input = Tensor::from_vec(vec![1, 3, 640, 640], data)?;
-/// let outputs = runner.run(&[("images", &input)])?;
-/// ```
 pub struct OnnxRunner<'m> {
     model: &'m OnnxModel,
     pool: Option<rayon::ThreadPool>,
+    shape_specialization: std::sync::OnceLock<ShapeSpecialization>,
     /// Pool-agnostic scope for kernels migrated to `&dyn ParallelScope`.
     /// Built in lock-step with `pool`: when `pool == Some(p)`, this is a
     /// rayon-backed scope wrapping `p`; when `pool == None` it wraps
@@ -147,6 +187,7 @@ impl<'m> OnnxRunner<'m> {
         Ok(Self {
             model,
             pool: None,
+            shape_specialization: std::sync::OnceLock::new(),
             parallel_scope: scope,
             single_thread: false,
         })
@@ -170,6 +211,7 @@ impl<'m> OnnxRunner<'m> {
             return Ok(Self {
                 model,
                 pool: None,
+                shape_specialization: std::sync::OnceLock::new(),
                 parallel_scope: scope,
                 single_thread: true,
             });
@@ -220,6 +262,7 @@ impl<'m> OnnxRunner<'m> {
         Ok(Self {
             model,
             pool,
+            shape_specialization: std::sync::OnceLock::new(),
             parallel_scope: scope,
             single_thread: false,
         })
@@ -252,6 +295,13 @@ impl<'m> OnnxRunner<'m> {
     }
 
     fn run_with_env(&self, env: TensorEnv<'_, '_>) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+        let specialization = runtime_input_shapes(self.model, &env).and_then(|input_shapes| {
+            let specialization = self
+                .shape_specialization
+                .get_or_init(|| shape_specialization(self.model, input_shapes.clone()));
+            (specialization.input_shapes == input_shapes).then_some(specialization)
+        });
+
         // Install the active ParallelScope on the inference thread so
         // migrated kernel sites (see `yscv_kernels::with_scope`) pick it
         // up without a signature-threading refactor. Dropped
@@ -283,7 +333,7 @@ impl<'m> OnnxRunner<'m> {
             // Inline WITHOUT pinning does not help (the lone caller still
             // migrates), so this stays opt-in rather than the default.
             if std::env::var_os("YSCV_ST_INLINE").is_some() {
-                return run_onnx_model_inner(self.model, env);
+                return run_onnx_model_inner_specialized(self.model, env, specialization);
             }
             thread_local! {
                 static ST_POOL: rayon::ThreadPool = rayon::ThreadPoolBuilder::new()
@@ -291,7 +341,9 @@ impl<'m> OnnxRunner<'m> {
                     .build()
                     .expect("1-thread pool");
             }
-            return ST_POOL.with(|pool| pool.install(|| run_onnx_model_inner(self.model, env)));
+            return ST_POOL.with(|pool| {
+                pool.install(|| run_onnx_model_inner_specialized(self.model, env, specialization))
+            });
         }
 
         // Optionally enter a session-scoped parallel region: inside
@@ -311,11 +363,11 @@ impl<'m> OnnxRunner<'m> {
                 // Run directly on the caller thread; yscv workers pick
                 // up parallel work via `scope_ctx` when kernel sites
                 // call through.
-                run_onnx_model_inner(model, env)
+                run_onnx_model_inner_specialized(model, env, specialization)
             } else if let Some(pool) = &self.pool {
-                pool.install(|| run_onnx_model_inner(model, env))
+                pool.install(|| run_onnx_model_inner_specialized(model, env, specialization))
             } else {
-                run_onnx_model_inner(model, env)
+                run_onnx_model_inner_specialized(model, env, specialization)
             }
         };
 
@@ -437,9 +489,17 @@ fn run_onnx_model_inner(
     model: &OnnxModel,
     env: TensorEnv<'_, '_>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+    run_onnx_model_inner_specialized(model, env, None)
+}
+
+fn run_onnx_model_inner_specialized(
+    model: &OnnxModel,
+    env: TensorEnv<'_, '_>,
+    specialization: Option<&ShapeSpecialization>,
+) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     // Use JIT execution plan if available (pre-compiled dispatch, no per-node matching)
     if !model.runtime_index.execution_plan.is_empty() {
-        return run_onnx_model_jit(model, env);
+        return run_onnx_model_jit(model, env, specialization);
     }
 
     run_onnx_model_sequential(model, env)

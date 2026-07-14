@@ -11,6 +11,7 @@ pub(crate) fn execute_plan_branch(
     env: &mut TensorEnv<'_, '_>,
     remaining_uses: &mut [usize],
     output_id_mask: &[bool],
+    reshape_shapes: Option<&FxHashMap<usize, Vec<usize>>>,
     mut accept: impl FnMut(usize) -> bool,
     conv_ns: &mut u64,
     other_ns: &mut u64,
@@ -991,7 +992,14 @@ pub(crate) fn execute_plan_branch(
 
             NodeAction::Generic { node_idx, kind } => {
                 let node = &nodes[*node_idx];
-                execute_node_with_layout_kind(node, env, *kind)?;
+                if *kind == NodeKind::Reshape
+                    && !env.is_nhwc(&node.inputs[0])
+                    && let Some(shape) = reshape_shapes.and_then(|shapes| shapes.get(node_idx))
+                {
+                    exec_reshape_known(node, env, shape)?;
+                } else {
+                    execute_node_with_layout_kind(node, env, *kind)?;
+                }
             }
         }
 

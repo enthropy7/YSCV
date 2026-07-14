@@ -10,6 +10,35 @@ use yscv_kernels::metal_backend::metal_conv::MetalInference;
 
 use crate::error::OnnxError;
 use crate::loader::{OnnxModel, OnnxNode};
+use crate::shape_infer::{ShapeMap, TensorShape, infer_shapes};
+
+fn can_skip_cpu_shape_discovery(model: &OnnxModel, shapes: &ShapeMap) -> bool {
+    model.nodes.iter().all(|node| {
+        matches!(
+            node.op_type.as_str(),
+            "Conv"
+                | "Add"
+                | "Sub"
+                | "Mul"
+                | "Div"
+                | "Sigmoid"
+                | "Relu"
+                | "Concat"
+                | "Transpose"
+                | "Reshape"
+                | "MatMul"
+        ) && node
+            .outputs
+            .iter()
+            .filter(|name| !name.is_empty())
+            .all(|name| {
+                shapes
+                    .get(name)
+                    .and_then(TensorShape::as_known_dims)
+                    .is_some()
+            })
+    })
+}
 
 /// Compile a Metal execution plan for the given ONNX model.
 /// Runs a shape-inference pass on CPU, then pre-allocates Metal buffers
@@ -31,35 +60,43 @@ pub fn compile_metal_plan(
     let debug_metal = false;
     let mut env = TensorEnv::from_model(model);
     env.insert(input_name.to_string(), input_tensor.clone());
-    // We need tensor shapes AND data for fallback ops. Some ops (Split) consume
-    // their inputs, so we snapshot shapes + data for fallback-eligible outputs
-    // immediately after each node executes.
-    let mut cpu_shapes: FxHashMap<String, Vec<usize>> = FxHashMap::default();
+    let input_shapes: ShapeMap = FxHashMap::from_iter([(
+        input_name.to_string(),
+        TensorShape::known(input_tensor.shape().to_vec()),
+    )]);
+    let inferred = infer_shapes(model, &input_shapes);
+    // A supported, fully-known graph needs shapes but not a CPU execution. Keep
+    // the existing CPU walk for every other graph because fallback nodes may
+    // need their concrete values, not merely their output dimensions.
+    let skip_cpu_prepass = std::env::var("METAL_COMPARE").is_err()
+        && inferred.diagnostics.is_empty()
+        && can_skip_cpu_shape_discovery(model, &inferred.shapes);
+    let mut cpu_shapes: FxHashMap<String, Vec<usize>> = inferred
+        .shapes
+        .iter()
+        .filter_map(|(name, shape)| shape.as_known_dims().map(|dims| (name.clone(), dims)))
+        .collect();
     let mut cpu_data: FxHashMap<String, Vec<f32>> = FxHashMap::default();
-    for (ni, node) in model.nodes.iter().enumerate() {
-        if let Err(e) = execute_node_cpu_for_metal_compile(node, &mut env)
-            && debug_metal
-        {
-            eprintln!(
-                "  [metal] CPU pass node {} {} '{}' FAILED: {}",
-                ni, node.op_type, node.name, e
-            );
-        }
-        // Snapshot outputs that Metal will need for cpu_fallback
-        for out_name in &node.outputs {
-            if out_name.is_empty() {
-                continue;
+    if !skip_cpu_prepass {
+        for (ni, node) in model.nodes.iter().enumerate() {
+            if let Err(e) = execute_node_cpu_for_metal_compile(node, &mut env)
+                && debug_metal
+            {
+                eprintln!(
+                    "  [metal] CPU pass node {} {} '{}' FAILED: {}",
+                    ni, node.op_type, node.name, e
+                );
             }
-            if let Some(t) = env.get(out_name) {
-                cpu_shapes.insert(out_name.clone(), t.shape().to_vec());
-                // Only save data for cpu_fallback-eligible ops (shape ops, etc.)
-                // to avoid excessive memory usage.
-                // Save data for any op that might need cpu_fallback
-                // (shape ops, unknown ops, etc.) — limit to small tensors to save memory
-                let n_elem = t.len();
-                if n_elem <= 1_000_000 {
-                    // ~4MB limit per tensor
-                    cpu_data.insert(out_name.clone(), t.data().to_vec());
+            // Snapshot outputs that Metal will need for cpu_fallback.
+            for out_name in &node.outputs {
+                if out_name.is_empty() {
+                    continue;
+                }
+                if let Some(t) = env.get(out_name) {
+                    cpu_shapes.insert(out_name.clone(), t.shape().to_vec());
+                    if t.len() <= 1_000_000 {
+                        cpu_data.insert(out_name.clone(), t.data().to_vec());
+                    }
                 }
             }
         }
