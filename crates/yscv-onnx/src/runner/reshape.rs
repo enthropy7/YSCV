@@ -21,6 +21,27 @@ pub(super) fn exec_reshape(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
     exec_reshape_inner(node, env, None)
 }
 
+/// Reshape using the runner's cached shape-inference result. This is used only
+/// for ordinary NCHW inputs; layout-aware reshapes retain the generic path.
+pub(super) fn exec_reshape_known(
+    node: &OnnxNode,
+    env: &mut TensorEnv,
+    shape: &[usize],
+) -> Result<(), OnnxError> {
+    let input = get_tensor(env, &node.name, &node.inputs[0])?;
+    let expected_len = shape.iter().product::<usize>();
+    if input.len() != expected_len {
+        return exec_reshape(node, env);
+    }
+    let out = input
+        .reshape(shape.to_vec())
+        .map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+    env.insert(node.outputs[0].clone(), out);
+    Ok(())
+}
+
 /// Reshape with optional use-count awareness: when the data input has exactly
 /// one remaining consumer we can `remove` it from the environment and call
 /// `into_reshape` (zero-copy). Otherwise we fall back to a cloning `reshape`.
