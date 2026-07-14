@@ -55,6 +55,14 @@ jobs:
       - name: Test Workspace
         run: cargo test --workspace --release
 
+      # blas is off by default now; keep the OpenBLAS path (and the vcpkg
+      # OpenBLAS + MSVC numerical regression test) covered explicitly.
+      - name: BLAS feature check + kernel tests
+        if: runner.os != 'macOS'
+        run: |
+          cargo check --workspace --features blas
+          cargo test -p yscv-kernels --features blas --release --lib
+
       - name: GPU feature compilation check
         if: runner.os == 'Linux'
         run: cargo check -p yscv-kernels --features gpu
