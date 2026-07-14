@@ -53,7 +53,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/yscv-onnx-pr-bench/assets
-          key: onnx-pr-bench-assets-v1
+          key: onnx-pr-bench-assets-v2
 
       - name: Download benchmark assets
         run: benchmarks/perf-runners/onnx-pr-bench/download-assets.sh "$ASSET_DIR"
