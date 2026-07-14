@@ -11,7 +11,7 @@ categories.workspace = true
 keywords.workspace = true
 
 [features]
-default = ["blas"]
+default = []
 blas = ["yscv-kernels/blas"]
 gpu = ["yscv-kernels/gpu"]
 metal-backend = ["yscv-kernels/metal-backend", "dep:metal", "dep:objc"]

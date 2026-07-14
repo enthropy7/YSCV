@@ -213,7 +213,7 @@ Quick summary of the big ones:
 | `metal-backend` | Metal-native GPU pipeline (yscv's fastest backend on Apple Silicon) | macOS only |
 | `rknn` | Rockchip NPU via `librknnrt.so` (RK3588 / RK3576 / RV1106) — `dlopen` at runtime, full SDK 2.4.3a0 | Linux ARM64 (Rockchip device) |
 | `native-camera` | Real camera capture (V4L2 / AVFoundation / MediaFoundation) | All |
-| `blas` | Hardware BLAS — Accelerate on macOS, OpenBLAS on Linux/Windows | All (default) |
+| `blas` | Hardware BLAS — Accelerate on macOS, OpenBLAS on Linux/Windows (opt-in; default matmul is yscv's hand-tuned kernels) | All (opt-in) |
 | `mkl` | Intel MKL for vectorized math on x86 | x86/x86_64 |
 | `armpl` | ARM Performance Libraries on ARM Linux (Graviton, Ampere) | aarch64 Linux |
 

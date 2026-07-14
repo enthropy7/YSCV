@@ -14,7 +14,7 @@ the dedicated guides linked inline.
 
 ```
 yscv (umbrella)
-├── blas            default ON — BLAS matmul dispatch (Accelerate / OpenBLAS)
+├── blas            opt-in — external BLAS matmul (Accelerate / OpenBLAS)
 ├── gpu             wgpu cross-platform GPU            → gpu-backend-guide.md
 ├── metal-backend   Apple MPSGraph (macOS GPU)         → mpsgraph-guide.md
 ├── rknn            Rockchip NPU                       → edge-deployment.md
@@ -66,9 +66,9 @@ picks at runtime based on your TOML/API choice.
 
 ### `blas` — BLAS-accelerated matmul
 
-Default ON in the `yscv-kernels` / `yscv-onnx` crates; default OFF in
-the `private/onnx-fps` bench harness. Links a CBLAS implementation for
-SGEMM dispatch:
+Opt-in (default OFF) across all crates — the default matmul path is
+yscv's own hand-tuned SIMD/asm GEMM. Enabling `blas` links a CBLAS
+implementation for SGEMM dispatch:
 
 - **macOS** — `Accelerate.framework` (built into OS, zero setup). Uses
   Apple's AMX matrix accelerator; ~2× faster than OpenBLAS here.
