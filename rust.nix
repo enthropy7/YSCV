@@ -75,10 +75,6 @@
           ]
           ++ lib.optionals (isLinux && isAarch64) [
             "rknn"
-            # "armpl"
-          ]
-          ++ lib.optionals (isLinux && isX86_64) [
-            # "mkl"
           ];
 
           mkTest = feature: {
