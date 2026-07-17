@@ -61,7 +61,9 @@ packing loop.
 Cascade dispatch: 48→32→16→8→4→scalar columns. k-loop unrolled by 2
 with doubled accumulator sets to break FMA latency dependency chains
 (FMA latency = 4 cycles, 2 FMA ports on Zen 4 — spacing accumulator
-reuse to 4+ cycles eliminates pipeline stalls).
+reuse to 4+ cycles eliminates pipeline stalls). Four-row transposed-A tiles
+prefetch strided B panels four K iterations ahead for the measured
+`M >= 128, K <= 32` AVX/FMA range and in-order Cortex-A53/A55 kernels.
 
 ### Depthwise Conv SIMD
 
