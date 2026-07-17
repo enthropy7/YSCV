@@ -4,6 +4,25 @@
 
 use super::*;
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+const MATMUL_PREFETCH_AHEAD: usize = 4;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn prefetch_l1_keep(p: *const f32) {
+    #[cfg(target_arch = "x86")]
+    std::arch::x86::_mm_prefetch::<{ std::arch::x86::_MM_HINT_T0 }>(p as *const i8);
+    #[cfg(target_arch = "x86_64")]
+    std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(p as *const i8);
+    #[cfg(target_arch = "aarch64")]
+    core::arch::asm!(
+        "prfm pldl1keep, [{p}]",
+        p = in(reg) p,
+        options(nostack, preserves_flags, readonly),
+    );
+}
+
 pub(super) fn non_trans_4row_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::env::var_os("YSCV_NON_TRANS_4ROW_OFF").is_some())
@@ -929,6 +948,8 @@ unsafe fn trans_a_4row_avx2(
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
+    let prefetch = m >= 128 && n > 16 && k <= 32;
+    let prefetch_end = k.saturating_sub(MATMUL_PREFETCH_AHEAD);
     unsafe {
         let r0 = out_4rows.as_mut_ptr();
         let r1 = r0.add(n);
@@ -955,6 +976,9 @@ unsafe fn trans_a_4row_avx2(
                 let a1 = _mm256_set1_ps(*a_row.add(1));
                 let a2 = _mm256_set1_ps(*a_row.add(2));
                 let a3 = _mm256_set1_ps(*a_row.add(3));
+                if prefetch && ki < prefetch_end {
+                    prefetch_l1_keep(b.as_ptr().add((ki + MATMUL_PREFETCH_AHEAD) * n + col));
+                }
                 let bptr = b.as_ptr().add(ki * n + col);
                 let b0 = _mm256_loadu_ps(bptr);
                 let b1 = _mm256_loadu_ps(bptr.add(8));
@@ -1015,6 +1039,8 @@ unsafe fn trans_a_4row_neon(
     n: usize,
     out_4rows: &mut [f32],
 ) {
+    let prefetch = n > 16 && crate::host_cpu().uarch.is_in_order();
+    let prefetch_end = k.saturating_sub(MATMUL_PREFETCH_AHEAD);
     unsafe {
         let r0 = out_4rows.as_mut_ptr();
         let r1 = r0.add(n);
@@ -1048,6 +1074,9 @@ unsafe fn trans_a_4row_neon(
                 let a1 = vdupq_n_f32(*a_row.add(1));
                 let a2 = vdupq_n_f32(*a_row.add(2));
                 let a3 = vdupq_n_f32(*a_row.add(3));
+                if prefetch && ki < prefetch_end {
+                    prefetch_l1_keep(b.as_ptr().add((ki + MATMUL_PREFETCH_AHEAD) * n + col));
+                }
                 let bptr = b.as_ptr().add(ki * n + col);
                 let b0 = vld1q_f32(bptr);
                 let b1 = vld1q_f32(bptr.add(4));
