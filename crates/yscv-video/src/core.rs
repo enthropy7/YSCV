@@ -37,6 +37,10 @@ pub mod h264_bitstream;
 pub mod h264_bslice;
 #[path = "h264_cabac.rs"]
 pub mod h264_cabac;
+#[path = "h264_cabac_init.rs"]
+mod h264_cabac_init;
+#[path = "h264_chase.rs"]
+mod h264_chase;
 #[path = "h264_deblock.rs"]
 pub mod h264_deblock;
 #[path = "h264_decoder.rs"]
@@ -137,9 +141,7 @@ pub use h264_bitstream::BitstreamReader;
 pub use h264_bslice::{BPredMode, BiMotionVector, decode_b_macroblock, motion_compensate_bipred};
 pub use h264_cabac::{
     CabacContext, CabacDecoder as H264CabacDecoder, EntropyCodingMode,
-    NUM_CABAC_CONTEXTS as H264_NUM_CABAC_CONTEXTS, decode_coded_block_flag,
-    decode_exp_golomb_bypass, decode_fixed_length, decode_mb_type_i_slice, decode_mb_type_p_slice,
-    decode_residual_block_cabac, decode_truncated_unary, decode_unary, init_cabac_contexts,
+    NUM_CABAC_CONTEXTS as H264_NUM_CABAC_CONTEXTS,
 };
 pub use h264_deblock::{compute_boundary_strength, deblock_edge_luma, deblock_frame};
 pub use h264_decoder::H264Decoder;

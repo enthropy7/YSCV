@@ -1015,3 +1015,22 @@ fn edge_pipeline_end_to_end() {
         "every encoded frame must start with Annex B start code"
     );
 }
+
+/// Regression for issue #20 (bonus bug 1): `H264Encoder::encode_frame` used to
+/// panic with an out-of-bounds index when width/height were not multiples of
+/// 16, because macroblock coding walks the 16-aligned grid while the input
+/// plane was only `width*height`. The encoder now edge-pads to the MB grid.
+#[test]
+fn h264_encoder_handles_non_16_aligned_dimensions() {
+    use super::h264_encoder::{H264Encoder, rgb8_to_yuv420};
+    for (w, h) in [(640usize, 360usize), (641, 361), (100, 100), (16, 16)] {
+        let rgb = vec![90u8; w * h * 3];
+        let yuv = rgb8_to_yuv420(&rgb, w, h);
+        let mut enc = H264Encoder::new(w as u32, h as u32, 28);
+        let au = enc.encode_frame(&yuv);
+        assert!(
+            au.len() > 4,
+            "{w}x{h}: encoder must emit a non-empty access unit"
+        );
+    }
+}

@@ -258,6 +258,11 @@ pub struct Mp4VideoReader {
     hw_init_au: Option<Vec<u8>>,
     /// Current HW sample index for streaming decode.
     hw_sample_idx: usize,
+    /// Frames drained from the decoder's display-reorder buffer at end of
+    /// stream (B-frame latency), returned one per `next_frame` call.
+    flush_queue: std::collections::VecDeque<super::codec::DecodedFrame>,
+    /// Whether the end-of-stream flush has been performed.
+    flushed: bool,
 }
 
 impl Mp4VideoReader {
@@ -371,6 +376,8 @@ impl Mp4VideoReader {
             params_fed: false,
             hw_init_au: None,
             hw_sample_idx: 0,
+            flush_queue: std::collections::VecDeque::new(),
+            flushed: false,
         })
     }
 
@@ -550,7 +557,17 @@ impl Mp4VideoReader {
                 }
             }
         }
-        Ok(None)
+
+        // End of samples: drain the H.264 decoder's display-reorder buffer
+        // (trailing B-frames held for display order), one frame per call.
+        if !self.flushed {
+            self.flushed = true;
+            if let Mp4Decoder::H264(ref mut dec) = self.decoder {
+                use super::codec::VideoDecoder;
+                self.flush_queue.extend(dec.flush().unwrap_or_default());
+            }
+        }
+        Ok(self.flush_queue.pop_front())
     }
 
     /// Decode the next frame in luma-only mode (skip RGB conversion entirely).
@@ -558,8 +575,11 @@ impl Mp4VideoReader {
     pub fn next_frame_luma_only(
         &mut self,
     ) -> Result<Option<super::codec::DecodedFrame>, VideoError> {
-        // Enable skip_rgb on HEVC decoder
+        // Enable skip_rgb on the software decoders
         if let Mp4Decoder::Hevc(ref mut dec) = self.decoder {
+            dec.skip_rgb = true;
+        }
+        if let Mp4Decoder::H264(ref mut dec) = self.decoder {
             dec.skip_rgb = true;
         }
         self.next_frame()

@@ -831,6 +831,20 @@ fn write_nal_unit(output: &mut Vec<u8>, nal_ref_idc: u8, nal_type: u8, rbsp: &[u
 ///
 /// Output layout: Y plane (width * height) + U plane (w/2 * h/2) + V plane (w/2 * h/2).
 /// Width and height must be even.
+/// Replicate a plane's right and bottom edges to reach `dst_w`×`dst_h`
+/// (`dst >= src` in both dims). Used to pad frames up to the macroblock grid.
+fn pad_plane_edge(src: &[u8], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Vec<u8> {
+    debug_assert!(src_w > 0 && src_h > 0 && dst_w >= src_w && dst_h >= src_h);
+    let mut dst = vec![0u8; dst_w * dst_h];
+    for (y, dst_row) in dst.chunks_exact_mut(dst_w).enumerate() {
+        let sy = y.min(src_h - 1);
+        let src_row = &src[sy * src_w..sy * src_w + src_w];
+        dst_row[..src_w].copy_from_slice(src_row);
+        dst_row[src_w..].fill(src_row[src_w - 1]);
+    }
+    dst
+}
+
 pub fn rgb8_to_yuv420(rgb: &[u8], width: usize, height: usize) -> Vec<u8> {
     let y_size = width * height;
     let uv_w = width / 2;
@@ -1137,14 +1151,35 @@ impl H264Encoder {
 
         let mb_w = self.mb_width() as usize;
         let mb_h = self.mb_height() as usize;
-        let width = self.width as usize;
-        let height = self.height as usize;
-        let y_plane = &yuv420[..width * height];
-        let uv_offset = width * height;
+        let src_w = self.width as usize;
+        let src_h = self.height as usize;
+        let src_uv_w = src_w / 2;
+        let src_uv_h = src_h / 2;
+        let src_y = &yuv420[..src_w * src_h];
+        let uv_offset = src_w * src_h;
+        let src_u = &yuv420[uv_offset..uv_offset + src_uv_w * src_uv_h];
+        let src_v = &yuv420[uv_offset + src_uv_w * src_uv_h..uv_offset + 2 * src_uv_w * src_uv_h];
+
+        // Macroblock coding operates on 16-aligned dimensions; the input may not
+        // be (e.g. 640x360). Pad luma/chroma to the MB grid by edge replication
+        // so partial edge macroblocks read valid samples instead of overrunning
+        // the buffer. The SPS already advertises the padded MB dimensions.
+        let width = mb_w * 16;
+        let height = mb_h * 16;
         let uv_w = width / 2;
         let uv_h = height / 2;
-        let u_plane = &yuv420[uv_offset..uv_offset + uv_w * uv_h];
-        let v_plane = &yuv420[uv_offset + uv_w * uv_h..];
+        let y_owned;
+        let u_owned;
+        let v_owned;
+        let (y_plane, u_plane, v_plane): (&[u8], &[u8], &[u8]) =
+            if width == src_w && height == src_h {
+                (src_y, src_u, src_v)
+            } else {
+                y_owned = pad_plane_edge(src_y, src_w, src_h, width, height);
+                u_owned = pad_plane_edge(src_u, src_uv_w, src_uv_h, uv_w, uv_h);
+                v_owned = pad_plane_edge(src_v, src_uv_w, src_uv_h, uv_w, uv_h);
+                (&y_owned, &u_owned, &v_owned)
+            };
 
         // Track non-zero coefficient counts for CAVLC context
         // nC is derived from neighbors; for simplicity use 0 for the first MB row

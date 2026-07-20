@@ -35,6 +35,21 @@ impl<'a> BitstreamReader<'a> {
         self.byte_offset * 8 + self.bit_offset as usize
     }
 
+    /// `more_rbsp_data()` (clause 7.2): true when unread payload remains before
+    /// the `rbsp_stop_one_bit`. The RBSP ends with a single 1 bit followed by
+    /// zero-padding, so this returns true only if the current position lies
+    /// strictly before that last set bit.
+    pub fn more_rbsp_data(&self) -> bool {
+        let cur = self.bits_consumed();
+        let total = self.data.len() * 8;
+        for i in (cur..total).rev() {
+            if (self.data[i / 8] >> (7 - (i % 8) as u8)) & 1 == 1 {
+                return cur < i;
+            }
+        }
+        false
+    }
+
     /// Reads a single bit (0 or 1).
     pub fn read_bit(&mut self) -> Result<u8, VideoError> {
         if self.byte_offset >= self.data.len() {

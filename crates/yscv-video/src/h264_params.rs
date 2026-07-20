@@ -19,11 +19,16 @@ pub struct Sps {
     pub log2_max_frame_num: u32,
     pub pic_order_cnt_type: u32,
     pub log2_max_pic_order_cnt_lsb: u32,
+    /// delta_pic_order_always_zero_flag (POC type 1).
+    pub delta_pic_order_always_zero: bool,
     pub max_num_ref_frames: u32,
     pub pic_width_in_mbs: u32,
     pub pic_height_in_map_units: u32,
     pub frame_mbs_only_flag: bool,
     pub mb_adaptive_frame_field_flag: bool,
+    /// direct_8x8_inference_flag: B-slice direct motion is derived per 8x8
+    /// (using the sub-block corners) rather than per 4x4 (clause 8.4.1.2).
+    pub direct_8x8_inference: bool,
     pub frame_crop_left: u32,
     pub frame_crop_right: u32,
     pub frame_crop_top: u32,
@@ -137,10 +142,11 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
     let pic_order_cnt_type = r.read_ue()?;
 
     let mut log2_max_pic_order_cnt_lsb = 0u32;
+    let mut delta_pic_order_always_zero = false;
     if pic_order_cnt_type == 0 {
         log2_max_pic_order_cnt_lsb = r.read_ue()? + 4;
     } else if pic_order_cnt_type == 1 {
-        let _delta_pic_order_always_zero_flag = r.read_bit()?;
+        delta_pic_order_always_zero = r.read_bit()? == 1;
         let _offset_for_non_ref_pic = r.read_se()?;
         let _offset_for_top_to_bottom = r.read_se()?;
         let num_ref_frames_in_poc = r.read_ue()?;
@@ -166,7 +172,7 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
         false
     };
 
-    let _direct_8x8_inference = r.read_bit()?;
+    let direct_8x8_inference = r.read_bit()? == 1;
 
     let mut frame_crop_left = 0u32;
     let mut frame_crop_right = 0u32;
@@ -191,11 +197,13 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
         log2_max_frame_num,
         pic_order_cnt_type,
         log2_max_pic_order_cnt_lsb,
+        delta_pic_order_always_zero,
         max_num_ref_frames,
         pic_width_in_mbs,
         pic_height_in_map_units,
         frame_mbs_only_flag,
         mb_adaptive_frame_field_flag,
+        direct_8x8_inference,
         frame_crop_left,
         frame_crop_right,
         frame_crop_top,
@@ -299,8 +307,15 @@ pub struct Pps {
     pub weighted_pred_flag: bool,
     pub weighted_bipred_idc: u32,
     pub pic_init_qp: i32,
+    /// chroma_qp_index_offset — added to QPy before the chroma QP table lookup.
+    pub chroma_qp_index_offset: i32,
     pub deblocking_filter_control_present_flag: bool,
     pub transform_8x8_mode_flag: bool,
+    /// bottom_field_pic_order_in_frame_present_flag: a frame slice header then
+    /// carries delta_pic_order_cnt_bottom (POC type 0 / 1).
+    pub bottom_field_pic_order_present: bool,
+    /// redundant_pic_cnt_present_flag: the slice header carries redundant_pic_cnt.
+    pub redundant_pic_cnt_present_flag: bool,
 }
 
 /// Parses a PPS NAL unit (without the NAL header byte).
@@ -314,7 +329,7 @@ pub fn parse_pps(nal_data: &[u8]) -> Result<Pps, VideoError> {
     let pps_id = r.read_ue()?;
     let sps_id = r.read_ue()?;
     let entropy_coding_mode_flag = r.read_bit()? == 1;
-    let _bottom_field_pic_order = r.read_bit()?;
+    let bottom_field_pic_order_present = r.read_bit()? == 1;
     let num_slice_groups = r.read_ue()? + 1;
 
     let mut slice_group_map_type = 0u32;
@@ -372,19 +387,22 @@ pub fn parse_pps(nal_data: &[u8]) -> Result<Pps, VideoError> {
     // pic_init_qs_minus26 (unused, for SP/SI slices)
     let _pic_init_qs = r.read_se()?;
     // chroma_qp_index_offset
-    let _chroma_qp_index_offset = r.read_se()?;
+    let chroma_qp_index_offset = r.read_se()?;
     let deblocking_filter_control_present_flag = r.read_bit()? == 1;
     let _constrained_intra_pred_flag = r.read_bit()?;
-    let _redundant_pic_cnt_present_flag = r.read_bit()?;
+    let redundant_pic_cnt_present_flag = r.read_bit()? == 1;
 
-    // High profile PPS extension: transform_8x8_mode_flag + second_chroma_qp_index_offset
-    let transform_8x8_mode_flag = if r.bits_remaining() >= 1 {
+    // High-profile PPS extension (transform_8x8_mode_flag, pic_scaling_matrix,
+    // second_chroma_qp_index_offset) is present only when payload remains before
+    // the rbsp_stop_one_bit — `bits_remaining() >= 1` would misread the stop bit
+    // of a Baseline/Main PPS as a set transform_8x8_mode_flag.
+    let transform_8x8_mode_flag = if r.more_rbsp_data() {
         r.read_bit().unwrap_or(0) == 1
     } else {
         false
     };
-    // Skip remaining high profile fields (scaling_list_8x8, second_chroma_qp_index_offset)
-    // if present — we don't need them for basic decode
+    // Remaining high-profile fields (pic_scaling_matrix, second_chroma_qp_index_offset)
+    // are not needed for the current decode path.
 
     Ok(Pps {
         pps_id,
@@ -403,8 +421,11 @@ pub fn parse_pps(nal_data: &[u8]) -> Result<Pps, VideoError> {
         weighted_pred_flag,
         weighted_bipred_idc,
         pic_init_qp,
+        chroma_qp_index_offset,
         deblocking_filter_control_present_flag,
         transform_8x8_mode_flag,
+        bottom_field_pic_order_present,
+        redundant_pic_cnt_present_flag,
     })
 }
 
@@ -450,6 +471,39 @@ pub struct SliceHeader {
     pub qp: i32,
     /// Weighted prediction table (populated when PPS weighted_pred_flag is set).
     pub weight_table: Option<WeightTable>,
+    /// `disable_deblocking_filter_idc` (0 = filter on, 1 = off, 2 = off at slice
+    /// boundaries). Defaults to 0 when not present in the slice header.
+    pub disable_deblocking_filter_idc: u32,
+    /// FilterOffsetA = slice_alpha_c0_offset_div2 * 2 (clause 8.7): added to
+    /// the averaged QP before the alpha / tc0 table lookups.
+    pub alpha_c0_offset: i32,
+    /// FilterOffsetB = slice_beta_offset_div2 * 2: added before the beta lookup.
+    pub beta_offset: i32,
+    /// `num_ref_idx_l0_active_minus1 + 1` when the slice overrides the PPS
+    /// default (clause 7.3.3).
+    pub num_ref_idx_l0_active: Option<u32>,
+    /// ref_pic_list_modification l0 ops as (modification_of_pic_nums_idc,
+    /// abs_diff_pic_num_minus1 / long_term_pic_num) pairs (clause 7.3.3.1).
+    pub ref_list_mods_l0: Vec<(u32, u32)>,
+    /// cabac_init_idc (0..2) selecting the P/B context init table (clause 9.3.1.1).
+    pub cabac_init_idc: u8,
+    /// pic_order_cnt_lsb (POC type 0); used to derive the picture order count for
+    /// B-slice reference-list ordering and display reordering (clause 8.2.1).
+    pub poc_lsb: u32,
+    /// delta_pic_order_cnt_bottom (POC type 0, frame with bottom-field present).
+    pub delta_poc_bottom: i32,
+    /// delta_pic_order_cnt[0..2] (POC type 1).
+    pub delta_poc: [i32; 2],
+    /// direct_spatial_mv_pred_flag (B slices): true = spatial direct, false =
+    /// temporal direct (clause 8.4.1.2).
+    pub direct_spatial_mv_pred: bool,
+    /// num_ref_idx_l1_active_minus1 + 1 when the B slice overrides the PPS default.
+    pub num_ref_idx_l1_active: Option<u32>,
+    /// ref_pic_list_modification l1 ops (clause 7.3.3.1), B slices.
+    pub ref_list_mods_l1: Vec<(u32, u32)>,
+    /// Captured memory_management_control operations (op, arg): op 1 retires a
+    /// short-term picture (arg = difference_of_pic_nums_minus1), op 5 clears all.
+    pub mmco: Vec<(u32, u32)>,
 }
 
 /// Parses the pred_weight_table() from the slice header (H.264 7.3.3.2).
@@ -587,6 +641,7 @@ pub(crate) fn parse_slice_header(
     sps: &Sps,
     pps: &Pps,
     is_idr: bool,
+    is_reference: bool,
 ) -> Result<SliceHeader, VideoError> {
     let first_mb_in_slice = r.read_ue()?;
     let slice_type = r.read_ue()?;
@@ -606,26 +661,49 @@ pub(crate) fn parse_slice_header(
         let _idr_pic_id = r.read_ue()?;
     }
 
-    if sps.pic_order_cnt_type == 0 {
-        let _pic_order_cnt_lsb = r.read_bits(sps.log2_max_pic_order_cnt_lsb as u8)?;
-    }
-
     let is_i_slice = slice_type == 2 || slice_type == 7;
     let is_p_slice = slice_type == 0 || slice_type == 5;
     let is_b_slice = slice_type == 1 || slice_type == 6;
 
+    // pic_order_cnt fields (clause 7.3.3): captured to derive POC (8.2.1).
+    let mut poc_lsb = 0u32;
+    let mut delta_poc_bottom = 0i32;
+    let mut delta_poc = [0i32; 2];
+    if sps.pic_order_cnt_type == 0 {
+        poc_lsb = r.read_bits(sps.log2_max_pic_order_cnt_lsb as u8)?;
+        if pps.bottom_field_pic_order_present && !field_pic_flag {
+            delta_poc_bottom = r.read_se()?;
+        }
+    } else if sps.pic_order_cnt_type == 1 && !sps.delta_pic_order_always_zero {
+        delta_poc[0] = r.read_se()?;
+        if pps.bottom_field_pic_order_present && !field_pic_flag {
+            delta_poc[1] = r.read_se()?;
+        }
+    }
+    if pps.redundant_pic_cnt_present_flag {
+        let _redundant_pic_cnt = r.read_ue()?;
+    }
+
+    // direct_spatial_mv_pred_flag (B slices) precedes the ref-index overrides.
+    let direct_spatial_mv_pred = if is_b_slice { r.read_bit()? == 1 } else { false };
+
     // num_ref_idx_active_override_flag + num_ref_idx overrides (for P/B slices)
+    let mut num_ref_idx_l0_active = None;
+    let mut num_ref_idx_l1_active = None;
     if !is_i_slice {
         let num_ref_override = r.read_bit()? == 1;
         if num_ref_override {
-            let _num_ref_idx_l0 = r.read_ue()? + 1;
+            num_ref_idx_l0_active = Some(r.read_ue()? + 1);
             if is_b_slice {
-                let _num_ref_idx_l1 = r.read_ue()? + 1;
+                num_ref_idx_l1_active = Some(r.read_ue()? + 1);
             }
         }
     }
 
-    // ref_pic_list_modification() — skip for P/B slices
+    // ref_pic_list_modification() for P/B slices: capture the l0 ops so the
+    // decoder can reorder its reference list (clause 8.2.4.3).
+    let mut ref_list_mods_l0 = Vec::new();
+    let mut ref_list_mods_l1: Vec<(u32, u32)> = Vec::new();
     if !is_i_slice {
         // ref_pic_list_modification_flag_l0
         let mod_flag_l0 = r.read_bit()? == 1;
@@ -635,7 +713,7 @@ pub(crate) fn parse_slice_header(
                 if op == 3 {
                     break;
                 } // end
-                let _val = r.read_ue()?;
+                ref_list_mods_l0.push((op, r.read_ue()?));
                 if r.bits_remaining() < 4 {
                     break;
                 }
@@ -649,7 +727,7 @@ pub(crate) fn parse_slice_header(
                     if op == 3 {
                         break;
                     }
-                    let _val = r.read_ue()?;
+                    ref_list_mods_l1.push((op, r.read_ue()?));
                     if r.bits_remaining() < 4 {
                         break;
                     }
@@ -658,25 +736,35 @@ pub(crate) fn parse_slice_header(
         }
     }
 
-    // pred_weight_table() — comes BEFORE dec_ref_pic_marking per H.264 spec 7.3.3
+    // pred_weight_table() — comes BEFORE dec_ref_pic_marking per H.264 spec 7.3.3.
+    // The weight loop counts use the slice-overridden reference counts (clause
+    // 7.3.3.2), not the PPS defaults.
+    let weight_l0 = num_ref_idx_l0_active.unwrap_or(pps.num_ref_idx_l0_default_active);
+    let weight_l1 = num_ref_idx_l1_active.unwrap_or(pps.num_ref_idx_l1_default_active);
     let weight_table =
         if (is_p_slice && pps.weighted_pred_flag) || (is_b_slice && pps.weighted_bipred_idc == 1) {
             Some(parse_weight_table(
                 r,
                 slice_type,
-                pps.num_ref_idx_l0_default_active,
-                pps.num_ref_idx_l1_default_active,
+                weight_l0,
+                weight_l1,
                 sps.chroma_format_idc,
             )?)
         } else {
             None
         };
 
-    // dec_ref_pic_marking()
+    // dec_ref_pic_marking() — present only for reference pictures (nal_ref_idc
+    // != 0). Non-reference B slices omit it entirely (clause 7.3.3.3); reading
+    // it anyway would consume an extra bit and misalign the CABAC start.
+    // Captured memory_management_control operations (clause 8.2.5.4): B-pyramid
+    // streams use op 1 to explicitly retire a B reference after its mini-GOP,
+    // so the sliding-window FIFO alone would keep the wrong DPB entries.
+    let mut mmco: Vec<(u32, u32)> = Vec::new();
     if is_idr {
         let _no_output_of_prior_pics = r.read_bit()?;
         let _long_term_reference_flag = r.read_bit()?;
-    } else {
+    } else if is_reference {
         let adaptive = r.read_bit()? == 1;
         if adaptive {
             loop {
@@ -685,8 +773,9 @@ pub(crate) fn parse_slice_header(
                     break;
                 }
                 match op {
+                    // 1: mark a short-term picture unused (difference_of_pic_nums).
                     1 => {
-                        let _ = r.read_ue()?;
+                        mmco.push((1, r.read_ue()?));
                     }
                     2 => {
                         let _ = r.read_ue()?;
@@ -698,7 +787,10 @@ pub(crate) fn parse_slice_header(
                     4 => {
                         let _ = r.read_ue()?;
                     }
-                    5 => {}
+                    // 5: mark all reference pictures unused.
+                    5 => {
+                        mmco.push((5, 0));
+                    }
                     6 => {
                         let _ = r.read_ue()?;
                     }
@@ -712,19 +804,23 @@ pub(crate) fn parse_slice_header(
     }
 
     // cabac_init_idc (for CABAC slices, non-I only)
+    let mut cabac_init_idc = 0u8;
     if pps.entropy_coding_mode_flag && !is_i_slice {
-        let _cabac_init_idc = r.read_ue()?;
+        cabac_init_idc = r.read_ue()?.min(2) as u8;
     }
 
     let slice_qp_delta = r.read_se()?;
     let qp = pps.pic_init_qp + slice_qp_delta;
 
     // deblocking filter parameters (when pps flag is set)
+    let mut disable_deblocking_filter_idc = 0;
+    let mut alpha_c0_offset = 0;
+    let mut beta_offset = 0;
     if pps.deblocking_filter_control_present_flag {
-        let disable_deblocking = r.read_ue()?;
-        if disable_deblocking != 1 {
-            let _alpha_offset = r.read_se()?;
-            let _beta_offset = r.read_se()?;
+        disable_deblocking_filter_idc = r.read_ue()?;
+        if disable_deblocking_filter_idc != 1 {
+            alpha_c0_offset = r.read_se()? * 2;
+            beta_offset = r.read_se()? * 2;
         }
     }
 
@@ -737,5 +833,18 @@ pub(crate) fn parse_slice_header(
         bottom_field_flag,
         qp,
         weight_table,
+        disable_deblocking_filter_idc,
+        alpha_c0_offset,
+        beta_offset,
+        num_ref_idx_l0_active,
+        ref_list_mods_l0,
+        cabac_init_idc,
+        poc_lsb,
+        delta_poc_bottom,
+        delta_poc,
+        direct_spatial_mv_pred,
+        num_ref_idx_l1_active,
+        ref_list_mods_l1,
+        mmco,
     })
 }

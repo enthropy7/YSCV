@@ -283,56 +283,64 @@ pub(crate) const ZIGZAG_4X4: [(usize, usize); 16] = [
 /// Uses the simplified butterfly operations specified in ITU-T H.264
 /// section 8.5.13 (Table 8-13). Coefficients should already be dequantized.
 pub fn inverse_dct_8x8(coeffs: &mut [i32; 64]) {
-    // Process rows (8 iterations)
+    // One 1D inverse transform (clause 8.5.13.2), three butterfly stages; the
+    // middle stage's `>> 2` refinements are what distinguish it from the 4x4.
+    #[inline]
+    fn idct8_1d(e: [i32; 8]) -> [i32; 8] {
+        let a0 = e[0] + e[4];
+        let a4 = e[0] - e[4];
+        let a2 = (e[2] >> 1) - e[6];
+        let a6 = e[2] + (e[6] >> 1);
+        let a1 = -e[3] + e[5] - e[7] - (e[7] >> 1);
+        let a3 = e[1] + e[7] - e[3] - (e[3] >> 1);
+        let a5 = -e[1] + e[7] + e[5] + (e[5] >> 1);
+        let a7 = e[3] + e[5] + e[1] + (e[1] >> 1);
+
+        let b0 = a0 + a6;
+        let b2 = a4 + a2;
+        let b4 = a4 - a2;
+        let b6 = a0 - a6;
+        let b1 = a1 + (a7 >> 2);
+        let b3 = a3 + (a5 >> 2);
+        let b5 = (a3 >> 2) - a5;
+        let b7 = a7 - (a1 >> 2);
+
+        [
+            b0 + b7,
+            b2 + b5,
+            b4 + b3,
+            b6 + b1,
+            b6 - b1,
+            b4 - b3,
+            b2 - b5,
+            b0 - b7,
+        ]
+    }
+
+    // The intermediate `>> 1` / `>> 2` floors make the 1D transform non-linear,
+    // so the pass order and where the +32 rounding bias lands both affect the
+    // result by ±1 on some inputs. Match the conformant reference exactly: add
+    // the bias to the DC coefficient once, transform columns then rows, and
+    // normalise with a bare `>> 6`.
+    // Rows, then columns; final normalisation (x + 32) >> 6 after the columns.
     for i in 0..8 {
         let base = i * 8;
-        let a0 = coeffs[base] + coeffs[base + 4];
-        let a1 = -coeffs[base + 3] + coeffs[base + 5] - coeffs[base + 7] - (coeffs[base + 7] >> 1);
-        let a2 = coeffs[base] - coeffs[base + 4];
-        let a3 = coeffs[base + 1] + coeffs[base + 7] - coeffs[base + 3] - (coeffs[base + 3] >> 1);
-        let a4 = (coeffs[base + 2] >> 1) - coeffs[base + 6];
-        let a5 = -coeffs[base + 1] + coeffs[base + 7] + coeffs[base + 5] + (coeffs[base + 5] >> 1);
-        let a6 = coeffs[base + 2] + (coeffs[base + 6] >> 1);
-        let a7 = coeffs[base + 3] + coeffs[base + 5] + coeffs[base + 1] + (coeffs[base + 1] >> 1);
-
-        let b0 = a0 + a6;
-        let b1 = a2 + a4;
-        let b2 = a2 - a4;
-        let b3 = a0 - a6;
-
-        coeffs[base] = b0 + a7;
-        coeffs[base + 1] = b1 + a5;
-        coeffs[base + 2] = b2 + a3;
-        coeffs[base + 3] = b3 + a1;
-        coeffs[base + 4] = b3 - a1;
-        coeffs[base + 5] = b2 - a3;
-        coeffs[base + 6] = b1 - a5;
-        coeffs[base + 7] = b0 - a7;
+        let row = [
+            coeffs[base], coeffs[base + 1], coeffs[base + 2], coeffs[base + 3],
+            coeffs[base + 4], coeffs[base + 5], coeffs[base + 6], coeffs[base + 7],
+        ];
+        let g = idct8_1d(row);
+        coeffs[base..base + 8].copy_from_slice(&g);
     }
-    // Process columns (same butterfly with stride 8 and final normalization >>6)
     for j in 0..8 {
-        let a0 = coeffs[j] + coeffs[32 + j];
-        let a1 = -coeffs[24 + j] + coeffs[40 + j] - coeffs[56 + j] - (coeffs[56 + j] >> 1);
-        let a2 = coeffs[j] - coeffs[32 + j];
-        let a3 = coeffs[8 + j] + coeffs[56 + j] - coeffs[24 + j] - (coeffs[24 + j] >> 1);
-        let a4 = (coeffs[16 + j] >> 1) - coeffs[48 + j];
-        let a5 = -coeffs[8 + j] + coeffs[56 + j] + coeffs[40 + j] + (coeffs[40 + j] >> 1);
-        let a6 = coeffs[16 + j] + (coeffs[48 + j] >> 1);
-        let a7 = coeffs[24 + j] + coeffs[40 + j] + coeffs[8 + j] + (coeffs[8 + j] >> 1);
-
-        let b0 = a0 + a6;
-        let b1 = a2 + a4;
-        let b2 = a2 - a4;
-        let b3 = a0 - a6;
-
-        coeffs[j] = (b0 + a7 + 32) >> 6;
-        coeffs[8 + j] = (b1 + a5 + 32) >> 6;
-        coeffs[16 + j] = (b2 + a3 + 32) >> 6;
-        coeffs[24 + j] = (b3 + a1 + 32) >> 6;
-        coeffs[32 + j] = (b3 - a1 + 32) >> 6;
-        coeffs[40 + j] = (b2 - a3 + 32) >> 6;
-        coeffs[48 + j] = (b1 - a5 + 32) >> 6;
-        coeffs[56 + j] = (b0 - a7 + 32) >> 6;
+        let col = [
+            coeffs[j], coeffs[8 + j], coeffs[16 + j], coeffs[24 + j],
+            coeffs[32 + j], coeffs[40 + j], coeffs[48 + j], coeffs[56 + j],
+        ];
+        let g = idct8_1d(col);
+        for (k, &v) in g.iter().enumerate() {
+            coeffs[k * 8 + j] = (v + 32) >> 6;
+        }
     }
 }
 
@@ -378,27 +386,22 @@ const DEQUANT_SCALE_8X8: [[i32; 64]; 6] = [
 
 /// Dequantizes an 8x8 block of transform coefficients in-place.
 ///
-/// Applies H.264 inverse quantization for 8x8 blocks:
-/// `level * scale8x8[qp%6][pos] << (qp/6 - 6)` when qp/6 >= 6,
-/// `(level * scale8x8[qp%6][pos] + (1 << (5-qp/6))) >> (6 - qp/6)` otherwise.
+/// Applies H.264 inverse quantization for 8x8 blocks (clause 8.5.13.1), where
+/// `LevelScale8x8 = weightScale(16) * normAdjust8x8` for a flat scaling list —
+/// `DEQUANT_SCALE_8X8` holds `normAdjust8x8`, so each product is scaled by 16:
+/// `level * 16 * normAdjust[pos] << (qp/6 - 6)` when qp/6 >= 6,
+/// `(level * 16 * normAdjust[pos] + (1 << (5-qp/6))) >> (6 - qp/6)` otherwise.
 /// Clamps QP to the valid range [0, 51].
 pub fn dequant_8x8(coeffs: &mut [i32; 64], qp: i32) {
     let qp = qp.clamp(0, 51);
-    let qp_div6 = qp / 6;
-    let qp_mod6 = (qp % 6) as usize;
-    let scale = &DEQUANT_SCALE_8X8[qp_mod6];
-
-    if qp_div6 >= 6 {
-        let shift = (qp_div6 - 6) as u32;
-        for i in 0..64 {
-            coeffs[i] = (coeffs[i] * scale[i]) << shift;
-        }
-    } else {
-        let shift = (6 - qp_div6) as u32;
-        let round = 1i32 << (shift - 1);
-        for i in 0..64 {
-            coeffs[i] = (coeffs[i] * scale[i] + round) >> shift;
-        }
+    let shift = (qp / 6) as u32;
+    let scale = &DEQUANT_SCALE_8X8[(qp % 6) as usize];
+    for i in 0..64 {
+        // Reference form: qmul folds the flat weight (16), the position-dependent
+        // normAdjust and the qP/6 shift; a single (level * qmul + 32) >> 6 then
+        // yields the same value the inverse transform expects.
+        let qmul = (16i64 * scale[i] as i64) << shift;
+        coeffs[i] = ((coeffs[i] as i64 * qmul + 32) >> 6) as i32;
     }
 }
 
@@ -406,7 +409,8 @@ pub fn dequant_8x8(coeffs: &mut [i32; 64], qp: i32) {
 // 8x8 block zigzag scan order
 // ---------------------------------------------------------------------------
 
-/// H.264 8x8 zigzag scan order: maps scan index to raster position.
+/// H.264 8x8 frame zig-zag scan (Table 8-12): maps scan index to the raster
+/// index (row * 8 + col) of the coefficient.
 pub(crate) const ZIGZAG_8X8: [usize; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
     13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
@@ -414,9 +418,9 @@ pub(crate) const ZIGZAG_8X8: [usize; 64] = [
 ];
 
 /// Converts scan-order coefficients to 8x8 raster order.
-pub(crate) fn unscan_8x8(scan_coeffs: &[i32], out: &mut [i32; 64]) {
+pub(crate) fn unscan_8x8(scan_coeffs: &[i32; 64], out: &mut [i32; 64]) {
     *out = [0i32; 64];
-    for (scan_idx, &val) in scan_coeffs.iter().enumerate().take(64) {
+    for (scan_idx, &val) in scan_coeffs.iter().enumerate() {
         out[ZIGZAG_8X8[scan_idx]] = val;
     }
 }

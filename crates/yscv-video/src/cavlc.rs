@@ -3,6 +3,10 @@
 //! CAVLC is the entropy coding method used in H.264 Baseline profile for
 //! encoding residual transform coefficients. This module provides a bitstream
 //! reader with Exp-Golomb support and a CAVLC block decoder.
+//!
+//! The coeff_token / total_zeros / run_before VLC tables and the level and nC
+//! derivation below are the ITU-T H.264 Tables 9-5, 9-7, 9-9 and 9-10 and the
+//! processes of clauses 9.2.1 / 9.2.2 / 9.2.3.
 
 // ---------------------------------------------------------------------------
 // BitReader — bit-level access to a byte slice (MSB first)
@@ -25,6 +29,36 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    /// Creates a `BitReader` positioned mid-stream (continuing after a
+    /// header parsed by another reader).
+    pub fn new_at(data: &'a [u8], byte_pos: usize, bit_pos: u8) -> Self {
+        Self {
+            data,
+            byte_pos,
+            bit_pos,
+        }
+    }
+
+    /// Skips to the next byte boundary (I_PCM alignment).
+    pub fn align_byte(&mut self) {
+        if self.bit_pos != 0 {
+            self.consume(8 - self.bit_pos);
+        }
+    }
+
+    /// Whether more RBSP syntax elements follow (clause 7.4.1): true when any
+    /// bit after the current position precedes the final RBSP stop bit.
+    pub fn more_rbsp_data(&self) -> bool {
+        let cur = self.byte_pos * 8 + self.bit_pos as usize;
+        for (i, &b) in self.data.iter().enumerate().rev() {
+            if b != 0 {
+                let last_one = i * 8 + 7 - b.trailing_zeros() as usize;
+                return cur < last_one;
+            }
+        }
+        false
+    }
+
     /// Returns the number of unconsumed bits remaining.
     pub fn bits_remaining(&self) -> usize {
         if self.byte_pos >= self.data.len() {
@@ -38,56 +72,41 @@ impl<'a> BitReader<'a> {
         if n == 0 {
             return Some(0);
         }
-        if self.bits_remaining() < n as usize {
+        if n > 32 || self.bits_remaining() < n as usize {
             return None;
         }
-        let mut value = 0u32;
-        let mut remaining = n;
-
-        // Fast path: consume partial byte
-        if self.bit_pos > 0 && self.byte_pos < self.data.len() {
-            let avail = 8 - self.bit_pos;
-            let take = remaining.min(avail);
-            let shift = avail - take;
-            let mask = (1u8 << take) - 1;
-            value = ((self.data[self.byte_pos] >> shift) & mask) as u32;
-            self.bit_pos += take;
-            if self.bit_pos >= 8 {
-                self.bit_pos = 0;
-                self.byte_pos += 1;
-            }
-            remaining -= take;
-        }
-
-        // Fast path: full bytes
-        while remaining >= 8 && self.byte_pos < self.data.len() {
-            value = (value << 8) | self.data[self.byte_pos] as u32;
-            self.byte_pos += 1;
-            remaining -= 8;
-        }
-
-        // Remainder
-        while remaining > 0 && self.byte_pos < self.data.len() {
-            let bit = (self.data[self.byte_pos] >> (7 - self.bit_pos)) & 1;
-            value = (value << 1) | bit as u32;
-            self.bit_pos += 1;
-            if self.bit_pos == 8 {
-                self.bit_pos = 0;
-                self.byte_pos += 1;
-            }
-            remaining -= 1;
-        }
+        let value = self.peek_padded(n);
+        self.consume(n);
         Some(value)
     }
 
     /// Peek at the next `n` bits without consuming them.
     pub fn peek_bits(&self, n: u8) -> Option<u32> {
-        let mut tmp = BitReader {
-            data: self.data,
-            byte_pos: self.byte_pos,
-            bit_pos: self.bit_pos,
+        if n == 0 {
+            return Some(0);
+        }
+        if n > 32 || self.bits_remaining() < n as usize {
+            return None;
+        }
+        Some(self.peek_padded(n))
+    }
+
+    /// Peek up to `n` bits, left-justified into an `n`-bit window, zero-padded
+    /// when fewer than `n` bits remain (VLC lookahead never over-reads a valid
+    /// codeword, and trailing zero-padding matches the RBSP stop-bit region).
+    /// One unaligned big-endian u64 load covers any 32-bit window.
+    fn peek_padded(&self, n: u8) -> u32 {
+        debug_assert!((1..=32).contains(&n));
+        let tail = &self.data[self.byte_pos.min(self.data.len())..];
+        let w = match tail.first_chunk::<8>() {
+            Some(chunk) => u64::from_be_bytes(*chunk),
+            None => {
+                let mut buf = [0u8; 8];
+                buf[..tail.len()].copy_from_slice(tail);
+                u64::from_be_bytes(buf)
+            }
         };
-        tmp.read_bits(n)
+        ((w << self.bit_pos) >> (64 - n as u32)) as u32
     }
 
     /// Consume (skip) `n` bits.
@@ -99,6 +118,19 @@ impl<'a> BitReader<'a> {
 
     /// Reads an unsigned Exp-Golomb coded integer (ue(v)).
     pub fn read_ue(&mut self) -> Option<u32> {
+        // Fast path: codewords up to 31 bits fit the 32-bit peek window, so a
+        // single leading-zeros count decodes prefix and suffix together.
+        let w = self.peek_padded(32);
+        let lz = w.leading_zeros();
+        if lz <= 15 {
+            let total = 2 * lz + 1;
+            if total as usize > self.bits_remaining() {
+                return None; // suffix would read past the data
+            }
+            self.consume(total as u8);
+            return Some((w >> (32 - total)) - 1);
+        }
+        // Slow path: ≥ 33-bit codeword or exhaustion.
         let mut leading_zeros = 0u32;
         loop {
             let bit = self.read_bits(1)?;
@@ -109,9 +141,6 @@ impl<'a> BitReader<'a> {
             if leading_zeros > 31 {
                 return None;
             }
-        }
-        if leading_zeros == 0 {
-            return Some(0);
         }
         let suffix = self.read_bits(leading_zeros as u8)?;
         Some((1 << leading_zeros) - 1 + suffix)
@@ -130,7 +159,7 @@ impl<'a> BitReader<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// CAVLC result and VLC tables
+// CAVLC result
 // ---------------------------------------------------------------------------
 
 /// Decoded CAVLC residual coefficients for one block.
@@ -145,383 +174,348 @@ pub struct CavlcResult {
     pub levels: [i32; 16],
     /// Total number of zero-valued coefficients before the last non-zero.
     pub total_zeros: usize,
-    /// Run of zeros before each coefficient (first `total_coeffs` valid).
-    pub runs: [usize; 16],
+    /// Run of zeros before each coefficient (first `total_coeffs` valid;
+    /// run_before ≤ 14 per Table 9-10, so u8 keeps the by-value struct small).
+    pub runs: [u8; 16],
 }
 
-// coeff_token VLC tables — each entry is (bit_pattern, bit_length, total_coeffs, trailing_ones).
-// Tables are indexed by nC category. Only the most common entries are included;
-// a production decoder would use the full ITU-T H.264 tables.
+// ---------------------------------------------------------------------------
+// ITU-T H.264 VLC tables (Table 9-5 coeff_token, 9-7/9-9 total_zeros, 9-10
+// run_before). Layout ported verbatim from the standard: coeff_token is
+// indexed [category][TotalCoeff*4 + TrailingOnes]; a length of 0 marks an
+// invalid (TotalCoeff, TrailingOnes) combination.
+// ---------------------------------------------------------------------------
 
-struct CoeffTokenEntry {
-    pattern: u32,
-    length: u8,
-    total_coeffs: u8,
-    trailing_ones: u8,
-}
+// coeff_token, categories: 0 => 0<=nC<2, 1 => 2<=nC<4, 2 => 4<=nC<8, 3 => nC>=8.
+#[rustfmt::skip]
+const COEFF_TOKEN_LEN: [[u8; 68]; 4] = [
+    [
+         1, 0, 0, 0,
+         6, 2, 0, 0,     8, 6, 3, 0,     9, 8, 7, 5,    10, 9, 8, 6,
+        11,10, 9, 7,    13,11,10, 8,    13,13,11, 9,    13,13,13,10,
+        14,14,13,11,    14,14,14,13,    15,15,14,14,    15,15,15,14,
+        16,15,15,15,    16,16,16,15,    16,16,16,16,    16,16,16,16,
+    ],
+    [
+         2, 0, 0, 0,
+         6, 2, 0, 0,     6, 5, 3, 0,     7, 6, 6, 4,     8, 6, 6, 4,
+         8, 7, 7, 5,     9, 8, 8, 6,    11, 9, 9, 6,    11,11,11, 7,
+        12,11,11, 9,    12,12,12,11,    12,12,12,11,    13,13,13,12,
+        13,13,13,13,    13,14,13,13,    14,14,14,13,    14,14,14,14,
+    ],
+    [
+         4, 0, 0, 0,
+         6, 4, 0, 0,     6, 5, 4, 0,     6, 5, 5, 4,     7, 5, 5, 4,
+         7, 5, 5, 4,     7, 6, 6, 4,     7, 6, 6, 4,     8, 7, 7, 5,
+         8, 8, 7, 6,     9, 8, 8, 7,     9, 9, 8, 8,     9, 9, 9, 8,
+        10, 9, 9, 9,    10,10,10,10,    10,10,10,10,    10,10,10,10,
+    ],
+    [
+         6, 0, 0, 0,
+         6, 6, 0, 0,     6, 6, 6, 0,     6, 6, 6, 6,     6, 6, 6, 6,
+         6, 6, 6, 6,     6, 6, 6, 6,     6, 6, 6, 6,     6, 6, 6, 6,
+         6, 6, 6, 6,     6, 6, 6, 6,     6, 6, 6, 6,     6, 6, 6, 6,
+         6, 6, 6, 6,     6, 6, 6, 6,     6, 6, 6, 6,     6, 6, 6, 6,
+    ],
+];
 
-// Macro to reduce boilerplate in table definitions.
-macro_rules! ct {
-    ($pat:expr, $len:expr, $tc:expr, $t1:expr) => {
-        CoeffTokenEntry {
-            pattern: $pat,
-            length: $len,
-            total_coeffs: $tc,
-            trailing_ones: $t1,
+#[rustfmt::skip]
+const COEFF_TOKEN_BITS: [[u8; 68]; 4] = [
+    [
+         1, 0, 0, 0,
+         5, 1, 0, 0,     7, 4, 1, 0,     7, 6, 5, 3,     7, 6, 5, 3,
+         7, 6, 5, 4,    15, 6, 5, 4,    11,14, 5, 4,     8,10,13, 4,
+        15,14, 9, 4,    11,10,13,12,    15,14, 9,12,    11,10,13, 8,
+        15, 1, 9,12,    11,14,13, 8,     7,10, 9,12,     4, 6, 5, 8,
+    ],
+    [
+         3, 0, 0, 0,
+        11, 2, 0, 0,     7, 7, 3, 0,     7,10, 9, 5,     7, 6, 5, 4,
+         4, 6, 5, 6,     7, 6, 5, 8,    15, 6, 5, 4,    11,14,13, 4,
+        15,10, 9, 4,    11,14,13,12,     8,10, 9, 8,    15,14,13,12,
+        11,10, 9,12,     7,11, 6, 8,     9, 8,10, 1,     7, 6, 5, 4,
+    ],
+    [
+        15, 0, 0, 0,
+        15,14, 0, 0,    11,15,13, 0,     8,12,14,12,    15,10,11,11,
+        11, 8, 9,10,     9,14,13, 9,     8,10, 9, 8,    15,14,13,13,
+        11,14,10,12,    15,10,13,12,    11,14, 9,12,     8,10,13, 8,
+        13, 7, 9,12,     9,12,11,10,     5, 8, 7, 6,     1, 4, 3, 2,
+    ],
+    [
+         3, 0, 0, 0,
+         0, 1, 0, 0,     4, 5, 6, 0,     8, 9,10,11,    12,13,14,15,
+        16,17,18,19,    20,21,22,23,    24,25,26,27,    28,29,30,31,
+        32,33,34,35,    36,37,38,39,    40,41,42,43,    44,45,46,47,
+        48,49,50,51,    52,53,54,55,    56,57,58,59,    60,61,62,63,
+    ],
+];
+
+// chroma DC coeff_token (ChromaArrayType == 1): indexed [TotalCoeff*4 + T1], TC 0..4.
+#[rustfmt::skip]
+const CHROMA_DC_COEFF_TOKEN_LEN: [u8; 20] = [
+    2, 0, 0, 0,  6, 1, 0, 0,  6, 6, 3, 0,  6, 7, 7, 6,  6, 8, 8, 7,
+];
+#[rustfmt::skip]
+const CHROMA_DC_COEFF_TOKEN_BITS: [u8; 20] = [
+    1, 0, 0, 0,  7, 1, 0, 0,  4, 6, 1, 0,  3, 3, 2, 5,  2, 3, 2, 0,
+];
+
+// total_zeros for 4x4 blocks (Table 9-7), indexed [TotalCoeff-1][total_zeros].
+#[rustfmt::skip]
+const TOTAL_ZEROS_LEN: [[u8; 16]; 15] = [
+    [1,3,3,4,4,5,5,6,6,7,7,8,8,9,9,9],
+    [3,3,3,3,3,4,4,4,4,5,5,6,6,6,6,0],
+    [4,3,3,3,4,4,3,3,4,5,5,6,5,6,0,0],
+    [5,3,4,4,3,3,3,4,3,4,5,5,5,0,0,0],
+    [4,4,4,3,3,3,3,3,4,5,4,5,0,0,0,0],
+    [6,5,3,3,3,3,3,3,4,3,6,0,0,0,0,0],
+    [6,5,3,3,3,2,3,4,3,6,0,0,0,0,0,0],
+    [6,4,5,3,2,2,3,3,6,0,0,0,0,0,0,0],
+    [6,6,4,2,2,3,2,5,0,0,0,0,0,0,0,0],
+    [5,5,3,2,2,2,4,0,0,0,0,0,0,0,0,0],
+    [4,4,3,3,1,3,0,0,0,0,0,0,0,0,0,0],
+    [4,4,2,1,3,0,0,0,0,0,0,0,0,0,0,0],
+    [3,3,1,2,0,0,0,0,0,0,0,0,0,0,0,0],
+    [2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+];
+#[rustfmt::skip]
+const TOTAL_ZEROS_BITS: [[u8; 16]; 15] = [
+    [1,3,2,3,2,3,2,3,2,3,2,3,2,3,2,1],
+    [7,6,5,4,3,5,4,3,2,3,2,3,2,1,0,0],
+    [5,7,6,5,4,3,4,3,2,3,2,1,1,0,0,0],
+    [3,7,5,4,6,5,4,3,3,2,2,1,0,0,0,0],
+    [5,4,3,7,6,5,4,3,2,1,1,0,0,0,0,0],
+    [1,1,7,6,5,4,3,2,1,1,0,0,0,0,0,0],
+    [1,1,5,4,3,3,2,1,1,0,0,0,0,0,0,0],
+    [1,1,1,3,3,2,2,1,0,0,0,0,0,0,0,0],
+    [1,0,1,3,2,1,1,1,0,0,0,0,0,0,0,0],
+    [1,0,1,3,2,1,1,0,0,0,0,0,0,0,0,0],
+    [0,1,1,2,1,3,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+];
+
+// total_zeros for chroma DC 2x2 (Table 9-9(a)), indexed [TotalCoeff-1][total_zeros].
+#[rustfmt::skip]
+const CHROMA_DC_TOTAL_ZEROS_LEN: [[u8; 4]; 3] = [
+    [1,2,3,3],
+    [1,2,2,0],
+    [1,1,0,0],
+];
+#[rustfmt::skip]
+const CHROMA_DC_TOTAL_ZEROS_BITS: [[u8; 4]; 3] = [
+    [1,1,1,0],
+    [1,1,0,0],
+    [1,0,0,0],
+];
+
+// run_before (Table 9-10), indexed [min(zerosLeft,7)-1][run_before].
+#[rustfmt::skip]
+const RUN_LEN: [[u8; 16]; 7] = [
+    [1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [1,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0],
+    [2,2,2,3,3,0,0,0,0,0,0,0,0,0,0,0],
+    [2,2,3,3,3,3,0,0,0,0,0,0,0,0,0,0],
+    [2,3,3,3,3,3,3,0,0,0,0,0,0,0,0,0],
+    [3,3,3,3,3,3,3,4,5,6,7,8,9,10,11,0],
+];
+#[rustfmt::skip]
+const RUN_BITS: [[u8; 16]; 7] = [
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [3,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [3,2,1,1,0,0,0,0,0,0,0,0,0,0,0,0],
+    [3,2,3,2,1,0,0,0,0,0,0,0,0,0,0,0],
+    [3,0,1,3,2,5,4,0,0,0,0,0,0,0,0,0],
+    [7,6,5,4,3,2,1,1,1,1,1,1,1,1,1,0],
+];
+
+// ---------------------------------------------------------------------------
+// VLC lookup helpers — direct 9-bit table lookup built at compile time from
+// the (len, bits) pairs, with a linear-scan fallback for longer codewords.
+// ---------------------------------------------------------------------------
+
+/// Window width of the direct-lookup tables. Every total_zeros / run_before /
+/// chroma-DC codeword fits; only the rare long coeff_token (≤16 bits) and
+/// run_before zerosLeft>6 (≤11 bits) codes take the fallback scan.
+const VLC_LUT_BITS: u8 = 9;
+
+/// Direct VLC lookup: indexed by the next 9 bits, each entry holds
+/// `(table_index << 5) | code_len`, or 0 when no codeword of length ≤ 9
+/// matches that prefix (longer codeword or invalid bitstream).
+type VlcLut = [u16; 1 << VLC_LUT_BITS];
+
+/// Expands one (len, bits) table into a [`VlcLut`] (compile-time).
+const fn build_vlc_lut<const N: usize>(lens: &[u8; N], bits: &[u8; N]) -> VlcLut {
+    let mut lut = [0u16; 1 << VLC_LUT_BITS];
+    let mut i = 0;
+    while i < N {
+        let len = lens[i];
+        if len > 0 && len <= VLC_LUT_BITS {
+            // Every window starting with this codeword maps to entry i.
+            let lo = (bits[i] as usize) << (VLC_LUT_BITS - len);
+            let hi = ((bits[i] as usize) + 1) << (VLC_LUT_BITS - len);
+            let mut w = lo;
+            while w < hi {
+                lut[w] = ((i as u16) << 5) | len as u16;
+                w += 1;
+            }
         }
-    };
+        i += 1;
+    }
+    lut
 }
 
-/// nC = 0..1 (Table 9-5(a) from the spec, truncated to common entries).
-const COEFF_TOKEN_NC_0_1: &[CoeffTokenEntry] = &[
-    ct!(0b1, 1, 0, 0),           // 1              -> (0,0)
-    ct!(0b000101, 6, 1, 0),      // 000101          -> (1,0)
-    ct!(0b01, 2, 1, 1),          // 01              -> (1,1)
-    ct!(0b00000111, 8, 2, 0),    // 00000111        -> (2,0)
-    ct!(0b000100, 6, 2, 1),      // 000100          -> (2,1)
-    ct!(0b001, 3, 2, 2),         // 001             -> (2,2)
-    ct!(0b000000111, 9, 3, 0),   // 000000111       -> (3,0)
-    ct!(0b00000110, 8, 3, 1),    // 00000110        -> (3,1)
-    ct!(0b0000101, 7, 3, 2),     // 0000101         -> (3,2)
-    ct!(0b00011, 5, 3, 3),       // 00011           -> (3,3)
-    ct!(0b0000000111, 10, 4, 0), // 0000000111      -> (4,0)
-    ct!(0b000000110, 9, 4, 1),   // 000000110       -> (4,1)
-    ct!(0b00000101, 8, 4, 2),    // 00000101        -> (4,2)
-    ct!(0b000011, 6, 4, 3),      // 000011          -> (4,3)
-];
-
-/// nC = 2..3 (Table 9-5(b), truncated).
-const COEFF_TOKEN_NC_2_3: &[CoeffTokenEntry] = &[
-    ct!(0b11, 2, 0, 0),       // 11              -> (0,0)
-    ct!(0b001011, 6, 1, 0),   // 001011          -> (1,0)
-    ct!(0b10, 2, 1, 1),       // 10              -> (1,1)
-    ct!(0b000111, 6, 2, 0),   // 000111          -> (2,0)
-    ct!(0b00111, 5, 2, 1),    // 00111           -> (2,1)
-    ct!(0b011, 3, 2, 2),      // 011             -> (2,2)
-    ct!(0b0000111, 7, 3, 0),  // 0000111         -> (3,0)
-    ct!(0b001010, 6, 3, 1),   // 001010          -> (3,1)
-    ct!(0b001001, 6, 3, 2),   // 001001          -> (3,2)
-    ct!(0b00101, 5, 3, 3),    // 00101           -> (3,3)
-    ct!(0b00000111, 8, 4, 0), // 00000111        -> (4,0)
-    ct!(0b0000110, 7, 4, 1),  // 0000110         -> (4,1)
-    ct!(0b000110, 6, 4, 2),   // 000110          -> (4,2)
-    ct!(0b00100, 5, 4, 3),    // 00100           -> (4,3)
-];
-
-/// nC = 4..7 (Table 9-5(c), truncated).
-const COEFF_TOKEN_NC_4_7: &[CoeffTokenEntry] = &[
-    ct!(0b1111, 4, 0, 0),    // 1111          -> (0,0)
-    ct!(0b001111, 6, 1, 0),  // 001111        -> (1,0)
-    ct!(0b1110, 4, 1, 1),    // 1110          -> (1,1)
-    ct!(0b001011, 6, 2, 0),  // 001011        -> (2,0)
-    ct!(0b01111, 5, 2, 1),   // 01111         -> (2,1)
-    ct!(0b1101, 4, 2, 2),    // 1101          -> (2,2)
-    ct!(0b001000, 6, 3, 0),  // 001000        -> (3,0)
-    ct!(0b01110, 5, 3, 1),   // 01110         -> (3,1)
-    ct!(0b01101, 5, 3, 2),   // 01101         -> (3,2)
-    ct!(0b1100, 4, 3, 3),    // 1100          -> (3,3)
-    ct!(0b0000111, 7, 4, 0), // 0000111       -> (4,0)
-    ct!(0b001110, 6, 4, 1),  // 001110        -> (4,1)
-    ct!(0b001010, 6, 4, 2),  // 001010        -> (4,2)
-    ct!(0b1011, 4, 4, 3),    // 1011          -> (4,3)
-];
-
-/// nC >= 8: fixed-length 6-bit code.
-fn coeff_token_nc_8plus(reader: &mut BitReader) -> Option<(u8, u8)> {
-    let code = reader.read_bits(6)?;
-    // For nC >= 8 the coeff_token is a 6-bit FLC:
-    //   trailing_ones = code[1:0], total_coeffs = code[5:2] + (trailing_ones > 0 ? 0 : 0)
-    // Simplified: the first 4 bits encode total_coeffs-trailing_ones info.
-    // ITU spec Table 9-5(d): code = (total_coeffs - 1) * 4 + trailing_ones
-    // with total_coeffs 0 mapped to code 3 (special case 0b000011).
-    if code == 3 {
-        return Some((0, 0));
+/// Builds one [`VlcLut`] per row of a two-dimensional VLC table (compile-time).
+const fn build_vlc_lut_rows<const C: usize, const R: usize>(
+    lens: &[[u8; C]; R],
+    bits: &[[u8; C]; R],
+) -> [VlcLut; R] {
+    let mut out = [[0u16; 1 << VLC_LUT_BITS]; R];
+    let mut r = 0;
+    while r < R {
+        out[r] = build_vlc_lut(&lens[r], &bits[r]);
+        r += 1;
     }
-    let trailing_ones = (code & 0x03) as u8;
-    let total_coeffs = ((code >> 2) + 1) as u8;
-    // Clamp trailing_ones to min(trailing_ones, total_coeffs, 3)
-    let trailing_ones = trailing_ones.min(total_coeffs).min(3);
-    Some((total_coeffs, trailing_ones))
+    out
 }
 
-/// Select the right coeff_token table based on nC.
-fn select_coeff_token_table(nc: i32) -> &'static [CoeffTokenEntry] {
-    match nc {
-        0..=1 => COEFF_TOKEN_NC_0_1,
-        2..=3 => COEFF_TOKEN_NC_2_3,
-        4..=7 => COEFF_TOKEN_NC_4_7,
-        _ => &[], // nc >= 8 uses fixed-length, handled separately
+static COEFF_TOKEN_LUT: [VlcLut; 4] = build_vlc_lut_rows(&COEFF_TOKEN_LEN, &COEFF_TOKEN_BITS);
+static CHROMA_DC_COEFF_TOKEN_LUT: VlcLut =
+    build_vlc_lut(&CHROMA_DC_COEFF_TOKEN_LEN, &CHROMA_DC_COEFF_TOKEN_BITS);
+static TOTAL_ZEROS_LUT: [VlcLut; 15] = build_vlc_lut_rows(&TOTAL_ZEROS_LEN, &TOTAL_ZEROS_BITS);
+static CHROMA_DC_TOTAL_ZEROS_LUT: [VlcLut; 3] =
+    build_vlc_lut_rows(&CHROMA_DC_TOTAL_ZEROS_LEN, &CHROMA_DC_TOTAL_ZEROS_BITS);
+static RUN_LUT: [VlcLut; 7] = build_vlc_lut_rows(&RUN_LEN, &RUN_BITS);
+
+/// Match a prefix-free VLC via its direct-lookup table, falling back to a
+/// longest-match scan over the parallel `len`/`bits` arrays for codewords
+/// longer than the lookup window. Consumes the matched bits.
+fn match_vlc(reader: &mut BitReader, lens: &[u8], bits: &[u8], lut: &VlcLut) -> Option<usize> {
+    let entry = lut[reader.peek_padded(VLC_LUT_BITS) as usize];
+    if entry != 0 {
+        reader.consume((entry & 31) as u8);
+        return Some((entry >> 5) as usize);
     }
-}
-
-/// Reads a coeff_token using VLC lookup.
-fn read_coeff_token(reader: &mut BitReader, nc: i32) -> Option<(u8, u8)> {
-    if nc >= 8 {
-        return coeff_token_nc_8plus(reader);
+    // Rare: codewords longer than the lookup window (or invalid bits).
+    let max_len = lens.iter().copied().max().unwrap_or(0);
+    if max_len == 0 {
+        return None;
     }
-
-    let table = select_coeff_token_table(nc);
-
-    // Peek once, match all entries against peeked bits
-    let max_len = table.iter().map(|e| e.length).max().unwrap_or(1);
-    let avail = reader.bits_remaining() as u8;
-    let peek_len = max_len.min(avail);
-    let peeked = reader.peek_bits(peek_len)?;
-
-    for entry in table {
-        let len = entry.length;
-        if len > peek_len {
+    let window = reader.peek_padded(max_len);
+    for (i, (&len, &pat)) in lens.iter().zip(bits.iter()).enumerate() {
+        if len == 0 {
             continue;
         }
-        let shift = peek_len - len;
-        let masked = peeked >> shift;
-        if masked == entry.pattern {
+        if (window >> (max_len - len)) == pat as u32 {
             reader.consume(len);
-            return Some((entry.total_coeffs, entry.trailing_ones));
+            return Some(i);
         }
     }
     None
 }
 
-// ---------------------------------------------------------------------------
-// total_zeros VLC tables (Table 9-7 from the spec, simplified)
-// ---------------------------------------------------------------------------
-
-struct VlcEntry {
-    pattern: u32,
-    length: u8,
-    value: u8,
-}
-
-macro_rules! vlc {
-    ($pat:expr, $len:expr, $val:expr) => {
-        VlcEntry {
-            pattern: $pat,
-            length: $len,
-            value: $val,
-        }
+/// Reads coeff_token, returning (total_coeffs, trailing_ones).
+/// `nc == -1` selects the chroma-DC (ChromaArrayType 1) table.
+fn read_coeff_token(reader: &mut BitReader, nc: i32) -> Option<(usize, usize)> {
+    let idx = if nc < 0 {
+        match_vlc(
+            reader,
+            &CHROMA_DC_COEFF_TOKEN_LEN,
+            &CHROMA_DC_COEFF_TOKEN_BITS,
+            &CHROMA_DC_COEFF_TOKEN_LUT,
+        )?
+    } else {
+        let cat = match nc {
+            0..=1 => 0,
+            2..=3 => 1,
+            4..=7 => 2,
+            _ => 3,
+        };
+        match_vlc(
+            reader,
+            &COEFF_TOKEN_LEN[cat],
+            &COEFF_TOKEN_BITS[cat],
+            &COEFF_TOKEN_LUT[cat],
+        )?
     };
+    Some((idx >> 2, idx & 3))
 }
 
-/// total_zeros tables indexed by total_coeffs (1-based). Only tc=1..4 provided.
-const TOTAL_ZEROS_TC1: &[VlcEntry] = &[
-    vlc!(0b1, 1, 0),
-    vlc!(0b011, 3, 1),
-    vlc!(0b010, 3, 2),
-    vlc!(0b0011, 4, 3),
-    vlc!(0b0010, 4, 4),
-    vlc!(0b00011, 5, 5),
-    vlc!(0b00010, 5, 6),
-    vlc!(0b00001, 5, 7),
-    vlc!(0b000001, 6, 8),
-    vlc!(0b0000001, 7, 9),
-    vlc!(0b00000001, 8, 10),
-    vlc!(0b000000001, 9, 11),
-    vlc!(0b0000000001, 10, 12),
-    vlc!(0b00000000011, 11, 13),
-    vlc!(0b00000000010, 11, 14),
-    vlc!(0b00000000001, 11, 15),
-];
-
-const TOTAL_ZEROS_TC2: &[VlcEntry] = &[
-    vlc!(0b111, 3, 0),
-    vlc!(0b110, 3, 1),
-    vlc!(0b101, 3, 2),
-    vlc!(0b100, 3, 3),
-    vlc!(0b011, 3, 4),
-    vlc!(0b0101, 4, 5),
-    vlc!(0b0100, 4, 6),
-    vlc!(0b0011, 4, 7),
-    vlc!(0b0010, 4, 8),
-    vlc!(0b00011, 5, 9),
-    vlc!(0b00010, 5, 10),
-    vlc!(0b000011, 6, 11),
-    vlc!(0b000010, 6, 12),
-    vlc!(0b000001, 6, 13),
-    vlc!(0b000000, 6, 14),
-];
-
-const TOTAL_ZEROS_TC3: &[VlcEntry] = &[
-    vlc!(0b0101, 4, 0),
-    vlc!(0b111, 3, 1),
-    vlc!(0b110, 3, 2),
-    vlc!(0b101, 3, 3),
-    vlc!(0b0100, 4, 4),
-    vlc!(0b0011, 4, 5),
-    vlc!(0b100, 3, 6),
-    vlc!(0b011, 3, 7),
-    vlc!(0b0010, 4, 8),
-    vlc!(0b00011, 5, 9),
-    vlc!(0b00010, 5, 10),
-    vlc!(0b000001, 6, 11),
-    vlc!(0b00001, 5, 12),
-    vlc!(0b000000, 6, 13),
-];
-
-const TOTAL_ZEROS_TC4: &[VlcEntry] = &[
-    vlc!(0b00011, 5, 0),
-    vlc!(0b111, 3, 1),
-    vlc!(0b0101, 4, 2),
-    vlc!(0b0100, 4, 3),
-    vlc!(0b110, 3, 4),
-    vlc!(0b101, 3, 5),
-    vlc!(0b100, 3, 6),
-    vlc!(0b0011, 4, 7),
-    vlc!(0b011, 3, 8),
-    vlc!(0b00010, 5, 9),
-    vlc!(0b00001, 5, 10),
-    vlc!(0b00000, 5, 11),
-    vlc!(0b0010, 4, 12),
-];
-
-fn total_zeros_table(total_coeffs: usize) -> &'static [VlcEntry] {
-    match total_coeffs {
-        1 => TOTAL_ZEROS_TC1,
-        2 => TOTAL_ZEROS_TC2,
-        3 => TOTAL_ZEROS_TC3,
-        4 => TOTAL_ZEROS_TC4,
-        _ => &[],
+/// Reads total_zeros for a block with `total_coeff` non-zero coefficients.
+/// `max_coeff == 4` uses the chroma-DC table; otherwise the 4x4 table.
+fn read_total_zeros(reader: &mut BitReader, total_coeff: usize, max_coeff: usize) -> Option<usize> {
+    if max_coeff == 4 {
+        let row = total_coeff - 1;
+        match_vlc(
+            reader,
+            &CHROMA_DC_TOTAL_ZEROS_LEN[row],
+            &CHROMA_DC_TOTAL_ZEROS_BITS[row],
+            &CHROMA_DC_TOTAL_ZEROS_LUT[row],
+        )
+    } else {
+        let row = total_coeff - 1;
+        match_vlc(
+            reader,
+            &TOTAL_ZEROS_LEN[row],
+            &TOTAL_ZEROS_BITS[row],
+            &TOTAL_ZEROS_LUT[row],
+        )
     }
 }
 
-/// Reads a value from a VLC table by trying each entry.
-fn read_vlc(reader: &mut BitReader, table: &[VlcEntry]) -> Option<u8> {
-    // Find max code length in table
-    let max_len = table.iter().map(|e| e.length).max().unwrap_or(1);
-    let avail = reader.bits_remaining() as u8;
-    let peek_len = max_len.min(avail);
-
-    // Peek once, then match all entries against the peeked bits
-    let peeked = reader.peek_bits(peek_len)?;
-
-    for entry in table {
-        let len = entry.length;
-        if len > peek_len {
-            continue;
-        }
-        // Extract the top `len` bits from peeked value
-        let shift = peek_len - len;
-        let masked = peeked >> shift;
-        if masked == entry.pattern {
-            reader.consume(len);
-            return Some(entry.value);
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
-// run_before VLC (Table 9-10)
-// ---------------------------------------------------------------------------
-
-/// Reads run_before given zeros_left.
+/// Reads run_before given the number of zeros still to be distributed.
 fn read_run_before(reader: &mut BitReader, zeros_left: usize) -> Option<usize> {
-    match zeros_left {
-        0 => Some(0),
-        1 => {
-            let bit = reader.read_bits(1)?;
-            Some(if bit == 1 { 0 } else { 1 })
-        }
-        2 => {
-            let bit = reader.read_bits(1)?;
-            if bit == 1 {
-                return Some(0);
-            }
-            let bit2 = reader.read_bits(1)?;
-            Some(if bit2 == 1 { 1 } else { 2 })
-        }
-        3 => {
-            let bits = reader.read_bits(2)?;
-            match bits {
-                0b11 => Some(0),
-                0b10 => Some(1),
-                0b01 => Some(2),
-                0b00 => Some(3),
-                _ => None,
-            }
-        }
-        4 => {
-            let bits = reader.read_bits(2)?;
-            if bits != 0 {
-                return Some(match bits {
-                    0b11 => 0,
-                    0b10 => 1,
-                    0b01 => 2,
-                    _ => unreachable!(),
-                });
-            }
-            let bit = reader.read_bits(1)?;
-            Some(if bit == 1 { 3 } else { 4 })
-        }
-        5 => {
-            let bits = reader.read_bits(2)?;
-            if bits != 0 {
-                return Some(match bits {
-                    0b11 => 0,
-                    0b10 => 1,
-                    0b01 => 2,
-                    _ => unreachable!(),
-                });
-            }
-            let bits2 = reader.read_bits(1)?;
-            if bits2 == 1 {
-                return Some(3);
-            }
-            let bits3 = reader.read_bits(1)?;
-            Some(if bits3 == 1 { 4 } else { 5 })
-        }
-        6 => {
-            let bits = reader.read_bits(2)?;
-            if bits != 0 {
-                return Some(match bits {
-                    0b11 => 0,
-                    0b10 => 1,
-                    0b01 => 2,
-                    _ => unreachable!(),
-                });
-            }
-            let bits2 = reader.read_bits(1)?;
-            if bits2 == 1 {
-                return Some(3);
-            }
-            let bits3 = reader.read_bits(1)?;
-            if bits3 == 1 {
-                return Some(4);
-            }
-            let bits4 = reader.read_bits(1)?;
-            Some(if bits4 == 1 { 5 } else { 6 })
-        }
-        _ => {
-            // zeros_left >= 7: prefix code 0..0 1 xxxx (leading zeros + 1)
-            let mut run = 0usize;
-            loop {
-                let bit = reader.read_bits(1)?;
-                if bit == 1 {
-                    break;
-                }
-                run += 1;
-                if run > 15 {
-                    return None;
-                }
-            }
-            Some(run)
-        }
+    if zeros_left == 0 {
+        return Some(0);
     }
+    let row = zeros_left.min(7) - 1;
+    match_vlc(reader, &RUN_LEN[row], &RUN_BITS[row], &RUN_LUT[row])
+}
+
+/// Reads a level_prefix: the number of leading zero bits before the terminating 1.
+fn read_level_prefix(reader: &mut BitReader) -> Option<u32> {
+    // The terminating 1 must be a real data bit (the peek pads with zeros);
+    // an all-zero window means exhaustion or prefix > 31 — None either way.
+    let w = reader.peek_padded(32);
+    let lz = w.leading_zeros();
+    if lz >= 32 || lz as usize >= reader.bits_remaining() {
+        return None;
+    }
+    reader.consume(lz as u8 + 1);
+    Some(lz)
 }
 
 // ---------------------------------------------------------------------------
 // Main CAVLC block decoder
 // ---------------------------------------------------------------------------
 
-/// Decodes one CAVLC-coded 4x4 residual block from the bitstream.
+/// Decodes one CAVLC-coded 4x4 luma/AC residual block (16 coefficients).
 ///
 /// `nc` is the predicted number of non-zero coefficients derived from
 /// neighbouring blocks (used to select the coeff_token VLC table).
 pub fn decode_cavlc_block(reader: &mut BitReader, nc: i32) -> Option<CavlcResult> {
-    // Step (a): read coeff_token -> (total_coeffs, trailing_ones)
-    let (total_coeffs_u8, trailing_ones_u8) = read_coeff_token(reader, nc)?;
-    let total_coeffs = total_coeffs_u8 as usize;
-    let trailing_ones = trailing_ones_u8 as usize;
+    decode_cavlc_block_max(reader, nc, 16)
+}
+
+/// Decodes one CAVLC-coded residual block with `max_coeff` coefficients
+/// (16 for luma 4x4, 15 for AC blocks, 4 for chroma DC — pass `nc == -1` for
+/// the chroma-DC coeff_token table). Implements ITU-T H.264 clause 9.2.
+pub fn decode_cavlc_block_max(
+    reader: &mut BitReader,
+    nc: i32,
+    max_coeff: usize,
+) -> Option<CavlcResult> {
+    // (a) coeff_token -> (total_coeff, trailing_ones)
+    let (total_coeffs, trailing_ones) = read_coeff_token(reader, nc)?;
+    if total_coeffs > max_coeff {
+        return None;
+    }
 
     if total_coeffs == 0 {
         return Some(CavlcResult {
@@ -536,107 +530,100 @@ pub fn decode_cavlc_block(reader: &mut BitReader, nc: i32) -> Option<CavlcResult
     let mut levels = [0i32; 16];
     let mut level_count = 0usize;
 
-    // Step (b): read sign of trailing ones (1 bit each, in reverse order)
-    for _ in 0..trailing_ones {
-        let sign_bit = reader.read_bits(1)?;
-        if level_count < 16 {
-            levels[level_count] = if sign_bit == 0 { 1 } else { -1 };
+    // (b) sign of each trailing one: read all of them in one go.
+    if trailing_ones > 0 {
+        let signs = reader.read_bits(trailing_ones as u8)?;
+        for k in 0..trailing_ones {
+            let bit = (signs >> (trailing_ones - 1 - k)) & 1;
+            levels[level_count] = if bit == 0 { 1 } else { -1 };
             level_count += 1;
         }
     }
 
-    // Step (c): read remaining levels (from trailing_ones..total_coeffs)
-    let mut suffix_length: u8 = if total_coeffs > 10 && trailing_ones < 3 {
+    // (c) remaining levels (clause 9.2.2.1).
+    let mut suffix_length: u32 = if total_coeffs > 10 && trailing_ones < 3 {
         1
     } else {
         0
     };
 
     for i in trailing_ones..total_coeffs {
-        // Read level_prefix: count leading zeros, then a 1-bit.
-        let mut level_prefix = 0u32;
-        loop {
-            let bit = reader.read_bits(1)?;
-            if bit == 1 {
-                break;
-            }
-            level_prefix += 1;
-            if level_prefix > 20 {
-                return None;
-            }
-        }
-
-        let mut level_code = level_prefix as i32;
-
-        // Read level_suffix.
-        let suffix_len = if level_prefix == 14 && suffix_length == 0 {
-            4 // special case
-        } else if level_prefix >= 15 {
-            (level_prefix as u8).saturating_sub(3)
+        // Fast path: for prefixes ≤ 13 the suffix size equals suffix_length
+        // (≤ 6), so prefix + stop bit + suffix (≤ 20 bits) all sit in one
+        // 32-bit peek and consume together.
+        let w = reader.peek_padded(32);
+        let lz = w.leading_zeros();
+        let total = lz + 1 + suffix_length;
+        let (level_prefix, level_suffix);
+        if lz <= 13 && total as usize <= reader.bits_remaining() {
+            level_prefix = lz;
+            level_suffix = (w >> (32 - total)) & ((1u32 << suffix_length) - 1);
+            reader.consume(total as u8);
         } else {
-            suffix_length
-        };
-
-        if suffix_len > 0 {
-            let level_suffix = reader.read_bits(suffix_len)? as i32;
-            level_code = (level_code << suffix_len) + level_suffix;
+            level_prefix = read_level_prefix(reader)?;
+            let level_suffix_size = if level_prefix == 14 && suffix_length == 0 {
+                4
+            } else if level_prefix >= 15 {
+                level_prefix - 3
+            } else {
+                suffix_length
+            };
+            level_suffix = if level_suffix_size > 0 {
+                reader.read_bits(level_suffix_size as u8)?
+            } else {
+                0
+            };
         }
 
-        // First non-trailing coefficient gets an offset when trailing_ones < 3.
+        let mut level_code = (level_prefix.min(15) << suffix_length) as i32 + level_suffix as i32;
+        if level_prefix >= 15 && suffix_length == 0 {
+            level_code += 15;
+        }
+        if level_prefix >= 16 {
+            level_code += ((1u32 << (level_prefix - 3)) - 4096) as i32;
+        }
+        // The first coefficient after the trailing ones adds 2 when fewer than
+        // three trailing ones were present.
         if i == trailing_ones && trailing_ones < 3 {
             level_code += 2;
         }
 
-        // Convert level_code to signed level.
         let level = if level_code % 2 == 0 {
             (level_code + 2) >> 1
         } else {
             (-level_code - 1) >> 1
         };
 
-        if level_count < 16 {
-            levels[level_count] = level;
-            level_count += 1;
-        }
+        levels[level_count] = level;
+        level_count += 1;
 
-        // Update suffix_length based on decoded level magnitude.
         if suffix_length == 0 {
             suffix_length = 1;
         }
-        if level.unsigned_abs() > (3 << (suffix_length - 1)) {
+        if level.unsigned_abs() > (3 << (suffix_length - 1)) && suffix_length < 6 {
             suffix_length += 1;
         }
     }
 
-    // Step (d): read total_zeros.
-    let max_zeros = 16 - total_coeffs;
-    let total_zeros = if total_coeffs < 16 && max_zeros > 0 {
-        let table = total_zeros_table(total_coeffs);
-        if table.is_empty() {
-            // Fallback: read as Exp-Golomb for unsupported table indices.
-            reader.read_ue()? as usize
-        } else {
-            read_vlc(reader, table)? as usize
-        }
+    // (d) total_zeros.
+    let total_zeros = if total_coeffs < max_coeff {
+        read_total_zeros(reader, total_coeffs, max_coeff)?
     } else {
         0
     };
 
-    // Step (e): read run_before for each coefficient.
-    let mut runs = [0usize; 16];
+    // (e) run_before for each coefficient except the last.
+    let mut runs = [0u8; 16];
     let mut zeros_left = total_zeros;
-    for i in 0..total_coeffs - 1 {
+    for run in runs.iter_mut().take(total_coeffs - 1) {
         if zeros_left == 0 {
             break;
         }
-        let run = read_run_before(reader, zeros_left)?;
-        runs[i] = run;
-        zeros_left = zeros_left.saturating_sub(run);
+        let r = read_run_before(reader, zeros_left)?;
+        *run = r as u8;
+        zeros_left = zeros_left.saturating_sub(r);
     }
-    // Last coefficient gets all remaining zeros.
-    if total_coeffs > 0 {
-        runs[total_coeffs - 1] = zeros_left;
-    }
+    runs[total_coeffs - 1] = zeros_left as u8;
 
     Some(CavlcResult {
         total_coeffs,
@@ -666,185 +653,96 @@ pub fn expand_cavlc_to_coefficients(result: &CavlcResult, block_size: usize) -> 
 /// Zero-allocation version: writes coefficients into a pre-allocated slice.
 /// Slice must be zeroed before calling.
 pub fn expand_cavlc_to_coefficients_into(result: &CavlcResult, coeffs: &mut [i32]) {
-    if result.total_coeffs == 0 {
+    let n = result.total_coeffs;
+    if n == 0 {
         return;
     }
 
-    let n = result.total_coeffs;
-    let block_size = coeffs.len();
-    let mut pos = block_size;
-
-    for i in 0..n {
-        let run = if i < result.runs.len() {
-            result.runs[i]
-        } else {
-            0
-        };
-        if pos < run {
-            break;
-        }
-        pos -= run;
-        if pos == 0 {
-            break;
-        }
-        pos -= 1;
-        if n > i && (n - 1 - i) < result.levels.len() {
-            coeffs[pos] = result.levels[n - 1 - i];
+    // Clause 9.2.4: coefficients are decoded highest-frequency first, so we walk
+    // the level/run arrays in reverse (from the last-decoded DC-side coefficient
+    // upward), advancing the scan position by `run_before + 1` each step. This
+    // anchors the DC at position 0 regardless of how many coefficients are
+    // present — filling from the top only happens to be correct for a full block.
+    let mut pos: i32 = -1;
+    for i in (0..n).rev() {
+        let run = result.runs.get(i).copied().unwrap_or(0);
+        pos += run as i32 + 1;
+        match (usize::try_from(pos), result.levels.get(i)) {
+            (Ok(p), Some(&level)) if p < coeffs.len() => coeffs[p] = level,
+            _ => break,
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
-mod tests {
+mod cavlc_tests {
     use super::*;
 
-    #[test]
-    fn test_bit_reader_basic() {
-        // 0b10110100 = 0xB4
-        let data = [0xB4];
+    // Build a BitReader from an MSB-first bit string like "000101".
+    fn br(bits: &str) -> Vec<u8> {
+        let mut out = vec![0u8; bits.len().div_ceil(8)];
+        for (i, c) in bits.chars().enumerate() {
+            if c == '1' {
+                out[i / 8] |= 1 << (7 - (i % 8));
+            }
+        }
+        out
+    }
+
+    fn ct(nc: i32, bits: &str) -> (usize, usize) {
+        let data = br(bits);
         let mut r = BitReader::new(&data);
-        assert_eq!(r.read_bits(1), Some(1)); // 1
-        assert_eq!(r.read_bits(1), Some(0)); // 0
-        assert_eq!(r.read_bits(1), Some(1)); // 1
-        assert_eq!(r.read_bits(1), Some(1)); // 1
-        assert_eq!(r.read_bits(1), Some(0)); // 0
-        assert_eq!(r.read_bits(1), Some(1)); // 1
-        assert_eq!(r.read_bits(1), Some(0)); // 0
-        assert_eq!(r.read_bits(1), Some(0)); // 0
-        assert_eq!(r.read_bits(1), None); // exhausted
+        read_coeff_token(&mut r, nc).expect("coeff_token match")
     }
 
     #[test]
-    fn test_bit_reader_exp_golomb_unsigned() {
-        // ue(0) = 1              -> 1 bit
-        // ue(1) = 010            -> 3 bits
-        // ue(2) = 011            -> 3 bits
-        // ue(3) = 00100          -> 5 bits
-        // ue(4) = 00101          -> 5 bits
-        // Total = 1+3+3+5+5 = 17 bits, padded to 3 bytes = 24 bits
-        // Binary: 1 010 011 00100 00101 0000000
-        //       = 1010_0110_0100_0010_1000_0000
-        //       = 0xA6 0x42 0x80
-        let data = [0xA6, 0x42, 0x80];
-        let mut r = BitReader::new(&data);
-        assert_eq!(r.read_ue(), Some(0));
-        assert_eq!(r.read_ue(), Some(1));
-        assert_eq!(r.read_ue(), Some(2));
-        assert_eq!(r.read_ue(), Some(3));
-        assert_eq!(r.read_ue(), Some(4));
+    fn coeff_token_spec_codewords() {
+        // Table 9-5, 0 <= nC < 2.
+        assert_eq!(ct(0, "1"), (0, 0));
+        assert_eq!(ct(0, "01"), (1, 1));
+        assert_eq!(ct(0, "001"), (2, 2));
+        assert_eq!(ct(0, "000101"), (1, 0));
+        assert_eq!(ct(0, "0000101"), (3, 2));
+        assert_eq!(ct(0, "00011"), (3, 3));
+        // 2 <= nC < 4.
+        assert_eq!(ct(2, "11"), (0, 0));
+        assert_eq!(ct(2, "10"), (1, 1));
+        assert_eq!(ct(2, "011"), (2, 2));
+        // 4 <= nC < 8.
+        assert_eq!(ct(4, "1111"), (0, 0));
+        assert_eq!(ct(4, "1110"), (1, 1));
+        // nC >= 8 (6-bit FLC): value = (tc-1)*4 + t1, and (0,0) == 000011.
+        assert_eq!(ct(8, "000011"), (0, 0));
+        assert_eq!(ct(8, "000000"), (1, 0));
+        assert_eq!(ct(8, "000101"), (2, 1));
+        // chroma DC (nc == -1): (0,0) is "01", (1,1) is "1".
+        assert_eq!(ct(-1, "01"), (0, 0));
+        assert_eq!(ct(-1, "1"), (1, 1));
     }
 
     #[test]
-    fn test_bit_reader_exp_golomb_signed() {
-        // se(0)  = ue(0) = 1           -> 1 bit
-        // se(1)  = ue(1) = 010         -> 3 bits
-        // se(-1) = ue(2) = 011         -> 3 bits
-        // se(2)  = ue(3) = 00100       -> 5 bits
-        // se(-2) = ue(4) = 00101       -> 5 bits
-        // Same bitstream as unsigned test.
-        let data = [0xA6, 0x42, 0x80];
-        let mut r = BitReader::new(&data);
-        assert_eq!(r.read_se(), Some(0));
-        assert_eq!(r.read_se(), Some(1));
-        assert_eq!(r.read_se(), Some(-1));
-        assert_eq!(r.read_se(), Some(2));
-        assert_eq!(r.read_se(), Some(-2));
-    }
-
-    #[test]
-    fn test_bit_reader_multi_byte() {
-        // Read a 12-bit value that spans two bytes.
-        // 0xFF 0xF0 = 1111_1111 1111_0000
-        let data = [0xFF, 0xF0];
-        let mut r = BitReader::new(&data);
-        assert_eq!(r.read_bits(12), Some(0xFFF)); // 12 ones
-        assert_eq!(r.read_bits(4), Some(0x0)); // 4 zeros
-    }
-
-    #[test]
-    fn test_cavlc_all_zeros() {
-        // For nc=0..1, coeff_token (0,0) is encoded as a single 1-bit.
-        let data = [0x80]; // 1000_0000
-        let mut r = BitReader::new(&data);
-        let result = decode_cavlc_block(&mut r, 0).unwrap();
-        assert_eq!(result.total_coeffs, 0);
-        assert_eq!(result.trailing_ones, 0);
-        assert_eq!(result.levels, [0; 16]);
-        assert_eq!(result.total_zeros, 0);
-        assert_eq!(result.runs, [0; 16]);
-    }
-
-    #[test]
-    fn test_expand_coefficients() {
-        // Manually construct a CavlcResult and verify expansion.
-        let result = CavlcResult {
-            total_coeffs: 3,
-            trailing_ones: 0,
-            levels: {
-                let mut l = [0i32; 16];
-                l[0] = 5;
-                l[1] = -3;
-                l[2] = 2;
-                l
-            },
-            total_zeros: 2,
-            runs: {
-                let mut r = [0usize; 16];
-                r[0] = 1;
-                r[1] = 0;
-                r[2] = 1;
-                r
-            },
-        };
-
-        let coeffs = expand_cavlc_to_coefficients(&result, 8);
-        // Expansion logic (placing from end, reverse scan order):
-        //   coeff[0] (level=levels[2]=2): runs[0]=1 zero, then coeff -> pos skips 1 zero, places 2
-        //   coeff[1] (level=levels[1]=-3): runs[1]=0, places -3
-        //   coeff[2] (level=levels[0]=5): runs[2]=1 zero, then 5
-        //
-        // Working backwards from position 8:
-        //   i=0: run=1, pos=8-1=7, pos=7-1=6 -> coeffs[6] = levels[2] = 2
-        //   i=1: run=0, pos=6-0=6, pos=6-1=5 -> coeffs[5] = levels[1] = -3
-        //   i=2: run=1, pos=5-1=4, pos=4-1=3 -> coeffs[3] = levels[0] = 5
-        assert_eq!(coeffs, [0, 0, 0, 5, 0, -3, 2, 0]);
-    }
-
-    #[test]
-    fn test_bits_remaining() {
-        let data = [0xAB, 0xCD];
-        let mut r = BitReader::new(&data);
-        assert_eq!(r.bits_remaining(), 16);
-        let _ = r.read_bits(5);
-        assert_eq!(r.bits_remaining(), 11);
-        let _ = r.read_bits(11);
-        assert_eq!(r.bits_remaining(), 0);
-    }
-
-    #[test]
-    fn test_expand_empty_block() {
-        let result = CavlcResult {
-            total_coeffs: 0,
-            trailing_ones: 0,
-            levels: [0; 16],
-            total_zeros: 0,
-            runs: [0; 16],
-        };
-        let coeffs = expand_cavlc_to_coefficients(&result, 16);
-        assert_eq!(coeffs, vec![0; 16]);
-    }
-
-    #[test]
-    fn test_cavlc_nc2_all_zeros() {
-        // For nc=2..3, coeff_token (0,0) is encoded as 0b11 (2 bits).
-        let data = [0xC0]; // 1100_0000
-        let mut r = BitReader::new(&data);
-        let result = decode_cavlc_block(&mut r, 2).unwrap();
-        assert_eq!(result.total_coeffs, 0);
-        assert_eq!(result.trailing_ones, 0);
+    fn total_zeros_and_run_spec() {
+        // total_zeros Table 9-7, tc=1: code "1" -> 0 zeros; "011" -> 1.
+        {
+            let d = br("1");
+            let mut r = BitReader::new(&d);
+            assert_eq!(read_total_zeros(&mut r, 1, 16).unwrap(), 0);
+        }
+        {
+            let d = br("011");
+            let mut r = BitReader::new(&d);
+            assert_eq!(read_total_zeros(&mut r, 1, 16).unwrap(), 1);
+        }
+        // run_before Table 9-10, zerosLeft=1: "1"->0, "0"->1.
+        {
+            let d = br("1");
+            let mut r = BitReader::new(&d);
+            assert_eq!(read_run_before(&mut r, 1).unwrap(), 0);
+        }
+        {
+            let d = br("0");
+            let mut r = BitReader::new(&d);
+            assert_eq!(read_run_before(&mut r, 1).unwrap(), 1);
+        }
     }
 }

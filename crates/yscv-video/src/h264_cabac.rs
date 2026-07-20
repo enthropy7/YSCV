@@ -1,18 +1,14 @@
-//! H.264 CABAC (Context-based Adaptive Binary Arithmetic Coding) entropy decoder.
+//! H.264 CABAC (Context-based Adaptive Binary Arithmetic Coding) entropy
+//! decoder — the exact clause 9.3 engine and syntax-element layer used by the
+//! Main/High-profile decode path.
 //!
-//! CABAC is the entropy coding method used in H.264 Main and High profiles.
-//! It provides 9--14 % bitrate savings over CAVLC at the cost of higher
-//! decoding complexity.  This module implements a *minimal* CABAC decoder
-//! covering the most common syntax elements:
-//!
-//! - `mb_type`
-//! - `coded_block_flag`
-//! - `significant_coeff_flag`
-//! - `last_significant_coeff_flag`
-//! - `coeff_abs_level_minus1`
-//!
-//! The arithmetic engine follows ITU-T H.264 section 9.3 (Table 9-45 state
-//! transitions and Table 9-48 range LPS values).
+//! The arithmetic engine implements clause 9.3.3.2 (Table 9-45 state
+//! transitions, Table 9-44 range LPS values); contexts initialise from the
+//! spec's (m, n) tables (9-12..9-33, generated in `h264_cabac_init`); the
+//! element decoders below implement the Table 9-34 binarizations and the
+//! clause 9.3.3.1 context-increment choreography. Neighbour-dependent
+//! `ctxIdxInc` values are derived by the caller (the decoder owns the
+//! neighbour grids) and passed in.
 
 // ---------------------------------------------------------------------------
 // State-transition tables (H.264 spec Table 9-45)
@@ -47,13 +43,11 @@ static TRANSITION_LPS: [u8; 64] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Range LPS table (H.264 spec Table 9-48)
+// Range LPS table (H.264 spec Table 9-44)
 // ---------------------------------------------------------------------------
 
 /// `RANGE_TABLE[pStateIdx][qRangeIdx]` — the LPS sub-range for each
 /// probability state and quarter-range index.
-///
-/// 64 rows x 4 columns.  Values taken directly from ITU-T H.264.
 #[rustfmt::skip]
 static RANGE_TABLE: [[u16; 4]; 64] = [
     [128, 176, 208, 240],
@@ -126,8 +120,8 @@ static RANGE_TABLE: [[u16; 4]; 64] = [
 // Context model
 // ---------------------------------------------------------------------------
 
-/// Number of context variables used in H.264 CABAC.
-pub const NUM_CABAC_CONTEXTS: usize = 460;
+/// Number of context variables (ctxIdx 0..1023, clause 9.3.1.1).
+pub const NUM_CABAC_CONTEXTS: usize = 1024;
 
 /// Adaptive probability context model for CABAC (H.264, 9.3.1).
 #[derive(Debug, Clone)]
@@ -138,43 +132,10 @@ pub struct CabacContext {
     pub mps: bool,
 }
 
-impl CabacContext {
-    /// Create a context initialised from a (slope, offset) init_value at a
-    /// given slice QP.
-    pub fn new(slice_qp: i32, init_value: i16) -> Self {
-        let m = (init_value >> 4) * 5 - 45;
-        let n = ((init_value & 15) << 3) - 16;
-        let pre = ((m * (slice_qp.clamp(0, 51) as i16 - 16)) >> 4) + n;
-        let pre = pre.clamp(1, 126);
-
-        if pre <= 63 {
-            CabacContext {
-                state: (63 - pre) as u8,
-                mps: false,
-            }
-        } else {
-            CabacContext {
-                state: (pre - 64) as u8,
-                mps: true,
-            }
-        }
-    }
-
-    /// Create a default equiprobable context.
-    pub fn equiprobable() -> Self {
-        CabacContext {
-            state: 0,
-            mps: false,
-        }
-    }
-}
-
-/// Initialise a single CABAC context directly from (m, n) pairs.
-///
-/// This avoids the lossy `encode_mn` packing and gives exact spec-compliant
-/// initial states. Implements ITU-T H.264 section 9.3.1.1 equations 9-5..9-9.
-fn init_cabac_context_direct(slice_qp: i32, m: i16, n: i16) -> CabacContext {
-    let pre = ((m as i32 * (slice_qp.clamp(0, 51) - 16)) >> 4) + n as i32;
+/// Initialise a single CABAC context from its (m, n) pair
+/// (clause 9.3.1.1 equations 9-5..9-9).
+fn init_context(slice_qp: i32, m: i8, n: i8) -> CabacContext {
+    let pre = ((m as i32 * slice_qp.clamp(0, 51)) >> 4) + n as i32;
     let pre = pre.clamp(1, 126);
     if pre <= 63 {
         CabacContext {
@@ -189,331 +150,33 @@ fn init_cabac_context_direct(slice_qp: i32, m: i16, n: i16) -> CabacContext {
     }
 }
 
-/// Initialise CABAC context variables for I-slices.
-///
-/// Uses exact (m, n) pairs from ITU-T H.264 spec tables:
-/// - mb_type I-slice (ctx 3..10): Table 9-12
-/// - mb_qp_delta (ctx 60..68): Table 9-15
-/// - coded_block_pattern (ctx 73..84): Table 9-13
-/// - coded_block_flag (ctx 85..104): Table 9-14
-/// - significant_coeff_flag (ctx 105..165): Table 9-17
-/// - last_significant_coeff_flag (ctx 166..226): Table 9-18
-/// - coeff_abs_level_minus1 (ctx 227..275): Table 9-19
-///
-/// Remaining contexts default to equiprobable (m=0, n=0).
-pub fn init_cabac_contexts(slice_qp: i32) -> Vec<CabacContext> {
-    // Start all 460 contexts with (m=0, n=0) = equiprobable
-    let mut mn_pairs = vec![(0i16, 0i16); NUM_CABAC_CONTEXTS];
-
-    // Table 9-12: mb_type for I-slices (ctxIdx 3..10)
-    let mb_type_i: [(i16, i16); 8] = [
-        (20, 29), // ctx  3
-        (2, 26),  // ctx  4
-        (0, 27),  // ctx  5
-        (0, 27),  // ctx  6
-        (0, 27),  // ctx  7
-        (0, 27),  // ctx  8
-        (0, 27),  // ctx  9
-        (0, 27),  // ctx 10
-    ];
-    for (i, &(m, n)) in mb_type_i.iter().enumerate() {
-        mn_pairs[3 + i] = (m, n);
-    }
-
-    // Table 9-15: mb_qp_delta (ctxIdx 60..68)
-    let qp_delta: [(i16, i16); 9] = [
-        (0, 39), // ctx 60
-        (0, 39), // ctx 61
-        (0, 39), // ctx 62
-        (0, 39), // ctx 63
-        (0, 39), // ctx 64
-        (0, 39), // ctx 65
-        (0, 39), // ctx 66
-        (0, 39), // ctx 67
-        (0, 39), // ctx 68
-    ];
-    for (i, &(m, n)) in qp_delta.iter().enumerate() {
-        mn_pairs[60 + i] = (m, n);
-    }
-
-    // Table 9-13: coded_block_pattern luma (ctxIdx 73..76)
-    let cbp_luma: [(i16, i16); 4] = [
-        (0, 41),  // ctx 73
-        (-3, 40), // ctx 74
-        (-7, 39), // ctx 75
-        (-5, 44), // ctx 76
-    ];
-    for (i, &(m, n)) in cbp_luma.iter().enumerate() {
-        mn_pairs[73 + i] = (m, n);
-    }
-
-    // Table 9-13: coded_block_pattern chroma (ctxIdx 77..84)
-    let cbp_chroma: [(i16, i16); 8] = [
-        (-11, 43), // ctx 77
-        (-15, 39), // ctx 78
-        (-4, 44),  // ctx 79
-        (-7, 43),  // ctx 80
-        (-11, 43), // ctx 81
-        (-15, 39), // ctx 82
-        (-4, 44),  // ctx 83
-        (-7, 43),  // ctx 84
-    ];
-    for (i, &(m, n)) in cbp_chroma.iter().enumerate() {
-        mn_pairs[77 + i] = (m, n);
-    }
-
-    // Table 9-14: coded_block_flag (ctxIdx 85..104)
-    // Real spec values for I-slice (luma DC, luma AC, luma 4x4, chroma DC, chroma AC)
-    let coded_block_flag: [(i16, i16); 20] = [
-        // ctxBlockCat=0 (Luma DC 16x16): ctx 85..88
-        (0, 45),  // ctx 85
-        (-2, 40), // ctx 86
-        (-6, 41), // ctx 87
-        (-7, 44), // ctx 88
-        // ctxBlockCat=1 (Luma AC 16x16): ctx 89..92
-        (0, 49),  // ctx 89
-        (-3, 44), // ctx 90
-        (-7, 40), // ctx 91
-        (-5, 45), // ctx 92
-        // ctxBlockCat=2 (Luma 4x4): ctx 93..96
-        (0, 45),  // ctx 93
-        (-2, 40), // ctx 94
-        (-6, 41), // ctx 95
-        (-7, 44), // ctx 96
-        // ctxBlockCat=3 (Chroma DC): ctx 97..100
-        (-12, 56), // ctx 97
-        (-11, 51), // ctx 98
-        (-10, 52), // ctx 99
-        (-8, 48),  // ctx 100
-        // ctxBlockCat=4 (Chroma AC): ctx 101..104
-        (-1, 42), // ctx 101
-        (-1, 36), // ctx 102
-        (-7, 42), // ctx 103
-        (-6, 40), // ctx 104
-    ];
-    for (i, &(m, n)) in coded_block_flag.iter().enumerate() {
-        mn_pairs[85 + i] = (m, n);
-    }
-
-    // Table 9-17: significant_coeff_flag (ctxIdx 105..165)
-    // Real spec values for I-slice, 4x4 block contexts (ctx 105..119)
-    // then 8x8 block contexts (ctx 120..165)
-    let sig_coeff_flag: [(i16, i16); 61] = [
-        // 4x4 block (ctx 105..119) — 15 entries
-        (-2, 13),  // ctx 105
-        (-6, 17),  // ctx 106
-        (-3, 14),  // ctx 107
-        (-5, 17),  // ctx 108
-        (-8, 21),  // ctx 109
-        (-5, 15),  // ctx 110
-        (-4, 16),  // ctx 111
-        (-4, 17),  // ctx 112
-        (-6, 20),  // ctx 113
-        (-10, 24), // ctx 114
-        (-3, 12),  // ctx 115
-        (-3, 14),  // ctx 116
-        (-3, 16),  // ctx 117
-        (-6, 17),  // ctx 118
-        (-8, 17),  // ctx 119
-        // 8x8 block (ctx 120..165) — 46 entries, use reasonable spec-like values
-        (-4, 15), // ctx 120
-        (-3, 14), // ctx 121
-        (-3, 14), // ctx 122
-        (-4, 16), // ctx 123
-        (-7, 19), // ctx 124
-        (-3, 13), // ctx 125
-        (-3, 14), // ctx 126
-        (-4, 16), // ctx 127
-        (-7, 19), // ctx 128
-        (-3, 13), // ctx 129
-        (-3, 14), // ctx 130
-        (-4, 16), // ctx 131
-        (-7, 19), // ctx 132
-        (-3, 13), // ctx 133
-        (-3, 14), // ctx 134
-        (-4, 16), // ctx 135
-        (-7, 19), // ctx 136
-        (-3, 13), // ctx 137
-        (-3, 14), // ctx 138
-        (-4, 16), // ctx 139
-        (-7, 19), // ctx 140
-        (-3, 13), // ctx 141
-        (-3, 14), // ctx 142
-        (-4, 16), // ctx 143
-        (-7, 19), // ctx 144
-        (-3, 13), // ctx 145
-        (-3, 14), // ctx 146
-        (-4, 16), // ctx 147
-        (-7, 19), // ctx 148
-        (-3, 13), // ctx 149
-        (-3, 14), // ctx 150
-        (-4, 16), // ctx 151
-        (-7, 19), // ctx 152
-        (-3, 13), // ctx 153
-        (-3, 14), // ctx 154
-        (-4, 16), // ctx 155
-        (-7, 19), // ctx 156
-        (-3, 13), // ctx 157
-        (-3, 14), // ctx 158
-        (-4, 16), // ctx 159
-        (-7, 19), // ctx 160
-        (-3, 13), // ctx 161
-        (-3, 14), // ctx 162
-        (-4, 16), // ctx 163
-        (-7, 19), // ctx 164
-        (-3, 13), // ctx 165
-    ];
-    for (i, &(m, n)) in sig_coeff_flag.iter().enumerate() {
-        mn_pairs[105 + i] = (m, n);
-    }
-
-    // Table 9-18: last_significant_coeff_flag (ctxIdx 166..226)
-    let last_sig_coeff_flag: [(i16, i16); 61] = [
-        // 4x4 block (ctx 166..180) — 15 entries
-        (1, 7),   // ctx 166
-        (1, 7),   // ctx 167
-        (0, 11),  // ctx 168
-        (-1, 15), // ctx 169
-        (-1, 15), // ctx 170
-        (-2, 17), // ctx 171
-        (-4, 21), // ctx 172
-        (-1, 13), // ctx 173
-        (-1, 15), // ctx 174
-        (-2, 18), // ctx 175
-        (-5, 22), // ctx 176
-        (-3, 17), // ctx 177
-        (-1, 14), // ctx 178
-        (-2, 16), // ctx 179
-        (-5, 19), // ctx 180
-        // 8x8 block (ctx 181..226) — 46 entries
-        (-2, 14), // ctx 181
-        (-1, 12), // ctx 182
-        (-1, 12), // ctx 183
-        (-2, 14), // ctx 184
-        (-4, 17), // ctx 185
-        (-1, 12), // ctx 186
-        (-1, 12), // ctx 187
-        (-2, 14), // ctx 188
-        (-4, 17), // ctx 189
-        (-1, 12), // ctx 190
-        (-1, 12), // ctx 191
-        (-2, 14), // ctx 192
-        (-4, 17), // ctx 193
-        (-1, 12), // ctx 194
-        (-1, 12), // ctx 195
-        (-2, 14), // ctx 196
-        (-4, 17), // ctx 197
-        (-1, 12), // ctx 198
-        (-1, 12), // ctx 199
-        (-2, 14), // ctx 200
-        (-4, 17), // ctx 201
-        (-1, 12), // ctx 202
-        (-1, 12), // ctx 203
-        (-2, 14), // ctx 204
-        (-4, 17), // ctx 205
-        (-1, 12), // ctx 206
-        (-1, 12), // ctx 207
-        (-2, 14), // ctx 208
-        (-4, 17), // ctx 209
-        (-1, 12), // ctx 210
-        (-1, 12), // ctx 211
-        (-2, 14), // ctx 212
-        (-4, 17), // ctx 213
-        (-1, 12), // ctx 214
-        (-1, 12), // ctx 215
-        (-2, 14), // ctx 216
-        (-4, 17), // ctx 217
-        (-1, 12), // ctx 218
-        (-1, 12), // ctx 219
-        (-2, 14), // ctx 220
-        (-4, 17), // ctx 221
-        (-1, 12), // ctx 222
-        (-1, 12), // ctx 223
-        (-2, 14), // ctx 224
-        (-4, 17), // ctx 225
-        (-1, 12), // ctx 226
-    ];
-    for (i, &(m, n)) in last_sig_coeff_flag.iter().enumerate() {
-        mn_pairs[166 + i] = (m, n);
-    }
-
-    // Table 9-19: coeff_abs_level_minus1 (ctxIdx 227..275)
-    let coeff_abs_level: [(i16, i16); 49] = [
-        // Block cat 0 (ctx 227..236): 10 entries
-        (-7, 21), // ctx 227
-        (-5, 22), // ctx 228
-        (-4, 22), // ctx 229
-        (-3, 20), // ctx 230
-        (-1, 16), // ctx 231
-        (-8, 24), // ctx 232
-        (-5, 22), // ctx 233
-        (-4, 21), // ctx 234
-        (-3, 18), // ctx 235
-        (-1, 14), // ctx 236
-        // Block cat 1 (ctx 237..246): 10 entries
-        (-7, 21), // ctx 237
-        (-5, 22), // ctx 238
-        (-4, 22), // ctx 239
-        (-3, 20), // ctx 240
-        (-1, 16), // ctx 241
-        (-8, 24), // ctx 242
-        (-5, 22), // ctx 243
-        (-4, 21), // ctx 244
-        (-3, 18), // ctx 245
-        (-1, 14), // ctx 246
-        // Block cat 2 (ctx 247..256): 10 entries
-        (-7, 21), // ctx 247
-        (-5, 22), // ctx 248
-        (-4, 22), // ctx 249
-        (-3, 20), // ctx 250
-        (-1, 16), // ctx 251
-        (-8, 24), // ctx 252
-        (-5, 22), // ctx 253
-        (-4, 21), // ctx 254
-        (-3, 18), // ctx 255
-        (-1, 14), // ctx 256
-        // Block cat 3 (ctx 257..261): 5 entries
-        (-13, 30), // ctx 257
-        (-12, 30), // ctx 258
-        (-9, 27),  // ctx 259
-        (-6, 22),  // ctx 260
-        (-2, 16),  // ctx 261
-        // Block cat 4 (ctx 262..275): 14 entries
-        (-7, 21), // ctx 262
-        (-5, 22), // ctx 263
-        (-4, 22), // ctx 264
-        (-3, 20), // ctx 265
-        (-1, 16), // ctx 266
-        (-8, 24), // ctx 267
-        (-5, 22), // ctx 268
-        (-4, 21), // ctx 269
-        (-3, 18), // ctx 270
-        (-1, 14), // ctx 271
-        (-7, 21), // ctx 272
-        (-5, 22), // ctx 273
-        (-4, 22), // ctx 274
-        (-3, 20), // ctx 275
-    ];
-    for (i, &(m, n)) in coeff_abs_level.iter().enumerate() {
-        mn_pairs[227 + i] = (m, n);
-    }
-
-    // Build all contexts using direct (m, n) computation — no lossy encoding
-    mn_pairs
-        .iter()
-        .map(|&(m, n)| init_cabac_context_direct(slice_qp, m, n))
+/// Initialise all context variables for a slice: the I-slice table, or the
+/// `cabac_init_idc`-selected P/B table (Tables 9-12..9-33).
+pub(crate) fn init_contexts(slice_qp: i32, intra_slice: bool, cabac_init_idc: u8) -> Vec<CabacContext> {
+    let tab: &[(i8, i8); NUM_CABAC_CONTEXTS] = if intra_slice {
+        &super::h264_cabac_init::CABAC_INIT_I
+    } else {
+        &super::h264_cabac_init::CABAC_INIT_PB[cabac_init_idc.min(2) as usize]
+    };
+    tab.iter()
+        .map(|&(m, n)| init_context(slice_qp, m, n))
         .collect()
 }
 
 // ---------------------------------------------------------------------------
-// CABAC arithmetic decoding engine (H.264, 9.3.3)
+// CABAC arithmetic decoding engine (H.264, 9.3.3.2)
 // ---------------------------------------------------------------------------
 
 /// CABAC binary arithmetic decoder for H.264.
 pub struct CabacDecoder<'a> {
     data: &'a [u8],
+    /// Next unread byte in `data`.
     offset: usize,
-    bits_left: u32,
+    /// Bit reservoir: valid bits occupy the low `bit_cnt` positions, most
+    /// significant first. Renormalisation consumes several bits at once from
+    /// here instead of one array access per bit.
+    bit_buf: u64,
+    bit_cnt: u32,
     /// Current arithmetic coding range (9-bit, initialised to 510).
     range: u32,
     /// Current arithmetic coding value.
@@ -524,64 +187,64 @@ impl<'a> CabacDecoder<'a> {
     /// Construct a new CABAC decoder from RBSP payload bytes.
     ///
     /// The slice must start at the first CABAC-coded byte (after the slice
-    /// header has been fully consumed).
+    /// header has been fully consumed and byte-aligned).
     pub fn new(data: &'a [u8]) -> Self {
         let mut dec = CabacDecoder {
             data,
             offset: 0,
-            bits_left: 0,
+            bit_buf: 0,
+            bit_cnt: 0,
             range: 510,
             value: 0,
         };
-        // Bootstrap: read 9 bits into `value` (spec 9.3.2.2).
+        // Bootstrap: read 9 bits into `value` (spec 9.3.1.2).
         dec.value = dec.read_bits(9);
         dec
     }
 
-    // ------------------------------------------------------------------
-    // Bit-level I/O
-    // ------------------------------------------------------------------
-
+    /// Tops up the bit reservoir from the input bytes (up to 56 valid bits).
     #[inline(always)]
-    fn read_bit(&mut self) -> u32 {
-        if self.bits_left == 0 {
-            if self.offset < self.data.len() {
-                self.bits_left = 8;
-                self.offset += 1;
-            } else {
-                return 0;
+    fn refill(&mut self) {
+        while self.bit_cnt <= 56 && self.offset < self.data.len() {
+            self.bit_buf = (self.bit_buf << 8) | u64::from(self.data[self.offset]);
+            self.offset += 1;
+            self.bit_cnt += 8;
+        }
+    }
+
+    /// Reads `n` (≤ 9) bits, most significant first. Past the RBSP end the
+    /// missing low bits read as zero (the cabac_zero_words tail).
+    #[inline(always)]
+    fn read_bits(&mut self, n: u32) -> u32 {
+        if n == 0 {
+            return 0;
+        }
+        if self.bit_cnt < n {
+            self.refill();
+            if self.bit_cnt < n {
+                let avail = self.bit_cnt;
+                let got = (self.bit_buf & ((1u64 << avail) - 1)) as u32;
+                self.bit_buf = 0;
+                self.bit_cnt = 0;
+                return got << (n - avail);
             }
         }
-        self.bits_left -= 1;
-        let byte = self.data[self.offset - 1];
-        (u32::from(byte) >> self.bits_left) & 1
+        self.bit_cnt -= n;
+        ((self.bit_buf >> self.bit_cnt) & ((1u64 << n) - 1)) as u32
     }
 
-    fn read_bits(&mut self, n: u32) -> u32 {
-        let mut val = 0u32;
-        for _ in 0..n {
-            val = (val << 1) | self.read_bit();
-        }
-        val
-    }
-
-    // ------------------------------------------------------------------
-    // Renormalization (spec 9.3.3.2.2)
-    // ------------------------------------------------------------------
-
+    /// Renormalization (spec 9.3.3.2.2): shift `range`/`value` left until
+    /// `range >= 256`, pulling all the needed low bits in one read.
     #[inline(always)]
     fn renorm(&mut self) {
-        while self.range < 256 {
-            self.range <<= 1;
-            self.value = (self.value << 1) | self.read_bit();
+        if self.range < 256 {
+            let shift = self.range.leading_zeros() - 23;
+            self.range <<= shift;
+            self.value = (self.value << shift) | self.read_bits(shift);
         }
     }
 
-    // ------------------------------------------------------------------
-    // Core decoding primitives
-    // ------------------------------------------------------------------
-
-    /// Decode a single context-modelled binary decision.
+    /// Decode a single context-modelled binary decision (spec 9.3.3.2.1).
     #[inline(always)]
     pub fn decode_decision(&mut self, ctx: &mut CabacContext) -> bool {
         let q_idx = (self.range >> 6) & 3;
@@ -594,22 +257,24 @@ impl<'a> CabacDecoder<'a> {
             self.renorm();
             ctx.mps
         } else {
-            // LPS path
+            // LPS path: binVal = 1 - valMPS with the *old* valMPS (spec
+            // 9.3.3.2.1.1), captured before the state-0 MPS flip.
             self.value -= self.range;
             self.range = lps_range;
+            let bin = !ctx.mps;
             if ctx.state == 0 {
                 ctx.mps = !ctx.mps;
             }
             ctx.state = TRANSITION_LPS[ctx.state as usize];
             self.renorm();
-            !ctx.mps
+            bin
         }
     }
 
-    /// Decode a bypass bin (equiprobable, no context update).
+    /// Decode a bypass bin (equiprobable, no context update; spec 9.3.3.2.3).
     #[inline(always)]
     pub fn decode_bypass(&mut self) -> bool {
-        self.value = (self.value << 1) | self.read_bit();
+        self.value = (self.value << 1) | self.read_bits(1);
         if self.value >= self.range {
             self.value -= self.range;
             true
@@ -618,7 +283,7 @@ impl<'a> CabacDecoder<'a> {
         }
     }
 
-    /// Decode a terminate bin (used for end_of_slice_flag).
+    /// Decode a terminate bin (end_of_slice_flag / I_PCM; spec 9.3.3.2.4).
     pub fn decode_terminate(&mut self) -> bool {
         self.range -= 2;
         if self.value >= self.range {
@@ -629,305 +294,502 @@ impl<'a> CabacDecoder<'a> {
         }
     }
 
-    /// Returns the number of unconsumed bytes remaining.
-    pub fn bytes_remaining(&self) -> usize {
-        let full_bytes = self.data.len().saturating_sub(self.offset);
-        if self.bits_left > 0 {
-            full_bytes + 1
-        } else {
-            full_bytes
-        }
+    /// Byte-aligns the reader for I_PCM sample data (spec 9.3.1 note): the
+    /// arithmetic engine has read the 9-bit `codIOffset` window ahead of the
+    /// logical position, so the aligned PCM start is 7 bits back, rounded up
+    /// to the next byte boundary.
+    pub fn align_to_byte(&mut self) {
+        // `offset` has read ahead into the reservoir; `bit_cnt` bits remain
+        // unconsumed, so the logical bit position is `offset*8 - bit_cnt`.
+        let logical = self.offset * 8 - self.bit_cnt as usize;
+        let pcm_byte = logical.saturating_sub(7).div_ceil(8);
+        self.offset = pcm_byte;
+        self.bit_buf = 0;
+        self.bit_cnt = 0;
+    }
+
+    /// Reads one raw I_PCM sample byte (after [`align_to_byte`]).
+    pub fn read_pcm_byte(&mut self) -> u8 {
+        let b = self.data.get(self.offset).copied().unwrap_or(0);
+        self.offset += 1;
+        b
+    }
+
+    /// Re-initialises the arithmetic engine after the I_PCM sample data
+    /// (spec 9.3.1.2), resuming from the current byte-aligned position.
+    pub fn reinit_after_pcm(&mut self) {
+        self.bit_buf = 0;
+        self.bit_cnt = 0;
+        self.range = 510;
+        self.value = self.read_bits(9);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Binarization schemes (H.264, 9.3.2)
+// Syntax-element decoders (Table 9-34 binarizations + clause 9.3.3.1 contexts)
 // ---------------------------------------------------------------------------
 
-/// Decode a unary-coded value (sequence of 1s terminated by 0, or max bins).
-pub fn decode_unary(decoder: &mut CabacDecoder<'_>, ctx: &mut CabacContext, max_bins: u32) -> u32 {
-    let mut val = 0u32;
-    while val < max_bins {
-        if decoder.decode_decision(ctx) {
-            val += 1;
-        } else {
-            return val;
-        }
-    }
-    val
+type Ctxs = [CabacContext];
+
+/// mb_skip_flag (P slices): ctxIdx 11 + inc, where `inc` counts available
+/// same-slice neighbours that are not skipped.
+pub(crate) fn decode_mb_skip(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, inc: usize) -> bool {
+    dec.decode_decision(&mut st[11 + inc])
 }
 
-/// Decode a truncated-unary coded value.
-pub fn decode_truncated_unary(
-    decoder: &mut CabacDecoder<'_>,
-    ctx: &mut CabacContext,
-    max_val: u32,
+/// I-macroblock type (Table 9-36 binarization): 0 = I_NxN, 25 = I_PCM,
+/// 1..=24 = I_16x16 with embedded CBP/pred-mode (the CAVLC numbering).
+/// `base` = 3 with the neighbour `inc` for I slices; 17 (inc unused) for the
+/// intra suffix inside P slices.
+pub(crate) fn decode_intra_mb_type(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    base: usize,
+    intra_slice: bool,
+    inc: usize,
 ) -> u32 {
-    if max_val == 0 {
-        return 0;
+    let first = if intra_slice { base + inc } else { base };
+    if !dec.decode_decision(&mut st[first]) {
+        return 0; // I_NxN
     }
-    let mut val = 0u32;
-    while val < max_val {
-        if decoder.decode_decision(ctx) {
-            val += 1;
-        } else {
-            return val;
-        }
-    }
-    val
-}
-
-/// Decode a fixed-length code of `n` bits using bypass decoding.
-pub fn decode_fixed_length(decoder: &mut CabacDecoder<'_>, n: u32) -> u32 {
-    let mut val = 0u32;
-    for _ in 0..n {
-        val = (val << 1) | (decoder.decode_bypass() as u32);
-    }
-    val
-}
-
-/// Decode a k-th order Exp-Golomb coded value using bypass bins.
-pub fn decode_exp_golomb_bypass(decoder: &mut CabacDecoder<'_>, k: u32) -> u32 {
-    let mut order = 0u32;
-    // Count leading 1-bits (prefix)
-    while decoder.decode_bypass() {
-        order += 1;
-        if order > 16 {
-            return 0; // safety limit
-        }
-    }
-    // Read (order + k) suffix bits
-    let suffix_len = order + k;
-    let mut val = (1u32 << order) - 1;
-    if suffix_len > 0 {
-        val += decode_fixed_length(decoder, suffix_len);
-    }
-    val
-}
-
-// ---------------------------------------------------------------------------
-// H.264 syntax element decoders
-// ---------------------------------------------------------------------------
-
-/// Context indices for the common syntax elements.
-pub mod ctx {
-    // mb_type contexts for I-slices (Table 9-34): 3..=10
-    pub const MB_TYPE_I_START: usize = 3;
-    // mb_type contexts for P-slices (Table 9-34): 14..=20
-    pub const MB_TYPE_P_START: usize = 14;
-    // coded_block_flag (Table 9-34): 85..=88 for luma
-    pub const CODED_BLOCK_FLAG_LUMA: usize = 85;
-    // significant_coeff_flag (Table 9-34): 105..=165
-    pub const SIGNIFICANT_COEFF_START: usize = 105;
-    // last_significant_coeff_flag: 166..=226
-    pub const LAST_SIGNIFICANT_COEFF_START: usize = 166;
-    // coeff_abs_level_minus1: 227..=275
-    pub const COEFF_ABS_LEVEL_START: usize = 227;
-}
-
-/// Decode `mb_type` for an I-slice macroblock (H.264 Table 9-34).
-///
-/// Binarization per ITU-T H.264 Table 9-36:
-///   bin 0 (ctx 3+ctxInc): 0 → I_4x4 (mb_type=0)
-///   bin 0=1, bin 1 (ctx 4): 1 → I_PCM (mb_type=25)
-///   bin 0=1, bin 1=0: I_16x16 — decode 4 more bins for sub-type (1..24)
-pub fn decode_mb_type_i_slice(
-    decoder: &mut CabacDecoder<'_>,
-    contexts: &mut [CabacContext],
-) -> u32 {
-    let ci = ctx::MB_TYPE_I_START;
-    // bin 0: I_4x4 vs other
-    if !decoder.decode_decision(&mut contexts[ci]) {
-        return 0; // I_4x4
-    }
-    // bin 1: I_PCM vs I_16x16
-    if decoder.decode_decision(&mut contexts[ci + 1]) {
+    if dec.decode_terminate() {
         return 25; // I_PCM
     }
-    // I_16x16: decode cbp_luma (1 bin), cbp_chroma (2 bins), pred_mode (2 bins)
-    // bin 2 (ctx 5): cbp_luma (0 or 1 → maps to cbp 0 or 15)
-    let cbp_luma = decoder.decode_decision(&mut contexts[ci + 2]) as u32;
-    // bin 3 (ctx 6): chroma cbp bit 0
-    let cbp_c0 = decoder.decode_decision(&mut contexts[ci + 3]) as u32;
-    // bin 4 (ctx 7): chroma cbp bit 1 (if cbp_c0=1)
-    let cbp_chroma = if cbp_c0 == 0 {
-        0u32
-    } else if decoder.decode_decision(&mut contexts[ci + 4]) {
-        2
+    // I_16x16 suffix contexts: I slice → base+3..base+7; P suffix reuses
+    // base+2 and base+3 for the paired bins.
+    let (s1, s2a, s2b, s3a, s3b) = if intra_slice {
+        (base + 3, base + 4, base + 5, base + 6, base + 7)
     } else {
-        1
+        (base + 1, base + 2, base + 2, base + 3, base + 3)
     };
-    // bin 5,6 (ctx 8,9): intra16x16 pred mode (2 bits)
-    let pred0 = decoder.decode_decision(&mut contexts[ci + 5]) as u32;
-    let pred1 = decoder.decode_decision(&mut contexts[ci + 6]) as u32;
-    let pred_mode = (pred0 << 1) | pred1;
-
-    // mb_type = 1 + pred_mode*4 + cbp_chroma*4*4? No — see Table 7-11:
-    // mb_type = 1 + cbp_luma*12 + cbp_chroma*4 + pred_mode
-    1 + cbp_luma * 12 + cbp_chroma * 4 + pred_mode
+    let mut mb_type = 1u32;
+    if dec.decode_decision(&mut st[s1]) {
+        mb_type += 12; // cbp_luma = 15
+    }
+    if dec.decode_decision(&mut st[s2a]) {
+        mb_type += 4 + 4 * dec.decode_decision(&mut st[s2b]) as u32; // cbp_chroma
+    }
+    mb_type += 2 * dec.decode_decision(&mut st[s3a]) as u32;
+    mb_type += dec.decode_decision(&mut st[s3b]) as u32;
+    mb_type
 }
 
-/// Decode `mb_type` for a P-slice macroblock.
-pub fn decode_mb_type_p_slice(
-    decoder: &mut CabacDecoder<'_>,
-    contexts: &mut [CabacContext],
+/// P-slice mb_type prefix: `Some(p_type)` with the CAVLC numbering
+/// (0 = 16x16, 1 = 16x8, 2 = 8x16, 3 = P_8x8) or `None` when the macroblock
+/// is intra (the suffix follows via [`decode_intra_mb_type`] at base 17).
+pub(crate) fn decode_p_mb_type(dec: &mut CabacDecoder<'_>, st: &mut Ctxs) -> Option<u32> {
+    if dec.decode_decision(&mut st[14]) {
+        return None;
+    }
+    Some(if !dec.decode_decision(&mut st[15]) {
+        3 * dec.decode_decision(&mut st[16]) as u32
+    } else {
+        2 - dec.decode_decision(&mut st[17]) as u32
+    })
+}
+
+/// P-slice sub_mb_type (Table 9-38): the CAVLC numbering
+/// (0 = 8x8, 1 = 8x4, 2 = 4x8, 3 = 4x4).
+pub(crate) fn decode_sub_mb_type_p(dec: &mut CabacDecoder<'_>, st: &mut Ctxs) -> u32 {
+    if dec.decode_decision(&mut st[21]) {
+        return 0;
+    }
+    if !dec.decode_decision(&mut st[22]) {
+        return 1;
+    }
+    if dec.decode_decision(&mut st[23]) { 2 } else { 3 }
+}
+
+/// mb_skip_flag for B slices (ctxIdxOffset 24; P uses [`decode_mb_skip`] at 11).
+pub(crate) fn decode_mb_skip_b(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, inc: usize) -> bool {
+    dec.decode_decision(&mut st[24 + inc])
+}
+
+/// B-slice mb_type prefix (Table 9-37, ctxIdxOffset 27). Returns the Table 7-14
+/// value `0..=22` for an inter B macroblock, or `None` when the macroblock is
+/// intra (its suffix follows via [`decode_intra_mb_type`] at base 32). `inc` is
+/// the binIdx-0 context increment (neighbours that are neither B_Skip nor
+/// B_Direct_16x16, clause 9.3.3.1.1.3).
+pub(crate) fn decode_b_mb_type(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, inc: usize) -> Option<u32> {
+    if !dec.decode_decision(&mut st[27 + inc]) {
+        return Some(0); // B_Direct_16x16
+    }
+    if !dec.decode_decision(&mut st[27 + 3]) {
+        // B_L0_16x16 / B_L1_16x16
+        return Some(1 + dec.decode_decision(&mut st[27 + 5]) as u32);
+    }
+    let mut bits = (dec.decode_decision(&mut st[27 + 4]) as u32) << 3;
+    bits += (dec.decode_decision(&mut st[27 + 5]) as u32) << 2;
+    bits += (dec.decode_decision(&mut st[27 + 5]) as u32) << 1;
+    bits += dec.decode_decision(&mut st[27 + 5]) as u32;
+    if bits < 8 {
+        return Some(bits + 3); // B_Bi_16x16 .. B_L1_L0_16x8
+    }
+    if bits == 13 {
+        return None; // intra
+    }
+    if bits == 14 {
+        return Some(11); // B_L1_L0_8x16
+    }
+    if bits == 15 {
+        return Some(22); // B_8x8
+    }
+    bits = (bits << 1) + dec.decode_decision(&mut st[27 + 5]) as u32;
+    Some(bits - 4) // B_L0_Bi_16x8 .. B_Bi_Bi_8x16
+}
+
+/// B-slice sub_mb_type (Table 9-38, ctxIdxOffset 36). Returns the Table 7-18
+/// value `0..=12` (0 = B_Direct_8x8, 1/2 = L0/L1 8x8, 3 = Bi 8x8, 4..9 = 8x4/4x8
+/// halves, 10..12 = 4x4 quarters).
+pub(crate) fn decode_sub_mb_type_b(dec: &mut CabacDecoder<'_>, st: &mut Ctxs) -> u32 {
+    if !dec.decode_decision(&mut st[36]) {
+        return 0; // B_Direct_8x8
+    }
+    if !dec.decode_decision(&mut st[37]) {
+        return 1 + dec.decode_decision(&mut st[39]) as u32; // B_L0_8x8 / B_L1_8x8
+    }
+    let mut ty = 3u32;
+    if dec.decode_decision(&mut st[38]) {
+        if dec.decode_decision(&mut st[39]) {
+            return 11 + dec.decode_decision(&mut st[39]) as u32; // B_L1_4x4 / B_Bi_4x4
+        }
+        ty += 4;
+    }
+    ty += 2 * dec.decode_decision(&mut st[39]) as u32;
+    ty += dec.decode_decision(&mut st[39]) as u32;
+    ty
+}
+
+/// prev_intra4x4_pred_mode_flag + rem_intra4x4_pred_mode (ctx 68/69; the
+/// three rem bins are least-significant first).
+pub(crate) fn decode_intra4x4_pred_mode(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    pred: u8,
+) -> u8 {
+    if dec.decode_decision(&mut st[68]) {
+        return pred;
+    }
+    let mut mode = dec.decode_decision(&mut st[69]) as u8;
+    mode += 2 * dec.decode_decision(&mut st[69]) as u8;
+    mode += 4 * dec.decode_decision(&mut st[69]) as u8;
+    mode + (mode >= pred) as u8
+}
+
+/// intra_chroma_pred_mode: ctx 64 + inc (neighbours with nonzero mode), then
+/// truncated unary with ctx 67.
+pub(crate) fn decode_chroma_pred_mode(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    inc: usize,
+) -> u8 {
+    if !dec.decode_decision(&mut st[64 + inc]) {
+        return 0;
+    }
+    if !dec.decode_decision(&mut st[67]) {
+        return 1;
+    }
+    if !dec.decode_decision(&mut st[67]) { 2 } else { 3 }
+}
+
+/// coded_block_pattern luma bits (clause 9.3.3.1.1.4): each bin's context
+/// looks at the co-located 8x8 CBP bit of the neighbour on that side
+/// (`cbp_a` left, `cbp_b` top; the caller substitutes the availability
+/// defaults).
+pub(crate) fn decode_cbp_luma(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    cbp_a: u32,
+    cbp_b: u32,
 ) -> u32 {
-    let ci = ctx::MB_TYPE_P_START;
-    if !decoder.decode_decision(&mut contexts[ci]) {
-        // P_L0_16x16 (0) or sub-partition modes
-        if !decoder.decode_decision(&mut contexts[ci + 1]) {
-            return 0; // P_L0_16x16
-        }
-        if !decoder.decode_decision(&mut contexts[ci + 2]) {
-            return 1; // P_L0_L0_16x8
-        }
-        return 2; // P_L0_L0_8x16
-    }
-    if !decoder.decode_decision(&mut contexts[ci + 3]) {
-        return 3; // P_8x8
-    }
-    // Intra modes in P-slice: decode as I-slice mb_type + 5
-    let intra_type = decode_mb_type_i_slice(decoder, contexts);
-    5 + intra_type
+    let mut cbp = 0u32;
+    let ctx = ((cbp_a & 0x02) == 0) as usize + 2 * ((cbp_b & 0x04) == 0) as usize;
+    cbp |= dec.decode_decision(&mut st[73 + ctx]) as u32;
+    let ctx = ((cbp & 0x01) == 0) as usize + 2 * ((cbp_b & 0x08) == 0) as usize;
+    cbp |= (dec.decode_decision(&mut st[73 + ctx]) as u32) << 1;
+    let ctx = ((cbp_a & 0x08) == 0) as usize + 2 * ((cbp & 0x01) == 0) as usize;
+    cbp |= (dec.decode_decision(&mut st[73 + ctx]) as u32) << 2;
+    let ctx = ((cbp & 0x04) == 0) as usize + 2 * ((cbp & 0x02) == 0) as usize;
+    cbp | ((dec.decode_decision(&mut st[73 + ctx]) as u32) << 3)
 }
 
-/// Decode `coded_block_flag` for a block.
-///
-/// `cat_offset`: block category offset:
-///   0 = luma DC (I_16x16), 1 = luma AC (I_16x16),
-///   2 = luma 4x4, 3 = chroma DC, 4 = chroma AC
-/// For simplicity, uses ctx 85 + cat_offset * 4 + ctxInc (ctxInc=0 simplified).
-pub fn decode_coded_block_flag(
-    decoder: &mut CabacDecoder<'_>,
-    contexts: &mut [CabacContext],
-    cat_offset: usize,
-) -> bool {
-    // Table 9-34: coded_block_flag ctx = 85 + ctxBlockCat * 4 + ctxInc
-    // ctxBlockCat: 0=Luma_DC_16x16, 1=Luma_AC_16x16, 2=Luma_4x4,
-    //              3=Chroma_DC, 4=Chroma_AC
-    let ci = (ctx::CODED_BLOCK_FLAG_LUMA + cat_offset * 4).min(contexts.len() - 1);
-    decoder.decode_decision(&mut contexts[ci])
+/// coded_block_pattern chroma (0/1/2): ctx 77 + inc from the neighbours'
+/// chroma CBP values.
+pub(crate) fn decode_cbp_chroma(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    cbp_a: u32,
+    cbp_b: u32,
+) -> u32 {
+    let inc = (cbp_a > 0) as usize + 2 * (cbp_b > 0) as usize;
+    if !dec.decode_decision(&mut st[77 + inc]) {
+        return 0;
+    }
+    let inc = 4 + (cbp_a == 2) as usize + 2 * (cbp_b == 2) as usize;
+    1 + dec.decode_decision(&mut st[77 + inc]) as u32
 }
 
-/// Decode residual coefficients for one 4x4 block via CABAC.
-///
-/// `ctx_block_cat` selects the context offset for this block type:
-///   0 = luma DC 16x16, 1 = luma AC 16x16, 2 = luma 4x4,
-///   3 = chroma DC, 4 = chroma AC
-///
-/// Returns a vector of up to `max_num_coeff` coefficients in scan order.
-pub fn decode_residual_block_cabac(
-    decoder: &mut CabacDecoder<'_>,
-    contexts: &mut [CabacContext],
-    max_num_coeff: usize,
-) -> Vec<i32> {
-    let mut coeffs = vec![0i32; max_num_coeff];
+/// mb_qp_delta: unary bins at ctx 60 + (previous delta != 0), 62, 63...,
+/// mapped to a signed delta (Table 9-3).
+pub(crate) fn decode_mb_qp_delta(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    prev_nonzero: bool,
+) -> i32 {
+    if !dec.decode_decision(&mut st[60 + prev_nonzero as usize]) {
+        return 0;
+    }
+    let mut val = 1i32;
+    let mut ctx = 62usize;
+    while dec.decode_decision(&mut st[ctx]) {
+        ctx = 63;
+        val += 1;
+        if val > 102 {
+            break; // corrupt stream guard
+        }
+    }
+    if val & 1 == 1 { (val + 1) >> 1 } else { -((val + 1) >> 1) }
+}
 
-    // 1) Decode significance map using position-dependent contexts
-    // significant_coeff_flag: ctx 105 + min(pos, 14) for 4x4 blocks (Table 9-17)
-    // last_significant_coeff_flag: ctx 166 + min(pos, 14) for 4x4 blocks (Table 9-18)
-    let mut significant = vec![false; max_num_coeff];
-    let mut last = vec![false; max_num_coeff];
-    let mut num_coeff = 0usize;
+/// ref_idx_l0: unary at ctx 54 + inc (neighbour partitions with refIdx > 0),
+/// continuing at 58 then 59.
+pub(crate) fn decode_ref_idx(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, inc: usize) -> u32 {
+    let mut ctx = inc;
+    let mut r = 0u32;
+    while dec.decode_decision(&mut st[54 + ctx]) {
+        ctx = (ctx >> 2) + 4;
+        r += 1;
+        if r >= 32 {
+            break; // corrupt stream guard
+        }
+    }
+    r
+}
 
-    let max_scan = max_num_coeff.saturating_sub(1);
-    for i in 0..max_scan {
-        // Position-dependent context: map scan index to context
-        let sig_ctx = if max_num_coeff <= 4 {
-            // Chroma DC: fewer contexts
-            ctx::SIGNIFICANT_COEFF_START + i.min(3)
-        } else if max_num_coeff <= 16 {
-            // 4x4 block: ctx offset by position
-            ctx::SIGNIFICANT_COEFF_START + i.min(14)
-        } else {
-            // 8x8 block (not used in our code, but safe)
-            ctx::SIGNIFICANT_COEFF_START + (i >> 2).min(14)
-        };
-        let sig_ctx = sig_ctx.min(contexts.len() - 1);
-        significant[i] = decoder.decode_decision(&mut contexts[sig_ctx]);
+/// One mvd component (UEG3 binarization, clause 9.3.2.3): `base` is 40 for
+/// mvd_x, 47 for mvd_y; `amvd` = |mvd_A| + |mvd_B| of the same component.
+/// Returns the signed mvd and its magnitude capped at 70 for the neighbour
+/// cache (the cap cannot change future threshold tests).
+pub(crate) fn decode_mvd(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    base: usize,
+    amvd: u32,
+) -> (i32, u8) {
+    let inc = (amvd > 2) as usize + (amvd > 32) as usize;
+    if !dec.decode_decision(&mut st[base + inc]) {
+        return (0, 0);
+    }
+    let mut mvd = 1u32;
+    let mut ctx = base + 3;
+    while mvd < 9 && dec.decode_decision(&mut st[ctx]) {
+        if mvd < 4 {
+            ctx += 1;
+        }
+        mvd += 1;
+    }
+    if mvd >= 9 {
+        // Exp-Golomb (k = 3) escape via bypass bins.
+        let mut k = 3u32;
+        while dec.decode_bypass() {
+            mvd += 1 << k;
+            k += 1;
+            if k > 24 {
+                break; // corrupt stream guard
+            }
+        }
+        while k > 0 {
+            k -= 1;
+            mvd += (dec.decode_bypass() as u32) << k;
+        }
+    }
+    let stored = mvd.min(70) as u8;
+    let signed = if dec.decode_bypass() {
+        -(mvd as i32)
+    } else {
+        mvd as i32
+    };
+    (signed, stored)
+}
 
-        if significant[i] {
-            let last_ctx = if max_num_coeff <= 4 {
-                ctx::LAST_SIGNIFICANT_COEFF_START + i.min(3)
-            } else if max_num_coeff <= 16 {
-                ctx::LAST_SIGNIFICANT_COEFF_START + i.min(14)
-            } else {
-                ctx::LAST_SIGNIFICANT_COEFF_START + (i >> 2).min(14)
-            };
-            let last_ctx = last_ctx.min(contexts.len() - 1);
-            last[i] = decoder.decode_decision(&mut contexts[last_ctx]);
-            num_coeff += 1;
-            if last[i] {
+/// coded_block_flag for block category `cat` (0 luma DC, 1 luma AC, 2 luma
+/// 4x4, 3 chroma DC, 4 chroma AC) with the neighbour-derived `inc`.
+pub(crate) fn decode_cbf(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, cat: usize, inc: usize) -> bool {
+    const BASE: [usize; 5] = [85, 89, 93, 97, 101];
+    dec.decode_decision(&mut st[BASE[cat] + inc])
+}
+
+/// Residual levels after a set coded_block_flag (clause 9.3.2.7): the
+/// significance map, then coeff_abs_level_minus1 + signs in reverse scan
+/// order. Fills `out[pos]` at scan positions `[0, max_coeff)` and returns the
+/// number of nonzero coefficients.
+pub(crate) fn decode_residual_levels(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    cat: usize,
+    max_coeff: usize,
+    out: &mut [i32; 16],
+) -> usize {
+    const SIG_BASE: [usize; 5] = [105, 105 + 15, 105 + 29, 105 + 44, 105 + 47];
+    const LAST_BASE: [usize; 5] = [166, 166 + 15, 166 + 29, 166 + 44, 166 + 47];
+    const ABS_BASE: [usize; 5] = [227, 227 + 10, 227 + 20, 227 + 30, 227 + 39];
+    // Level-context node machine (clause 9.3.3.1.3): nodes 0..3 count
+    // trailing ones, 4..7 mark a level > 1 already seen.
+    const LEVEL1_CTX: [usize; 8] = [1, 2, 3, 4, 0, 0, 0, 0];
+    const LEVELGT1_CTX: [usize; 8] = [5, 5, 5, 5, 6, 7, 8, 9];
+    const TRANS_EQ1: [usize; 8] = [1, 2, 3, 3, 4, 5, 6, 7];
+    const TRANS_GT1: [usize; 8] = [4, 4, 4, 4, 5, 6, 7, 7];
+
+    let (sig_base, last_base, abs_base) = (SIG_BASE[cat], LAST_BASE[cat], ABS_BASE[cat]);
+    let mut index = [0usize; 16];
+    let mut count = 0usize;
+    let mut pos = 0usize;
+    while pos < max_coeff - 1 {
+        if dec.decode_decision(&mut st[sig_base + pos]) {
+            index[count] = pos;
+            count += 1;
+            if dec.decode_decision(&mut st[last_base + pos]) {
+                pos = max_coeff;
                 break;
             }
         }
+        pos += 1;
     }
-    // Last position is implicitly significant if we haven't hit last yet
-    if num_coeff > 0 && !last.iter().any(|&l| l) {
-        significant[max_num_coeff - 1] = true;
-        num_coeff += 1;
-    }
-
-    if num_coeff == 0 {
-        return coeffs;
+    if pos == max_coeff - 1 {
+        // Ran through every earlier position: the final one is significant.
+        index[count] = pos;
+        count += 1;
     }
 
-    // 2) Decode coefficient levels in reverse scan order
-    // coeff_abs_level_minus1: ctx 227 + offset based on num_gt1 and num_eq1
-    // Table 9-19: ctxIdxInc = min(num_gt1, 4) for prefix bins
-    //             Suffix uses bypass (Exp-Golomb k=0)
-    let sig_positions: Vec<usize> = (0..max_num_coeff).filter(|&i| significant[i]).collect();
-
-    let mut num_gt1 = 0u32;
-    let mut num_t1 = 0u32; // trailing ones
-
-    for &pos in sig_positions.iter().rev() {
-        // Base context for coeff_abs_level_minus1:
-        // ctx = 227 + 5 * min(block_cat, 4) + min(num_gt1, 4) for prefix bin 0
-        // Simplified: use ctx 227 + 10*min(num_t1,4) for bin0, 227+5+min(num_gt1,4) for bin1+
-        let base_ctx = ctx::COEFF_ABS_LEVEL_START;
-
-        // Bin 0: ctx = base + min(num_t1, 4) (decides abs_level == 1 vs > 1)
-        let ci0 = (base_ctx + num_t1.min(4) as usize).min(contexts.len() - 1);
-        let prefix_bin0 = decoder.decode_decision(&mut contexts[ci0]);
-
-        let abs_level = if !prefix_bin0 {
-            1u32 // abs_level_minus1 = 0 → abs_level = 1
+    let mut node = 0usize;
+    for k in (0..count).rev() {
+        let p = index[k];
+        if !dec.decode_decision(&mut st[abs_base + LEVEL1_CTX[node]]) {
+            node = TRANS_EQ1[node];
+            out[p] = if dec.decode_bypass() { -1 } else { 1 };
         } else {
-            // Bins 1+: ctx = base + 5 + min(num_gt1, 4)
-            let mut abs_minus1 = 1u32;
-            let ci_rest = (base_ctx + 5 + num_gt1.min(4) as usize).min(contexts.len() - 1);
-            while abs_minus1 < 14 {
-                if !decoder.decode_decision(&mut contexts[ci_rest]) {
-                    break;
+            let mut abs = 2u32;
+            let gt1 = abs_base + LEVELGT1_CTX[node];
+            node = TRANS_GT1[node];
+            while abs < 15 && dec.decode_decision(&mut st[gt1]) {
+                abs += 1;
+            }
+            if abs >= 15 {
+                // Exp-Golomb (k = 0) escape via bypass bins.
+                let mut j = 0u32;
+                while dec.decode_bypass() && j < 23 {
+                    j += 1;
                 }
-                abs_minus1 += 1;
+                abs = 1;
+                while j > 0 {
+                    j -= 1;
+                    abs = abs * 2 + dec.decode_bypass() as u32;
+                }
+                abs += 14;
             }
-            if abs_minus1 >= 14 {
-                // Suffix: Exp-Golomb bypass
-                abs_minus1 += decode_exp_golomb_bypass(decoder, 0);
-            }
-            abs_minus1 + 1
-        };
-
-        // Sign bit (bypass)
-        let sign = decoder.decode_bypass();
-        coeffs[pos] = if sign {
-            -(abs_level as i32)
-        } else {
-            abs_level as i32
-        };
-
-        if abs_level == 1 {
-            num_t1 += 1;
-        }
-        if abs_level > 1 {
-            num_gt1 += 1;
-            num_t1 = 0; // reset trailing ones count
+            out[p] = if dec.decode_bypass() {
+                -(abs as i32)
+            } else {
+                abs as i32
+            };
         }
     }
+    count
+}
 
-    coeffs
+/// transform_size_8x8_flag (clause 9.3.3.1.1.10): ctxIdxOffset 399, with
+/// ctxIdxInc = whether the left / top macroblock used the 8x8 transform.
+pub(crate) fn decode_transform_size_8x8_flag(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    inc: usize,
+) -> bool {
+    dec.decode_decision(&mut st[399 + inc])
+}
+
+/// Luma 8x8 residual (ctxBlockCat 5) for the frame-coded case: the 63-position
+/// significance map uses the position→context maps of Table 9-43 rather than
+/// the raw scan position, then the same reverse-scan level machine as the 4x4
+/// path. Fills `out` at scan positions `[0, 64)` and returns the nonzero count.
+/// In 4:2:0 the 8x8 luma block carries no coded_block_flag — the caller decodes
+/// this only when the CBP marks the 8x8 as coded.
+pub(crate) fn decode_residual_8x8(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    out: &mut [i32; 64],
+) -> usize {
+    // Table 9-43 (frame): significant_coeff_flag / last_significant_coeff_flag
+    // ctxIdxInc as a function of the scan position.
+    const SIG_MAP: [u8; 63] = [
+        0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5, 4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9, 10, 9,
+        8, 7, 7, 6, 11, 12, 13, 11, 6, 7, 8, 9, 14, 10, 9, 8, 6, 11, 12, 13, 11, 6, 9, 14, 10, 9,
+        11, 12, 13, 11, 14, 10, 12,
+    ];
+    const LAST_MAP: [u8; 63] = [
+        0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+        2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7,
+        8, 8, 8,
+    ];
+    const SIG_BASE: usize = 402;
+    const LAST_BASE: usize = 417;
+    const ABS_BASE: usize = 426;
+    const LEVEL1_CTX: [usize; 8] = [1, 2, 3, 4, 0, 0, 0, 0];
+    const LEVELGT1_CTX: [usize; 8] = [5, 5, 5, 5, 6, 7, 8, 9];
+    const TRANS_EQ1: [usize; 8] = [1, 2, 3, 3, 4, 5, 6, 7];
+    const TRANS_GT1: [usize; 8] = [4, 4, 4, 4, 5, 6, 7, 7];
+
+    let mut index = [0usize; 64];
+    let mut count = 0usize;
+    let mut pos = 0usize;
+    while pos < 63 {
+        if dec.decode_decision(&mut st[SIG_BASE + SIG_MAP[pos] as usize]) {
+            index[count] = pos;
+            count += 1;
+            if dec.decode_decision(&mut st[LAST_BASE + LAST_MAP[pos] as usize]) {
+                pos = 64;
+                break;
+            }
+        }
+        pos += 1;
+    }
+    if pos == 63 {
+        index[count] = pos;
+        count += 1;
+    }
+
+    let mut node = 0usize;
+    for k in (0..count).rev() {
+        let p = index[k];
+        if !dec.decode_decision(&mut st[ABS_BASE + LEVEL1_CTX[node]]) {
+            node = TRANS_EQ1[node];
+            out[p] = if dec.decode_bypass() { -1 } else { 1 };
+        } else {
+            let mut abs = 2u32;
+            let gt1 = ABS_BASE + LEVELGT1_CTX[node];
+            node = TRANS_GT1[node];
+            while abs < 15 && dec.decode_decision(&mut st[gt1]) {
+                abs += 1;
+            }
+            if abs >= 15 {
+                let mut j = 0u32;
+                while dec.decode_bypass() && j < 23 {
+                    j += 1;
+                }
+                abs = 1;
+                while j > 0 {
+                    j -= 1;
+                    abs = abs * 2 + dec.decode_bypass() as u32;
+                }
+                abs += 14;
+            }
+            out[p] = if dec.decode_bypass() {
+                -(abs as i32)
+            } else {
+                abs as i32
+            };
+        }
+    }
+    count
 }
 
 /// Identifies the entropy coding mode from a PPS.
@@ -959,27 +821,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cabac_context_init_equiprobable() {
-        let ctx = CabacContext::equiprobable();
-        assert_eq!(ctx.state, 0);
-        assert!(!ctx.mps);
+    fn context_init_matches_spec_formula() {
+        // ctx 3 in the I table is (m, n) = (20, -15): at QP 26,
+        // pre = ((20 * 26) >> 4) - 15 = 32 - 15 = 17 → state 63-17=46, mps 0.
+        let st = init_contexts(26, true, 0);
+        assert_eq!(st.len(), NUM_CABAC_CONTEXTS);
+        assert_eq!(st[3].state, 63 - 17);
+        assert!(!st[3].mps);
     }
 
     #[test]
-    fn test_cabac_context_init_from_value() {
-        // init_value 0x7E = 126 -> slope = (126>>4)*5-45 = 7*5-45 = -10
-        // offset = ((126&15)<<3)-16 = (14<<3)-16 = 96
-        // init_state = ((-10)*(26-16))>>4 + 96 = (-100>>4)+96 = -7+96 = 89
-        // pre = clamp(89,1,126) = 89
-        // 89 > 63 -> state = 89-64 = 25, mps = true
-        let ctx = CabacContext::new(26, 0x7E);
-        assert_eq!(ctx.state, 25);
-        assert!(ctx.mps);
+    fn pb_tables_select_by_init_idc() {
+        let a = init_contexts(30, false, 0);
+        let b = init_contexts(30, false, 1);
+        // The three P/B variants differ somewhere in the mvd contexts.
+        assert!((40..54).any(|i| a[i].state != b[i].state || a[i].mps != b[i].mps));
     }
 
     #[test]
-    fn test_cabac_decode_bypass_deterministic() {
-        // All-zero data -> bypass always returns false (value stays below range).
+    fn bypass_deterministic_on_zeros() {
         let data = [0x00, 0x00, 0x00, 0x00];
         let mut dec = CabacDecoder::new(&data);
         for _ in 0..8 {
@@ -988,106 +848,30 @@ mod tests {
     }
 
     #[test]
-    fn test_cabac_decode_terminate_on_end() {
-        // Range starts at 510. After subtracting 2, range = 508.
-        // If value >= 508, terminate returns true.
-        // With all-ones data, value will be large.
+    fn terminate_fires_on_all_ones() {
+        // value after init = 0x1FF = 511; range 510 - 2 = 508; 511 >= 508.
         let data = [0xFF, 0xFF, 0xFF, 0xFF];
         let mut dec = CabacDecoder::new(&data);
-        // value after init = first 9 bits of 0xFFFF... = 0x1FF = 511
-        // range = 510, range -= 2 = 508, value (511) >= 508 -> true
         assert!(dec.decode_terminate());
     }
 
     #[test]
-    fn test_cabac_decode_decision_updates_state() {
-        let data = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    fn decision_updates_state() {
+        let data = [0x5A, 0xC3, 0x99, 0x11, 0x22];
         let mut dec = CabacDecoder::new(&data);
-        let mut ctx = CabacContext::equiprobable();
-        let initial_state = ctx.state;
-
-        // After a decision the state should change.
-        let _bin = dec.decode_decision(&mut ctx);
-        // The state may or may not differ from initial (depends on MPS/LPS),
-        // but the function should not panic.
-        assert!(ctx.state <= 63);
-        let _ = initial_state;
+        let mut ctx = CabacContext { state: 10, mps: false };
+        let before = ctx.state;
+        let _ = dec.decode_decision(&mut ctx);
+        assert_ne!(ctx.state, before);
     }
 
     #[test]
-    fn test_decode_unary_zero() {
-        // With all-zero data, decode_decision on an equiprobable context
-        // with value=0 should return the MPS (false) immediately,
-        // giving unary value 0.
-        let data = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let mut dec = CabacDecoder::new(&data);
-        let mut ctx = CabacContext::equiprobable();
-        let val = decode_unary(&mut dec, &mut ctx, 10);
-        // Value should be 0 since MPS = false -> decode_decision returns false
-        // on MPS path (value < range for all-zero data).
-        assert_eq!(val, 0);
-    }
-
-    #[test]
-    fn test_fixed_length_decode() {
-        // All-ones data: bypass bits should all be 1.
-        let data = [0xFF, 0xFF, 0xFF, 0xFF];
-        let mut dec = CabacDecoder::new(&data);
-        let val = decode_fixed_length(&mut dec, 3);
-        // 3 bypass bits from all-1s stream should produce 0b111 = 7.
-        assert_eq!(val, 7);
-    }
-
-    #[test]
-    fn test_entropy_coding_mode_from_flag() {
-        assert_eq!(
-            EntropyCodingMode::from_flag(false),
-            EntropyCodingMode::Cavlc
-        );
-        assert_eq!(EntropyCodingMode::from_flag(true), EntropyCodingMode::Cabac);
-    }
-
-    #[test]
-    fn test_init_cabac_contexts_count() {
-        let contexts = init_cabac_contexts(26);
-        assert_eq!(contexts.len(), NUM_CABAC_CONTEXTS);
-    }
-
-    #[test]
-    fn test_decode_residual_block_length() {
-        // Verify that decode_residual_block_cabac always returns the
-        // requested number of coefficients regardless of input data.
-        let data = [0x00; 32];
-        let mut dec = CabacDecoder::new(&data);
-        let mut contexts = init_cabac_contexts(26);
-        let coeffs = decode_residual_block_cabac(&mut dec, &mut contexts, 16);
-        assert_eq!(coeffs.len(), 16);
-
-        // Also verify with max_num_coeff = 4 (chroma DC).
-        let data2 = [0x00; 32];
-        let mut dec2 = CabacDecoder::new(&data2);
-        let mut contexts2 = init_cabac_contexts(26);
-        let coeffs2 = decode_residual_block_cabac(&mut dec2, &mut contexts2, 4);
-        assert_eq!(coeffs2.len(), 4);
-    }
-
-    #[test]
-    fn test_transition_table_bounds() {
-        // Verify all transition table entries are in [0, 63].
-        for &s in TRANSITION_MPS.iter() {
-            assert!(s <= 63);
-        }
-        for &s in TRANSITION_LPS.iter() {
-            assert!(s <= 63);
-        }
-    }
-
-    #[test]
-    fn test_range_table_positive() {
-        // All range table entries should be > 0.
-        for row in RANGE_TABLE.iter() {
-            for &val in row.iter() {
-                assert!(val > 0);
+    fn transition_tables_bounded() {
+        for s in 0..64 {
+            assert!(TRANSITION_MPS[s] < 64);
+            assert!(TRANSITION_LPS[s] < 64);
+            for q in 0..4 {
+                assert!(RANGE_TABLE[s][q] >= 2);
             }
         }
     }
