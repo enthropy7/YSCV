@@ -152,7 +152,11 @@ fn init_context(slice_qp: i32, m: i8, n: i8) -> CabacContext {
 
 /// Initialise all context variables for a slice: the I-slice table, or the
 /// `cabac_init_idc`-selected P/B table (Tables 9-12..9-33).
-pub(crate) fn init_contexts(slice_qp: i32, intra_slice: bool, cabac_init_idc: u8) -> Vec<CabacContext> {
+pub(crate) fn init_contexts(
+    slice_qp: i32,
+    intra_slice: bool,
+    cabac_init_idc: u8,
+) -> Vec<CabacContext> {
     let tab: &[(i8, i8); NUM_CABAC_CONTEXTS] = if intra_slice {
         &super::h264_cabac_init::CABAC_INIT_I
     } else {
@@ -397,7 +401,11 @@ pub(crate) fn decode_sub_mb_type_p(dec: &mut CabacDecoder<'_>, st: &mut Ctxs) ->
     if !dec.decode_decision(&mut st[22]) {
         return 1;
     }
-    if dec.decode_decision(&mut st[23]) { 2 } else { 3 }
+    if dec.decode_decision(&mut st[23]) {
+        2
+    } else {
+        3
+    }
 }
 
 /// mb_skip_flag for B slices (ctxIdxOffset 24; P uses [`decode_mb_skip`] at 11).
@@ -410,7 +418,11 @@ pub(crate) fn decode_mb_skip_b(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, inc: u
 /// intra (its suffix follows via [`decode_intra_mb_type`] at base 32). `inc` is
 /// the binIdx-0 context increment (neighbours that are neither B_Skip nor
 /// B_Direct_16x16, clause 9.3.3.1.1.3).
-pub(crate) fn decode_b_mb_type(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, inc: usize) -> Option<u32> {
+pub(crate) fn decode_b_mb_type(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    inc: usize,
+) -> Option<u32> {
     if !dec.decode_decision(&mut st[27 + inc]) {
         return Some(0); // B_Direct_16x16
     }
@@ -462,11 +474,7 @@ pub(crate) fn decode_sub_mb_type_b(dec: &mut CabacDecoder<'_>, st: &mut Ctxs) ->
 
 /// prev_intra4x4_pred_mode_flag + rem_intra4x4_pred_mode (ctx 68/69; the
 /// three rem bins are least-significant first).
-pub(crate) fn decode_intra4x4_pred_mode(
-    dec: &mut CabacDecoder<'_>,
-    st: &mut Ctxs,
-    pred: u8,
-) -> u8 {
+pub(crate) fn decode_intra4x4_pred_mode(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, pred: u8) -> u8 {
     if dec.decode_decision(&mut st[68]) {
         return pred;
     }
@@ -478,18 +486,18 @@ pub(crate) fn decode_intra4x4_pred_mode(
 
 /// intra_chroma_pred_mode: ctx 64 + inc (neighbours with nonzero mode), then
 /// truncated unary with ctx 67.
-pub(crate) fn decode_chroma_pred_mode(
-    dec: &mut CabacDecoder<'_>,
-    st: &mut Ctxs,
-    inc: usize,
-) -> u8 {
+pub(crate) fn decode_chroma_pred_mode(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, inc: usize) -> u8 {
     if !dec.decode_decision(&mut st[64 + inc]) {
         return 0;
     }
     if !dec.decode_decision(&mut st[67]) {
         return 1;
     }
-    if !dec.decode_decision(&mut st[67]) { 2 } else { 3 }
+    if !dec.decode_decision(&mut st[67]) {
+        2
+    } else {
+        3
+    }
 }
 
 /// coded_block_pattern luma bits (clause 9.3.3.1.1.4): each bin's context
@@ -548,7 +556,11 @@ pub(crate) fn decode_mb_qp_delta(
             break; // corrupt stream guard
         }
     }
-    if val & 1 == 1 { (val + 1) >> 1 } else { -((val + 1) >> 1) }
+    if val & 1 == 1 {
+        (val + 1) >> 1
+    } else {
+        -((val + 1) >> 1)
+    }
 }
 
 /// ref_idx_l0: unary at ctx 54 + inc (neighbour partitions with refIdx > 0),
@@ -614,7 +626,12 @@ pub(crate) fn decode_mvd(
 
 /// coded_block_flag for block category `cat` (0 luma DC, 1 luma AC, 2 luma
 /// 4x4, 3 chroma DC, 4 chroma AC) with the neighbour-derived `inc`.
-pub(crate) fn decode_cbf(dec: &mut CabacDecoder<'_>, st: &mut Ctxs, cat: usize, inc: usize) -> bool {
+pub(crate) fn decode_cbf(
+    dec: &mut CabacDecoder<'_>,
+    st: &mut Ctxs,
+    cat: usize,
+    inc: usize,
+) -> bool {
     const BASE: [usize; 5] = [85, 89, 93, 97, 101];
     dec.decode_decision(&mut st[BASE[cat] + inc])
 }
@@ -859,7 +876,10 @@ mod tests {
     fn decision_updates_state() {
         let data = [0x5A, 0xC3, 0x99, 0x11, 0x22];
         let mut dec = CabacDecoder::new(&data);
-        let mut ctx = CabacContext { state: 10, mps: false };
+        let mut ctx = CabacContext {
+            state: 10,
+            mps: false,
+        };
         let before = ctx.state;
         let _ = dec.decode_decision(&mut ctx);
         assert_ne!(ctx.state, before);

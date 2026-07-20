@@ -592,7 +592,11 @@ impl DeblockInfo<'_> {
         }
         if rq0 != rq1 {
             // Two distinct pictures: compare vectors for the matching reference.
-            let (mp_q0, mp_q1) = if rq0 == rp0 { (mvp0, mvp1) } else { (mvp1, mvp0) };
+            let (mp_q0, mp_q1) = if rq0 == rp0 {
+                (mvp0, mvp1)
+            } else {
+                (mvp1, mvp0)
+            };
             return (diff(mvq0, mp_q0) || diff(mvq1, mp_q1)) as u8;
         }
         // Same picture in both lists: either pairing may match.
@@ -756,7 +760,16 @@ fn filter_luma_edge_h16(
     }
     for (seg, &b) in bs.iter().enumerate() {
         if b > 0 {
-            filter_luma_segment(plane, q0_base + seg * 4, stride, 1, b, alpha, beta, tc0[seg]);
+            filter_luma_segment(
+                plane,
+                q0_base + seg * 4,
+                stride,
+                1,
+                b,
+                alpha,
+                beta,
+                tc0[seg],
+            );
         }
     }
 }
@@ -809,7 +822,16 @@ fn filter_luma_edge_v16(
     }
     for (seg, &b) in bs.iter().enumerate() {
         if b > 0 {
-            filter_luma_segment(plane, q0_base + seg * 4 * stride, 1, stride, b, alpha, beta, tc0[seg]);
+            filter_luma_segment(
+                plane,
+                q0_base + seg * 4 * stride,
+                1,
+                stride,
+                b,
+                alpha,
+                beta,
+                tc0[seg],
+            );
         }
     }
 }
@@ -837,7 +859,10 @@ unsafe fn wide_s16_neon(
 #[allow(unsafe_code)]
 unsafe fn wide_u16_neon(
     v: std::arch::aarch64::uint8x16_t,
-) -> (std::arch::aarch64::uint16x8_t, std::arch::aarch64::uint16x8_t) {
+) -> (
+    std::arch::aarch64::uint16x8_t,
+    std::arch::aarch64::uint16x8_t,
+) {
     use std::arch::aarch64::*;
     // SAFETY: NEON is mandatory on aarch64.
     unsafe { (vmovl_u8(vget_low_u8(v)), vmovl_u8(vget_high_u8(v))) }
@@ -983,10 +1008,7 @@ unsafe fn luma_core_neon(
     // Normal filter (bS 1..3): tc = tc0 + ap + aq, delta clamped to ±tc.
     let one = vdupq_n_u8(1);
     let tc0v = vld1q_u8(tcb.as_ptr());
-    let tc = vaddq_u8(
-        tc0v,
-        vaddq_u8(vandq_u8(ap, one), vandq_u8(aq, one)),
-    );
+    let tc = vaddq_u8(tc0v, vaddq_u8(vandq_u8(ap, one), vandq_u8(aq, one)));
     let (p0l, p0h) = wide_s16_neon(p0);
     let (q0l, q0h) = wide_s16_neon(q0);
     let (p1l, p1h) = wide_s16_neon(p1);
@@ -1113,10 +1135,24 @@ unsafe fn deblock_luma_v16_neon(
     let base = plane.as_mut_ptr().add(q0_base - 4);
     let row = |i: usize| vld1_u8(base.add(i * stride));
     let top = transpose_8x8_neon([
-        row(0), row(1), row(2), row(3), row(4), row(5), row(6), row(7),
+        row(0),
+        row(1),
+        row(2),
+        row(3),
+        row(4),
+        row(5),
+        row(6),
+        row(7),
     ]);
     let bot = transpose_8x8_neon([
-        row(8), row(9), row(10), row(11), row(12), row(13), row(14), row(15),
+        row(8),
+        row(9),
+        row(10),
+        row(11),
+        row(12),
+        row(13),
+        row(14),
+        row(15),
     ]);
     let v = [
         vcombine_u8(top[0], bot[0]),
@@ -1164,7 +1200,10 @@ unsafe fn deblock_luma_v16_neon(
 #[cfg(target_arch = "x86_64")]
 #[inline]
 #[allow(unsafe_code)]
-unsafe fn abd_u8_sse2(a: std::arch::x86_64::__m128i, b: std::arch::x86_64::__m128i) -> std::arch::x86_64::__m128i {
+unsafe fn abd_u8_sse2(
+    a: std::arch::x86_64::__m128i,
+    b: std::arch::x86_64::__m128i,
+) -> std::arch::x86_64::__m128i {
     use std::arch::x86_64::*;
     // SAFETY: SSE2 is part of the x86_64 baseline.
     unsafe { _mm_or_si128(_mm_subs_epu8(a, b), _mm_subs_epu8(b, a)) }
@@ -1607,7 +1646,10 @@ unsafe fn narrow16_avx2(t: std::arch::x86_64::__m256i) -> std::arch::x86_64::__m
     use std::arch::x86_64::*;
     // SAFETY: caller runs under the AVX2 target feature.
     unsafe {
-        _mm256_castsi256_si128(_mm256_permute4x64_epi64(_mm256_packus_epi16(t, t), 0b00_00_10_00))
+        _mm256_castsi256_si128(_mm256_permute4x64_epi64(
+            _mm256_packus_epi16(t, t),
+            0b00_00_10_00,
+        ))
     }
 }
 
@@ -1836,7 +1878,10 @@ unsafe fn chroma_core_neon(
     alpha: i32,
     beta: i32,
     tc0: &[i32; 4],
-) -> (std::arch::aarch64::uint8x16_t, std::arch::aarch64::uint8x16_t) {
+) -> (
+    std::arch::aarch64::uint8x16_t,
+    std::arch::aarch64::uint8x16_t,
+) {
     use std::arch::aarch64::*;
     let av = vdupq_n_u8(alpha as u8);
     let bv = vdupq_n_u8(beta as u8);
@@ -1961,7 +2006,14 @@ unsafe fn deblock_chroma_v8_neon(
         vcreate_u8(uw | (vw << 32))
     };
     let cols = transpose_8x8_neon([
-        row(0), row(1), row(2), row(3), row(4), row(5), row(6), row(7),
+        row(0),
+        row(1),
+        row(2),
+        row(3),
+        row(4),
+        row(5),
+        row(6),
+        row(7),
     ]);
     let p1 = vcombine_u8(cols[0], cols[4]);
     let p0 = vcombine_u8(cols[1], cols[5]);

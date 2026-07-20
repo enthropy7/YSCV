@@ -685,7 +685,11 @@ pub(crate) fn parse_slice_header(
     }
 
     // direct_spatial_mv_pred_flag (B slices) precedes the ref-index overrides.
-    let direct_spatial_mv_pred = if is_b_slice { r.read_bit()? == 1 } else { false };
+    let direct_spatial_mv_pred = if is_b_slice {
+        r.read_bit()? == 1
+    } else {
+        false
+    };
 
     // num_ref_idx_active_override_flag + num_ref_idx overrides (for P/B slices)
     let mut num_ref_idx_l0_active = None;

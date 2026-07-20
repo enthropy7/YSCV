@@ -376,8 +376,8 @@ fn intra8x8_pred(
     for y in 0..8i32 {
         for x in 0..8i32 {
             let v = match mode {
-                0 => ft[x as usize],     // Vertical
-                1 => fl[y as usize],     // Horizontal
+                0 => ft[x as usize], // Vertical
+                1 => fl[y as usize], // Horizontal
                 2 => {
                     // DC.
                     if top && left {
@@ -415,7 +415,8 @@ fn intra8x8_pred(
                     if z >= 0 && z % 2 == 0 {
                         (tx(x - (y >> 1) - 1) + tx(x - (y >> 1)) + 1) >> 1
                     } else if z >= 0 {
-                        (tx(x - (y >> 1) - 2) + 2 * tx(x - (y >> 1) - 1) + tx(x - (y >> 1)) + 2) >> 2
+                        (tx(x - (y >> 1) - 2) + 2 * tx(x - (y >> 1) - 1) + tx(x - (y >> 1)) + 2)
+                            >> 2
                     } else if z == -1 {
                         (ly(0) + 2 * ftl + tx(0) + 2) >> 2
                     } else {
@@ -432,7 +433,8 @@ fn intra8x8_pred(
                     if z >= 0 && z % 2 == 0 {
                         (ly(y - (x >> 1) - 1) + ly(y - (x >> 1)) + 1) >> 1
                     } else if z >= 0 {
-                        (ly(y - (x >> 1) - 2) + 2 * ly(y - (x >> 1) - 1) + ly(y - (x >> 1)) + 2) >> 2
+                        (ly(y - (x >> 1) - 2) + 2 * ly(y - (x >> 1) - 1) + ly(y - (x >> 1)) + 2)
+                            >> 2
                     } else if z == -1 {
                         (ly(0) + 2 * ftl + tx(0) + 2) >> 2
                     } else {
@@ -1020,7 +1022,8 @@ fn decode_chroma(
                     let grid = if pi == 0 { &ctx.nnz_cb } else { &ctx.nnz_cr };
                     nc_pred(grid, ctx.grid_w2, gx, gy, bl, bt)
                 };
-                let tc = if let Some(result) = super::cavlc::decode_cavlc_block_max(reader, nc, 15) {
+                let tc = if let Some(result) = super::cavlc::decode_cavlc_block_max(reader, nc, 15)
+                {
                     let mut tmp = [0i32; 16];
                     super::cavlc::expand_cavlc_to_coefficients_into(&result, &mut tmp[..15]);
                     let mut scan = [0i32; 16];
@@ -1233,7 +1236,11 @@ impl InterMv {
     /// Sum of the left / top neighbour's absolute mvd for one component
     /// (clause 9.3.3.1.1.7); out-of-frame and intra neighbours contribute 0.
     fn amvd_sum(&self, bx: i32, by: i32, comp: usize) -> u32 {
-        let g = if comp == 0 { &self.amvd_x } else { &self.amvd_y };
+        let g = if comp == 0 {
+            &self.amvd_x
+        } else {
+            &self.amvd_y
+        };
         let at = |x: i32, y: i32| -> u32 {
             if x < 0 || y < 0 || x >= self.gw4 as i32 || y >= self.gh4 as i32 {
                 0
@@ -1269,12 +1276,27 @@ impl InterMv {
         if cell & MV_AVAIL == 0 {
             return (false, 0, 0, -1);
         }
-        (true, cell as u16 as i16, (cell >> 16) as u16 as i16, mv_refi(cell))
+        (
+            true,
+            cell as u16 as i16,
+            (cell >> 16) as u16 as i16,
+            mv_refi(cell),
+        )
     }
 
     /// Fills a `w4`x`h4` region (in 4x4 units) at grid origin `(bx4, by4)`.
     #[allow(clippy::too_many_arguments)]
-    fn set(&mut self, bx4: usize, by4: usize, w4: usize, h4: usize, dx: i16, dy: i16, refi: i8, pic_id: i8) {
+    fn set(
+        &mut self,
+        bx4: usize,
+        by4: usize,
+        w4: usize,
+        h4: usize,
+        dx: i16,
+        dy: i16,
+        refi: i8,
+        pic_id: i8,
+    ) {
         let cell = mv_pack(dx, dy, refi, pic_id, true);
         for r in 0..h4 {
             let i = (by4 + r) * self.gw4 + bx4;
@@ -1603,7 +1625,9 @@ fn apply_partition_weight(
     u_plane: &mut [u8],
     v_plane: &mut [u8],
 ) {
-    apply_partition_weight_list(wt, 0, refi, geo, dst_x, dst_y, pw, ph, y_plane, u_plane, v_plane);
+    apply_partition_weight_list(
+        wt, 0, refi, geo, dst_x, dst_y, pw, ph, y_plane, u_plane, v_plane,
+    );
 }
 
 /// Applies explicit uni-directional weighted prediction from list `list` (0 =
@@ -1640,15 +1664,30 @@ fn apply_partition_weight_list(
         && (lw.weight != luma_default || lw.offset != 0)
     {
         super::h264_motion::apply_weighted_pred(
-            y_plane, geo.stride_y, dst_x, dst_y, pw, ph, lw.weight, lw.offset, wt.luma_log2_denom,
+            y_plane,
+            geo.stride_y,
+            dst_x,
+            dst_y,
+            pw,
+            ph,
+            lw.weight,
+            lw.offset,
+            wt.luma_log2_denom,
         );
     }
     if let Some(cw) = chroma.get(ri) {
         for (plane, entry) in [(&mut *u_plane, &cw[0]), (&mut *v_plane, &cw[1])] {
             if entry.weight != chroma_default || entry.offset != 0 {
                 super::h264_motion::apply_weighted_pred(
-                    plane, geo.stride_c, dst_x / 2, dst_y / 2, pw / 2, ph / 2, entry.weight,
-                    entry.offset, wt.chroma_log2_denom,
+                    plane,
+                    geo.stride_c,
+                    dst_x / 2,
+                    dst_y / 2,
+                    pw / 2,
+                    ph / 2,
+                    entry.weight,
+                    entry.offset,
+                    wt.chroma_log2_denom,
                 );
             }
         }
@@ -1682,52 +1721,70 @@ fn decode_inter_mb_cavlc(
 
     // Reconstruct the per-partition motion field, motion-compensating each part.
     // A closure performs prediction + MC + grid update for one partition.
-    let do_part =
-        |field: &mut InterMv,
-         y: &mut [u8],
-         u: &mut [u8],
-         v: &mut [u8],
-         ox: usize,
-         oy: usize,
-         pw: usize,
-         ph: usize,
-         refi: i8,
-         mvd: (i16, i16),
-         shape: PartShape| {
-            let px4 = (bx0 + ox / 4) as i32;
-            let py4 = (by0 + oy / 4) as i32;
-            let (pdx, pdy) = mvp_predict(field, px4, py4, (pw / 4) as i32, refi, shape);
-            let mvx = pdx + mvd.0;
-            let mvy = pdy + mvd.1;
-            // ref_idx selects the reference picture from list l0 (clamped for
-            // robustness against corrupt streams).
-            let rp = refs[(refi.max(0) as usize).min(refs.len() - 1)];
-            mc_partition(
-                rp,
-                geo,
-                mvx as i32,
-                mvy as i32,
-                px + ox,
-                py + oy,
-                pw,
-                ph,
-                y,
-                u,
-                v,
-            );
-            if let Some(wt) = wt {
-                apply_partition_weight(wt, refi, geo, px + ox, py + oy, pw, ph, y, u, v);
-            }
-            let pic_id = ref_pic_id.get(refi.max(0) as usize).copied().unwrap_or(-1);
-            field.set(px4 as usize, py4 as usize, pw / 4, ph / 4, mvx, mvy, refi, pic_id);
-        };
+    let do_part = |field: &mut InterMv,
+                   y: &mut [u8],
+                   u: &mut [u8],
+                   v: &mut [u8],
+                   ox: usize,
+                   oy: usize,
+                   pw: usize,
+                   ph: usize,
+                   refi: i8,
+                   mvd: (i16, i16),
+                   shape: PartShape| {
+        let px4 = (bx0 + ox / 4) as i32;
+        let py4 = (by0 + oy / 4) as i32;
+        let (pdx, pdy) = mvp_predict(field, px4, py4, (pw / 4) as i32, refi, shape);
+        let mvx = pdx + mvd.0;
+        let mvy = pdy + mvd.1;
+        // ref_idx selects the reference picture from list l0 (clamped for
+        // robustness against corrupt streams).
+        let rp = refs[(refi.max(0) as usize).min(refs.len() - 1)];
+        mc_partition(
+            rp,
+            geo,
+            mvx as i32,
+            mvy as i32,
+            px + ox,
+            py + oy,
+            pw,
+            ph,
+            y,
+            u,
+            v,
+        );
+        if let Some(wt) = wt {
+            apply_partition_weight(wt, refi, geo, px + ox, py + oy, pw, ph, y, u, v);
+        }
+        let pic_id = ref_pic_id.get(refi.max(0) as usize).copied().unwrap_or(-1);
+        field.set(
+            px4 as usize,
+            py4 as usize,
+            pw / 4,
+            ph / 4,
+            mvx,
+            mvy,
+            refi,
+            pic_id,
+        );
+    };
 
     match p_mb_type {
         0 => {
             let refi = read_ref_idx(reader, num_ref);
             let mvd = read_mvd(reader)?;
             do_part(
-                field, y_plane, u_plane, v_plane, 0, 0, 16, 16, refi, mvd, PartShape::Normal,
+                field,
+                y_plane,
+                u_plane,
+                v_plane,
+                0,
+                0,
+                16,
+                16,
+                refi,
+                mvd,
+                PartShape::Normal,
             );
         }
         1 | 2 => {
@@ -1920,7 +1977,8 @@ fn add_inter_chroma_residual(
                     let grid = if pi == 0 { &ctx.nnz_cb } else { &ctx.nnz_cr };
                     nc_pred(grid, ctx.grid_w2, gx, gy, bl, bt)
                 };
-                let tc = if let Some(result) = super::cavlc::decode_cavlc_block_max(reader, nc, 15) {
+                let tc = if let Some(result) = super::cavlc::decode_cavlc_block_max(reader, nc, 15)
+                {
                     let mut tmp = [0i32; 16];
                     super::cavlc::expand_cavlc_to_coefficients_into(&result, &mut tmp[..15]);
                     let mut scan = [0i32; 16];
@@ -2187,12 +2245,8 @@ fn decode_macroblock_cabac(
         let cbp_a = cabac_neighbor_cbp(ctx, mb_x as i32 - 1, mb_y as i32, true);
         let cbp_b = cabac_neighbor_cbp(ctx, mb_x as i32, mb_y as i32 - 1, true);
         let cbp_luma = super::h264_cabac::decode_cbp_luma(cabac, st, cbp_a, cbp_b);
-        let cbp_chroma = super::h264_cabac::decode_cbp_chroma(
-            cabac,
-            st,
-            (cbp_a >> 4) & 3,
-            (cbp_b >> 4) & 3,
-        );
+        let cbp_chroma =
+            super::h264_cabac::decode_cbp_chroma(cabac, st, (cbp_a >> 4) & 3, (cbp_b >> 4) & 3);
         (cbp_luma, cbp_chroma)
     };
     let cbp = cbp_luma | (chroma_cbp << 4);
@@ -2216,8 +2270,8 @@ fn decode_macroblock_cabac(
     if is_i16x16 {
         let left_val = cabac_neighbor_cbp(ctx, mb_x as i32 - 1, mb_y as i32, true);
         let top_val = cabac_neighbor_cbp(ctx, mb_x as i32, mb_y as i32 - 1, true);
-        let inc = ((left_val & CBP_LUMA_DC) != 0) as usize
-            + 2 * ((top_val & CBP_LUMA_DC) != 0) as usize;
+        let inc =
+            ((left_val & CBP_LUMA_DC) != 0) as usize + 2 * ((top_val & CBP_LUMA_DC) != 0) as usize;
         if super::h264_cabac::decode_cbf(cabac, st, 0, inc) {
             let mut scan = [0i32; 16];
             super::h264_cabac::decode_residual_levels(cabac, st, 0, 16, &mut scan);
@@ -2327,7 +2381,8 @@ fn decode_macroblock_cabac(
             if super::h264_cabac::decode_cbf(cabac, st, cat, inc) {
                 let max_coeff = if is_i16x16 { 15 } else { 16 };
                 let mut tmp = [0i32; 16];
-                nnz = super::h264_cabac::decode_residual_levels(cabac, st, cat, max_coeff, &mut tmp);
+                nnz =
+                    super::h264_cabac::decode_residual_levels(cabac, st, cat, max_coeff, &mut tmp);
                 // Intra_16x16 AC blocks place their 15 levels at scan positions
                 // 1..=15 (the DC is coded separately); I_4x4 uses the full block.
                 let mut scan = [0i32; 16];
@@ -2352,12 +2407,26 @@ fn decode_macroblock_cabac(
                     }
                 }
             } else if is_i16x16 {
-                reconstruct_i16_dc(y_plane, stride_y, block_x, block_y, &pred, luma_dc[(br / 4) * 4 + bc / 4]);
+                reconstruct_i16_dc(
+                    y_plane,
+                    stride_y,
+                    block_x,
+                    block_y,
+                    &pred,
+                    luma_dc[(br / 4) * 4 + bc / 4],
+                );
             } else {
                 write_pred_luma(y_plane, stride_y, block_x, block_y, &pred);
             }
         } else if is_i16x16 {
-            reconstruct_i16_dc(y_plane, stride_y, block_x, block_y, &pred, luma_dc[(br / 4) * 4 + bc / 4]);
+            reconstruct_i16_dc(
+                y_plane,
+                stride_y,
+                block_x,
+                block_y,
+                &pred,
+                luma_dc[(br / 4) * 4 + bc / 4],
+            );
         } else {
             write_pred_luma(y_plane, stride_y, block_x, block_y, &pred);
         }
@@ -2368,7 +2437,17 @@ fn decode_macroblock_cabac(
 
     // --- Chroma ---
     decode_chroma_cabac(
-        cabac, st, ctx, mb_x, mb_y, chroma_mode, chroma_cbp, qp, &mut cbp_word, u_plane, v_plane,
+        cabac,
+        st,
+        ctx,
+        mb_x,
+        mb_y,
+        chroma_mode,
+        chroma_cbp,
+        qp,
+        &mut cbp_word,
+        u_plane,
+        v_plane,
         stride_uv,
     );
 
@@ -2378,7 +2457,14 @@ fn decode_macroblock_cabac(
 
 /// Reconstructs an Intra_16x16 luma 4x4 block that has no AC residual: just the
 /// DC coefficient added to the prediction.
-fn reconstruct_i16_dc(y: &mut [u8], stride: usize, bx: usize, by: usize, pred: &[i32; 16], dc: i32) {
+fn reconstruct_i16_dc(
+    y: &mut [u8],
+    stride: usize,
+    bx: usize,
+    by: usize,
+    pred: &[i32; 16],
+    dc: i32,
+) {
     let mut coeffs = [0i32; 16];
     coeffs[0] = dc;
     inverse_dct_4x4(&mut coeffs);
@@ -2435,7 +2521,11 @@ fn reconstruct_intra8x8_cabac(
                 && gx + 2 < gw4
                 && ctx.nnz_decoded[(gy - 1) * gw4 + gx + 2];
             for x in 8..16 {
-                t[x] = if tr_ok { y_plane[base + x] as i32 } else { t[7] };
+                t[x] = if tr_ok {
+                    y_plane[base + x] as i32
+                } else {
+                    t[7]
+                };
             }
         }
         if left {
@@ -2509,8 +2599,8 @@ fn decode_chroma_cabac(
         for (pi, d) in dc.iter_mut().enumerate() {
             let left_val = cabac_neighbor_cbp(ctx, mb_x as i32 - 1, mb_y as i32, true);
             let top_val = cabac_neighbor_cbp(ctx, mb_x as i32, mb_y as i32 - 1, true);
-            let inc = ((left_val >> (6 + pi)) & 1) as usize
-                + 2 * ((top_val >> (6 + pi)) & 1) as usize;
+            let inc =
+                ((left_val >> (6 + pi)) & 1) as usize + 2 * ((top_val >> (6 + pi)) & 1) as usize;
             if super::h264_cabac::decode_cbf(cabac, st, 3, inc) {
                 let mut c = [0i32; 16];
                 super::h264_cabac::decode_residual_levels(cabac, st, 3, 4, &mut c);
@@ -2571,7 +2661,11 @@ fn decode_chroma_cabac(
     let left_ok = ctx.sample_mb_avail(cpx as i32 - 1, cpy as i32, 3);
     let tl_ok = ctx.sample_mb_avail(cpx as i32 - 1, cpy as i32 - 1, 3);
     for pi in 0..2 {
-        let plane = if pi == 0 { &mut *u_plane } else { &mut *v_plane };
+        let plane = if pi == 0 {
+            &mut *u_plane
+        } else {
+            &mut *v_plane
+        };
         let top = top_ok.then(|| {
             let mut a = [0i32; 8];
             for (x, s) in a.iter_mut().enumerate() {
@@ -2651,7 +2745,6 @@ fn decode_chroma_cabac(
     }
 }
 
-
 /// Decodes and reconstructs one inter (P_L0) macroblock using CABAC entropy
 /// coding, reusing the CAVLC path's motion compensation and reconstruction.
 #[allow(clippy::too_many_arguments)]
@@ -2685,10 +2778,10 @@ fn decode_inter_mb_cabac(
     // ref_idx_l0 (CABAC): unary at ctx 54 + inc, inc from neighbours with
     // refIdx > 0. Only present when more than one reference is active.
     let decode_ref = |cabac: &mut CabacDecoder<'_>,
-                          st: &mut [super::h264_cabac::CabacContext],
-                          field: &InterMv,
-                          px4: i32,
-                          py4: i32|
+                      st: &mut [super::h264_cabac::CabacContext],
+                      field: &InterMv,
+                      px4: i32,
+                      py4: i32|
      -> i8 {
         if num_ref <= 1 {
             return 0;
@@ -2734,13 +2827,32 @@ fn decode_inter_mb_cabac(
         let mvy = pdy + mdy as i16;
         let rp = refs[(refi.max(0) as usize).min(refs.len() - 1)];
         mc_partition(
-            rp, geo, mvx as i32, mvy as i32, px + ox, py + oy, pw, ph, y, u, v,
+            rp,
+            geo,
+            mvx as i32,
+            mvy as i32,
+            px + ox,
+            py + oy,
+            pw,
+            ph,
+            y,
+            u,
+            v,
         );
         if let Some(wt) = wt {
             apply_partition_weight(wt, refi, geo, px + ox, py + oy, pw, ph, y, u, v);
         }
         let pic_id = ref_pic_id.get(refi.max(0) as usize).copied().unwrap_or(-1);
-        field.set(px4 as usize, py4 as usize, pw / 4, ph / 4, mvx, mvy, refi, pic_id);
+        field.set(
+            px4 as usize,
+            py4 as usize,
+            pw / 4,
+            ph / 4,
+            mvx,
+            mvy,
+            refi,
+            pic_id,
+        );
         field.set_amvd(px4 as usize, py4 as usize, pw / 4, ph / 4, sx, sy);
     }
 
@@ -2748,8 +2860,26 @@ fn decode_inter_mb_cabac(
         0 => {
             let refi = decode_ref(cabac, st, field, bx0 as i32, by0 as i32);
             do_part(
-                cabac, st, field, refs, ref_pic_id, geo, wt, bx0, by0, px, py, 0, 0, 16, 16, refi,
-                PartShape::Normal, y_plane, u_plane, v_plane,
+                cabac,
+                st,
+                field,
+                refs,
+                ref_pic_id,
+                geo,
+                wt,
+                bx0,
+                by0,
+                px,
+                py,
+                0,
+                0,
+                16,
+                16,
+                refi,
+                PartShape::Normal,
+                y_plane,
+                u_plane,
+                v_plane,
             );
         }
         1 | 2 => {
@@ -2764,16 +2894,37 @@ fn decode_inter_mb_cabac(
                     (8, 0, 8, 16, PartShape::Right8x16),
                 ]
             };
-            let r0 = decode_ref(cabac, st, field, (bx0 + parts[0].0 / 4) as i32, (by0 + parts[0].1 / 4) as i32);
+            let r0 = decode_ref(
+                cabac,
+                st,
+                field,
+                (bx0 + parts[0].0 / 4) as i32,
+                (by0 + parts[0].1 / 4) as i32,
+            );
             // Provisionally record part 0's ref so part 1's ref context sees it.
             let p0id = ref_pic_id.get(r0.max(0) as usize).copied().unwrap_or(-1);
-            field.set(bx0 + parts[0].0 / 4, by0 + parts[0].1 / 4, parts[0].2 / 4, parts[0].3 / 4, 0, 0, r0, p0id);
-            let r1 = decode_ref(cabac, st, field, (bx0 + parts[1].0 / 4) as i32, (by0 + parts[1].1 / 4) as i32);
+            field.set(
+                bx0 + parts[0].0 / 4,
+                by0 + parts[0].1 / 4,
+                parts[0].2 / 4,
+                parts[0].3 / 4,
+                0,
+                0,
+                r0,
+                p0id,
+            );
+            let r1 = decode_ref(
+                cabac,
+                st,
+                field,
+                (bx0 + parts[1].0 / 4) as i32,
+                (by0 + parts[1].1 / 4) as i32,
+            );
             let refs_p = [r0, r1];
             for (i, &(ox, oy, pw, ph, shape)) in parts.iter().enumerate() {
                 do_part(
-                    cabac, st, field, refs, ref_pic_id, geo, wt, bx0, by0, px, py, ox, oy, pw, ph, refs_p[i],
-                    shape, y_plane, u_plane, v_plane,
+                    cabac, st, field, refs, ref_pic_id, geo, wt, bx0, by0, px, py, ox, oy, pw, ph,
+                    refs_p[i], shape, y_plane, u_plane, v_plane,
                 );
             }
         }
@@ -2788,7 +2939,13 @@ fn decode_inter_mb_cabac(
             let mut sub_refs = [0i8; 4];
             for (sub, sr) in sub_refs.iter_mut().enumerate() {
                 let (sox, soy) = ((sub % 2) * 8, (sub / 2) * 8);
-                *sr = decode_ref(cabac, st, field, (bx0 + sox / 4) as i32, (by0 + soy / 4) as i32);
+                *sr = decode_ref(
+                    cabac,
+                    st,
+                    field,
+                    (bx0 + sox / 4) as i32,
+                    (by0 + soy / 4) as i32,
+                );
                 // Record so the next sub-block's ref context sees it.
                 let srid = ref_pic_id.get((*sr).max(0) as usize).copied().unwrap_or(-1);
                 field.set(bx0 + sox / 4, by0 + soy / 4, 2, 2, 0, 0, *sr, srid);
@@ -2803,8 +2960,26 @@ fn decode_inter_mb_cabac(
                 };
                 for &(ppx, ppy, pw, ph) in subparts {
                     do_part(
-                        cabac, st, field, refs, ref_pic_id, geo, wt, bx0, by0, px, py, sox + ppx,
-                        soy + ppy, pw, ph, sub_refs[sub], PartShape::Normal, y_plane, u_plane, v_plane,
+                        cabac,
+                        st,
+                        field,
+                        refs,
+                        ref_pic_id,
+                        geo,
+                        wt,
+                        bx0,
+                        by0,
+                        px,
+                        py,
+                        sox + ppx,
+                        soy + ppy,
+                        pw,
+                        ph,
+                        sub_refs[sub],
+                        PartShape::Normal,
+                        y_plane,
+                        u_plane,
+                        v_plane,
                     );
                 }
             }
@@ -2812,8 +2987,18 @@ fn decode_inter_mb_cabac(
     }
 
     finish_inter_mb_cabac(
-        cabac, st, ctx, mb_x, mb_y, no_sub_8x8, transform_8x8_mode, qp_delta_nonzero, geo, y_plane,
-        u_plane, v_plane,
+        cabac,
+        st,
+        ctx,
+        mb_x,
+        mb_y,
+        no_sub_8x8,
+        transform_8x8_mode,
+        qp_delta_nonzero,
+        geo,
+        y_plane,
+        u_plane,
+        v_plane,
     )
 }
 
@@ -2939,7 +3124,17 @@ fn finish_inter_mb_cabac(
 
     // --- Chroma residual (add onto MC prediction) ---
     add_inter_chroma_cabac(
-        cabac, st, ctx, mb_x, mb_y, cbp_chroma, qp, &mut cbp_word, u_plane, v_plane, geo.stride_c,
+        cabac,
+        st,
+        ctx,
+        mb_x,
+        mb_y,
+        cbp_chroma,
+        qp,
+        &mut cbp_word,
+        u_plane,
+        v_plane,
+        geo.stride_c,
     );
 
     ctx.mb_cbp[mb_idx] = cbp_word;
@@ -3010,9 +3205,24 @@ fn b_mb_type_parts(
         _ => BDir::Bi,
     };
     match mb_type {
-        1 => ([(0, 0, 16, 16), (0, 0, 0, 0)], [BDir::L0; 2], [PartShape::Normal; 2], 1),
-        2 => ([(0, 0, 16, 16), (0, 0, 0, 0)], [BDir::L1; 2], [PartShape::Normal; 2], 1),
-        3 => ([(0, 0, 16, 16), (0, 0, 0, 0)], [BDir::Bi; 2], [PartShape::Normal; 2], 1),
+        1 => (
+            [(0, 0, 16, 16), (0, 0, 0, 0)],
+            [BDir::L0; 2],
+            [PartShape::Normal; 2],
+            1,
+        ),
+        2 => (
+            [(0, 0, 16, 16), (0, 0, 0, 0)],
+            [BDir::L1; 2],
+            [PartShape::Normal; 2],
+            1,
+        ),
+        3 => (
+            [(0, 0, 16, 16), (0, 0, 0, 0)],
+            [BDir::Bi; 2],
+            [PartShape::Normal; 2],
+            1,
+        ),
         _ => {
             let idx = mb_type - 4; // 0..=17
             let pair = idx / 2;
@@ -3169,7 +3379,9 @@ fn bmc_partition(
         BDir::L0 => {
             if let Some(&rp) = bf.list0.get(idx0) {
                 mc_partition(rp, geo, mv0.0 as i32, mv0.1 as i32, px, py, pw, ph, y, u, v);
-                if bf.weighted_bipred_idc == 1 && let Some(wt) = bf.wt {
+                if bf.weighted_bipred_idc == 1
+                    && let Some(wt) = bf.wt
+                {
                     apply_partition_weight_list(wt, 0, ref0, geo, px, py, pw, ph, y, u, v);
                 }
             }
@@ -3177,7 +3389,9 @@ fn bmc_partition(
         BDir::L1 => {
             if let Some(&rp) = bf.list1.get(idx1) {
                 mc_partition(rp, geo, mv1.0 as i32, mv1.1 as i32, px, py, pw, ph, y, u, v);
-                if bf.weighted_bipred_idc == 1 && let Some(wt) = bf.wt {
+                if bf.weighted_bipred_idc == 1
+                    && let Some(wt) = bf.wt
+                {
                     apply_partition_weight_list(wt, 1, ref1, geo, px, py, pw, ph, y, u, v);
                 }
             }
@@ -3187,23 +3401,68 @@ fn bmc_partition(
                 return;
             };
             // L0 prediction into the plane; L1 prediction into compact temporaries.
-            mc_partition(rp0, geo, mv0.0 as i32, mv0.1 as i32, px, py, pw, ph, y, u, v);
+            mc_partition(
+                rp0,
+                geo,
+                mv0.0 as i32,
+                mv0.1 as i32,
+                px,
+                py,
+                pw,
+                ph,
+                y,
+                u,
+                v,
+            );
             let mut ty = [0u8; 256];
             let mut tu = [0u8; 64];
             let mut tv = [0u8; 64];
             super::h264_motion::mc_luma_block(
-                &rp1.y, geo.origin_y, geo.stride_y, geo.w, geo.h, mv1.0 as i32, mv1.1 as i32, px, py,
-                pw, ph, &mut ty, pw,
+                &rp1.y,
+                geo.origin_y,
+                geo.stride_y,
+                geo.w,
+                geo.h,
+                mv1.0 as i32,
+                mv1.1 as i32,
+                px,
+                py,
+                pw,
+                ph,
+                &mut ty,
+                pw,
             );
             let (cpw, cph) = (pw / 2, ph / 2);
             let (cx, cy) = (px / 2, py / 2);
             super::h264_motion::mc_chroma_block(
-                &rp1.u, geo.origin_c, geo.stride_c, geo.cw, geo.ch, mv1.0 as i32, mv1.1 as i32, cx,
-                cy, cpw, cph, &mut tu, cpw,
+                &rp1.u,
+                geo.origin_c,
+                geo.stride_c,
+                geo.cw,
+                geo.ch,
+                mv1.0 as i32,
+                mv1.1 as i32,
+                cx,
+                cy,
+                cpw,
+                cph,
+                &mut tu,
+                cpw,
             );
             super::h264_motion::mc_chroma_block(
-                &rp1.v, geo.origin_c, geo.stride_c, geo.cw, geo.ch, mv1.0 as i32, mv1.1 as i32, cx,
-                cy, cpw, cph, &mut tv, cpw,
+                &rp1.v,
+                geo.origin_c,
+                geo.stride_c,
+                geo.cw,
+                geo.ch,
+                mv1.0 as i32,
+                mv1.1 as i32,
+                cx,
+                cy,
+                cpw,
+                cph,
+                &mut tv,
+                cpw,
             );
             match bf.weighted_bipred_idc {
                 1 => {
@@ -3212,17 +3471,55 @@ fn bmc_partition(
                         let (r0, r1) = (ref0.max(0) as usize, ref1.max(0) as usize);
                         let ld = wt.luma_log2_denom;
                         let dflt = 1 << ld;
-                        let (lw0, lo0) = wt.luma_l0.get(r0).map_or((dflt, 0), |e| (e.weight, e.offset));
-                        let (lw1, lo1) = wt.luma_l1.get(r1).map_or((dflt, 0), |e| (e.weight, e.offset));
-                        b_weight_plane(y, geo.stride_y, px, py, pw, ph, &ty, pw, lw0, lw1, ld, lo0 + lo1);
+                        let (lw0, lo0) = wt
+                            .luma_l0
+                            .get(r0)
+                            .map_or((dflt, 0), |e| (e.weight, e.offset));
+                        let (lw1, lo1) = wt
+                            .luma_l1
+                            .get(r1)
+                            .map_or((dflt, 0), |e| (e.weight, e.offset));
+                        b_weight_plane(
+                            y,
+                            geo.stride_y,
+                            px,
+                            py,
+                            pw,
+                            ph,
+                            &ty,
+                            pw,
+                            lw0,
+                            lw1,
+                            ld,
+                            lo0 + lo1,
+                        );
                         let cd = wt.chroma_log2_denom;
                         let cdflt = 1 << cd;
-                        for (ci, (plane, tmp)) in [(&mut *u, &tu), (&mut *v, &tv)].into_iter().enumerate() {
-                            let (cw0, co0) =
-                                wt.chroma_l0.get(r0).map_or((cdflt, 0), |e| (e[ci].weight, e[ci].offset));
-                            let (cw1, co1) =
-                                wt.chroma_l1.get(r1).map_or((cdflt, 0), |e| (e[ci].weight, e[ci].offset));
-                            b_weight_plane(plane, geo.stride_c, cx, cy, cpw, cph, tmp, cpw, cw0, cw1, cd, co0 + co1);
+                        for (ci, (plane, tmp)) in
+                            [(&mut *u, &tu), (&mut *v, &tv)].into_iter().enumerate()
+                        {
+                            let (cw0, co0) = wt
+                                .chroma_l0
+                                .get(r0)
+                                .map_or((cdflt, 0), |e| (e[ci].weight, e[ci].offset));
+                            let (cw1, co1) = wt
+                                .chroma_l1
+                                .get(r1)
+                                .map_or((cdflt, 0), |e| (e[ci].weight, e[ci].offset));
+                            b_weight_plane(
+                                plane,
+                                geo.stride_c,
+                                cx,
+                                cy,
+                                cpw,
+                                cph,
+                                tmp,
+                                cpw,
+                                cw0,
+                                cw1,
+                                cd,
+                                co0 + co1,
+                            );
                         }
                     }
                 }
@@ -3406,8 +3703,16 @@ fn apply_b_direct(
             let mut subx = ox;
             while subx < ox + w {
                 let czf = col_zero_flag(bf, bx0, by0, subx, suby);
-                let smv0 = if pred0 && ref0 == 0 && czf { (0, 0) } else { mv0 };
-                let smv1 = if pred1 && ref1 == 0 && czf { (0, 0) } else { mv1 };
+                let smv0 = if pred0 && ref0 == 0 && czf {
+                    (0, 0)
+                } else {
+                    mv0
+                };
+                let smv1 = if pred1 && ref1 == 0 && czf {
+                    (0, 0)
+                } else {
+                    mv1
+                };
                 record_and_mc(
                     field, field_l1, ctx, bf, mb_x, mb_y, subx, suby, step, step, dir, smv0, ref0,
                     smv1, ref1, true, y, u, v,
@@ -3457,9 +3762,15 @@ fn temporal_sub(
     }
     // Choose the co-located L0 vector, falling back to L1.
     let (mvc, col_poc) = if cr0 >= 0 {
-        ((cl0 as i16, (cl0 >> 16) as i16), col.l0_poc.get(cr0 as usize).copied())
+        (
+            (cl0 as i16, (cl0 >> 16) as i16),
+            col.l0_poc.get(cr0 as usize).copied(),
+        )
     } else {
-        ((cl1 as i16, (cl1 >> 16) as i16), col.l1_poc.get(cr1 as usize).copied())
+        (
+            (cl1 as i16, (cl1 >> 16) as i16),
+            col.l1_poc.get(cr1 as usize).copied(),
+        )
     };
     // Map the co-located reference (by POC) into the current L0 list.
     let ref0 = col_poc
@@ -3554,7 +3865,15 @@ fn decode_b_parts_cabac(
         if uses_l1(dirs[p]) {
             let (ox, oy, pw, ph) = parts[p];
             let (bx4, by4) = (bx0 + ox / 4, by0 + oy / 4);
-            ref1[p] = decode_ref_b(cabac, st, field_l1, ctx, bx4 as i32, by4 as i32, bf.num_ref1);
+            ref1[p] = decode_ref_b(
+                cabac,
+                st,
+                field_l1,
+                ctx,
+                bx4 as i32,
+                by4 as i32,
+                bf.num_ref1,
+            );
             let pic = bf.ref_pic_id1.get(r_idx(ref1[p])).copied().unwrap_or(-1);
             field_l1.set(bx4, by4, pw / 4, ph / 4, 0, 0, ref1[p], pic);
         }
@@ -3570,8 +3889,14 @@ fn decode_b_parts_cabac(
             let ay = field.amvd_sum(bx4 as i32, by4 as i32, 1);
             let (mdx, sx) = super::h264_cabac::decode_mvd(cabac, st, 40, ax);
             let (mdy, sy) = super::h264_cabac::decode_mvd(cabac, st, 47, ay);
-            let (pdx, pdy) =
-                mvp_predict(field, bx4 as i32, by4 as i32, (pw / 4) as i32, ref0[p], shapes[p]);
+            let (pdx, pdy) = mvp_predict(
+                field,
+                bx4 as i32,
+                by4 as i32,
+                (pw / 4) as i32,
+                ref0[p],
+                shapes[p],
+            );
             mv0[p] = (pdx + mdx as i16, pdy + mdy as i16);
             let pic = bf.ref_pic_id0.get(r_idx(ref0[p])).copied().unwrap_or(-1);
             field.set(bx4, by4, pw / 4, ph / 4, mv0[p].0, mv0[p].1, ref0[p], pic);
@@ -3586,8 +3911,14 @@ fn decode_b_parts_cabac(
             let ay = field_l1.amvd_sum(bx4 as i32, by4 as i32, 1);
             let (mdx, sx) = super::h264_cabac::decode_mvd(cabac, st, 40, ax);
             let (mdy, sy) = super::h264_cabac::decode_mvd(cabac, st, 47, ay);
-            let (pdx, pdy) =
-                mvp_predict(field_l1, bx4 as i32, by4 as i32, (pw / 4) as i32, ref1[p], shapes[p]);
+            let (pdx, pdy) = mvp_predict(
+                field_l1,
+                bx4 as i32,
+                by4 as i32,
+                (pw / 4) as i32,
+                ref1[p],
+                shapes[p],
+            );
             mv1[p] = (pdx + mdx as i16, pdy + mdy as i16);
             let pic = bf.ref_pic_id1.get(r_idx(ref1[p])).copied().unwrap_or(-1);
             field_l1.set(bx4, by4, pw / 4, ph / 4, mv1[p].0, mv1[p].1, ref1[p], pic);
@@ -3598,7 +3929,9 @@ fn decode_b_parts_cabac(
     for p in 0..count {
         let (ox, oy, pw, ph) = parts[p];
         let (px, py) = (mb_x * 16 + ox, mb_y * 16 + oy);
-        bmc_partition(bf, dirs[p], mv0[p], ref0[p], mv1[p], ref1[p], px, py, pw, ph, y, u, v);
+        bmc_partition(
+            bf, dirs[p], mv0[p], ref0[p], mv1[p], ref1[p], px, py, pw, ph, y, u, v,
+        );
     }
 }
 
@@ -3661,7 +3994,9 @@ fn decode_b_8x8_cabac(
     for s8 in 0..4 {
         if sub[s8] == 0 {
             let (sox, soy) = ((s8 % 2) * 8, (s8 / 2) * 8);
-            apply_b_direct(field, field_l1, ctx, bf, mb_x, mb_y, sox, soy, 8, 8, y, u, v);
+            apply_b_direct(
+                field, field_l1, ctx, bf, mb_x, mb_y, sox, soy, 8, 8, y, u, v,
+            );
         }
     }
     // Phase 1: one ref_idx per sub-mb per list (non-direct sub-mbs only).
@@ -3680,7 +4015,15 @@ fn decode_b_8x8_cabac(
         if sub[s8] != 0 && uses_l1(b_sub_dir(sub[s8])) {
             let (sox, soy) = ((s8 % 2) * 8, (s8 / 2) * 8);
             let (bx4, by4) = (bx0 + sox / 4, by0 + soy / 4);
-            ref1[s8] = decode_ref_b(cabac, st, field_l1, ctx, bx4 as i32, by4 as i32, bf.num_ref1);
+            ref1[s8] = decode_ref_b(
+                cabac,
+                st,
+                field_l1,
+                ctx,
+                bx4 as i32,
+                by4 as i32,
+                bf.num_ref1,
+            );
             let pic = bf.ref_pic_id1.get(r_idx(ref1[s8])).copied().unwrap_or(-1);
             field_l1.set(bx4, by4, 2, 2, 0, 0, ref1[s8], pic);
         }
@@ -3702,7 +4045,11 @@ fn decode_b_8x8_cabac(
                 continue;
             }
             let (sox, soy) = ((s8 % 2) * 8, (s8 / 2) * 8);
-            let pic_ids = if list_is_l1 { bf.ref_pic_id1 } else { bf.ref_pic_id0 };
+            let pic_ids = if list_is_l1 {
+                bf.ref_pic_id1
+            } else {
+                bf.ref_pic_id0
+            };
             let pic = pic_ids.get(r_idx(refs[s8])).copied().unwrap_or(-1);
             for &(ppx, ppy, pw, ph) in b_sub_shapes(sub[s8]) {
                 let bx4 = bx0 + (sox + ppx) / 4;
@@ -3739,8 +4086,14 @@ fn decode_b_8x8_cabac(
         for &(ppx, ppy, pw, ph) in b_sub_shapes(sub[s8]) {
             let bx4 = bx0 + (sox + ppx) / 4;
             let by4 = by0 + (soy + ppy) / 4;
-            let mv0 = (field.cells[by4 * field.gw4 + bx4] as i16, (field.cells[by4 * field.gw4 + bx4] >> 16) as i16);
-            let mv1 = (field_l1.cells[by4 * field_l1.gw4 + bx4] as i16, (field_l1.cells[by4 * field_l1.gw4 + bx4] >> 16) as i16);
+            let mv0 = (
+                field.cells[by4 * field.gw4 + bx4] as i16,
+                (field.cells[by4 * field.gw4 + bx4] >> 16) as i16,
+            );
+            let mv1 = (
+                field_l1.cells[by4 * field_l1.gw4 + bx4] as i16,
+                (field_l1.cells[by4 * field_l1.gw4 + bx4] >> 16) as i16,
+            );
             let px = mb_x * 16 + sox + ppx;
             let py = mb_y * 16 + soy + ppy;
             bmc_partition(bf, d, mv0, ref0[s8], mv1, ref1[s8], px, py, pw, ph, y, u, v);
@@ -3778,18 +4131,42 @@ fn decode_b_mb_cabac(
     match mb_type {
         0 => apply_b_direct(field, field_l1, ctx, bf, mb_x, mb_y, 0, 0, 16, 16, y, u, v),
         22 => {
-            no_sub_8x8 = decode_b_8x8_cabac(cabac, st, ctx, field, field_l1, bf, mb_x, mb_y, y, u, v);
+            no_sub_8x8 =
+                decode_b_8x8_cabac(cabac, st, ctx, field, field_l1, bf, mb_x, mb_y, y, u, v);
         }
         _ => {
             let (parts, dirs, shapes, count) = b_mb_type_parts(mb_type);
             decode_b_parts_cabac(
-                cabac, st, ctx, field, field_l1, bf, mb_x, mb_y, &parts[..count], &dirs[..count],
-                &shapes[..count], y, u, v,
+                cabac,
+                st,
+                ctx,
+                field,
+                field_l1,
+                bf,
+                mb_x,
+                mb_y,
+                &parts[..count],
+                &dirs[..count],
+                &shapes[..count],
+                y,
+                u,
+                v,
             );
         }
     }
     finish_inter_mb_cabac(
-        cabac, st, ctx, mb_x, mb_y, no_sub_8x8, transform_8x8_mode, qp_delta_nonzero, bf.geo, y, u, v,
+        cabac,
+        st,
+        ctx,
+        mb_x,
+        mb_y,
+        no_sub_8x8,
+        transform_8x8_mode,
+        qp_delta_nonzero,
+        bf.geo,
+        y,
+        u,
+        v,
     )
 }
 
@@ -3853,8 +4230,14 @@ fn decode_b_parts_cavlc(
             let (ox, oy, pw, ph) = parts[p];
             let (bx4, by4) = (bx0 + ox / 4, by0 + oy / 4);
             let (mdx, mdy) = read_mvd(reader)?;
-            let (pdx, pdy) =
-                mvp_predict(field, bx4 as i32, by4 as i32, (pw / 4) as i32, ref0[p], shapes[p]);
+            let (pdx, pdy) = mvp_predict(
+                field,
+                bx4 as i32,
+                by4 as i32,
+                (pw / 4) as i32,
+                ref0[p],
+                shapes[p],
+            );
             mv0[p] = (pdx + mdx, pdy + mdy);
             let pic = bf.ref_pic_id0.get(r_idx(ref0[p])).copied().unwrap_or(-1);
             field.set(bx4, by4, pw / 4, ph / 4, mv0[p].0, mv0[p].1, ref0[p], pic);
@@ -3865,8 +4248,14 @@ fn decode_b_parts_cavlc(
             let (ox, oy, pw, ph) = parts[p];
             let (bx4, by4) = (bx0 + ox / 4, by0 + oy / 4);
             let (mdx, mdy) = read_mvd(reader)?;
-            let (pdx, pdy) =
-                mvp_predict(field_l1, bx4 as i32, by4 as i32, (pw / 4) as i32, ref1[p], shapes[p]);
+            let (pdx, pdy) = mvp_predict(
+                field_l1,
+                bx4 as i32,
+                by4 as i32,
+                (pw / 4) as i32,
+                ref1[p],
+                shapes[p],
+            );
             mv1[p] = (pdx + mdx, pdy + mdy);
             let pic = bf.ref_pic_id1.get(r_idx(ref1[p])).copied().unwrap_or(-1);
             field_l1.set(bx4, by4, pw / 4, ph / 4, mv1[p].0, mv1[p].1, ref1[p], pic);
@@ -3875,7 +4264,9 @@ fn decode_b_parts_cavlc(
     for p in 0..count {
         let (ox, oy, pw, ph) = parts[p];
         let (px, py) = (mb_x * 16 + ox, mb_y * 16 + oy);
-        bmc_partition(bf, dirs[p], mv0[p], ref0[p], mv1[p], ref1[p], px, py, pw, ph, y, u, v);
+        bmc_partition(
+            bf, dirs[p], mv0[p], ref0[p], mv1[p], ref1[p], px, py, pw, ph, y, u, v,
+        );
     }
     Ok(())
 }
@@ -3913,7 +4304,9 @@ fn decode_b_8x8_cavlc(
     for s8 in 0..4 {
         if sub[s8] == 0 {
             let (sox, soy) = ((s8 % 2) * 8, (s8 / 2) * 8);
-            apply_b_direct(field, field_l1, ctx, bf, mb_x, mb_y, sox, soy, 8, 8, y, u, v);
+            apply_b_direct(
+                field, field_l1, ctx, bf, mb_x, mb_y, sox, soy, 8, 8, y, u, v,
+            );
         }
     }
     // Phase 1: one ref_idx per sub-mb per list (non-direct sub-mbs only).
@@ -3940,7 +4333,11 @@ fn decode_b_8x8_cavlc(
     // Phase 2: mvd_l0 for all sub-partitions, then mvd_l1.
     for (list_is_l1, fld) in [(false, &mut *field), (true, &mut *field_l1)] {
         let refs = if list_is_l1 { &ref1 } else { &ref0 };
-        let pic_ids = if list_is_l1 { bf.ref_pic_id1 } else { bf.ref_pic_id0 };
+        let pic_ids = if list_is_l1 {
+            bf.ref_pic_id1
+        } else {
+            bf.ref_pic_id0
+        };
         for s8 in 0..4 {
             if sub[s8] == 0 {
                 continue;
@@ -3964,7 +4361,16 @@ fn decode_b_8x8_cavlc(
                     refs[s8],
                     PartShape::Normal,
                 );
-                fld.set(bx4, by4, pw / 4, ph / 4, pdx + mdx, pdy + mdy, refs[s8], pic);
+                fld.set(
+                    bx4,
+                    by4,
+                    pw / 4,
+                    ph / 4,
+                    pdx + mdx,
+                    pdy + mdy,
+                    refs[s8],
+                    pic,
+                );
             }
         }
     }
@@ -4012,8 +4418,19 @@ fn decode_b_mb_cavlc(
         _ => {
             let (parts, dirs, shapes, count) = b_mb_type_parts(mb_type);
             decode_b_parts_cavlc(
-                reader, ctx, field, field_l1, bf, mb_x, mb_y, &parts[..count], &dirs[..count],
-                &shapes[..count], y, u, v,
+                reader,
+                ctx,
+                field,
+                field_l1,
+                bf,
+                mb_x,
+                mb_y,
+                &parts[..count],
+                &dirs[..count],
+                &shapes[..count],
+                y,
+                u,
+                v,
             )?;
         }
     }
@@ -4048,8 +4465,8 @@ fn add_inter_chroma_cabac(
         for (pi, d) in dc.iter_mut().enumerate() {
             let left_val = cabac_neighbor_cbp(ctx, mb_x as i32 - 1, mb_y as i32, false);
             let top_val = cabac_neighbor_cbp(ctx, mb_x as i32, mb_y as i32 - 1, false);
-            let inc = ((left_val >> (6 + pi)) & 1) as usize
-                + 2 * ((top_val >> (6 + pi)) & 1) as usize;
+            let inc =
+                ((left_val >> (6 + pi)) & 1) as usize + 2 * ((top_val >> (6 + pi)) & 1) as usize;
             if super::h264_cabac::decode_cbf(cabac, st, 3, inc) {
                 let mut c = [0i32; 16];
                 super::h264_cabac::decode_residual_levels(cabac, st, 3, 4, &mut c);
@@ -4219,9 +4636,18 @@ fn send_chase_row(
     m.filter_on = filter_on;
     m.alpha_c0_offset = alpha_c0_offset;
     m.beta_offset = beta_offset;
-    copy_into(&mut m.y, &y_dec[r * 16 * geo.stride_y..(r * 16 + 16) * geo.stride_y]);
-    copy_into(&mut m.u, &u_dec[r * 8 * geo.stride_c..(r * 8 + 8) * geo.stride_c]);
-    copy_into(&mut m.v, &v_dec[r * 8 * geo.stride_c..(r * 8 + 8) * geo.stride_c]);
+    copy_into(
+        &mut m.y,
+        &y_dec[r * 16 * geo.stride_y..(r * 16 + 16) * geo.stride_y],
+    );
+    copy_into(
+        &mut m.u,
+        &u_dec[r * 8 * geo.stride_c..(r * 8 + 8) * geo.stride_c],
+    );
+    copy_into(
+        &mut m.v,
+        &v_dec[r * 8 * geo.stride_c..(r * 8 + 8) * geo.stride_c],
+    );
     let gw4 = mb_ctx.grid_w4;
     let g = r * 4 * gw4..(r * 4 + 4) * gw4;
     copy_into(&mut m.nnz, &mb_ctx.nnz_luma[g.clone()]);
@@ -4247,7 +4673,8 @@ fn send_chase_row(
     }
     copy_into(&mut m.qp, &mb_qp[r * mb_ctx.mb_w..(r + 1) * mb_ctx.mb_w]);
     m.tr8x8.clear();
-    m.tr8x8.extend_from_slice(&mb_ctx.mb_tr8x8[r * mb_ctx.mb_w..(r + 1) * mb_ctx.mb_w]);
+    m.tr8x8
+        .extend_from_slice(&mb_ctx.mb_tr8x8[r * mb_ctx.mb_w..(r + 1) * mb_ctx.mb_w]);
     let _ = chase.send_row(m);
 }
 
@@ -4381,7 +4808,11 @@ fn build_ref_list0<'a>(
         let target_pn = match op {
             0 | 1 => {
                 let abs_diff = val as i64 + 1;
-                let mut no_wrap = if op == 0 { pred - abs_diff } else { pred + abs_diff };
+                let mut no_wrap = if op == 0 {
+                    pred - abs_diff
+                } else {
+                    pred + abs_diff
+                };
                 if no_wrap < 0 {
                     no_wrap += max_fn;
                 }
@@ -4389,7 +4820,11 @@ fn build_ref_list0<'a>(
                     no_wrap -= max_fn;
                 }
                 pred = no_wrap;
-                if no_wrap > curr { no_wrap - max_fn } else { no_wrap }
+                if no_wrap > curr {
+                    no_wrap - max_fn
+                } else {
+                    no_wrap
+                }
             }
             // Long-term references are never kept in this sliding-window DPB.
             _ => continue,
@@ -4451,7 +4886,11 @@ fn apply_ref_mods<'a>(
         let target_pn = match op {
             0 | 1 => {
                 let abs_diff = val as i64 + 1;
-                let mut nw = if op == 0 { pred - abs_diff } else { pred + abs_diff };
+                let mut nw = if op == 0 {
+                    pred - abs_diff
+                } else {
+                    pred + abs_diff
+                };
                 if nw < 0 {
                     nw += max_fn;
                 }
@@ -4507,9 +4946,7 @@ fn build_ref_lists_b<'a>(
     l0.extend(after.iter().copied());
     let mut l1: Vec<&RefPic> = after;
     l1.extend(before.iter().copied());
-    if l1.len() > 1
-        && l0.len() == l1.len()
-        && l0.iter().zip(&l1).all(|(a, b)| std::ptr::eq(*a, *b))
+    if l1.len() > 1 && l0.len() == l1.len() && l0.iter().zip(&l1).all(|(a, b)| std::ptr::eq(*a, *b))
     {
         l1.swap(0, 1);
     }
@@ -4673,8 +5110,7 @@ impl H264Decoder {
                 } else {
                     self.poc_prev_frame_num_offset
                 };
-                let tmp = 2 * (frame_num_offset + sh.frame_num as i32)
-                    - if is_ref { 0 } else { 1 };
+                let tmp = 2 * (frame_num_offset + sh.frame_num as i32) - if is_ref { 0 } else { 1 };
                 self.poc_prev_frame_num_offset = frame_num_offset;
                 self.poc_prev_frame_num = sh.frame_num;
                 tmp
@@ -4780,8 +5216,7 @@ impl H264Decoder {
         // Every plane is padded (ffmpeg's memory model): motion compensation
         // reads the reference through the replicated-edge ring, decode and
         // deblock write through origin-based views.
-        let (stride_y, origin_y, y_sz) =
-            super::h264_motion::padded_plane_geometry(full_w, full_h);
+        let (stride_y, origin_y, y_sz) = super::h264_motion::padded_plane_geometry(full_w, full_h);
         let (stride_c, origin_c, c_sz) =
             super::h264_motion::padded_plane_geometry(chroma_w.max(1), chroma_h.max(1));
         let geo = PlaneGeo {
@@ -4822,7 +5257,9 @@ impl H264Decoder {
         let fc = if first_mb == 0 {
             if let Some(stale) = pending {
                 // Abandoned incomplete frame (corrupt stream): recycle planes.
-                if stale.chased && let Some(c) = chase {
+                if stale.chased
+                    && let Some(c) = chase
+                {
                     c.abort_frame();
                 }
                 self.plane_pool.push(RefPic {
@@ -4898,7 +5335,9 @@ impl H264Decoder {
                 other => {
                     // Orphan continuation slice: drop it, recycle any pending.
                     if let Some(stale) = other {
-                        if stale.chased && let Some(c) = chase {
+                        if stale.chased
+                            && let Some(c) = chase
+                        {
                             c.abort_frame();
                         }
                         self.plane_pool.push(RefPic {
@@ -5058,9 +5497,19 @@ impl H264Decoder {
                 if mb_x == 0 {
                     while rows_sent < mb_y {
                         send_chase_row(
-                            chase, rows_sent, y_dec, u_dec, v_dec, &geo, &mb_ctx, &field,
-                            is_b_slice.then_some(&field_l1), &mb_qp, deblock_on,
-                            slice_header.alpha_c0_offset, slice_header.beta_offset,
+                            chase,
+                            rows_sent,
+                            y_dec,
+                            u_dec,
+                            v_dec,
+                            &geo,
+                            &mb_ctx,
+                            &field,
+                            is_b_slice.then_some(&field_l1),
+                            &mb_qp,
+                            deblock_on,
+                            slice_header.alpha_c0_offset,
+                            slice_header.beta_offset,
                         );
                         rows_sent += 1;
                     }
@@ -5100,8 +5549,19 @@ impl H264Decoder {
                             mb_direct[mb_idx] = true;
                             if has_ref {
                                 apply_b_direct(
-                                    &mut field, &mut field_l1, &mut mb_ctx, &bf, mb_x, mb_y, 0, 0,
-                                    16, 16, y_dec, u_dec, v_dec,
+                                    &mut field,
+                                    &mut field_l1,
+                                    &mut mb_ctx,
+                                    &bf,
+                                    mb_x,
+                                    mb_y,
+                                    0,
+                                    0,
+                                    16,
+                                    16,
+                                    y_dec,
+                                    u_dec,
+                                    v_dec,
                                 );
                             } else {
                                 for r in 0..4 {
@@ -5127,17 +5587,43 @@ impl H264Decoder {
                             if has_ref {
                                 let rp = list0[0];
                                 mc_partition(
-                                    rp, &geo, mvx as i32, mvy as i32, px, py, 16, 16, &mut *y_dec,
-                                    &mut *u_dec, &mut *v_dec,
+                                    rp,
+                                    &geo,
+                                    mvx as i32,
+                                    mvy as i32,
+                                    px,
+                                    py,
+                                    16,
+                                    16,
+                                    &mut *y_dec,
+                                    &mut *u_dec,
+                                    &mut *v_dec,
                                 );
                                 if let Some(wt) = slice_header.weight_table.as_ref() {
                                     apply_partition_weight(
-                                        wt, 0, &geo, px, py, 16, 16, &mut *y_dec, &mut *u_dec,
+                                        wt,
+                                        0,
+                                        &geo,
+                                        px,
+                                        py,
+                                        16,
+                                        16,
+                                        &mut *y_dec,
+                                        &mut *u_dec,
                                         &mut *v_dec,
                                     );
                                 }
                             }
-                            field.set(bx4, by4, 4, 4, mvx, mvy, 0, ref_pic_id.first().copied().unwrap_or(-1));
+                            field.set(
+                                bx4,
+                                by4,
+                                4,
+                                4,
+                                mvx,
+                                mvy,
+                                0,
+                                ref_pic_id.first().copied().unwrap_or(-1),
+                            );
                             field.set_amvd(bx4, by4, 4, 4, 0, 0);
                         }
                         for r in 0..4 {
@@ -5169,10 +5655,20 @@ impl H264Decoder {
                                 mb_direct[mb_idx] = mb_type == 0;
                                 if list0.is_empty()
                                     || decode_b_mb_cabac(
-                                        &mut cabac, &mut st, &mut mb_ctx, &mut field,
-                                        &mut field_l1, &bf, mb_x, mb_y, mb_type,
-                                        pps.transform_8x8_mode_flag, &mut qp_delta_nonzero, y_dec,
-                                        u_dec, v_dec,
+                                        &mut cabac,
+                                        &mut st,
+                                        &mut mb_ctx,
+                                        &mut field,
+                                        &mut field_l1,
+                                        &bf,
+                                        mb_x,
+                                        mb_y,
+                                        mb_type,
+                                        pps.transform_8x8_mode_flag,
+                                        &mut qp_delta_nonzero,
+                                        y_dec,
+                                        u_dec,
+                                        v_dec,
                                     )
                                     .is_err()
                                 {
@@ -5188,11 +5684,23 @@ impl H264Decoder {
                             Some(p_type) => {
                                 if list0.is_empty()
                                     || decode_inter_mb_cabac(
-                                        &mut cabac, &mut st, &mut mb_ctx, &mut field, mb_x, mb_y,
-                                        p_type, num_ref, &list0, &ref_pic_id, &geo,
+                                        &mut cabac,
+                                        &mut st,
+                                        &mut mb_ctx,
+                                        &mut field,
+                                        mb_x,
+                                        mb_y,
+                                        p_type,
+                                        num_ref,
+                                        &list0,
+                                        &ref_pic_id,
+                                        &geo,
                                         slice_header.weight_table.as_ref(),
-                                        pps.transform_8x8_mode_flag, &mut qp_delta_nonzero,
-                                        y_dec, u_dec, v_dec,
+                                        pps.transform_8x8_mode_flag,
+                                        &mut qp_delta_nonzero,
+                                        y_dec,
+                                        u_dec,
+                                        v_dec,
                                     )
                                     .is_err()
                                 {
@@ -5217,9 +5725,20 @@ impl H264Decoder {
                             field_l1.cells[i..i + 4].fill(mv_pack(0, 0, -1, -1, true));
                         }
                         if decode_macroblock_cabac(
-                            &mut cabac, &mut st, &mut mb_ctx, mb_x, mb_y, is_inter, is_b_slice,
-                            pps.transform_8x8_mode_flag, &mut qp_delta_nonzero, y_dec, u_dec, v_dec,
-                            stride_y, stride_uv,
+                            &mut cabac,
+                            &mut st,
+                            &mut mb_ctx,
+                            mb_x,
+                            mb_y,
+                            is_inter,
+                            is_b_slice,
+                            pps.transform_8x8_mode_flag,
+                            &mut qp_delta_nonzero,
+                            y_dec,
+                            u_dec,
+                            v_dec,
+                            stride_y,
+                            stride_uv,
                         )
                         .is_err()
                         {
@@ -5288,8 +5807,19 @@ impl H264Decoder {
                             // B_Skip: direct-mode motion, no residual.
                             if has_ref {
                                 apply_b_direct(
-                                    &mut field, &mut field_l1, &mut mb_ctx, &bf, mb_x, mb_y, 0, 0,
-                                    16, 16, y_dec, u_dec, v_dec,
+                                    &mut field,
+                                    &mut field_l1,
+                                    &mut mb_ctx,
+                                    &bf,
+                                    mb_x,
+                                    mb_y,
+                                    0,
+                                    0,
+                                    16,
+                                    16,
+                                    y_dec,
+                                    u_dec,
+                                    v_dec,
                                 );
                             } else {
                                 for r in 0..4 {
@@ -5318,24 +5848,54 @@ impl H264Decoder {
                             if has_ref {
                                 let rp = list0[0];
                                 mc_partition(
-                                    rp, &geo, mvx as i32, mvy as i32, mb_x * 16, mb_y * 16, 16,
-                                    16, &mut *y_dec, &mut *u_dec, &mut *v_dec,
+                                    rp,
+                                    &geo,
+                                    mvx as i32,
+                                    mvy as i32,
+                                    mb_x * 16,
+                                    mb_y * 16,
+                                    16,
+                                    16,
+                                    &mut *y_dec,
+                                    &mut *u_dec,
+                                    &mut *v_dec,
                                 );
                                 if let Some(wt) = slice_header.weight_table.as_ref() {
                                     apply_partition_weight(
-                                        wt, 0, &geo, mb_x * 16, mb_y * 16, 16, 16, &mut *y_dec,
-                                        &mut *u_dec, &mut *v_dec,
+                                        wt,
+                                        0,
+                                        &geo,
+                                        mb_x * 16,
+                                        mb_y * 16,
+                                        16,
+                                        16,
+                                        &mut *y_dec,
+                                        &mut *u_dec,
+                                        &mut *v_dec,
                                     );
                                 }
                             }
-                            field.set(bx4 as usize, by4 as usize, 4, 4, mvx, mvy, 0, ref_pic_id.first().copied().unwrap_or(-1));
+                            field.set(
+                                bx4 as usize,
+                                by4 as usize,
+                                4,
+                                4,
+                                mvx,
+                                mvy,
+                                0,
+                                ref_pic_id.first().copied().unwrap_or(-1),
+                            );
                         }
                         // A skipped MB has no coefficients.
                         for r in 0..4 {
                             for c in 0..4 {
-                                mb_ctx.nnz_luma[(by4 as usize + r) * mb_ctx.grid_w4 + bx4 as usize + c] = 0;
-                                mb_ctx.nnz_decoded[(by4 as usize + r) * mb_ctx.grid_w4 + bx4 as usize + c] = true;
-                                mb_ctx.modes4x4[(by4 as usize + r) * mb_ctx.grid_w4 + bx4 as usize + c] = NOT_I4X4;
+                                mb_ctx.nnz_luma
+                                    [(by4 as usize + r) * mb_ctx.grid_w4 + bx4 as usize + c] = 0;
+                                mb_ctx.nnz_decoded
+                                    [(by4 as usize + r) * mb_ctx.grid_w4 + bx4 as usize + c] = true;
+                                mb_ctx.modes4x4
+                                    [(by4 as usize + r) * mb_ctx.grid_w4 + bx4 as usize + c] =
+                                    NOT_I4X4;
                             }
                         }
                         for r in 0..2 {
@@ -5370,15 +5930,35 @@ impl H264Decoder {
                             true
                         } else if is_b_slice {
                             decode_b_mb_cavlc(
-                                &mut reader, &mut mb_ctx, &mut field, &mut field_l1, &bf, mb_x,
-                                mb_y, mb_type_raw, y_dec, u_dec, v_dec,
+                                &mut reader,
+                                &mut mb_ctx,
+                                &mut field,
+                                &mut field_l1,
+                                &bf,
+                                mb_x,
+                                mb_y,
+                                mb_type_raw,
+                                y_dec,
+                                u_dec,
+                                v_dec,
                             )
                             .is_err()
                         } else {
                             decode_inter_mb_cavlc(
-                                &mut reader, &mut mb_ctx, &mut field, mb_x, mb_y, mb_type_raw,
-                                num_ref, &list0, &ref_pic_id, &geo,
-                                slice_header.weight_table.as_ref(), y_dec, u_dec, v_dec,
+                                &mut reader,
+                                &mut mb_ctx,
+                                &mut field,
+                                mb_x,
+                                mb_y,
+                                mb_type_raw,
+                                num_ref,
+                                &list0,
+                                &ref_pic_id,
+                                &geo,
+                                slice_header.weight_table.as_ref(),
+                                y_dec,
+                                u_dec,
+                                v_dec,
                             )
                             .is_err()
                         };
@@ -5552,8 +6132,7 @@ impl H264Decoder {
                 for row in 0..h {
                     let src_start = row * full_w * 3;
                     let dst_start = row * w * 3;
-                    if src_start + w * 3 <= rgb8_full.len() && dst_start + w * 3 <= cropped.len()
-                    {
+                    if src_start + w * 3 <= rgb8_full.len() && dst_start + w * 3 <= cropped.len() {
                         cropped[dst_start..dst_start + w * 3]
                             .copy_from_slice(&rgb8_full[src_start..src_start + w * 3]);
                     }

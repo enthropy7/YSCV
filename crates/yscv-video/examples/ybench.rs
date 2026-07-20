@@ -6,8 +6,13 @@ use std::time::Instant;
 use yscv_video::VideoDecoder;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: ybench <file.264> [passes]");
-    let passes: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(7);
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: ybench <file.264> [passes]");
+    let passes: usize = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7);
     let data = std::fs::read(&path).expect("read input");
     let nals = yscv_video::parse_annex_b(&data);
 

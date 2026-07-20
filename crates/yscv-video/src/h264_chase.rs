@@ -99,7 +99,9 @@ enum ChaseMsg {
     Row(Box<RowMsg>),
     /// Picture complete: optionally replicate the padding ring (reference
     /// pictures), then hand the filtered shadow back.
-    Finish { replicate: bool },
+    Finish {
+        replicate: bool,
+    },
     /// Donate a plane set (the swapped-out unfiltered buffers) to the
     /// worker's shadow pool.
     Recycle(PlaneSet),
@@ -246,8 +248,18 @@ fn worker_loop(rx: Receiver<ChaseMsg>, reply_tx: Sender<PlaneSet>, row_tx: Sende
             ChaseMsg::Row(msg) => {
                 if let (Some(job), Some(shadow)) = (st.job, st.shadow.as_mut()) {
                     apply_row(
-                        &mut st.nnz, &mut st.mvx, &mut st.mvy, &mut st.refi, &mut st.mvx1,
-                        &mut st.mvy1, &mut st.refi1, &mut st.qp, &mut st.tr8x8, shadow, &job, &msg,
+                        &mut st.nnz,
+                        &mut st.mvx,
+                        &mut st.mvy,
+                        &mut st.refi,
+                        &mut st.mvx1,
+                        &mut st.mvy1,
+                        &mut st.refi1,
+                        &mut st.qp,
+                        &mut st.tr8x8,
+                        shadow,
+                        &job,
+                        &msg,
                     );
                 }
                 let _ = row_tx.send(msg);

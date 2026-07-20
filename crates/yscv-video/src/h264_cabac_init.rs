@@ -2,6 +2,7 @@
 //! `(m, n)` slope/offset pairs per ctxIdx for the clause 9.3.1.1 init, for
 //! I slices and the three `cabac_init_idc` variants used by P/B slices.
 
+#[rustfmt::skip]
 pub(crate) static CABAC_INIT_I: [(i8, i8); 1024] = [
     (20, -15), (2, 54), (3, 74), (20, -15), (2, 54), (3, 74), (-28, 127), (-23, 104),
     (-6, 53), (-1, 54), (7, 51), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0),
@@ -133,6 +134,7 @@ pub(crate) static CABAC_INIT_I: [(i8, i8); 1024] = [
     (-3, 70), (-8, 93), (-10, 90), (-30, 127), (-3, 70), (-8, 93), (-10, 90), (-30, 127),
 ];
 
+#[rustfmt::skip]
 pub(crate) static CABAC_INIT_PB: [[(i8, i8); 1024]; 3] = [
     [
         (20, -15), (2, 54), (3, 74), (20, -15), (2, 54), (3, 74), (-28, 127), (-23, 104),

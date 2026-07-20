@@ -394,8 +394,12 @@ fn run_luma_op(
     }
 
     match filter {
-        LumaFilter::H { dy } => hpel_h_scalar(win, stride, 2 + dy, bw, bh, dst, dst_off, dst_stride),
-        LumaFilter::V { dx } => hpel_v_scalar(win, stride, 2 + dx, bw, bh, dst, dst_off, dst_stride),
+        LumaFilter::H { dy } => {
+            hpel_h_scalar(win, stride, 2 + dy, bw, bh, dst, dst_off, dst_stride)
+        }
+        LumaFilter::V { dx } => {
+            hpel_v_scalar(win, stride, 2 + dx, bw, bh, dst, dst_off, dst_stride)
+        }
         LumaFilter::C => hpel_c_scalar(win, stride, bw, bh, dst, dst_off, dst_stride),
     }
 }
@@ -403,7 +407,15 @@ fn run_luma_op(
 /// Rounded average of two prediction buffers (quarter-pel positions):
 /// `dst = (a + b + 1) >> 1`.
 #[allow(unsafe_code)]
-fn avg_block(a: &[u8], b: &[u8], bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+fn avg_block(
+    a: &[u8],
+    b: &[u8],
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     #[cfg(target_arch = "aarch64")]
     if bw >= 8 && yscv_cpu::host_cpu().features.neon {
         // SAFETY: NEON detected at runtime; `a`/`b` hold bw*bh samples and the
@@ -431,13 +443,23 @@ fn avg_block(a: &[u8], b: &[u8], bw: usize, bh: usize, dst: &mut [u8], dst_off: 
 }
 
 /// Horizontal six-tap (1,-5,20,20,-5,1) half-pel: `Clip1((t + 16) >> 5)`.
-fn hpel_h_scalar(win: &[u8], stride: usize, oy: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+fn hpel_h_scalar(
+    win: &[u8],
+    stride: usize,
+    oy: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     for r in 0..bh {
         let base = (oy + r) * stride + 2;
         let d = dst_off + r * dst_stride;
         for c in 0..bw {
             let i = base + c;
-            let t = win[i - 2] as i32 - 5 * win[i - 1] as i32 + 20 * win[i] as i32
+            let t = win[i - 2] as i32 - 5 * win[i - 1] as i32
+                + 20 * win[i] as i32
                 + 20 * win[i + 1] as i32
                 - 5 * win[i + 2] as i32
                 + win[i + 3] as i32;
@@ -447,14 +469,24 @@ fn hpel_h_scalar(win: &[u8], stride: usize, oy: usize, bw: usize, bh: usize, dst
 }
 
 /// Vertical six-tap half-pel: `Clip1((t + 16) >> 5)`.
-fn hpel_v_scalar(win: &[u8], stride: usize, ox: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+fn hpel_v_scalar(
+    win: &[u8],
+    stride: usize,
+    ox: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     let s_ = stride;
     for r in 0..bh {
         let base = (2 + r) * s_ + ox;
         let d = dst_off + r * dst_stride;
         for c in 0..bw {
             let i = base + c;
-            let t = win[i - 2 * s_] as i32 - 5 * win[i - s_] as i32 + 20 * win[i] as i32
+            let t = win[i - 2 * s_] as i32 - 5 * win[i - s_] as i32
+                + 20 * win[i] as i32
                 + 20 * win[i + s_] as i32
                 - 5 * win[i + 2 * s_] as i32
                 + win[i + 3 * s_] as i32;
@@ -465,7 +497,15 @@ fn hpel_v_scalar(win: &[u8], stride: usize, ox: usize, bw: usize, bh: usize, dst
 
 /// Centre half-pel j: horizontal taps into an i16 scratch, then a vertical
 /// six-tap over the intermediates, `Clip1((t + 512) >> 10)`.
-fn hpel_c_scalar(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+fn hpel_c_scalar(
+    win: &[u8],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     // Pass 1: unclipped horizontal taps for the bh+5 rows the vertical filter
     // reads (range ±10710 fits i16).
     let mut htmp = [0i16; 16 * 21];
@@ -473,7 +513,8 @@ fn hpel_c_scalar(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut [u8]
         let base = k * stride + 2;
         for c in 0..bw {
             let i = base + c;
-            let t = win[i - 2] as i32 - 5 * win[i - 1] as i32 + 20 * win[i] as i32
+            let t = win[i - 2] as i32 - 5 * win[i - 1] as i32
+                + 20 * win[i] as i32
                 + 20 * win[i + 1] as i32
                 - 5 * win[i + 2] as i32
                 + win[i + 3] as i32;
@@ -485,7 +526,8 @@ fn hpel_c_scalar(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut [u8]
         let d = dst_off + r * dst_stride;
         for c in 0..bw {
             let i = r * 16 + c;
-            let t = htmp[i] as i32 - 5 * htmp[i + 16] as i32 + 20 * htmp[i + 32] as i32
+            let t = htmp[i] as i32 - 5 * htmp[i + 16] as i32
+                + 20 * htmp[i + 32] as i32
                 + 20 * htmp[i + 48] as i32
                 - 5 * htmp[i + 64] as i32
                 + htmp[i + 80] as i32;
@@ -497,7 +539,16 @@ fn hpel_c_scalar(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut [u8]
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_h_neon(win: &[u8], stride: usize, oy: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_h_neon(
+    win: &[u8],
+    stride: usize,
+    oy: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::aarch64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
     for r in 0..bh {
@@ -526,7 +577,16 @@ unsafe fn hpel_h_neon(win: &[u8], stride: usize, oy: usize, bw: usize, bh: usize
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_v_neon(win: &[u8], stride: usize, ox: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_v_neon(
+    win: &[u8],
+    stride: usize,
+    ox: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::aarch64::*;
     let s_ = stride;
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
@@ -553,7 +613,15 @@ unsafe fn hpel_v_neon(win: &[u8], stride: usize, ox: usize, bw: usize, bh: usize
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_c_neon(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_c_neon(
+    win: &[u8],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::aarch64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
     // Pass 1: unclipped horizontal taps (i16) for the bh+5 rows pass 2 reads.
@@ -609,7 +677,15 @@ unsafe fn hpel_c_neon(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn avg_block_neon(a: &[u8], b: &[u8], bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn avg_block_neon(
+    a: &[u8],
+    b: &[u8],
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::aarch64::*;
     debug_assert!(bw * bh <= a.len() && bw * bh <= b.len());
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
@@ -619,7 +695,10 @@ unsafe fn avg_block_neon(a: &[u8], b: &[u8], bw: usize, bh: usize, dst: &mut [u8
         let d = dst.as_mut_ptr().add(dst_off + r * dst_stride);
         let mut c = 0usize;
         while c + 16 <= bw {
-            vst1q_u8(d.add(c), vrhaddq_u8(vld1q_u8(pa.add(c)), vld1q_u8(pb.add(c))));
+            vst1q_u8(
+                d.add(c),
+                vrhaddq_u8(vld1q_u8(pa.add(c)), vld1q_u8(pb.add(c))),
+            );
             c += 16;
         }
         while c + 8 <= bw {
@@ -650,9 +729,7 @@ unsafe fn sse2_widen_s16(
 #[cfg(target_arch = "x86_64")]
 #[inline]
 #[allow(unsafe_code)]
-unsafe fn sse2_tap6_epi16(
-    s: [std::arch::x86_64::__m128i; 6],
-) -> std::arch::x86_64::__m128i {
+unsafe fn sse2_tap6_epi16(s: [std::arch::x86_64::__m128i; 6]) -> std::arch::x86_64::__m128i {
     use std::arch::x86_64::*;
     // SAFETY: SSE2 is part of the x86_64 baseline.
     unsafe {
@@ -672,7 +749,16 @@ unsafe fn sse2_tap6_epi16(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_h_sse2(win: &[u8], stride: usize, oy: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_h_sse2(
+    win: &[u8],
+    stride: usize,
+    oy: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
     let zero = _mm_setzero_si128();
@@ -698,7 +784,16 @@ unsafe fn hpel_h_sse2(win: &[u8], stride: usize, oy: usize, bw: usize, bh: usize
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_v_sse2(win: &[u8], stride: usize, ox: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_v_sse2(
+    win: &[u8],
+    stride: usize,
+    ox: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     let s_ = stride;
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
@@ -725,7 +820,15 @@ unsafe fn hpel_v_sse2(win: &[u8], stride: usize, ox: usize, bw: usize, bh: usize
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_c_sse2(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_c_sse2(
+    win: &[u8],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
     let zero = _mm_setzero_si128();
@@ -783,7 +886,15 @@ unsafe fn hpel_c_sse2(win: &[u8], stride: usize, bw: usize, bh: usize, dst: &mut
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn avg_block_sse2(a: &[u8], b: &[u8], bw: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn avg_block_sse2(
+    a: &[u8],
+    b: &[u8],
+    bw: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     debug_assert!(bw * bh <= a.len() && bw * bh <= b.len());
     debug_assert!(dst_off + (bh - 1) * dst_stride + bw <= dst.len());
@@ -820,7 +931,10 @@ unsafe fn pack16_avx2(t: std::arch::x86_64::__m256i) -> std::arch::x86_64::__m12
     use std::arch::x86_64::*;
     // SAFETY: caller runs under the AVX2 target feature.
     unsafe {
-        _mm256_castsi256_si128(_mm256_permute4x64_epi64(_mm256_packus_epi16(t, t), 0b00_00_10_00))
+        _mm256_castsi256_si128(_mm256_permute4x64_epi64(
+            _mm256_packus_epi16(t, t),
+            0b00_00_10_00,
+        ))
     }
 }
 
@@ -834,9 +948,7 @@ unsafe fn tap6_row_avx2(src: *const u8) -> std::arch::x86_64::__m256i {
     // SAFETY: caller runs under the AVX2 target feature and guarantees
     // `src..src+21+15` stays inside the padded window row (stride 32).
     unsafe {
-        let s = |n: usize| {
-            _mm256_cvtepu8_epi16(_mm_loadu_si128(src.add(n) as *const __m128i))
-        };
+        let s = |n: usize| _mm256_cvtepu8_epi16(_mm_loadu_si128(src.add(n) as *const __m128i));
         let a05 = _mm256_add_epi16(s(0), s(5));
         let a14 = _mm256_add_epi16(s(1), s(4));
         let a23 = _mm256_add_epi16(s(2), s(3));
@@ -853,7 +965,15 @@ unsafe fn tap6_row_avx2(src: *const u8) -> std::arch::x86_64::__m256i {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_h_avx2(win: &[u8], stride: usize, oy: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_h_avx2(
+    win: &[u8],
+    stride: usize,
+    oy: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + 16 <= dst.len());
     for r in 0..bh {
@@ -869,7 +989,15 @@ unsafe fn hpel_h_avx2(win: &[u8], stride: usize, oy: usize, bh: usize, dst: &mut
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_v_avx2(win: &[u8], stride: usize, ox: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_v_avx2(
+    win: &[u8],
+    stride: usize,
+    ox: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     let s_ = stride;
     debug_assert!(dst_off + (bh - 1) * dst_stride + 16 <= dst.len());
@@ -900,7 +1028,14 @@ unsafe fn hpel_v_avx2(win: &[u8], stride: usize, ox: usize, bh: usize, dst: &mut
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn hpel_c_avx2(win: &[u8], stride: usize, bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn hpel_c_avx2(
+    win: &[u8],
+    stride: usize,
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + 16 <= dst.len());
     // Pass 1: unclipped horizontal taps, one ymm (16 i16) per window row.
@@ -968,8 +1103,19 @@ pub fn mc_luma(
     // reproduces the in-place write exactly.
     let dst_off = dst_y * out_stride + dst_x;
     mc_luma_block(
-        reference, ref_origin, ref_stride, ref_width, ref_height, mvx, mvy, dst_x, dst_y, bw, bh,
-        &mut output[dst_off..], out_stride,
+        reference,
+        ref_origin,
+        ref_stride,
+        ref_width,
+        ref_height,
+        mvx,
+        mvy,
+        dst_x,
+        dst_y,
+        bw,
+        bh,
+        &mut output[dst_off..],
+        out_stride,
     );
 }
 
@@ -1014,7 +1160,16 @@ pub fn mc_luma_block(
 
     // Integer-pel fast path: plain row copies out of the padded plane.
     if xf == 0 && yf == 0 {
-        copy_block(src, 2 * ref_stride + 2, ref_stride, bw, bh, out, 0, out_stride);
+        copy_block(
+            src,
+            2 * ref_stride + 2,
+            ref_stride,
+            bw,
+            bh,
+            out,
+            0,
+            out_stride,
+        );
         return;
     }
 
@@ -1045,10 +1200,23 @@ fn chroma_weights(xf: i32, yf: i32) -> [u8; 4] {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn mc_chroma_row8_neon(win: &[u8], stride: usize, w: [u8; 4], bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn mc_chroma_row8_neon(
+    win: &[u8],
+    stride: usize,
+    w: [u8; 4],
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::aarch64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + 8 <= dst.len());
-    let (wa, wb, wc, wd) = (vdup_n_u8(w[0]), vdup_n_u8(w[1]), vdup_n_u8(w[2]), vdup_n_u8(w[3]));
+    let (wa, wb, wc, wd) = (
+        vdup_n_u8(w[0]),
+        vdup_n_u8(w[1]),
+        vdup_n_u8(w[2]),
+        vdup_n_u8(w[3]),
+    );
     for r in 0..bh {
         let p = win.as_ptr().add(r * stride);
         let v0 = vld1q_u8(p);
@@ -1062,14 +1230,25 @@ unsafe fn mc_chroma_row8_neon(win: &[u8], stride: usize, w: [u8; 4], bh: usize, 
         acc = vmlal_u8(acc, b, wb);
         acc = vmlal_u8(acc, c, wc);
         acc = vmlal_u8(acc, d, wd);
-        vst1_u8(dst.as_mut_ptr().add(dst_off + r * dst_stride), vrshrn_n_u16::<6>(acc));
+        vst1_u8(
+            dst.as_mut_ptr().add(dst_off + r * dst_stride),
+            vrshrn_n_u16::<6>(acc),
+        );
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn mc_chroma_row8_sse2(win: &[u8], stride: usize, w: [u8; 4], bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn mc_chroma_row8_sse2(
+    win: &[u8],
+    stride: usize,
+    w: [u8; 4],
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + 8 <= dst.len());
     let zero = _mm_setzero_si128();
@@ -1105,10 +1284,23 @@ unsafe fn mc_chroma_row8_sse2(win: &[u8], stride: usize, w: [u8; 4], bh: usize, 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn mc_chroma_row4_neon(win: &[u8], stride: usize, w: [u8; 4], bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn mc_chroma_row4_neon(
+    win: &[u8],
+    stride: usize,
+    w: [u8; 4],
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::aarch64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + 4 <= dst.len());
-    let (wa, wb, wc, wd) = (vdup_n_u8(w[0]), vdup_n_u8(w[1]), vdup_n_u8(w[2]), vdup_n_u8(w[3]));
+    let (wa, wb, wc, wd) = (
+        vdup_n_u8(w[0]),
+        vdup_n_u8(w[1]),
+        vdup_n_u8(w[2]),
+        vdup_n_u8(w[3]),
+    );
     for r in 0..bh {
         let p = win.as_ptr().add(r * stride);
         let v0 = vld1_u8(p);
@@ -1127,7 +1319,15 @@ unsafe fn mc_chroma_row4_neon(win: &[u8], stride: usize, w: [u8; 4], bh: usize, 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn mc_chroma_row4_sse2(win: &[u8], stride: usize, w: [u8; 4], bh: usize, dst: &mut [u8], dst_off: usize, dst_stride: usize) {
+unsafe fn mc_chroma_row4_sse2(
+    win: &[u8],
+    stride: usize,
+    w: [u8; 4],
+    bh: usize,
+    dst: &mut [u8],
+    dst_off: usize,
+    dst_stride: usize,
+) {
     use std::arch::x86_64::*;
     debug_assert!(dst_off + (bh - 1) * dst_stride + 4 <= dst.len());
     let zero = _mm_setzero_si128();
@@ -1178,8 +1378,19 @@ pub fn mc_chroma(
 ) {
     let dst_off = dst_y * out_stride + dst_x;
     mc_chroma_block(
-        reference, ref_origin, ref_stride, ref_width, ref_height, mvx, mvy, dst_x, dst_y, bw, bh,
-        &mut output[dst_off..], out_stride,
+        reference,
+        ref_origin,
+        ref_stride,
+        ref_width,
+        ref_height,
+        mvx,
+        mvy,
+        dst_x,
+        dst_y,
+        bw,
+        bh,
+        &mut output[dst_off..],
+        out_stride,
     );
 }
 

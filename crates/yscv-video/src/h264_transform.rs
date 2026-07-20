@@ -326,16 +326,28 @@ pub fn inverse_dct_8x8(coeffs: &mut [i32; 64]) {
     for i in 0..8 {
         let base = i * 8;
         let row = [
-            coeffs[base], coeffs[base + 1], coeffs[base + 2], coeffs[base + 3],
-            coeffs[base + 4], coeffs[base + 5], coeffs[base + 6], coeffs[base + 7],
+            coeffs[base],
+            coeffs[base + 1],
+            coeffs[base + 2],
+            coeffs[base + 3],
+            coeffs[base + 4],
+            coeffs[base + 5],
+            coeffs[base + 6],
+            coeffs[base + 7],
         ];
         let g = idct8_1d(row);
         coeffs[base..base + 8].copy_from_slice(&g);
     }
     for j in 0..8 {
         let col = [
-            coeffs[j], coeffs[8 + j], coeffs[16 + j], coeffs[24 + j],
-            coeffs[32 + j], coeffs[40 + j], coeffs[48 + j], coeffs[56 + j],
+            coeffs[j],
+            coeffs[8 + j],
+            coeffs[16 + j],
+            coeffs[24 + j],
+            coeffs[32 + j],
+            coeffs[40 + j],
+            coeffs[48 + j],
+            coeffs[56 + j],
         ];
         let g = idct8_1d(col);
         for (k, &v) in g.iter().enumerate() {

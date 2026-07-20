@@ -9,7 +9,7 @@
 //! regression.
 
 use std::path::PathBuf;
-use yscv_video::{yuv420_to_rgb8, Mp4VideoReader};
+use yscv_video::{Mp4VideoReader, yuv420_to_rgb8};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
