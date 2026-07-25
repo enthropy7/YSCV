@@ -443,3 +443,58 @@ fn binary_box_matches_generic_ones_kernel() {
         );
     }
 }
+
+/// Bit-packed morphology must agree with the generic kernel path on sizes
+/// that stress word boundaries (widths just under, at and over 64 bits) and
+/// on kernels far larger than one word, which is where the doubling window
+/// and the cross-word shifts can drift.
+#[test]
+fn binary_box_matches_generic_across_word_boundaries() {
+    use super::super::{
+        close_binary_box, dilate, dilate_binary_box, erode, erode_binary_box, open_binary_box,
+    };
+
+    let mut state = 0x1234_5678_9ABC_DEF0_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+
+    for &(h, w) in &[(9usize, 63usize), (8, 64), (7, 65), (5, 130), (70, 40)] {
+        for &density in &[20u64, 60, 95] {
+            let data: Vec<f32> = (0..h * w)
+                .map(|_| f32::from(u8::from(next() % 100 < density)))
+                .collect();
+            let img = Tensor::from_vec(vec![h, w, 1], data).unwrap();
+            for ksize in [1usize, 3, 5, 9, 33, 65] {
+                let kernel =
+                    Tensor::from_vec(vec![ksize, ksize, 1], vec![1.0f32; ksize * ksize]).unwrap();
+                let dilated = dilate(&img, &kernel).unwrap();
+                let eroded = erode(&img, &kernel).unwrap();
+                assert_eq!(
+                    dilated.data(),
+                    dilate_binary_box(&img, ksize).unwrap().data(),
+                    "dilate {h}x{w} density {density} ksize {ksize}"
+                );
+                assert_eq!(
+                    eroded.data(),
+                    erode_binary_box(&img, ksize).unwrap().data(),
+                    "erode {h}x{w} density {density} ksize {ksize}"
+                );
+                // open = erode then dilate, close = dilate then erode
+                assert_eq!(
+                    dilate(&eroded, &kernel).unwrap().data(),
+                    open_binary_box(&img, ksize).unwrap().data(),
+                    "open {h}x{w} density {density} ksize {ksize}"
+                );
+                assert_eq!(
+                    erode(&dilated, &kernel).unwrap().data(),
+                    close_binary_box(&img, ksize).unwrap().data(),
+                    "close {h}x{w} density {density} ksize {ksize}"
+                );
+            }
+        }
+    }
+}

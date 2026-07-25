@@ -92,6 +92,8 @@ pub use ops::canny;
 pub use ops::canny_with_scratch;
 /// Contrast-limited adaptive histogram equalization. Input: `[H, W]` grayscale.
 pub use ops::clahe;
+/// Binary dilation via sliding-window counts (~2 ops/pixel).
+pub use ops::close_binary_box;
 /// Morphological closing (dilate then erode) with 3x3 structuring element.
 /// Input: `[H, W]` grayscale f32.
 pub use ops::closing_3x3;
@@ -127,7 +129,6 @@ pub use ops::dilate;
 /// Morphological dilation with 3x3 square structuring element.
 /// Input: `[H, W]` grayscale f32.
 pub use ops::dilate_3x3;
-/// Binary dilation via sliding-window counts (~2 ops/pixel).
 pub use ops::dilate_binary_box;
 /// Dilation with an all-ones square kernel — separable, O(n) per pass.
 pub use ops::dilate_box;
@@ -222,6 +223,7 @@ pub use ops::nms;
 /// Normalize image channels: `(pixel - mean) / std`. Input: `[H, W, C]` f32.
 /// `mean` and `std` slices must have length equal to `C`.
 pub use ops::normalize;
+pub use ops::open_binary_box;
 /// Morphological opening (erode then dilate) with 3x3 structuring element.
 /// Input: `[H, W]` grayscale f32.
 pub use ops::opening_3x3;
