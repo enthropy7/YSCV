@@ -401,3 +401,126 @@ fn convex_hull_discard_preserves_the_hull() {
         );
     }
 }
+
+/// Прямолинейная заливка по пикселям — эталон для разметки по отрезкам.
+/// Порядок обхода растровый, метки выдаются по первому встреченному пикселю,
+/// то есть ровно так же, как их обязана выдавать быстрая реализация.
+fn reference_components(
+    data: &[f32],
+    h: usize,
+    w: usize,
+    diagonal: bool,
+) -> (
+    Vec<f32>,
+    Vec<(usize, usize, (usize, usize, usize, usize), (f32, f32))>,
+) {
+    let offsets: &[(isize, isize)] = if diagonal {
+        &[
+            (0, -1),
+            (0, 1),
+            (-1, 0),
+            (1, 0),
+            (-1, -1),
+            (1, -1),
+            (-1, 1),
+            (1, 1),
+        ]
+    } else {
+        &[(0, -1), (0, 1), (-1, 0), (1, 0)]
+    };
+    let mut labels = vec![0.0f32; h * w];
+    let mut stats = Vec::new();
+    let mut next = 1usize;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            if data[idx] <= 0.5 || labels[idx] != 0.0 {
+                continue;
+            }
+            let label = next;
+            next += 1;
+            labels[idx] = label as f32;
+            let mut queue = std::collections::VecDeque::from([(x, y)]);
+            let (mut area, mut sum_x, mut sum_y) = (0usize, 0.0f64, 0.0f64);
+            let (mut min_x, mut max_x, mut min_y, mut max_y) = (x, x, y, y);
+            while let Some((cx, cy)) = queue.pop_front() {
+                area += 1;
+                sum_x += cx as f64;
+                sum_y += cy as f64;
+                min_x = min_x.min(cx);
+                max_x = max_x.max(cx);
+                min_y = min_y.min(cy);
+                max_y = max_y.max(cy);
+                for &(dx, dy) in offsets {
+                    let (nx, ny) = (cx as isize + dx, cy as isize + dy);
+                    if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                        continue;
+                    }
+                    let nidx = ny as usize * w + nx as usize;
+                    if data[nidx] > 0.5 && labels[nidx] == 0.0 {
+                        labels[nidx] = label as f32;
+                        queue.push_back((nx as usize, ny as usize));
+                    }
+                }
+            }
+            stats.push((
+                label,
+                area,
+                (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1),
+                ((sum_x / area as f64) as f32, (sum_y / area as f64) as f32),
+            ));
+        }
+    }
+    (labels, stats)
+}
+
+#[test]
+fn connected_components_match_a_pixel_flood_fill() {
+    use super::super::{connected_components_with_stats, connected_components_with_stats_8};
+    let (h, w) = (37usize, 41usize);
+    // SplitMix64: картинки одни и те же от запуска к запуску.
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+
+    // Плотности от «редкая соль» до «почти сплошное поле»: первая рождает
+    // множество мелких компонент и диагональных мостов, вторая — длинные
+    // отрезки и цепочки слияний внутри одного компонента.
+    for percent in [8u64, 25, 50, 75, 92] {
+        let data: Vec<f32> = (0..h * w)
+            .map(|_| f32::from(u8::from(next() % 100 < percent)))
+            .collect();
+        let img = Tensor::from_vec(vec![h, w, 1], data.clone()).unwrap();
+
+        for diagonal in [false, true] {
+            let (labels, stats) = if diagonal {
+                connected_components_with_stats_8(&img).unwrap()
+            } else {
+                connected_components_with_stats(&img).unwrap()
+            };
+            let (want_labels, want_stats) = reference_components(&data, h, w, diagonal);
+            assert_eq!(
+                labels.data(),
+                want_labels.as_slice(),
+                "метки разошлись: плотность {percent}%, diagonal={diagonal}"
+            );
+            assert_eq!(
+                stats.len(),
+                want_stats.len(),
+                "число компонент: плотность {percent}%, diagonal={diagonal}"
+            );
+            for (got, want) in stats.iter().zip(&want_stats) {
+                assert_eq!(
+                    (got.label, got.area, got.bbox, got.centroid),
+                    *want,
+                    "статистика компонента разошлась: плотность {percent}%, diagonal={diagonal}"
+                );
+            }
+        }
+    }
+}

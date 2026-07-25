@@ -563,13 +563,76 @@ pub struct RegionProp {
     pub perimeter: f32,
 }
 
-/// Connected-component labelling with per-component statistics.
+/// Maximal horizontal span of foreground pixels: columns `[start, end)` of `row`.
+struct Run {
+    row: usize,
+    start: usize,
+    end: usize,
+    label: u32,
+}
+
+/// Disjoint set over provisional run labels: union by size, path halving.
+struct RunUnion {
+    parent: Vec<u32>,
+    size: Vec<u32>,
+}
+
+impl RunUnion {
+    fn with_capacity(runs: usize) -> Self {
+        Self {
+            parent: Vec::with_capacity(runs),
+            size: Vec::with_capacity(runs),
+        }
+    }
+
+    fn make(&mut self) -> u32 {
+        let id = self.parent.len() as u32;
+        self.parent.push(id);
+        self.size.push(1);
+        id
+    }
+
+    fn find(&mut self, mut x: u32) -> u32 {
+        while self.parent[x as usize] != x {
+            let grandparent = self.parent[self.parent[x as usize] as usize];
+            self.parent[x as usize] = grandparent;
+            x = grandparent;
+        }
+        x
+    }
+
+    fn union(&mut self, a: u32, b: u32) {
+        let (mut ra, mut rb) = (self.find(a), self.find(b));
+        if ra == rb {
+            return;
+        }
+        if self.size[ra as usize] < self.size[rb as usize] {
+            std::mem::swap(&mut ra, &mut rb);
+        }
+        self.parent[rb as usize] = ra;
+        self.size[ra as usize] += self.size[rb as usize];
+    }
+}
+
+/// Shared implementation of the two labelling entry points.
 ///
-/// Input: single-channel binary image `[H, W, 1]` (pixels > 0.5 are foreground).
-/// Returns `(label_image, stats)` where `label_image` has shape `[H, W, 1]` with
-/// label 0 for background and labels 1..N for components. Uses BFS with 4-connectivity.
-pub fn connected_components_with_stats(
+/// Works on horizontal runs rather than pixels. A row is scanned once into
+/// maximal foreground spans, each span joins the spans it touches in the row
+/// above, and a disjoint set resolves the chains. That keeps the cost tied to
+/// the number of spans instead of the number of pixels: a flood fill visits
+/// every pixel eight times and pushes each onto a queue, while a solid object
+/// here is a handful of runs per row.
+///
+/// Per-component statistics come out of the same runs in closed form — a span
+/// of length `n` starting at `s` contributes `n` to the area and
+/// `(2s + n - 1)·n/2` to the x-moment, both exact in `f64` at any image size
+/// that fits in memory — so no pass over individual pixels is needed at all.
+///
+/// Labels are handed out in raster order of each component's first pixel,
+/// matching what a scanline flood fill produces.
+fn label_components(
     img: &Tensor,
+    diagonal: bool,
 ) -> Result<(Tensor, Vec<ComponentStats>), ImgProcError> {
     let (h, w, c) = hwc_shape(img)?;
     if c != 1 {
@@ -579,74 +642,110 @@ pub fn connected_components_with_stats(
         });
     }
     let data = img.data();
-    let mut labels = vec![0u32; h * w];
-    let mut next_label = 1u32;
-    let mut stats_list: Vec<ComponentStats> = Vec::new();
+    // Diagonal contact widens the overlap test by one column on each side.
+    let slack = usize::from(diagonal);
 
-    for y in 0..h {
-        for x in 0..w {
-            let idx = y * w + x;
-            if data[idx] <= 0.5 || labels[idx] != 0 {
+    let mut runs: Vec<Run> = Vec::new();
+    let mut union = RunUnion::with_capacity(w.max(1));
+    let mut previous_row = 0..0usize;
+
+    for row in 0..h {
+        let line = &data[row * w..(row + 1) * w];
+        let row_start = runs.len();
+        let mut above = previous_row.start;
+
+        let mut col = 0usize;
+        while col < w {
+            if line[col] <= 0.5 {
+                col += 1;
                 continue;
             }
-            // BFS flood-fill
-            let current_label = next_label;
-            next_label += 1;
-            labels[idx] = current_label;
-
-            let mut queue = std::collections::VecDeque::new();
-            queue.push_back((x, y));
-
-            let mut area = 0usize;
-            let mut sum_x = 0.0f64;
-            let mut sum_y = 0.0f64;
-            let mut min_x = x;
-            let mut max_x = x;
-            let mut min_y = y;
-            let mut max_y = y;
-
-            while let Some((cx, cy)) = queue.pop_front() {
-                area += 1;
-                sum_x += cx as f64;
-                sum_y += cy as f64;
-                if cx < min_x {
-                    min_x = cx;
-                }
-                if cx > max_x {
-                    max_x = cx;
-                }
-                if cy < min_y {
-                    min_y = cy;
-                }
-                if cy > max_y {
-                    max_y = cy;
-                }
-
-                for &(dx, dy) in &[(0isize, -1isize), (0, 1), (-1, 0), (1, 0)] {
-                    let nx = cx as isize + dx;
-                    let ny = cy as isize + dy;
-                    if nx >= 0 && nx < w as isize && ny >= 0 && ny < h as isize {
-                        let nidx = ny as usize * w + nx as usize;
-                        if data[nidx] > 0.5 && labels[nidx] == 0 {
-                            labels[nidx] = current_label;
-                            queue.push_back((nx as usize, ny as usize));
-                        }
-                    }
-                }
+            let start = col;
+            while col < w && line[col] > 0.5 {
+                col += 1;
             }
+            let end = col;
 
-            stats_list.push(ComponentStats {
-                label: current_label as usize,
-                area,
-                bbox: (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1),
-                centroid: ((sum_x / area as f64) as f32, (sum_y / area as f64) as f32),
+            let label = union.make();
+            // Runs of both rows are sorted by start, so the window of spans
+            // above that can touch this one only ever moves forward.
+            while above < previous_row.end && runs[above].end + slack <= start {
+                above += 1;
+            }
+            let mut touching = above;
+            while touching < previous_row.end && runs[touching].start < end + slack {
+                let other = runs[touching].label;
+                union.union(label, other);
+                touching += 1;
+            }
+            runs.push(Run {
+                row,
+                start,
+                end,
+                label,
             });
         }
+        previous_row = row_start..runs.len();
     }
 
-    let label_data: Vec<f32> = labels.iter().map(|&l| l as f32).collect();
-    let label_tensor = Tensor::from_vec(vec![h, w, 1], label_data)?;
-    Ok((label_tensor, stats_list))
+    // Final labels follow the first run of each component, which is its first
+    // pixel in raster order.
+    let mut final_label = vec![0u32; runs.len()];
+    let mut stats_list: Vec<ComponentStats> = Vec::new();
+    let mut moments: Vec<(f64, f64)> = Vec::new();
+    let mut label_data = vec![0.0f32; h * w];
+
+    for index in 0..runs.len() {
+        let root = union.find(runs[index].label) as usize;
+        let Run {
+            row, start, end, ..
+        } = runs[index];
+        let length = end - start;
+
+        if final_label[root] == 0 {
+            stats_list.push(ComponentStats {
+                label: stats_list.len() + 1,
+                area: 0,
+                bbox: (start, row, 0, 0),
+                centroid: (0.0, 0.0),
+            });
+            moments.push((0.0, 0.0));
+            final_label[root] = stats_list.len() as u32;
+        }
+        let label = final_label[root];
+        let stats = &mut stats_list[label as usize - 1];
+        let (sum_x, sum_y) = &mut moments[label as usize - 1];
+
+        stats.area += length;
+        // Held as (min_x, min_y, max_x, max_y) until the end. Rows are visited
+        // in order, so min_y is already final from the component's first run.
+        let (min_x, min_y, max_x, max_y) = stats.bbox;
+        stats.bbox = (min_x.min(start), min_y, max_x.max(end - 1), max_y.max(row));
+        *sum_x += (start + end - 1) as f64 * length as f64 / 2.0;
+        *sum_y += (row * length) as f64;
+
+        label_data[row * w + start..row * w + end].fill(label as f32);
+    }
+
+    for (stats, (sum_x, sum_y)) in stats_list.iter_mut().zip(&moments) {
+        let (min_x, min_y, max_x, max_y) = stats.bbox;
+        stats.bbox = (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
+        let area = stats.area as f64;
+        stats.centroid = ((sum_x / area) as f32, (sum_y / area) as f32);
+    }
+
+    Ok((Tensor::from_vec(vec![h, w, 1], label_data)?, stats_list))
+}
+
+/// Connected-component labelling with per-component statistics.
+///
+/// Input: single-channel binary image `[H, W, 1]` (pixels > 0.5 are foreground).
+/// Returns `(label_image, stats)` where `label_image` has shape `[H, W, 1]` with
+/// label 0 for background and labels 1..N for components. 4-connectivity.
+pub fn connected_components_with_stats(
+    img: &Tensor,
+) -> Result<(Tensor, Vec<ComponentStats>), ImgProcError> {
+    label_components(img, false)
 }
 
 /// Connected-component labelling with per-component statistics, 8-connectivity.
@@ -658,80 +757,7 @@ pub fn connected_components_with_stats(
 pub fn connected_components_with_stats_8(
     img: &Tensor,
 ) -> Result<(Tensor, Vec<ComponentStats>), ImgProcError> {
-    let (h, w, c) = hwc_shape(img)?;
-    if c != 1 {
-        return Err(ImgProcError::InvalidChannelCount {
-            expected: 1,
-            got: c,
-        });
-    }
-    const NEIGHBOURS_8: [(isize, isize); 8] = [
-        (0, -1),
-        (0, 1),
-        (-1, 0),
-        (1, 0),
-        (-1, -1),
-        (1, -1),
-        (-1, 1),
-        (1, 1),
-    ];
-    let data = img.data();
-    let mut labels = vec![0u32; h * w];
-    let mut next_label = 1u32;
-    let mut stats_list: Vec<ComponentStats> = Vec::new();
-
-    for y in 0..h {
-        for x in 0..w {
-            let idx = y * w + x;
-            if data[idx] <= 0.5 || labels[idx] != 0 {
-                continue;
-            }
-            let current_label = next_label;
-            next_label += 1;
-            labels[idx] = current_label;
-
-            let mut queue = std::collections::VecDeque::new();
-            queue.push_back((x, y));
-
-            let mut area = 0usize;
-            let mut sum_x = 0.0f64;
-            let mut sum_y = 0.0f64;
-            let (mut min_x, mut max_x, mut min_y, mut max_y) = (x, x, y, y);
-
-            while let Some((cx, cy)) = queue.pop_front() {
-                area += 1;
-                sum_x += cx as f64;
-                sum_y += cy as f64;
-                min_x = min_x.min(cx);
-                max_x = max_x.max(cx);
-                min_y = min_y.min(cy);
-                max_y = max_y.max(cy);
-
-                for &(dx, dy) in &NEIGHBOURS_8 {
-                    let nx = cx as isize + dx;
-                    let ny = cy as isize + dy;
-                    if nx >= 0 && nx < w as isize && ny >= 0 && ny < h as isize {
-                        let nidx = ny as usize * w + nx as usize;
-                        if data[nidx] > 0.5 && labels[nidx] == 0 {
-                            labels[nidx] = current_label;
-                            queue.push_back((nx as usize, ny as usize));
-                        }
-                    }
-                }
-            }
-
-            stats_list.push(ComponentStats {
-                label: current_label as usize,
-                area,
-                bbox: (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1),
-                centroid: ((sum_x / area as f64) as f32, (sum_y / area as f64) as f32),
-            });
-        }
-    }
-
-    let label_data: Vec<f32> = labels.iter().map(|&l| l as f32).collect();
-    let label_tensor = Tensor::from_vec(vec![h, w, 1], label_data)?;
-    Ok((label_tensor, stats_list))
+    label_components(img, true)
 }
 
 /// Minimum enclosing circle of a point set (Welzl's algorithm, exact).
