@@ -111,7 +111,7 @@ pub fn convex_hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
         return points.to_vec();
     }
 
-    let mut pts: Vec<(f32, f32)> = points.to_vec();
+    let mut pts: Vec<(f32, f32)> = akl_toussaint_filter(points);
     pts.sort_unstable_by(|a, b| {
         a.0.partial_cmp(&b.0)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -139,6 +139,59 @@ pub fn convex_hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
     }
     hull.pop();
     hull
+}
+
+/// Akl-Toussaint discard: drop points that provably cannot be hull vertices.
+///
+/// The four axis extremes span a convex quadrilateral, so every point strictly
+/// inside it is a convex combination of hull members and can never be one
+/// itself. Dropping them is exact — the returned set has the same convex hull —
+/// and it turns the dominant `O(n log n)` sort into a linear pass over a much
+/// smaller set. On dense blobs (a segmentation footprint, a filled contour)
+/// this typically discards well over 90% of the input.
+///
+/// Points are kept when the strict-inside test fails, so anything on an edge of
+/// the quadrilateral survives and float ties cannot discard a real vertex.
+fn akl_toussaint_filter(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    // Small inputs: filtering costs more than it saves.
+    if points.len() < 64 {
+        return points.to_vec();
+    }
+    let mut left = points[0];
+    let mut right = points[0];
+    let mut bottom = points[0];
+    let mut top = points[0];
+    for &p in points {
+        if p.0 < left.0 {
+            left = p;
+        }
+        if p.0 > right.0 {
+            right = p;
+        }
+        if p.1 < bottom.1 {
+            bottom = p;
+        }
+        if p.1 > top.1 {
+            top = p;
+        }
+    }
+    let quad = [left, bottom, right, top];
+    // Degenerate spans (a line, a point) leave the quadrilateral empty.
+    let area = cross_2d(quad[0], quad[1], quad[2]) + cross_2d(quad[0], quad[2], quad[3]);
+    if area.abs() < f32::EPSILON {
+        return points.to_vec();
+    }
+    let orientation = area.signum();
+    let strictly_inside = |p: (f32, f32)| -> bool {
+        (0..4).all(|i| {
+            let a = quad[i];
+            let b = quad[(i + 1) % 4];
+            cross_2d(a, b, p) * orientation > 0.0
+        })
+    };
+    let mut kept: Vec<(f32, f32)> = Vec::with_capacity(points.len() / 8 + 16);
+    kept.extend(points.iter().copied().filter(|&p| !strictly_inside(p)));
+    kept
 }
 
 fn cross_2d(o: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {

@@ -323,3 +323,81 @@ fn fit_circle_partial_arc_and_degenerate_cases() {
     assert!(fit_circle(&[(0.0, 0.0), (1.0, 1.0)]).is_none());
     assert!(fit_circle(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]).is_none());
 }
+
+// ── Akl-Toussaint discard inside convex_hull ────────────────────────
+
+/// The discard must be invisible: hull of the filtered set equals the hull of
+/// the raw set, for dense blobs, sparse rings and degenerate lines alike.
+#[test]
+fn convex_hull_discard_preserves_the_hull() {
+    use super::super::convex_hull;
+
+    fn reference_hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+        // Monotone chain over the unfiltered set.
+        let mut pts = points.to_vec();
+        pts.sort_unstable_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| {
+            (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+        };
+        let mut hull: Vec<(f32, f32)> = Vec::new();
+        for &p in &pts {
+            while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        let lower = hull.len() + 1;
+        for &p in pts.iter().rev().skip(1) {
+            while hull.len() >= lower && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+        hull
+    }
+
+    let mut state = 0x2545_F491_4F6C_DD1D_u64;
+    let mut rand = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 40) as f32 / 16_777_216.0
+    };
+
+    // dense disc: almost every point is interior and must be discarded
+    let disc: Vec<(f32, f32)> = (0..5000)
+        .map(|_| {
+            let (u, v) = (rand(), rand());
+            let r = 50.0 * u.sqrt();
+            let a = v * std::f32::consts::TAU;
+            (r * a.cos(), r * a.sin())
+        })
+        .collect();
+    // filled rectangle on an integer grid: many collinear boundary points
+    let grid: Vec<(f32, f32)> = (0..80)
+        .flat_map(|y| (0..120).map(move |x| (x as f32, y as f32)))
+        .collect();
+    // degenerate: a straight line has an empty quadrilateral
+    let line: Vec<(f32, f32)> = (0..500).map(|i| (i as f32, 3.0 * i as f32)).collect();
+    // a single duplicated point
+    let same: Vec<(f32, f32)> = vec![(7.0, -2.0); 200];
+
+    for (name, set) in [
+        ("disc", &disc),
+        ("grid", &grid),
+        ("line", &line),
+        ("duplicate", &same),
+    ] {
+        assert_eq!(
+            convex_hull(set),
+            reference_hull(set),
+            "hull changed for {name}"
+        );
+    }
+}
