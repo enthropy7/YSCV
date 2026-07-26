@@ -1,6 +1,6 @@
 # yscv-tensor
 
-SIMD-accelerated tensor library. 115 `Tensor` operations in `ops/`, f32/f16/bf16 support, NumPy-style broadcasting, 32-byte aligned memory.
+SIMD-accelerated tensor library. 159 `Tensor` operations in `ops/`, f32/f16/bf16 support, NumPy-style broadcasting, 32-byte aligned memory.
 
 ```rust,ignore
 use yscv_tensor::Tensor;

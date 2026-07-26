@@ -321,12 +321,10 @@ impl TransformerEncoderLayer {
             layer: "TransformerEncoder",
         })?;
 
-        // attn_out = mha.forward(graph, input)
         let attn_out = mha.forward(graph, input)?;
         // norm1 = layer_norm(input + attn_out)
         let residual1 = graph.add(input, attn_out)?;
         let norm1 = graph.layer_norm(residual1, ln1_g, ln1_b, 1e-5)?;
-        // ff_out = ff.forward(graph, norm1)
         let ff_out = ff.forward(graph, norm1)?;
         // output = layer_norm(norm1 + ff_out)
         let residual2 = graph.add(norm1, ff_out)?;

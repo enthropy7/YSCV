@@ -2062,7 +2062,6 @@ fn exec_softmax(
         let result = sm.permute(&perm).map_err(|e| OnnxError::DecodeFailed {
             message: e.to_string(),
         })?;
-        // Upload result back to GPU
         let gpu_buf = gpu.upload(&result);
         gc.insert(
             node.outputs[0].clone(),

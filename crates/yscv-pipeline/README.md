@@ -143,7 +143,7 @@ pool.reload(&std::fs::read("models/v2.rknn")?)?;
 22 unit + integration tests covering: config parsing, validation
 (file magic + accelerator availability + dry-run model load), topo
 sort + cycle detection, dispatcher factory feature-gate behaviour,
-and the realtime + watchdog wire-up. 1897 workspace lib tests pass
+and the realtime + watchdog wire-up. the workspace test suite passes
 under `--features "rknn metal-backend gpu realtime rknn-validate"`.
 
 ## License

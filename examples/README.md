@@ -52,7 +52,6 @@ cargo run --release --example train_cnn
 
 | Example | What it shows | Features |
 |---|---|---|
-| **[bench_yolo.rs](src/bench_yolo.rs)** | YOLO inference timing on CPU vs onnxruntime. | none |
 | **[bench_gpu.rs](src/bench_gpu.rs)** | wgpu (Vulkan / Metal / DX12) inference benchmark. | `gpu` |
 | **[bench_mpsgraph.rs](src/bench_mpsgraph.rs)** | Apple MPSGraph: CPU vs Metal-per-op vs MPSGraph for any ONNX. | `metal-backend` |
 | **[bench_mpsgraph_only.rs](src/bench_mpsgraph_only.rs)** | MPSGraph alone, focused on plan compile + dispatch latency. | `metal-backend` |
@@ -64,7 +63,7 @@ cargo run --release --example train_cnn
 | **[bench_vball_cpu.rs](src/bench_vball_cpu.rs)** | VballNet CPU inference for comparison against the Metal version. | none |
 
 ```bash
-cargo run --release --example bench_yolo
+cargo run --release --example bench_gpu --features gpu -- model.onnx
 cargo run --release --features metal-backend --example bench_mpsgraph
 ```
 

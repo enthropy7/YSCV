@@ -116,8 +116,8 @@ Pick your starting point.
 |---|---|
 | [yscv](../crates/yscv/README.md) | Umbrella — re-exports prelude + per-crate APIs. |
 | [yscv-cpu](../crates/yscv-cpu/README.md) | Cached host CPU identity and runtime feature detection shared by dispatch. |
-| [yscv-tensor](../crates/yscv-tensor/README.md) | N-dim tensor with 115 ops, f32/f16/bf16, SIMD-aligned storage. |
-| [yscv-kernels](../crates/yscv-kernels/README.md) | CPU + GPU compute backends, 315 SIMD functions, RKNN bindings. |
+| [yscv-tensor](../crates/yscv-tensor/README.md) | N-dim tensor with 159 ops, f32/f16/bf16, SIMD-aligned storage. |
+| [yscv-kernels](../crates/yscv-kernels/README.md) | CPU + GPU compute backends, 570 SIMD functions, RKNN bindings. |
 | [yscv-autograd](../crates/yscv-autograd/README.md) | Reverse-mode autodiff, 61 backward op variants. |
 | [yscv-optim](../crates/yscv-optim/README.md) | Optimizers + LR schedulers + Lookahead. |
 | [yscv-model](../crates/yscv-model/README.md) | 39 layer types, Trainer, model zoo (17 architectures), LoRA, EMA. |

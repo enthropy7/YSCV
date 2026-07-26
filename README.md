@@ -1,4 +1,8 @@
-# Important: Current state of framework is WIP. It's ready to use for small inputs and special models. Also crates like tensors/kernels etc are self-sufficient. If you found any issues, please report them. You can connect with me via Telegram on my GitHub page or open an issue on GitHub. Stable version will be released soon. Milestone is 0.2.0. 
+> **Status: work in progress.** Usable today for small inputs and specific
+> models. The self-contained crates — `yscv-tensor`, `yscv-kernels`,
+> `yscv-imgproc` — stand on their own already. Dropping the WIP label is the
+> 0.2.0 milestone. Found a problem? Open an issue, or reach me via Telegram
+> from my GitHub page.
 
 # yscv
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/enthropy7/YSCV)
@@ -8,10 +12,10 @@
 [![GitHub stars](https://img.shields.io/github/stars/enthropy7/yscv?style=flat&logo=github)](https://github.com/enthropy7/yscv/stargazers)
 [![CI](https://github.com/enthropy7/yscv/actions/workflows/ci.yml/badge.svg)](https://github.com/enthropy7/yscv/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-1861%20passing%20%7C%201897%20all--features-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-2249%20passing-brightgreen.svg)
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
 
-A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (160 ops, faster than OpenCV), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (171 ops), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
 > Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On a public Siamese tracker we are within ~7% of ORT-CPU single-thread on x86 and faster than ORT on ARM SBCs and Apple M1; **the CPU benchmarks (x86 / ARM / Apple M1) and the M1 GPU path (MPSGraph vs CoreML) are freshly measured on current hardware** (the YOLO / video Metal sections are still pending re-measurement) — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 >
@@ -19,13 +23,13 @@ A complete computer vision and deep learning framework in pure Rust. One `cargo 
 
 > **First time here?** → **[QUICKSTART](QUICKSTART.md)** (5 minutes to a running program) · **[Tutorial](docs/getting-started.md)** (full walkthrough) · **[Cookbook](docs/cookbook.md)** (recipes by task) · **[Feature flags](docs/feature-flags.md)** (what to enable for your target) · **[Edge / Rockchip](docs/edge-deployment.md)** (NPU deployment) · **[Examples](examples/README.md)** (worked code) · **[Troubleshooting](docs/troubleshooting.md)** (when things break) · **[Docs hub](docs/README.md)** (everything else)
 
-We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 315 `#[target_feature]`-gated functions selected by runtime CPU detection, so one binary picks the best path for the host it lands on.
+We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 570 `#[target_feature]`-gated functions selected by runtime CPU detection, so one binary picks the best path for the host it lands on.
 
 ## Quick Start
 
 ```toml
 [dependencies]
-yscv = "0.1.10"
+yscv = "0.1.11"
 ```
 
 Load an image, process it, save the result — three lines:
@@ -38,27 +42,8 @@ let gray = rgb_to_grayscale(&img)?;
 imwrite("gray.png", &gray)?;
 ```
 
-## What can you build with this?
-
-**The short answer: anything you'd normally need Python + OpenCV + PyTorch for.**
-
-YSCV covers the full pipeline — from reading pixels off a camera to training a neural network to deploying an optimized model. Here are some real examples:
-
-**Video surveillance and security.** Hook up a camera, detect people, track them across frames, recognize faces. The tracking and face-matching stages cost tens of microseconds per frame on a single CPU core; the detector/tracker model inference is the real budget (a public Siamese tracker runs ~8.6 ms / 116 FPS single-thread on a Zen 4 core — see [benchmarks](docs/performance-benchmarks.md)). No GPU needed — deploy on any ARM or x86 device as a static binary.
-
-**Factory quality control.** Train a defect detection model on your laptop, export to ONNX, quantize to INT8, deploy on cheap edge hardware on the production line. The whole thing runs without internet, without Python, without Docker.
-
-**Retail and traffic analytics.** Count people, track movement paths, measure dwell time. One machine can handle dozens of camera streams because the processing is that fast.
-
-**Medical imaging.** Process X-rays and DICOM images at scale: resize, normalize, detect edges, extract features. Memory-safe by construction — no segfaults on malformed input, ever.
-
-**Robotics and drones.** Cross-compile to ARM, get a 5MB binary with feature detection (ORB, SIFT), optical flow, stereo matching, and homography estimation. No Python runtime on your drone.
-
-**Training on the edge.** Fine-tune a pretrained ResNet or ViT directly on device with Adam optimizer, learning rate scheduling, and gradient clipping. You don't always need a GPU cluster.
-
 ## Training a model
 
-Build a CNN, train it, done:
 
 ```rust,ignore
 use yscv::prelude::*;
@@ -136,21 +121,21 @@ per-hardware performance is in
 > hardware and dates and are marked *pending re-measurement* — treat those as
 > provisional.
 
-1,861 default tests / 1,897 with all features, across 19 crates.
+2,249 tests across 19 crates.
 
 ## What's inside
 
-The framework is split into 19 crates, each doing one thing well:
+The framework is split into 19 crates:
 
 | Crate | Purpose |
 |-------|---------|
 | `yscv-cpu` | Cached host CPU identity (`Microarch`, `CpuFeatures`, `host_cpu`) shared by runtime dispatch |
-| `yscv-tensor` | N-dimensional tensor with 115 ops, f32/f16/bf16, SIMD-accelerated |
-| `yscv-kernels` | CPU + GPU compute backends, 315 SIMD functions, 61 WGSL + 4 Metal shaders |
+| `yscv-tensor` | N-dimensional tensor with 159 ops, f32/f16/bf16, SIMD-accelerated |
+| `yscv-kernels` | CPU + GPU compute backends, 264 SIMD functions, 61 WGSL + 4 Metal shaders |
 | `yscv-autograd` | Reverse-mode autodiff with 61 backward op variants |
 | `yscv-optim` | SGD, Adam, AdamW, Adagrad, RAdam, RmsProp, Lamb, Lars + Lookahead, 11 LR schedulers |
 | `yscv-model` | 39 layer types, 17 loss functions, Trainer API, model zoo (17 architectures), LoRA |
-| `yscv-imgproc` | 160 image processing ops (blur, edges, morphology, features, color) |
+| `yscv-imgproc` | 171 image processing ops (blur, edges, morphology, features, color) |
 | `yscv-video` | H.264/HEVC/AV1 decoder (parallel tile/WPP, weighted prediction, AV1 inter MC), hardware decode, camera I/O, MP4 / MKV parsing, audio metadata |
 | `yscv-detect` | YOLOv8/v11 pipeline, NMS, heatmap decoding |
 | `yscv-track` | DeepSORT, ByteTrack, Kalman filter, Hungarian assignment, Re-ID |
@@ -166,7 +151,7 @@ The framework is split into 19 crates, each doing one thing well:
 
 ```bash
 cargo build --workspace --release
-cargo test --workspace --release      # 1,861 tests (default)
+cargo test --workspace --release      # 2,249 tests
 cargo run --example train_cnn         # train a CNN on synthetic data
 cargo run --example train_linear      # linear regression
 cargo run --example image_processing  # image pipeline demo
@@ -178,7 +163,7 @@ cargo run --example yolo_finetune     # fine-tune a detection head
 
 ```bash
 # wgpu backend (Vulkan / Metal / DX12 — cross-platform)
-cargo run --release --example bench_yolo --features gpu
+cargo run --release --example bench_gpu --features gpu -- model.onnx
 
 # Metal-native backend (macOS only)
 cargo run --release --example bench_mpsgraph --features metal-backend  # MPSGraph + per-op comparison
@@ -231,7 +216,7 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |
 | **Allocator** | mimalloc | mimalloc | mimalloc |
 
-SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. `yscv_kernels::runtime_dispatch_report()` exposes the typed CPU/kernel selection snapshot, while `runtime_config_report()` records active `YSCV_*` A/B overrides for reproducible benchmark logs. 315 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
+SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. `yscv_kernels::runtime_dispatch_report()` exposes the typed CPU/kernel selection snapshot, while `runtime_config_report()` records active `YSCV_*` A/B overrides for reproducible benchmark logs. 570 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
 
 ### Recommended release profile
 
@@ -286,7 +271,7 @@ See [docs/cookbook.md](docs/cookbook.md) for practical recipes: image processing
 
 **Don't use YSCV when** you need the Python ML ecosystem — Hugging Face model hub, thousands of community architectures, Jupyter notebook prototyping, dynamic graph debugging with breakpoints. When you're training foundation models across thousands of GPUs with NCCL. For that, use PyTorch.
 
-YSCV is faster than PyTorch on many individual operations, but PyTorch has a decade-old ecosystem with millions of pretrained models and research tooling. Different tools for different jobs. Train in PyTorch, export to ONNX, deploy with YSCV — or train directly in YSCV if your model fits within our 39 layer types and you don't need the Python ecosystem.
+YSCV is faster than PyTorch on many individual operations, but PyTorch has a decade-old ecosystem with millions of pretrained models and research tooling. Train in PyTorch, export to ONNX, deploy with YSCV — or train directly in YSCV if your model fits within our 39 layer types and you don't need the Python ecosystem.
 
 ## License
 

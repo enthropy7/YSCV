@@ -14,7 +14,8 @@ fi
 # Verified via `grep ^yscv- crates/*/Cargo.toml` — every crate appears
 # after all of its yscv-* path deps.
 CRATES=(
-    yscv-tensor       # no yscv deps
+    yscv-cpu          # no yscv deps; tensor, kernels, imgproc, onnx, optim, video need it
+    yscv-tensor       # <- cpu
     yscv-video-mpp    # no yscv deps, standalone
     yscv-threadpool   # no yscv deps (kernels + onnx depend on it)
     yscv-kernels      # <- tensor, threadpool

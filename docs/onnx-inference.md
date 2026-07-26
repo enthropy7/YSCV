@@ -153,8 +153,8 @@ cargo run --release --example bench_mpsgraph --features metal-backend
 # Specific model
 cargo run --release --example bench_mpsgraph --features metal-backend -- path/to/model.onnx 50
 
-# CPU-only YOLO benchmark
-cargo run --release --example bench_yolo
+# wgpu YOLO benchmark
+cargo run --release --example bench_gpu --features gpu -- path/to/model.onnx
 ```
 
 ## Performance Reference (Apple M1 MacBook Air)

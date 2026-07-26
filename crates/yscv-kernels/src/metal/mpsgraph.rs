@@ -791,7 +791,6 @@ impl MpsGraph {
                         let dim_size: u64 = msg_send![nd_array, lengthOfDimension: d];
                         total_elements *= dim_size;
                     }
-                    // dataType from nd_array
                     let dtype: u32 = msg_send![nd_array, dataType];
                     let bytes_per_elem = if dtype == MPS_DATA_TYPE_FLOAT16 {
                         2u64

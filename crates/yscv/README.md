@@ -1,10 +1,10 @@
 # yscv
 
-Umbrella crate that re-exports the entire yscv framework. One dependency gives you everything.
+Umbrella crate re-exporting the whole framework behind one dependency.
 
 ```toml
 [dependencies]
-yscv = "0.1.10"
+yscv = "0.1.11"
 ```
 
 ```rust,ignore
@@ -22,12 +22,12 @@ The yscv workspace ships 19 library crates; this umbrella re-exports them all be
 | Crate | What it does |
 |-------|-------------|
 | `yscv-cpu` | Cached host CPU identity and runtime feature detection |
-| `yscv-tensor` | 115 `Tensor` ops, f32/f16/bf16, broadcasting, SIMD |
+| `yscv-tensor` | 159 `Tensor` ops, f32/f16/bf16, broadcasting, SIMD |
 | `yscv-kernels` | CPU/GPU compute backends (61 WGSL + 4 Metal shaders, wgpu + metal-rs) |
 | `yscv-autograd` | Tape-based reverse-mode autodiff with 61 `Op` variants |
 | `yscv-optim` | 8 optimizers (SGD/Adam/AdamW/RAdam/RmsProp/Adagrad/Lamb/Lars) + Lookahead, 11 LR schedulers |
 | `yscv-model` | 39 layer types, 17 loss functions, Trainer API, model zoo (17 architectures), LoRA |
-| `yscv-imgproc` | 160 image processing operations (NEON/AVX2/SSE/SSSE3 + scalar) |
+| `yscv-imgproc` | 171 image processing operations (NEON/AVX2/SSE/SSSE3 + scalar) |
 | `yscv-video` | H.264/HEVC/AV1 decode (incl. hardware backends), MP4/MKV parse, camera I/O, audio metadata |
 | `yscv-detect` | YOLOv8 + YOLOv11 detection, NMS, heatmaps, RoI align |
 | `yscv-track` | DeepSORT, ByteTrack, Kalman filter, Hungarian, ReId |

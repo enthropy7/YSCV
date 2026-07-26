@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] — 2026-07-26
+
 ### Added
 
 - CPU profiler (`profile_onnx_model_cpu`) now reports which `yscv-kernels`
@@ -51,6 +53,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `--per-node`, which diffs two runs node-by-node and flags any
   dispatched-kernel change as `old→new` — ideal for a baseline-vs-change
   comparison of the same model.
+
+### Changed
+
+- **yscv-imgproc**: `convex_hull` runs an Akl–Toussaint discard before the
+  monotone-chain sort. The four axis extremes bound a quadrilateral, and every
+  point strictly inside it is provably not a hull vertex, so the filter is exact
+  and drops the input to the sort in a single `O(n)` pass. Points on an edge are
+  kept, so float ties cannot discard a real vertex.
+- **yscv-imgproc**: binary morphology packs rows into `u64` words instead of
+  holding one float per pixel — a 720p mask goes from 3.7 MB to 115 KB, which
+  matters most on the small ARM boards this targets. Dilation becomes word-wise
+  OR, and a window of length `L` is built by recursive doubling in `O(log L)`
+  passes. New `open_binary_box` / `close_binary_box` keep the mask packed
+  between the two stages instead of converting to floats and back twice.
+- **yscv-imgproc**: both connected-component entry points work on horizontal
+  runs rather than pixels — a row is scanned into maximal foreground spans, each
+  span joins the spans it touches above, and a disjoint set resolves the chains.
+  Per-component area, bounding box and centroid come out of the same spans in
+  closed form, so individual pixels are never walked. Labels still follow the
+  raster order of each component's first pixel. Three solid objects on
+  1280×720: 3.83 ms → 0.97 ms.
 
 ## [0.1.10] — 2026-06-21
 
@@ -772,7 +795,7 @@ This is the first checkpoint of Phase 4. It closes one of the four HEVC blockers
 - **183 `unsafe { … }` blocks** across the seven Phase 3 target files now carry `// SAFETY:` comments. Coverage went from **0–7%** (8 SAFETY comments across 181 unsafe blocks before Phase 3) to **100%** (183 SAFETY comments across 183 blocks after).
 - **BLOCKER files** (Phase 3.1) — full per-block contracts:
   - [crates/yscv-video/src/hw_decode.rs](crates/yscv-video/src/hw_decode.rs): 15 blocks. Each VideoToolbox / VAAPI / NVDEC / MediaFoundation FFI call now documents the parameter-set / decoder-handle / autoreleasepool / Drop-ordering invariant. Long contracts on `decode_callback`, `decode()`, the `vaInitialize`/`vaCreateConfig` block, the NVDEC `cuvidParseVideoData` path, and all four `Drop` impls.
-  - [crates/yscv-kernels/src/metal_backend.rs](crates/yscv-kernels/src/metal_backend.rs): 45 blocks. Detailed per-function contracts on `buffer_from_f32`, `buffer_from_f32_as_f16`, `read_buffer_f32`, `write_buffer_f32`, `write_buffer_f32_nchw_as_f16_nhwc` (with five inline references explaining the NEON `ldr/st3/fcvtn` bounds), the two `mps_gemm_f16` autoreleasepool blocks, plus a **module-level SAFETY contract** at the top of `pub mod mpsgraph` that the 32 `msg_send!` blocks reference. Covers Objective-C class lookup, factory-method autorelease, NSArray/NSData lifetimes, tensor-handle ownership, `msg_send!` selector typing, and `Drop` ordering.
+  - [crates/yscv-kernels/src/metal_backend.rs](crates/yscv-kernels/src/metal): 45 blocks. Detailed per-function contracts on `buffer_from_f32`, `buffer_from_f32_as_f16`, `read_buffer_f32`, `write_buffer_f32`, `write_buffer_f32_nchw_as_f16_nhwc` (with five inline references explaining the NEON `ldr/st3/fcvtn` bounds), the two `mps_gemm_f16` autoreleasepool blocks, plus a **module-level SAFETY contract** at the top of `pub mod mpsgraph` that the 32 `msg_send!` blocks reference. Covers Objective-C class lookup, factory-method autorelease, NSArray/NSData lifetimes, tensor-handle ownership, `msg_send!` selector typing, and `Drop` ordering.
 - **SHOULD-FIX files** (Phase 3.2) — file-level SAFETY contracts plus per-block references:
   - [crates/yscv-imgproc/src/ops/u8_features.rs](crates/yscv-imgproc/src/ops/u8_features.rs): 40 blocks. File-level contract covers (A) slice reconstruction across rayon parallel-fors via `SendConstPtr`/`SendMutPtr`, (B) NEON/SSE/AVX intrinsic feature gating, and (C) internal `unsafe fn` helper invocation.
   - [crates/yscv-imgproc/src/ops/color.rs](crates/yscv-imgproc/src/ops/color.rs): 31 blocks. Same A/B contract.
@@ -788,7 +811,7 @@ This is the first checkpoint of Phase 4. It closes one of the four HEVC blockers
 - **Phase 2.2 (HIGH_VISION, 14 ops, 16 tests)**: `Slice` (axis 0 + step 2), `Pad` (default fill + custom value), `Cast`, `Tile`, `Expand`, `Where`, `Resize` (nearest 2× upscale), `Upsample` (Resize alias), `ConvTranspose` (stride 2 with identity kernel), `GatherND`, `ScatterND`, `RoiAlign`, `LpNormalization` (L1 unit norm), `LRN` (Local Response Normalization).
 - **Phase 2.3 (MEDIUM_MATH, 32 ops, 47 tests)**: trigonometric (`Tan`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Asinh`, `Acosh`, `Atanh`); rounding (`Round`, `Sign`, `Floor`, `Ceil`); detection (`IsNaN`, `IsInf`); SIMD-tensor unaries (`Exp`, `Log`, `Sqrt`, `Neg`, `Abs`, `Reciprocal`, `Tanh`); softsigns (`Softsign`, `Mish`); binary math (`Sub`, `Mul`, `Div`, `Pow`, `Mod` Python-style + `fmod=1` truncation, `BitShift LEFT` / `RIGHT`); attribute-driven activations (`Celu`, `ThresholdedRelu`); variadic (`Min`, `Max`, `Mean`, `Sum`); reductions (`ReduceMean`, `ReduceSum`, `ReduceMax`, `ReduceMin`, `ReduceProd`, `ReduceL1`, `ReduceL2`); index ops (`ArgMin`, `Hardmax`).
 - **Phase 2.4 (LOW_UTIL, 11 ops, 11 tests)**: comparisons (`Equal`, `Greater`, `Less`, `LessOrEqual`); logical (`And`, `Or`, `Xor`); shape (`Squeeze` with `axes` attribute); misc (`NonZero`, `Compress` along axis, `GridSample` with align_corners=1).
-- **yscv-onnx**: Fixed a runner bug in `exec_qlinear_conv` ([crates/yscv-onnx/src/runner/conv.rs:312-326](crates/yscv-onnx/src/runner/conv.rs#L312-L326)) discovered while writing the Phase 2.1 tests. The synthetic float `Conv` node always advertised `"__qb"` as `inputs[2]` regardless of whether QLinearConv was called with a bias, so the inner `exec_conv` looked up a non-existent tensor and failed with `MissingInput { input: "__qb" }`. Fixed by building the synthetic input list conditionally on `bias.is_some()`.
+- **yscv-onnx**: Fixed a runner bug in `exec_qlinear_conv` ([crates/yscv-onnx/src/runner/conv.rs:312-326](crates/yscv-onnx/src/runner/conv)) discovered while writing the Phase 2.1 tests. The synthetic float `Conv` node always advertised `"__qb"` as `inputs[2]` regardless of whether QLinearConv was called with a bias, so the inner `exec_conv` looked up a non-existent tensor and failed with `MissingInput { input: "__qb" }`. Fixed by building the synthetic input list conditionally on `bias.is_some()`.
 
 ### Phase 1 of 1.0 roadmap (regression coverage, sealing, CI gate)
 
