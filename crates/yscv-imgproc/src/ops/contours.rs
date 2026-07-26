@@ -616,20 +616,18 @@ impl RunUnion {
 
 /// Shared implementation of the two labelling entry points.
 ///
-/// Works on horizontal runs rather than pixels. A row is scanned once into
-/// maximal foreground spans, each span joins the spans it touches in the row
-/// above, and a disjoint set resolves the chains. That keeps the cost tied to
-/// the number of spans instead of the number of pixels: a flood fill visits
-/// every pixel eight times and pushes each onto a queue, while a solid object
-/// here is a handful of runs per row.
+/// Works on horizontal runs, not pixels: a row is scanned once into maximal
+/// foreground spans, each span joins the spans it touches in the row above, and
+/// a disjoint set resolves the chains. Cost then follows the number of spans,
+/// and a solid object is a couple of spans per row however wide it is.
 ///
-/// Per-component statistics come out of the same runs in closed form — a span
-/// of length `n` starting at `s` contributes `n` to the area and
-/// `(2s + n - 1)·n/2` to the x-moment, both exact in `f64` at any image size
-/// that fits in memory — so no pass over individual pixels is needed at all.
+/// Statistics come out of the same spans in closed form — a span of length `n`
+/// starting at `s` adds `n` to the area and `(2s + n - 1)·n/2` to the x-moment,
+/// both exact in `f64` at any image size that fits in memory — so individual
+/// pixels are never walked at all.
 ///
-/// Labels are handed out in raster order of each component's first pixel,
-/// matching what a scanline flood fill produces.
+/// Labels follow the raster order of each component's first pixel, which is
+/// what a flood fill produces and what callers rely on.
 fn label_components(
     img: &Tensor,
     diagonal: bool,
