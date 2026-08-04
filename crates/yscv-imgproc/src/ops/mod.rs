@@ -30,6 +30,7 @@ mod brief;
 mod calibration;
 mod color;
 mod contours;
+mod crop_resize;
 mod draw;
 mod f32_ops;
 mod fast;
@@ -115,6 +116,7 @@ pub use nms::{BBox, TemplateMatchMethod, TemplateMatchResult, nms, template_matc
 pub use normalize::normalize;
 pub use orb::{OrbConfig, OrbFeature, detect_orb, match_features};
 pub use preprocess::{center_crop, chw_to_hwc, hwc_to_chw, imagenet_preprocess, normalize_image};
+pub use crop_resize::{crop_resize_bilinear, crop_resize_bilinear_raw};
 pub use resize::{resize_bilinear, resize_bilinear_half_pixel, resize_nearest};
 pub use stereo::{StereoConfig, stereo_block_matching};
 pub use surf::{
