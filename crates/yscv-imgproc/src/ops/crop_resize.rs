@@ -41,11 +41,20 @@ pub fn crop_resize_bilinear_raw(
         };
     }
     #[cfg(target_arch = "x86_64")]
-    if !cfg!(miri) && (ch == 1 || ch == 3) && yscv_cpu::host_cpu().features.avx2 {
-        // SAFETY: guarded by runtime AVX2 detection; bit-exact vs scalar.
-        return unsafe {
-            crop_resize_avx2(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h)
-        };
+    if !cfg!(miri) {
+        // SAFETY: each path is guarded by runtime feature detection; all are
+        // bit-exact vs scalar (parity test). Gather-based (AVX2/AVX512) handle
+        // ch in {1,3}; the SSE channel-lane path handles ch <= 4.
+        let f = &yscv_cpu::host_cpu().features;
+        if (ch == 1 || ch == 3) && f.avx512f {
+            return unsafe { crop_resize_avx512(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
+        }
+        if (ch == 1 || ch == 3) && f.avx2 {
+            return unsafe { crop_resize_avx2(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
+        }
+        if (1..=4).contains(&ch) && f.sse41 {
+            return unsafe { crop_resize_sse(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
+        }
     }
     crop_resize_scalar(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h)
 }
@@ -326,6 +335,192 @@ unsafe fn crop_resize_avx2(
     out
 }
 
+// ===========================================================================
+// SSE4.1: per output pixel, bilinear across the ch<=4 channel lanes of one xmm.
+// (SSE has no gather, so this mirrors the NEON channel-lane structure.)
+// ===========================================================================
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn crop_resize_sse(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+) -> Vec<f32> {
+    use std::arch::x86_64::*;
+    #[inline(always)]
+    unsafe fn loadn(src: &[f32], o: usize, ch: usize) -> __m128 {
+        let mut a = [0f32; 4];
+        a[0] = *src.get_unchecked(o);
+        if ch > 1 {
+            a[1] = *src.get_unchecked(o + 1);
+        }
+        if ch > 2 {
+            a[2] = *src.get_unchecked(o + 2);
+        }
+        if ch > 3 {
+            a[3] = *src.get_unchecked(o + 3);
+        }
+        _mm_loadu_ps(a.as_ptr())
+    }
+
+    let (ox, oy) = map_origin(cx, cy, win_w, win_h);
+    let sx = win_w as f32 / tpl_w as f32;
+    let sy = win_h as f32 / tpl_h as f32;
+    let (wi, hi) = (w as isize, h as isize);
+    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+    for j in 0..tpl_h {
+        let fy = oy + (j as f32 + 0.5) * sy - 0.5;
+        let y0f = fy.floor();
+        let ay = fy - y0f;
+        let y0 = (y0f as isize).clamp(0, hi - 1) as usize;
+        let y1 = (y0f as isize + 1).clamp(0, hi - 1) as usize;
+        for i in 0..tpl_w {
+            let fx = ox + (i as f32 + 0.5) * sx - 0.5;
+            let x0f = fx.floor();
+            let ax = fx - x0f;
+            let x0 = (x0f as isize).clamp(0, wi - 1) as usize;
+            let x1 = (x0f as isize + 1).clamp(0, wi - 1) as usize;
+            let (w00, w01) = ((1.0 - ax) * (1.0 - ay), ax * (1.0 - ay));
+            let (w10, w11) = ((1.0 - ax) * ay, ax * ay);
+            let p00 = loadn(src, (y0 * w + x0) * ch, ch);
+            let p01 = loadn(src, (y0 * w + x1) * ch, ch);
+            let p10 = loadn(src, (y1 * w + x0) * ch, ch);
+            let p11 = loadn(src, (y1 * w + x1) * ch, ch);
+            let mut acc = _mm_mul_ps(p00, _mm_set1_ps(w00));
+            acc = _mm_add_ps(acc, _mm_mul_ps(p01, _mm_set1_ps(w01)));
+            acc = _mm_add_ps(acc, _mm_mul_ps(p10, _mm_set1_ps(w10)));
+            acc = _mm_add_ps(acc, _mm_mul_ps(p11, _mm_set1_ps(w11)));
+            let mut r = [0f32; 4];
+            _mm_storeu_ps(r.as_mut_ptr(), acc);
+            let base = (j * tpl_w + i) * ch;
+            for c in 0..ch {
+                *out.get_unchecked_mut(base + c) = r[c];
+            }
+        }
+    }
+    out
+}
+
+// ===========================================================================
+// AVX512F: across 16 output pixels per row, hardware gather for the 4 taps.
+// ===========================================================================
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn crop_resize_avx512(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+) -> Vec<f32> {
+    use std::arch::x86_64::*;
+
+    let (ox, oy) = map_origin(cx, cy, win_w, win_h);
+    let sx = win_w as f32 / tpl_w as f32;
+    let sy = win_h as f32 / tpl_h as f32;
+    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+
+    let one = _mm512_set1_ps(1.0);
+    let half = _mm512_set1_ps(0.5);
+    let ramp = _mm512_set_ps(
+        15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0,
+    );
+    let wmax = _mm512_set1_epi32(w as i32 - 1);
+    let zero_i = _mm512_setzero_si512();
+    let one_i = _mm512_set1_epi32(1);
+    let ch_i = _mm512_set1_epi32(ch as i32);
+    let src_ptr = src.as_ptr();
+
+    for j in 0..tpl_h {
+        let fy = oy + (j as f32 + 0.5) * sy - 0.5;
+        let y0f = fy.floor();
+        let ay = _mm512_set1_ps(fy - y0f);
+        let ay1 = _mm512_sub_ps(one, ay);
+        let y0 = (y0f as isize).clamp(0, h as isize - 1) as i32;
+        let y1 = (y0f as isize + 1).clamp(0, h as isize - 1) as i32;
+        let r0 = _mm512_set1_epi32(y0 * w as i32);
+        let r1 = _mm512_set1_epi32(y1 * w as i32);
+
+        let mut i = 0usize;
+        while i + 16 <= tpl_w {
+            let idx = _mm512_add_ps(_mm512_set1_ps(i as f32), ramp);
+            let t = _mm512_mul_ps(_mm512_add_ps(idx, half), _mm512_set1_ps(sx));
+            let fx = _mm512_sub_ps(_mm512_add_ps(_mm512_set1_ps(ox), t), half);
+            let x0f = _mm512_roundscale_ps::<0x01>(fx); // 0x01 = round toward -inf (floor)
+            let ax = _mm512_sub_ps(fx, x0f);
+            let ax1 = _mm512_sub_ps(one, ax);
+            let x0t = _mm512_cvttps_epi32(x0f);
+            let x0i = _mm512_min_epi32(_mm512_max_epi32(x0t, zero_i), wmax);
+            let x1i = _mm512_min_epi32(_mm512_max_epi32(_mm512_add_epi32(x0t, one_i), zero_i), wmax);
+            let w00 = _mm512_mul_ps(ax1, ay1);
+            let w01 = _mm512_mul_ps(ax, ay1);
+            let w10 = _mm512_mul_ps(ax1, ay);
+            let w11 = _mm512_mul_ps(ax, ay);
+            let b00 = _mm512_mullo_epi32(_mm512_add_epi32(r0, x0i), ch_i);
+            let b01 = _mm512_mullo_epi32(_mm512_add_epi32(r0, x1i), ch_i);
+            let b10 = _mm512_mullo_epi32(_mm512_add_epi32(r1, x0i), ch_i);
+            let b11 = _mm512_mullo_epi32(_mm512_add_epi32(r1, x1i), ch_i);
+            for c in 0..ch as i32 {
+                let cc = _mm512_set1_epi32(c);
+                let g00 = _mm512_i32gather_ps::<4>(_mm512_add_epi32(b00, cc), src_ptr);
+                let g01 = _mm512_i32gather_ps::<4>(_mm512_add_epi32(b01, cc), src_ptr);
+                let g10 = _mm512_i32gather_ps::<4>(_mm512_add_epi32(b10, cc), src_ptr);
+                let g11 = _mm512_i32gather_ps::<4>(_mm512_add_epi32(b11, cc), src_ptr);
+                let mut acc = _mm512_mul_ps(w00, g00);
+                acc = _mm512_add_ps(acc, _mm512_mul_ps(w01, g01));
+                acc = _mm512_add_ps(acc, _mm512_mul_ps(w10, g10));
+                acc = _mm512_add_ps(acc, _mm512_mul_ps(w11, g11));
+                if ch == 1 {
+                    _mm512_storeu_ps(out.as_mut_ptr().add(j * tpl_w + i), acc);
+                } else {
+                    let mut tmp = [0f32; 16];
+                    _mm512_storeu_ps(tmp.as_mut_ptr(), acc);
+                    for lane in 0..16 {
+                        *out.get_unchecked_mut((j * tpl_w + i + lane) * ch + c as usize) = tmp[lane];
+                    }
+                }
+            }
+            i += 16;
+        }
+        for ii in i..tpl_w {
+            let fx = ox + (ii as f32 + 0.5) * sx - 0.5;
+            let x0f = fx.floor();
+            let ax = fx - x0f;
+            let x0 = (x0f as isize).clamp(0, w as isize - 1) as usize;
+            let x1 = (x0f as isize + 1).clamp(0, w as isize - 1) as usize;
+            let ayf = fy - y0f;
+            let (cw00, cw01) = ((1.0 - ax) * (1.0 - ayf), ax * (1.0 - ayf));
+            let (cw10, cw11) = ((1.0 - ax) * ayf, ax * ayf);
+            let o00 = (y0 as usize * w + x0) * ch;
+            let o01 = (y0 as usize * w + x1) * ch;
+            let o10 = (y1 as usize * w + x0) * ch;
+            let o11 = (y1 as usize * w + x1) * ch;
+            let base = (j * tpl_w + ii) * ch;
+            for c in 0..ch {
+                *out.get_unchecked_mut(base + c) = cw00 * src[o00 + c]
+                    + cw01 * src[o01 + c]
+                    + cw10 * src[o10 + c]
+                    + cw11 * src[o11 + c];
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,14 +548,35 @@ mod tests {
             (140, 140, 33, 33),                   // scale-filter-ish
             (37, 41, 40, 40),                     // up-sampling
         ];
+        let bitexact = |want: &[f32], got: &[f32], label: &str| {
+            let mx = want.iter().zip(got).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+            assert_eq!(mx, 0.0, "{label} max diff {mx}");
+        };
         for &ch in &[1usize, 3] {
             let src = synth(h, w, ch);
             for &(ww, wh, tw, th) in &cases {
                 let (cx, cy) = (623.4f32, 408.6f32);
                 let want = crop_resize_scalar(&src, h, w, ch, cx, cy, ww, wh, tw, th);
-                let got = crop_resize_bilinear_raw(&src, h, w, ch, cx, cy, ww, wh, tw, th);
-                let mx = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
-                assert_eq!(mx, 0.0, "ch={ch} win={ww}x{wh} tpl={tw}x{th} max diff {mx}");
+                let lbl = format!("ch={ch} win={ww}x{wh} tpl={tw}x{th}");
+                // the dispatched entry point (whatever the host picks)
+                bitexact(&want, &crop_resize_bilinear_raw(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                // and each individual SIMD path the host supports
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx512f") {
+                        bitexact(&want, &crop_resize_avx512(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                    }
+                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx2") {
+                        bitexact(&want, &crop_resize_avx2(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                    }
+                    if std::is_x86_feature_detected!("sse4.1") {
+                        bitexact(&want, &crop_resize_sse(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                    }
+                }
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    bitexact(&want, &crop_resize_neon(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                }
             }
         }
     }
