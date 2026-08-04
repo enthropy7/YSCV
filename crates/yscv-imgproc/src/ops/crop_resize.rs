@@ -8,11 +8,11 @@
 //! This is the hot primitive for correlation-filter trackers (crop a padded
 //! search window around the target and normalise it to a fixed model size).
 //!
-//! Multi-arch: a scalar reference, a NEON path (per-pixel, vectorised across the
-//! `ch <= 4` channel lanes) and an AVX2 path (across 8 output pixels, using
-//! hardware gather for the four bilinear taps). Every path is bit-identical to
-//! the scalar reference (same non-fused `w00*p00 + w01*p01 + w10*p10 + w11*p11`
-//! order), verified by the parity test.
+//! Multi-arch, all bit-identical to the scalar reference (same non-fused
+//! `w00*p00 + w01*p01 + w10*p10 + w11*p11` order, verified by the parity test):
+//!   - NEON / SSE4.1: per output pixel, bilinear across the `ch <= 4` lanes.
+//!   - AVX2 / AVX512F: across 8 / 16 output pixels, hardware gather for the four
+//!     taps (`ch` in {1, 3}).
 
 use super::super::ImgProcError;
 use super::super::shape::hwc_shape;
