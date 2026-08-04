@@ -1,6 +1,6 @@
 # yscv-imgproc
 
-171 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images.
+173 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images.
 
 ```rust,ignore
 use yscv_imgproc::*;
@@ -20,7 +20,7 @@ let resized = resize_bilinear(&img, 224, 224)?;
 | **Morphology** | dilate, erode, opening, closing, gradient, tophat, blackhat, skeletonize |
 | **Edge** | canny, sobel_3x3_gradients, sobel_3x3_magnitude |
 | **Features** | fast9, harris_corners, sift, surf, orb, brief, template_match |
-| **Geometry** | resize (nearest/bilinear), flip, rotate90, warp_affine, warp_perspective |
+| **Geometry** | resize (nearest/bilinear), crop_resize (fused crop+resize), flip, rotate90, warp_affine, warp_perspective |
 | **Threshold** | binary, binary_inv, truncate, adaptive, otsu |
 | **Contour** | find_contours, contour_area, bounding_rect, convex_hull, approx_poly |
 | **Drawing** | draw_rect, draw_circle, draw_line, draw_text, fill_poly |
