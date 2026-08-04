@@ -36,9 +36,7 @@ pub fn crop_resize_bilinear_raw(
     #[cfg(target_arch = "aarch64")]
     if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
-        return unsafe {
-            crop_resize_neon(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h)
-        };
+        return unsafe { crop_resize_neon(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
     }
     #[cfg(target_arch = "x86_64")]
     if !cfg!(miri) {
@@ -47,7 +45,9 @@ pub fn crop_resize_bilinear_raw(
         // ch in {1,3}; the SSE channel-lane path handles ch <= 4.
         let f = &yscv_cpu::host_cpu().features;
         if (ch == 1 || ch == 3) && f.avx512f {
-            return unsafe { crop_resize_avx512(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
+            return unsafe {
+                crop_resize_avx512(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h)
+            };
         }
         if (ch == 1 || ch == 3) && f.avx2 {
             return unsafe { crop_resize_avx2(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
@@ -72,7 +72,10 @@ pub fn crop_resize_bilinear(
 ) -> Result<Tensor, ImgProcError> {
     let (h, w, ch) = hwc_shape(input)?;
     if tpl_h == 0 || tpl_w == 0 || win_w == 0 || win_h == 0 {
-        return Err(ImgProcError::InvalidOutputDimensions { out_h: tpl_h, out_w: tpl_w });
+        return Err(ImgProcError::InvalidOutputDimensions {
+            out_h: tpl_h,
+            out_w: tpl_w,
+        });
     }
     let out = crop_resize_bilinear_raw(input.data(), h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h);
     Tensor::from_vec(vec![tpl_h, tpl_w, ch], out).map_err(Into::into)
@@ -81,7 +84,10 @@ pub fn crop_resize_bilinear(
 // ---- coordinate mapping (shared): cv2 half-pixel + getRectSubPix window offset.
 #[inline(always)]
 fn map_origin(cx: f32, cy: f32, win_w: usize, win_h: usize) -> (f32, f32) {
-    (cx - (win_w as f32 - 1.0) * 0.5, cy - (win_h as f32 - 1.0) * 0.5)
+    (
+        cx - (win_w as f32 - 1.0) * 0.5,
+        cy - (win_h as f32 - 1.0) * 0.5,
+    )
 }
 
 // ===========================================================================
@@ -272,7 +278,10 @@ unsafe fn crop_resize_avx2(
             // clamp x0,x1 to [0,w-1]
             let x0i = _mm256_min_epi32(_mm256_max_epi32(_mm256_cvttps_epi32(x0f), zero_i), wmax);
             let x1i = _mm256_min_epi32(
-                _mm256_max_epi32(_mm256_add_epi32(_mm256_cvttps_epi32(x0f), _mm256_set1_epi32(1)), zero_i),
+                _mm256_max_epi32(
+                    _mm256_add_epi32(_mm256_cvttps_epi32(x0f), _mm256_set1_epi32(1)),
+                    zero_i,
+                ),
                 wmax,
             );
             let _ = hmax; // y already clamped scalar
@@ -298,12 +307,13 @@ unsafe fn crop_resize_avx2(
                 acc = _mm256_add_ps(acc, _mm256_mul_ps(w10, g10));
                 acc = _mm256_add_ps(acc, _mm256_mul_ps(w11, g11));
                 if ch == 1 {
-                    _mm256_storeu_ps(out.as_mut_ptr().add((j * tpl_w + i) + 0), acc);
+                    _mm256_storeu_ps(out.as_mut_ptr().add(j * tpl_w + i), acc);
                 } else {
                     let mut tmp = [0f32; 8];
                     _mm256_storeu_ps(tmp.as_mut_ptr(), acc);
                     for lane in 0..8 {
-                        *out.get_unchecked_mut((j * tpl_w + i + lane) * ch + c as usize) = tmp[lane];
+                        *out.get_unchecked_mut((j * tpl_w + i + lane) * ch + c as usize) =
+                            tmp[lane];
                     }
                 }
             }
@@ -465,7 +475,8 @@ unsafe fn crop_resize_avx512(
             let ax1 = _mm512_sub_ps(one, ax);
             let x0t = _mm512_cvttps_epi32(x0f);
             let x0i = _mm512_min_epi32(_mm512_max_epi32(x0t, zero_i), wmax);
-            let x1i = _mm512_min_epi32(_mm512_max_epi32(_mm512_add_epi32(x0t, one_i), zero_i), wmax);
+            let x1i =
+                _mm512_min_epi32(_mm512_max_epi32(_mm512_add_epi32(x0t, one_i), zero_i), wmax);
             let w00 = _mm512_mul_ps(ax1, ay1);
             let w01 = _mm512_mul_ps(ax, ay1);
             let w10 = _mm512_mul_ps(ax1, ay);
@@ -490,7 +501,8 @@ unsafe fn crop_resize_avx512(
                     let mut tmp = [0f32; 16];
                     _mm512_storeu_ps(tmp.as_mut_ptr(), acc);
                     for lane in 0..16 {
-                        *out.get_unchecked_mut((j * tpl_w + i + lane) * ch + c as usize) = tmp[lane];
+                        *out.get_unchecked_mut((j * tpl_w + i + lane) * ch + c as usize) =
+                            tmp[lane];
                     }
                 }
             }
@@ -549,7 +561,11 @@ mod tests {
             (37, 41, 40, 40),                     // up-sampling
         ];
         let bitexact = |want: &[f32], got: &[f32], label: &str| {
-            let mx = want.iter().zip(got).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+            let mx = want
+                .iter()
+                .zip(got)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f32::max);
             assert_eq!(mx, 0.0, "{label} max diff {mx}");
         };
         for &ch in &[1usize, 3] {
@@ -559,23 +575,43 @@ mod tests {
                 let want = crop_resize_scalar(&src, h, w, ch, cx, cy, ww, wh, tw, th);
                 let lbl = format!("ch={ch} win={ww}x{wh} tpl={tw}x{th}");
                 // the dispatched entry point (whatever the host picks)
-                bitexact(&want, &crop_resize_bilinear_raw(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                bitexact(
+                    &want,
+                    &crop_resize_bilinear_raw(&src, h, w, ch, cx, cy, ww, wh, tw, th),
+                    &lbl,
+                );
                 // and each individual SIMD path the host supports
                 #[cfg(target_arch = "x86_64")]
                 unsafe {
                     if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx512f") {
-                        bitexact(&want, &crop_resize_avx512(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                        bitexact(
+                            &want,
+                            &crop_resize_avx512(&src, h, w, ch, cx, cy, ww, wh, tw, th),
+                            &lbl,
+                        );
                     }
                     if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx2") {
-                        bitexact(&want, &crop_resize_avx2(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                        bitexact(
+                            &want,
+                            &crop_resize_avx2(&src, h, w, ch, cx, cy, ww, wh, tw, th),
+                            &lbl,
+                        );
                     }
                     if std::is_x86_feature_detected!("sse4.1") {
-                        bitexact(&want, &crop_resize_sse(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                        bitexact(
+                            &want,
+                            &crop_resize_sse(&src, h, w, ch, cx, cy, ww, wh, tw, th),
+                            &lbl,
+                        );
                     }
                 }
                 #[cfg(target_arch = "aarch64")]
                 unsafe {
-                    bitexact(&want, &crop_resize_neon(&src, h, w, ch, cx, cy, ww, wh, tw, th), &lbl);
+                    bitexact(
+                        &want,
+                        &crop_resize_neon(&src, h, w, ch, cx, cy, ww, wh, tw, th),
+                        &lbl,
+                    );
                 }
             }
         }

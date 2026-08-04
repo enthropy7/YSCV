@@ -117,6 +117,11 @@ pub use ops::convex_hull;
 pub use ops::corner_sub_pix;
 /// Crop a region from an image tensor. Input: `[H, W, C]` or `[H, W]`.
 pub use ops::crop;
+/// Fused crop + bilinear resize (Tensor). Samples a `tpl_h x tpl_w x C` template
+/// from a window centred at `(cx, cy)`, cv2 half-pixel + border replicate.
+pub use ops::crop_resize_bilinear;
+/// Fused crop + bilinear resize on a raw HWC f32 slice (zero-copy source).
+pub use ops::crop_resize_bilinear_raw;
 /// Dense optical flow (Farneback method). Input: two consecutive `[H, W]` grayscale frames.
 pub use ops::dense_optical_flow;
 /// Detect ORB features (keypoints + descriptors). Input: `[H, W]` grayscale f32.
@@ -243,11 +248,6 @@ pub use ops::ransac_homography;
 pub use ops::region_props;
 /// Remove small connected components below a size threshold.
 pub use ops::remove_small_objects;
-/// Fused crop + bilinear resize (Tensor). Samples a `tpl_h x tpl_w x C` template
-/// from a window centred at `(cx, cy)`, cv2 half-pixel + border replicate.
-pub use ops::crop_resize_bilinear;
-/// Fused crop + bilinear resize on a raw HWC f32 slice (zero-copy source).
-pub use ops::crop_resize_bilinear_raw;
 /// Resize using bilinear interpolation. Input: `[H, W, C]` or `[H, W]` f32.
 pub use ops::resize_bilinear;
 pub use ops::resize_bilinear_half_pixel;

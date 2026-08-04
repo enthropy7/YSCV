@@ -76,6 +76,7 @@ pub use contours::{
     find_contours, fit_circle, fit_ellipse, homography_4pt, hu_moments, min_area_rect,
     min_enclosing_circle, ransac_homography, region_props,
 };
+pub use crop_resize::{crop_resize_bilinear, crop_resize_bilinear_raw};
 pub use draw::{
     Detection as DrawDetection, draw_circle, draw_detections, draw_line, draw_polylines, draw_rect,
     draw_text, draw_text_scaled, fill_poly,
@@ -116,7 +117,6 @@ pub use nms::{BBox, TemplateMatchMethod, TemplateMatchResult, nms, template_matc
 pub use normalize::normalize;
 pub use orb::{OrbConfig, OrbFeature, detect_orb, match_features};
 pub use preprocess::{center_crop, chw_to_hwc, hwc_to_chw, imagenet_preprocess, normalize_image};
-pub use crop_resize::{crop_resize_bilinear, crop_resize_bilinear_raw};
 pub use resize::{resize_bilinear, resize_bilinear_half_pixel, resize_nearest};
 pub use stereo::{StereoConfig, stereo_block_matching};
 pub use surf::{
