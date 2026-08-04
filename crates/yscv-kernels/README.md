@@ -173,14 +173,15 @@ Most important ONNX CPU kernel toggles:
   interior fast path)
 - `YSCV_FUSED_DW_PW_STREAM_OFF=1`
 - `YSCV_FUSED_DW_PW_STREAM_PADDED=1`
-- `YSCV_FUSED_DW_PW_STREAM_PADDED_OFF=1`
 - `YSCV_FUSED_DW_PW_ROW_BATCH=<N>`
 - `YSCV_NO_POINTWISE_16X16_DIRECT=1`
 - `YSCV_NO_POINTWISE_NX16_DIRECT=1`
 - `YSCV_NO_X86_LOW_K_BLOCKED=1`
 - `YSCV_DIRECT_CONV_WORK_MAX=<N>`
 
-For full semantics/defaults and tracker reproduction commands, see
+This is a curated subset. For every environment variable with defaults and
+scope see [`docs/env-vars.md`](../../docs/env-vars.md); for the kernel routing
+map and tracker reproduction commands see
 [`docs/onnx-cpu-kernels.md`](../../docs/onnx-cpu-kernels.md).
 
 ### Multi-architecture coverage
