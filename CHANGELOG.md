@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** operator attributes are keyed by the new `Attr` enum instead of
+  `String`. `OnnxNode.attributes` is now `FxHashMap<Attr, OnnxAttribute>` and the
+  `get_attr_*` helpers take an `Attr`. ONNX attribute names are a closed
+  vocabulary, but they were spelled as string literals at ~200 sites, where a
+  typo silently produced a missing attribute and a default value rather than a
+  compile error. Names outside the table live on in `Attr::Other`, so decoding
+  and re-exporting a model the runtime does not fully interpret stays lossless.
+
 - **Breaking:** `optimize_onnx_graph` now returns `Result<(), OnnxError>`.
   Constant folding evaluates operators, so the pipeline can genuinely fail, and
   the previous signature left no way to say so — failures were printed to stderr

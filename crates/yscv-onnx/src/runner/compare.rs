@@ -68,7 +68,7 @@ pub(super) fn exec_where(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onn
 /// in cached-decoder mode (Llama / Qwen / Phi).
 pub(super) fn exec_trilu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let upper = get_attr_int(node, "upper").unwrap_or(1) != 0;
+    let upper = get_attr_int(node, Attr::Upper).unwrap_or(1) != 0;
     let k = if node.inputs.len() >= 2 {
         let kt = get_tensor(env, &node.name, &node.inputs[1])?;
         if kt.data().is_empty() {

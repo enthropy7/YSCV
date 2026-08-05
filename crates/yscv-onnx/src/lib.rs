@@ -2,6 +2,8 @@
 
 pub const CRATE_ID: &str = "yscv-onnx";
 
+mod attr;
+
 pub mod cpu_topology;
 mod dtype;
 #[path = "error.rs"]
@@ -18,6 +20,7 @@ pub mod quantize;
 mod runner;
 pub mod shape_infer;
 
+pub use attr::Attr;
 pub use dtype::{OnnxDtype, OnnxTensorData};
 pub use error::OnnxError;
 pub use exporter::{

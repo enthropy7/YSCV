@@ -343,17 +343,20 @@ pub fn compile_mpsgraph_plan(
                 // BOTH the graph-constant tensor map (for math consumers) and
                 // const_values (for compile-time shape consumers like Reshape).
                 let (data, shape) = if let Some(OnnxAttribute::Tensor(t)) =
-                    node.attributes.get("value")
+                    node.attributes.get(&Attr::Value)
                 {
                     (t.data().to_vec(), t.shape().to_vec())
-                } else if let Some(OnnxAttribute::Float(v)) = node.attributes.get("value_float") {
+                } else if let Some(OnnxAttribute::Float(v)) = node.attributes.get(&Attr::ValueFloat)
+                {
                     (vec![*v], vec![1usize])
-                } else if let Some(OnnxAttribute::Int(v)) = node.attributes.get("value_int") {
+                } else if let Some(OnnxAttribute::Int(v)) = node.attributes.get(&Attr::ValueInt) {
                     (vec![*v as f32], vec![1usize])
-                } else if let Some(OnnxAttribute::Floats(v)) = node.attributes.get("value_floats") {
+                } else if let Some(OnnxAttribute::Floats(v)) =
+                    node.attributes.get(&Attr::ValueFloats)
+                {
                     let n = v.len();
                     (v.clone(), vec![n])
-                } else if let Some(OnnxAttribute::Ints(v)) = node.attributes.get("value_ints") {
+                } else if let Some(OnnxAttribute::Ints(v)) = node.attributes.get(&Attr::ValueInts) {
                     let n = v.len();
                     (v.iter().map(|&i| i as f32).collect(), vec![n])
                 } else {
@@ -384,7 +387,7 @@ pub fn compile_mpsgraph_plan(
                 let out_shape: Vec<usize> = shape_vals.iter().map(|&v| v as usize).collect();
                 let n: usize = out_shape.iter().product();
                 // Default fill value is 0.0
-                let fill = get_attr_float(node, "value").unwrap_or(0.0);
+                let fill = get_attr_float(node, Attr::Value).unwrap_or(0.0);
                 let f16_data: Vec<u16> = vec![f32_to_f16_bits(fill); n];
                 let t = graph.constant_f16(&f16_data, &out_shape)?;
                 tensors.insert(node.outputs[0].clone(), t);
@@ -791,10 +794,10 @@ fn build_graph_node(
             // Since we load weights as constants directly from initializer data,
             // they're in the original ONNX format (OIHW).
 
-            let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-            let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-            let dilations = get_attr_ints(node, "dilations").unwrap_or_else(|| vec![1, 1]);
-            let group = get_attr_int(node, "group").unwrap_or(1) as usize;
+            let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+            let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
+            let dilations = get_attr_ints(node, Attr::Dilations).unwrap_or_else(|| vec![1, 1]);
+            let group = get_attr_int(node, Attr::Group).unwrap_or(1) as usize;
 
             let (o_ch, _i_per_g, kh, kw) = (w_shape[0], w_shape[1], w_shape[2], w_shape[3]);
 
@@ -899,9 +902,9 @@ fn build_graph_node(
         "MaxPool" => {
             let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
-            let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
-            let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-            let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+            let kernel_shape = get_attr_ints(node, Attr::KernelShape).unwrap_or_else(|| vec![2, 2]);
+            let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+            let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
 
             let desc = Pool2dDesc {
                 kernel_h: kernel_shape[0] as usize,
@@ -933,9 +936,9 @@ fn build_graph_node(
         "AveragePool" => {
             let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
-            let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
-            let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-            let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+            let kernel_shape = get_attr_ints(node, Attr::KernelShape).unwrap_or_else(|| vec![2, 2]);
+            let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+            let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
 
             let desc = Pool2dDesc {
                 kernel_h: kernel_shape[0] as usize,
@@ -979,7 +982,7 @@ fn build_graph_node(
             let beta = try_get!(&node.inputs[2]);
             let mean = try_get!(&node.inputs[3]);
             let variance = try_get!(&node.inputs[4]);
-            let epsilon = get_attr_float(node, "epsilon").unwrap_or(1e-5);
+            let epsilon = get_attr_float(node, Attr::Epsilon).unwrap_or(1e-5);
             let in_shape = get_shape(&node.inputs[0]);
 
             // Reshape gamma/beta/mean/var from [C] → [1, C, 1, 1] for NCHW broadcast
@@ -997,7 +1000,7 @@ fn build_graph_node(
         }
 
         "Concat" => {
-            let axis = get_attr_int(node, "axis").unwrap_or(1);
+            let axis = get_attr_int(node, Attr::Axis).unwrap_or(1);
             let first_shape = get_shape(&node.inputs[0]);
             let ndim = first_shape.len() as i64;
             let ax = if axis < 0 { ndim + axis } else { axis } as usize;
@@ -1040,7 +1043,7 @@ fn build_graph_node(
 
             // For Flatten, compute shape from axis
             let target = if node.op_type == "Flatten" {
-                let axis = get_attr_int(node, "axis").unwrap_or(1) as usize;
+                let axis = get_attr_int(node, Attr::Axis).unwrap_or(1) as usize;
                 let before: usize = in_shape.iter().take(axis).product();
                 let after: usize = in_shape.iter().skip(axis).product();
                 vec![before as i64, after as i64]
@@ -1093,7 +1096,7 @@ fn build_graph_node(
         "Transpose" => {
             let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
-            let perm = get_attr_ints(node, "perm").unwrap_or_default();
+            let perm = get_attr_ints(node, Attr::Perm).unwrap_or_default();
 
             if perm.is_empty() {
                 return Ok(None); // Need explicit perm
@@ -1124,7 +1127,7 @@ fn build_graph_node(
         "Softmax" => {
             let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
-            let axis = get_attr_int(node, "axis").unwrap_or(-1);
+            let axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
             let ndim = in_shape.len() as i64;
             let ax = if axis < 0 { ndim + axis } else { axis };
 
@@ -1220,14 +1223,14 @@ fn build_graph_node(
         "Split" => {
             let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
-            let axis = get_attr_int(node, "axis").unwrap_or(0);
+            let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
             let ndim = in_shape.len() as i64;
             let ax = if axis < 0 { ndim + axis } else { axis } as usize;
 
             let num_outputs = node.outputs.len();
 
             // Read split sizes: try attribute first (opset < 13), then input tensor (opset 13+)
-            let split_sizes = get_attr_ints(node, "split").or_else(|| {
+            let split_sizes = get_attr_ints(node, Attr::Split).or_else(|| {
                 if node.inputs.len() > 1 && !node.inputs[1].is_empty() {
                     let name = &node.inputs[1];
                     if let Some(t) = model.initializers.get(name) {
@@ -1365,7 +1368,7 @@ fn build_graph_node(
             let in_shape = get_shape(&node.inputs[0]);
 
             // Read axes from attribute (opset < 13) or input tensor (opset 13+)
-            let axes = get_attr_ints(node, "axes")
+            let axes = get_attr_ints(node, Attr::Axes)
                 .or_else(|| {
                     if node.inputs.len() > 1 && !node.inputs[1].is_empty() {
                         let name = &node.inputs[1];
@@ -1408,7 +1411,7 @@ fn build_graph_node(
             let input = try_get!(&node.inputs[0]);
             let in_shape = get_shape(&node.inputs[0]);
 
-            let axes = get_attr_ints(node, "axes").or_else(|| {
+            let axes = get_attr_ints(node, Attr::Axes).or_else(|| {
                 if node.inputs.len() > 1 && !node.inputs[1].is_empty() {
                     let name = &node.inputs[1];
                     model

@@ -532,10 +532,10 @@ pub fn run_onnx_model_gpu_cached(
                                     if let Some(at) = env.get(&node.inputs[1]) {
                                         at.data().iter().map(|&v| v as i64).collect()
                                     } else {
-                                        get_attr_ints(node, "axes").unwrap_or_default()
+                                        get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                     }
                                 } else {
-                                    get_attr_ints(node, "axes").unwrap_or_default()
+                                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                 };
                             let mut sorted: Vec<usize> = axes
                                 .iter()
@@ -562,7 +562,7 @@ pub fn run_onnx_model_gpu_cached(
                                         vec![]
                                     }
                                 } else {
-                                    get_attr_ints(node, "axes").unwrap_or_default()
+                                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                 };
                             if axes.is_empty() {
                                 shape.retain(|&d| d != 1);
@@ -802,10 +802,10 @@ pub fn compile_gpu_plan(
                                     if let Some(at) = env.get(&node.inputs[1]) {
                                         at.data().iter().map(|&v| v as i64).collect()
                                     } else {
-                                        get_attr_ints(node, "axes").unwrap_or_default()
+                                        get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                     }
                                 } else {
-                                    get_attr_ints(node, "axes").unwrap_or_default()
+                                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                 };
                             let mut sorted: Vec<usize> = axes
                                 .iter()
@@ -832,7 +832,7 @@ pub fn compile_gpu_plan(
                                         vec![]
                                     }
                                 } else {
-                                    get_attr_ints(node, "axes").unwrap_or_default()
+                                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                 };
                             if axes.is_empty() {
                                 shape.retain(|&d| d != 1);
@@ -1656,9 +1656,9 @@ fn exec_conv_act(
         None
     };
 
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-    let group = get_attr_int(node, "group").unwrap_or(1) as usize;
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let group = get_attr_int(node, Attr::Group).unwrap_or(1) as usize;
     let sh = strides[0] as usize;
     let sw = strides[1] as usize;
     let pad4 = [
@@ -1884,7 +1884,7 @@ fn exec_bn(
     let beta = get_tensor(env, &node.name, &node.inputs[2])?;
     let mean = get_tensor(env, &node.name, &node.inputs[3])?;
     let var = get_tensor(env, &node.name, &node.inputs[4])?;
-    let eps = get_attr_float(node, "epsilon").unwrap_or(1e-5);
+    let eps = get_attr_float(node, Attr::Epsilon).unwrap_or(1e-5);
 
     let gamma_gpu = gpu.upload(gamma);
     let beta_gpu = gpu.upload(beta);
@@ -1923,9 +1923,9 @@ fn exec_pool(
     mode: u32,
 ) -> Result<(), OnnxError> {
     let name = &node.inputs[0];
-    let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let kernel_shape = get_attr_ints(node, Attr::KernelShape).unwrap_or_else(|| vec![2, 2]);
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
     let pad4 = [
         pads[0] as usize,
         pads[1] as usize,
@@ -2016,7 +2016,7 @@ fn exec_softmax(
         .map(|gt| gt.buf.shape().len())
         .or_else(|| env.get(name).map(|t| t.rank()))
         .unwrap_or(0);
-    let raw_axis = get_attr_int(node, "axis").unwrap_or(-1);
+    let raw_axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
     let axis = if raw_axis < 0 {
         (ndim as i64 + raw_axis) as usize
     } else {
@@ -2185,7 +2185,7 @@ fn exec_transpose_gpu(
     let rank = gt.buf.shape().len();
 
     // Get permutation (default: reverse axes)
-    let perm: Vec<usize> = match get_attr_ints(node, "perm") {
+    let perm: Vec<usize> = match get_attr_ints(node, Attr::Perm) {
         Some(p) => p.iter().map(|&v| v as usize).collect(),
         None => (0..rank).rev().collect(),
     };
@@ -2247,7 +2247,7 @@ fn exec_concat_gpu(
     env: &mut TensorEnv,
     gc: &mut GpuCache,
 ) -> Result<(), OnnxError> {
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let input_names: Vec<&String> = node.inputs.iter().filter(|n| !n.is_empty()).collect();
 
     if input_names.is_empty() {
@@ -2353,7 +2353,7 @@ fn exec_split_gpu(
     env: &mut TensorEnv,
     gc: &mut GpuCache,
 ) -> Result<(), OnnxError> {
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let name = &node.inputs[0];
 
     let on_gpu = gc.contains_key(name.as_str());
@@ -2393,7 +2393,7 @@ fn exec_split_gpu(
         } else {
             equal_split(dim_size, num_outputs)
         }
-    } else if let Some(s) = get_attr_ints(node, "split") {
+    } else if let Some(s) = get_attr_ints(node, Attr::Split) {
         s.iter().map(|&v| v as usize).collect()
     } else {
         equal_split(dim_size, num_outputs)
@@ -2619,7 +2619,7 @@ fn get_reshape_shape(
     total: usize,
 ) -> Result<Vec<usize>, yscv_kernels::KernelError> {
     if node.op_type == "Flatten" {
-        let axis = get_attr_int(node, "axis").unwrap_or(1) as usize;
+        let axis = get_attr_int(node, Attr::Axis).unwrap_or(1) as usize;
         let d0: usize = in_shape[..axis].iter().product();
         let d1: usize = in_shape[axis..].iter().product();
         return Ok(vec![d0, d1]);
@@ -2697,10 +2697,10 @@ fn exec_unsqueeze_gpu(
                     if let Some(at) = env.get(&node.inputs[1]) {
                         at.data().iter().map(|&v| v as i64).collect()
                     } else {
-                        get_attr_ints(node, "axes").unwrap_or_default()
+                        get_attr_ints(node, Attr::Axes).unwrap_or_default()
                     }
                 } else {
-                    get_attr_ints(node, "axes").unwrap_or_default()
+                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                 };
                 let mut sorted: Vec<usize> = axes
                     .iter()
@@ -2725,7 +2725,7 @@ fn exec_unsqueeze_gpu(
                         vec![]
                     }
                 } else {
-                    get_attr_ints(node, "axes").unwrap_or_default()
+                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                 };
                 if axes.is_empty() {
                     shape.retain(|&d| d != 1);
@@ -2921,7 +2921,7 @@ fn exec_constant_of_shape_gpu(
         });
     };
 
-    let value = get_attr_float(node, "value").unwrap_or(0.0);
+    let value = get_attr_float(node, Attr::Value).unwrap_or(0.0);
     let total: usize = shape.iter().product();
 
     // Create filled tensor on CPU — no GPU needed for a constant

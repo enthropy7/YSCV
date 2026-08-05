@@ -14,6 +14,7 @@ mod qlinear;
 mod reshape;
 mod shape_infer;
 
+use crate::attr::Attr;
 use prost::Message;
 
 use super::loader::{OnnxAttribute, load_onnx_model};

@@ -506,11 +506,11 @@ pub fn profile_onnx_model_cpu(
             .unwrap_or_default();
 
         let (kernel_shape, strides, kernel) = if kind == NodeKind::Conv {
-            let kernel_shape = match node.attributes.get("kernel_shape") {
+            let kernel_shape = match node.attributes.get(&Attr::KernelShape) {
                 Some(OnnxAttribute::Ints(v)) => v.clone(),
                 _ => Vec::new(),
             };
-            let strides = match node.attributes.get("strides") {
+            let strides = match node.attributes.get(&Attr::Strides) {
                 Some(OnnxAttribute::Ints(v)) => v.clone(),
                 _ => vec![1, 1],
             };

@@ -25,6 +25,7 @@ pub use rewriter::{
     rewrite_to_qlinear,
 };
 
+use crate::attr::Attr;
 use rustc_hash::FxHashMap;
 
 use yscv_tensor::Tensor;
@@ -160,7 +161,7 @@ pub fn quantize_weights_int4(model: &mut OnnxModel) -> Result<(), OnnxError> {
             attributes: {
                 let mut attrs = FxHashMap::default();
                 // axis=0 for per-channel dequantization
-                attrs.insert("axis".to_string(), OnnxAttribute::Int(0));
+                attrs.insert(Attr::Axis, OnnxAttribute::Int(0));
                 attrs
             },
         };

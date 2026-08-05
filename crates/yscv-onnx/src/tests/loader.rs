@@ -119,11 +119,11 @@ fn load_node_with_attributes() {
 
     let conv = &model.nodes[0];
     assert_eq!(conv.op_type, "Conv");
-    match &conv.attributes["kernel_shape"] {
+    match &conv.attributes[&Attr::KernelShape] {
         OnnxAttribute::Ints(v) => assert_eq!(v, &[3, 3]),
         _ => panic!("expected Ints attribute"),
     }
-    match &conv.attributes["group"] {
+    match &conv.attributes[&Attr::Group] {
         OnnxAttribute::Int(v) => assert_eq!(*v, 1),
         _ => panic!("expected Int attribute"),
     }

@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 ///   cargo run --release --no-default-features -p yscv-llm-bench --bin nchwc_coverage \
 ///     -- private/private/model.onnx
 use rustc_hash::FxHashSet;
-use yscv_onnx::{OnnxAttribute, OnnxModel, OnnxNode, load_onnx_model_from_file};
+use yscv_onnx::{Attr, OnnxAttribute, OnnxModel, OnnxNode, load_onnx_model_from_file};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -18,16 +18,16 @@ fn main() {
     run_coverage_probe(&model);
 }
 
-fn get_int_attr(node: &OnnxNode, key: &str, default: i64) -> i64 {
-    match node.attributes.get(key) {
+fn get_int_attr(node: &OnnxNode, key: Attr, default: i64) -> i64 {
+    match node.attributes.get(&key) {
         Some(OnnxAttribute::Int(v)) => *v,
         Some(OnnxAttribute::Ints(v)) => v.first().copied().unwrap_or(default),
         _ => default,
     }
 }
 
-fn get_ints_attr(node: &OnnxNode, key: &str) -> Vec<i64> {
-    match node.attributes.get(key) {
+fn get_ints_attr(node: &OnnxNode, key: Attr) -> Vec<i64> {
+    match node.attributes.get(&key) {
         Some(OnnxAttribute::Ints(v)) => v.clone(),
         _ => vec![],
     }
@@ -150,11 +150,11 @@ fn run_coverage_probe(model: &OnnxModel) {
             .cloned()
             .unwrap_or_default();
 
-        let group = get_int_attr(node, "group", 1);
-        let strides = get_ints_attr(node, "strides");
+        let group = get_int_attr(node, Attr::Group, 1);
+        let strides = get_ints_attr(node, Attr::Strides);
         let sh = strides.first().copied().unwrap_or(1);
         let sw = strides.get(1).copied().unwrap_or(1);
-        let dilations = get_ints_attr(node, "dilations");
+        let dilations = get_ints_attr(node, Attr::Dilations);
         let dh = dilations.first().copied().unwrap_or(1);
         let dw_d = dilations.get(1).copied().unwrap_or(1);
 
@@ -384,11 +384,11 @@ fn run_coverage_probe(model: &OnnxModel) {
                     .cloned()
                     .unwrap_or_default();
 
-                let group = get_int_attr(node, "group", 1);
-                let strides = get_ints_attr(node, "strides");
+                let group = get_int_attr(node, Attr::Group, 1);
+                let strides = get_ints_attr(node, Attr::Strides);
                 let sh = strides.first().copied().unwrap_or(1);
                 let sw = strides.get(1).copied().unwrap_or(1);
-                let dilations = get_ints_attr(node, "dilations");
+                let dilations = get_ints_attr(node, Attr::Dilations);
                 let dh = dilations.first().copied().unwrap_or(1);
                 let dw_d = dilations.get(1).copied().unwrap_or(1);
 

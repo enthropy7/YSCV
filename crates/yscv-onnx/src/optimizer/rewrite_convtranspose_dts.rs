@@ -1,3 +1,4 @@
+use crate::attr::Attr;
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
@@ -54,15 +55,15 @@ fn match_rewrite(graph: &Graph, node_id: NodeId) -> Option<Rewrite> {
         return None;
     }
 
-    let ints = |name: &str| match node.attributes.get(name) {
+    let ints = |name: Attr| match node.attributes.get(&name) {
         Some(OnnxAttribute::Ints(v)) => Some(v.clone()),
         _ => None,
     };
-    let strides = ints("strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = ints("pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-    let output_padding = ints("output_padding").unwrap_or_else(|| vec![0, 0]);
-    let dilations = ints("dilations").unwrap_or_else(|| vec![1, 1]);
-    let group = match node.attributes.get("group") {
+    let strides = ints(Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = ints(Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let output_padding = ints(Attr::OutputPadding).unwrap_or_else(|| vec![0, 0]);
+    let dilations = ints(Attr::Dilations).unwrap_or_else(|| vec![1, 1]);
+    let group = match node.attributes.get(&Attr::Group) {
         Some(OnnxAttribute::Int(g)) => *g,
         _ => 1,
     };
@@ -163,9 +164,9 @@ fn apply(graph: &mut Graph, node_id: NodeId, rewrite: Rewrite) {
         inputs: conv_inputs,
         outputs: vec![mid],
         attributes: attrs([
-            ("strides", OnnxAttribute::Ints(vec![1, 1])),
-            ("pads", OnnxAttribute::Ints(vec![0, 0, 0, 0])),
-            ("kernel_shape", OnnxAttribute::Ints(vec![1, 1])),
+            (Attr::Strides, OnnxAttribute::Ints(vec![1, 1])),
+            (Attr::Pads, OnnxAttribute::Ints(vec![0, 0, 0, 0])),
+            (Attr::KernelShape, OnnxAttribute::Ints(vec![1, 1])),
         ]),
     };
     let depth_to_space = Node {
@@ -175,17 +176,14 @@ fn apply(graph: &mut Graph, node_id: NodeId, rewrite: Rewrite) {
         // `replace_node` fills these in from the node being replaced.
         outputs: Vec::new(),
         attributes: attrs([
-            ("blocksize", OnnxAttribute::Int(rewrite.block as i64)),
-            ("mode", OnnxAttribute::String("CRD".to_owned())),
+            (Attr::BlockSize, OnnxAttribute::Int(rewrite.block as i64)),
+            (Attr::Mode, OnnxAttribute::String("CRD".to_owned())),
         ]),
     };
 
     graph.replace_node(node_id, vec![conv, depth_to_space]);
 }
 
-fn attrs<const N: usize>(pairs: [(&str, OnnxAttribute); N]) -> FxHashMap<String, OnnxAttribute> {
-    pairs
-        .into_iter()
-        .map(|(name, value)| (name.to_owned(), value))
-        .collect()
+fn attrs<const N: usize>(pairs: [(Attr, OnnxAttribute); N]) -> FxHashMap<Attr, OnnxAttribute> {
+    pairs.into_iter().collect()
 }

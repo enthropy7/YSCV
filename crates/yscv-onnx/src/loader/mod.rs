@@ -4,6 +4,7 @@ use prost::Message;
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
+use crate::attr::Attr;
 use crate::error::OnnxError;
 use crate::proto::onnx;
 
@@ -21,7 +22,7 @@ pub struct OnnxNode {
     pub name: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
-    pub attributes: FxHashMap<String, OnnxAttribute>,
+    pub attributes: FxHashMap<Attr, OnnxAttribute>,
 }
 
 /// Supported ONNX attribute value types.
@@ -443,7 +444,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
             let attr_name = attr.name.clone().unwrap_or_default();
             let value = convert_attribute(attr);
             if let Some(v) = value {
-                attributes.insert(attr_name, v);
+                attributes.insert(Attr::from_name(&attr_name), v);
             }
         }
         nodes.push(OnnxNode {
@@ -469,7 +470,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
             && matmul_rhs_inputs.contains(&node.outputs[0])
             && !graph_outputs.contains(&node.outputs[0]);
         if can_fold_const_transpose && let Some(input) = initializers.get(&node.inputs[0]) {
-            let axes: Vec<usize> = match node.attributes.get("perm") {
+            let axes: Vec<usize> = match node.attributes.get(&Attr::Perm) {
                 Some(OnnxAttribute::Ints(v)) if v.len() == input.rank() => {
                     v.iter().map(|&x| x as usize).collect()
                 }
@@ -500,7 +501,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         // Only pre-permute group=1 conv weights
         let group = node
             .attributes
-            .get("group")
+            .get(&Attr::Group)
             .and_then(|a| match a {
                 OnnxAttribute::Int(v) => Some(*v),
                 _ => None,
@@ -541,7 +542,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         }
         let group = node
             .attributes
-            .get("group")
+            .get(&Attr::Group)
             .and_then(|a| match a {
                 OnnxAttribute::Int(v) => Some(*v as usize),
                 _ => None,
@@ -601,7 +602,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         }
         let group = node
             .attributes
-            .get("group")
+            .get(&Attr::Group)
             .and_then(|a| match a {
                 OnnxAttribute::Int(v) => Some(*v as usize),
                 _ => None,

@@ -17,6 +17,7 @@
 //! contains K nibbles, matching the format expected by the GEMV
 //! kernel (`m_w = N`, `k = K`).
 
+use crate::attr::Attr;
 use yscv_kernels::pack_int4_symmetric_per_group;
 
 use crate::error::OnnxError;
@@ -152,7 +153,7 @@ fn collect_packing_candidates(nodes: &[OnnxNode]) -> Vec<Candidate> {
                 });
             }
             "Gemm" if node.inputs.len() >= 2 => {
-                let trans_b = match node.attributes.get("transB") {
+                let trans_b = match node.attributes.get(&Attr::TransB) {
                     Some(crate::loader::OnnxAttribute::Int(v)) => *v,
                     _ => 0,
                 };
@@ -187,7 +188,7 @@ mod tests {
         );
         let mut attrs = FxHashMap::default();
         if op == "Gemm" {
-            attrs.insert("transB".to_string(), OnnxAttribute::Int(1));
+            attrs.insert(Attr::TransB, OnnxAttribute::Int(1));
         }
         OnnxModel {
             ir_version: 7,

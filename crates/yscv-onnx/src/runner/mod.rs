@@ -10,6 +10,7 @@ pub(crate) use yscv_kernels::{
 };
 pub(crate) use yscv_tensor::{DType, Tensor};
 
+pub(crate) use crate::attr::Attr;
 pub(crate) use crate::error::OnnxError;
 pub(crate) use crate::loader::{NodeKind, OnnxAttribute, OnnxModel, OnnxNode};
 

@@ -103,9 +103,9 @@ pub(crate) fn record_conv(
         None
     };
 
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-    let group = get_attr_int(node, "group").unwrap_or(1) as usize;
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let group = get_attr_int(node, Attr::Group).unwrap_or(1) as usize;
 
     let w_shape = weight.shape();
     let is_khwc = env.is_khwc_weight(&node.inputs[1]);
@@ -647,7 +647,7 @@ pub(crate) fn record_node(
         }
 
         "Concat" => {
-            let axis = get_attr_int(node, "axis").unwrap_or(1) as i32;
+            let axis = get_attr_int(node, Attr::Axis).unwrap_or(1) as i32;
             let first_shape = shapes.get(&node.inputs[0]).cloned().unwrap_or_default();
             let is_nhwc_input = *nhwc.get(&node.inputs[0]).unwrap_or(&false);
 
@@ -742,7 +742,7 @@ pub(crate) fn record_node(
         }
 
         "Split" => {
-            let axis = get_attr_int(node, "axis").unwrap_or(1) as i32;
+            let axis = get_attr_int(node, Attr::Axis).unwrap_or(1) as i32;
             let in_name = &node.inputs[0];
             let in_shape = shapes.get(in_name).cloned().unwrap_or_default();
             let is_nhwc_input = *nhwc.get(in_name).unwrap_or(&false);
@@ -870,9 +870,9 @@ pub(crate) fn record_node(
             }
             let (n, ih, iw, ic) = (in_shape[0], in_shape[1], in_shape[2], in_shape[3]);
 
-            let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
-            let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![2, 2]);
-            let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+            let kernel_shape = get_attr_ints(node, Attr::KernelShape).unwrap_or_else(|| vec![2, 2]);
+            let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![2, 2]);
+            let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
 
             let kh = kernel_shape[0] as usize;
             let kw = kernel_shape[1] as usize;
@@ -981,7 +981,7 @@ pub(crate) fn record_node(
                 f32_bufs,
             );
             let in_shape = shapes.get(&actual_in).cloned().unwrap_or_default();
-            let axis = get_attr_int(node, "axis").unwrap_or(-1);
+            let axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
             let ndim = in_shape.len() as i64;
             let actual_axis = if axis < 0 { ndim + axis } else { axis } as usize;
 
@@ -1098,7 +1098,7 @@ pub(crate) fn record_node(
             let in_name = &node.inputs[0];
             let in_is_f32 = f32_bufs.contains(in_name.as_str());
             let in_shape = shapes.get(in_name.as_str()).cloned().unwrap_or_default();
-            let perm = get_attr_ints(node, "perm").unwrap_or_default();
+            let perm = get_attr_ints(node, Attr::Perm).unwrap_or_default();
             let use_f16 = !in_is_f32;
 
             // Helper: allocate output buffer (f32 if input was f32, f16 otherwise)
