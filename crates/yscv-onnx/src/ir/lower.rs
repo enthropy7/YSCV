@@ -14,7 +14,7 @@
 
 use rustc_hash::FxHashMap;
 
-use super::{Graph, Node, Op, ValueKind};
+use super::{Graph, Node, Op, ValueKind, WeightLayout};
 use crate::loader::{OnnxModel, OnnxNode};
 
 impl OnnxModel {
@@ -31,6 +31,24 @@ impl OnnxModel {
         for (name, tensor) in &self.initializers {
             let id = graph.value_by_name(name);
             graph.set_constant(id, tensor.clone());
+
+            // The loader pre-permutes conv weights and records which
+            // permutation in three side sets; passes that rewrite a weight need
+            // to know, because the output channel sits on a different axis in
+            // each. Carried on the value so they ask once instead of consulting
+            // three sets. See `ir::weight_layout`.
+            let layout = if self.khwc_weights.contains(name) {
+                WeightLayout::Khwc
+            } else if self.dw_khwc_weights.contains(name) {
+                WeightLayout::DepthwiseKhwc
+            } else if self.group_khwc_weights.contains(name) {
+                WeightLayout::GroupKhwc
+            } else {
+                WeightLayout::Oihw
+            };
+            if layout != WeightLayout::Oihw {
+                graph.set_weight_layout(id, layout);
+            }
         }
 
         let input_ids: Vec<_> = self

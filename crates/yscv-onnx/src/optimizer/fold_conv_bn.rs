@@ -1,181 +1,154 @@
 use yscv_tensor::Tensor;
 
-use crate::loader::OnnxModel;
+use crate::error::OnnxError;
+use crate::ir::{Changed, Graph, NodeId, Op, Pass, ValueId};
+use crate::loader::OnnxAttribute;
 
-/// Folds Conv + BatchNormalization pairs by absorbing BN parameters into Conv weights.
+/// Folds `BatchNormalization` into the weights of the `Conv` that feeds it.
 ///
-/// For each Conv immediately followed by a BatchNormalization whose sole input is the
-/// Conv output, we compute fused weights:
-///   scale_c = gamma_c / sqrt(var_c + eps)
-///   `W_fused[c] = W[c] * scale_c`
-///   `b_fused[c] = (b[c] - mean_c) * scale_c + beta_c`
-/// The Conv initializers are replaced and the BN node is removed.
-pub fn fold_conv_bn(model: &mut OnnxModel) {
-    if run(model) {
-        model.rebuild_runtime_index();
+/// At inference the batch statistics are frozen, so the normalization is an
+/// affine per-channel transform and collapses into the convolution:
+///
+/// ```text
+/// scale[c] = gamma[c] / sqrt(var[c] + epsilon)
+/// W'[c]    = W[c] * scale[c]
+/// b'[c]    = (b[c] - mean[c]) * scale[c] + beta[c]
+/// ```
+///
+/// The three duplicated layout branches the string version carried — output
+/// channels live on a different axis depending on how the loader pre-permuted
+/// the weight — are now one `WeightLayout` lookup.
+pub(crate) struct FoldConvBatchNorm;
+
+impl Pass for FoldConvBatchNorm {
+    fn name(&self) -> &'static str {
+        "fold_conv_bn"
+    }
+
+    fn run(&self, graph: &mut Graph) -> Result<Changed, OnnxError> {
+        let mut changed = false;
+
+        for conv_id in graph.node_ids().collect::<Vec<_>>() {
+            let Some(fold) = match_fold(graph, conv_id) else {
+                continue;
+            };
+            apply(graph, conv_id, &fold);
+            graph.absorb_consumer(conv_id, fold.bn_id);
+            changed = true;
+        }
+
+        Ok(changed)
     }
 }
 
-/// Folds without rebuilding the runtime index; returns whether the graph
-/// changed. The driver calls this and rebuilds once for the whole pipeline.
-pub(super) fn run(model: &mut OnnxModel) -> bool {
-    let mut changed = false;
-    let mut fuse_pairs: Vec<(usize, usize)> = Vec::new();
+/// Everything the rewrite needs, resolved before any mutation.
+struct Fold {
+    bn_id: NodeId,
+    weight: ValueId,
+    /// Existing bias operand, when the Conv already had one.
+    bias: Option<ValueId>,
+    fused_weight: Tensor,
+    fused_bias: Tensor,
+}
 
-    for i in 0..model.nodes.len().saturating_sub(1) {
-        if model.nodes[i].op_type == "Conv"
-            && model.nodes[i + 1].op_type == "BatchNormalization"
-            && !model.nodes[i].outputs.is_empty()
-            && !model.nodes[i + 1].inputs.is_empty()
-            && model.nodes[i + 1].inputs[0] == model.nodes[i].outputs[0]
-        {
-            let conv_out = &model.nodes[i].outputs[0];
-            let consumers: usize = model
-                .nodes
-                .iter()
-                .enumerate()
-                .filter(|&(j, n)| j != i + 1 && n.inputs.contains(conv_out))
-                .count();
-            if consumers == 0 && !model.outputs.contains(conv_out) {
-                fuse_pairs.push((i, i + 1));
-            }
-        }
+fn match_fold(graph: &Graph, conv_id: NodeId) -> Option<Fold> {
+    let conv = graph.node(conv_id)?;
+    if conv.op != Op::Conv {
+        return None;
     }
 
-    for &(conv_idx, bn_idx) in fuse_pairs.iter().rev() {
-        let conv_node = &model.nodes[conv_idx];
-        let bn_node = &model.nodes[bn_idx];
-
-        if conv_node.inputs.len() < 2 || bn_node.inputs.len() < 5 {
-            continue;
-        }
-
-        let w_name = &conv_node.inputs[1];
-        let gamma_name = &bn_node.inputs[1];
-        let beta_name = &bn_node.inputs[2];
-        let mean_name = &bn_node.inputs[3];
-        let var_name = &bn_node.inputs[4];
-
-        let epsilon = bn_node
-            .attributes
-            .get("epsilon")
-            .and_then(|a| {
-                if let crate::loader::OnnxAttribute::Float(v) = a {
-                    Some(*v)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(1e-5);
-
-        let w = match model.initializers.get(w_name) {
-            Some(t) => t.clone(),
-            None => continue,
-        };
-        let gamma = match model.initializers.get(gamma_name) {
-            Some(t) => t.clone(),
-            None => continue,
-        };
-        let beta = match model.initializers.get(beta_name) {
-            Some(t) => t.clone(),
-            None => continue,
-        };
-        let mean = match model.initializers.get(mean_name) {
-            Some(t) => t.clone(),
-            None => continue,
-        };
-        let var = match model.initializers.get(var_name) {
-            Some(t) => t.clone(),
-            None => continue,
-        };
-
-        let is_khwc = model.khwc_weights.contains(w_name);
-        let is_dw_khwc = model.dw_khwc_weights.contains(w_name);
-        let is_group_khwc = model.group_khwc_weights.contains(w_name);
-
-        let out_channels = if is_khwc {
-            w.shape()[3]
-        } else if is_dw_khwc {
-            w.shape()[2]
-        } else if is_group_khwc {
-            w.shape()[0]
-        } else {
-            w.shape()[0]
-        };
-
-        let gamma_d = gamma.data();
-        let beta_d = beta.data();
-        let mean_d = mean.data();
-        let var_d = var.data();
-
-        if gamma_d.len() < out_channels
-            || beta_d.len() < out_channels
-            || mean_d.len() < out_channels
-            || var_d.len() < out_channels
-        {
-            continue;
-        }
-
-        let scale: Vec<f32> = (0..out_channels)
-            .map(|c| gamma_d[c] / (var_d[c] + epsilon).sqrt())
-            .collect();
-
-        let w_shape = w.shape().to_vec();
-        let mut w_data = w.data().to_vec();
-        if is_khwc {
-            for (i, v) in w_data.iter_mut().enumerate() {
-                *v *= scale[i % out_channels];
-            }
-        } else if is_dw_khwc {
-            let dm = w.shape()[3];
-            for (i, v) in w_data.iter_mut().enumerate() {
-                let c = (i / dm) % out_channels;
-                *v *= scale[c];
-            }
-        } else {
-            let elems_per_channel = w_data.len() / out_channels;
-            for c in 0..out_channels {
-                let start = c * elems_per_channel;
-                let end = start + elems_per_channel;
-                for v in &mut w_data[start..end] {
-                    *v *= scale[c];
-                }
-            }
-        }
-        let w_fused = Tensor::from_vec(w_shape, w_data).expect("fused weight shape matches data");
-
-        let conv_has_bias = conv_node.inputs.len() >= 3 && !conv_node.inputs[2].is_empty();
-        let old_bias: Vec<f32> = if conv_has_bias {
-            model
-                .initializers
-                .get(&conv_node.inputs[2])
-                .map(|t| t.data().to_vec())
-                .unwrap_or_else(|| vec![0.0; out_channels])
-        } else {
-            vec![0.0; out_channels]
-        };
-        let b_fused_data: Vec<f32> = (0..out_channels)
-            .map(|c| (old_bias[c] - mean_d[c]) * scale[c] + beta_d[c])
-            .collect();
-        let b_fused = Tensor::from_vec(vec![out_channels], b_fused_data)
-            .expect("fused bias shape matches data");
-
-        model.initializers.insert(w_name.clone(), w_fused);
-
-        let bias_name = if conv_has_bias {
-            conv_node.inputs[2].clone()
-        } else {
-            let name = format!("{}_fused_bias", conv_node.name);
-            model.nodes[conv_idx].inputs.push(name.clone());
-            name
-        };
-        model.initializers.insert(bias_name, b_fused);
-
-        let bn_output = model.nodes[bn_idx].outputs[0].clone();
-        model.nodes[conv_idx].outputs[0] = bn_output;
-
-        model.nodes.remove(bn_idx);
-        changed = true;
+    // The BatchNormalization must be the only thing reading the Conv's output,
+    // or the unnormalized values are still observable somewhere.
+    let use_site = graph.sole_consumer(*conv.outputs.first()?)?;
+    if use_site.port != 0 {
+        return None;
     }
-    changed
+    let bn = graph.node(use_site.node)?;
+    if bn.op != Op::BatchNormalization || bn.inputs.len() < 5 {
+        return None;
+    }
+
+    let weight = (*conv.inputs.get(1)?)?;
+    let w = graph.constant(weight)?;
+
+    // Folding rewrites the weight in place, so a weight shared with another
+    // Conv — the two branches of a Siamese tracker, say — would have the second
+    // Conv's scale applied on top of the first's. The string version rewrote
+    // `initializers[name]` without checking, and silently corrupted such
+    // models.
+    if graph.use_count(weight) != 1 {
+        return None;
+    }
+
+    let gamma = graph.constant((*bn.inputs.get(1)?)?)?.data();
+    let beta = graph.constant((*bn.inputs.get(2)?)?)?.data();
+    let mean = graph.constant((*bn.inputs.get(3)?)?)?.data();
+    let var = graph.constant((*bn.inputs.get(4)?)?)?.data();
+
+    let epsilon = match bn.attributes.get("epsilon") {
+        Some(OnnxAttribute::Float(v)) => *v,
+        _ => 1e-5,
+    };
+
+    let layout = graph.weight_layout(weight);
+    let shape = w.shape().to_vec();
+    let out_channels = layout.out_channels(&shape)?;
+    if gamma.len() < out_channels
+        || beta.len() < out_channels
+        || mean.len() < out_channels
+        || var.len() < out_channels
+    {
+        return None;
+    }
+
+    let scale: Vec<f32> = (0..out_channels)
+        .map(|c| gamma[c] / (var[c] + epsilon).sqrt())
+        .collect();
+
+    let mut w_data = w.data().to_vec();
+    for (i, v) in w_data.iter_mut().enumerate() {
+        *v *= scale[layout.channel_of(i, &shape, out_channels)];
+    }
+    let fused_weight = Tensor::from_vec(shape, w_data).ok()?;
+
+    let bias = conv.inputs.get(2).copied().flatten();
+    let old_bias = match bias {
+        Some(b) => graph.constant(b).map(|t| t.data().to_vec()),
+        None => Some(vec![0.0; out_channels]),
+    }?;
+    if old_bias.len() < out_channels {
+        return None;
+    }
+    // A shared bias has the same aliasing problem as a shared weight.
+    if let Some(b) = bias
+        && graph.use_count(b) != 1
+    {
+        return None;
+    }
+
+    let fused_bias_data: Vec<f32> = (0..out_channels)
+        .map(|c| (old_bias[c] - mean[c]) * scale[c] + beta[c])
+        .collect();
+    let fused_bias = Tensor::from_vec(vec![out_channels], fused_bias_data).ok()?;
+
+    Some(Fold {
+        bn_id: use_site.node,
+        weight,
+        bias,
+        fused_weight,
+        fused_bias,
+    })
+}
+
+fn apply(graph: &mut Graph, conv_id: NodeId, fold: &Fold) {
+    graph.set_constant(fold.weight, fold.fused_weight.clone());
+    match fold.bias {
+        Some(bias) => graph.set_constant(bias, fold.fused_bias.clone()),
+        None => {
+            let name = graph.fresh_value_name(conv_id, "fused_bias");
+            let bias = graph.value_by_name(&name);
+            graph.set_constant(bias, fold.fused_bias.clone());
+            graph.push_input(conv_id, bias);
+        }
+    }
 }

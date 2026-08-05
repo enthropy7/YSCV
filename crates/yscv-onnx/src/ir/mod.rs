@@ -34,6 +34,7 @@
 mod lower;
 mod op;
 mod pass;
+mod weight_layout;
 
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
@@ -42,6 +43,7 @@ use crate::loader::OnnxAttribute;
 
 pub(crate) use op::Op;
 pub(crate) use pass::{Changed, Pass, PassManager};
+pub(crate) use weight_layout::WeightLayout;
 
 /// Index of a node in [`Graph::nodes`]. Stable across mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -128,6 +130,10 @@ pub(crate) struct Graph {
     /// Name lookup for values. Kept in sync so lowering and tests can address
     /// values the way the source model does.
     by_name: FxHashMap<String, ValueId>,
+    /// Physical layout of pre-permuted conv weights. Only weights the loader
+    /// permuted appear; everything else is [`WeightLayout::Oihw`]. Temporary —
+    /// see [`weight_layout`].
+    weight_layouts: FxHashMap<ValueId, WeightLayout>,
 }
 
 impl Graph {
@@ -144,6 +150,7 @@ impl Graph {
             inputs: Vec::new(),
             outputs: Vec::new(),
             by_name: FxHashMap::default(),
+            weight_layouts: FxHashMap::default(),
         }
     }
 
@@ -257,6 +264,38 @@ impl Graph {
         self.values[id.idx()].kind = ValueKind::Constant(tensor);
     }
 
+    /// A value name derived from `node` that nothing else is using.
+    ///
+    /// Passes that synthesize an operand need a name for it. Deriving one from
+    /// the node name alone is unsafe, because ONNX node names are optional:
+    /// every unnamed Conv would propose the same `_fused_bias`, and the second
+    /// would silently alias the first's tensor.
+    pub(crate) fn fresh_value_name(&self, node: NodeId, suffix: &str) -> String {
+        let named = self.node(node).map(|n| n.name.as_str()).unwrap_or_default();
+        let stem = if named.is_empty() {
+            format!("node{}", node.0)
+        } else {
+            named.to_string()
+        };
+        let mut candidate = format!("{stem}_{suffix}");
+        let mut disambiguator = 1u32;
+        while self.by_name.contains_key(&candidate) {
+            candidate = format!("{stem}_{suffix}_{disambiguator}");
+            disambiguator += 1;
+        }
+        candidate
+    }
+
+    /// Physical layout of a conv weight, defaulting to ONNX-native OIHW.
+    pub(crate) fn weight_layout(&self, id: ValueId) -> WeightLayout {
+        self.weight_layouts.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Records that the loader pre-permuted this weight.
+    pub(crate) fn set_weight_layout(&mut self, id: ValueId, layout: WeightLayout) {
+        self.weight_layouts.insert(id, layout);
+    }
+
     pub(crate) fn set_graph_inputs(&mut self, ids: Vec<ValueId>) {
         for &id in &ids {
             if matches!(self.values[id.idx()].kind, ValueKind::Intermediate) {
@@ -360,6 +399,21 @@ impl Graph {
             self.validate().is_ok(),
             "absorb_consumer broke an invariant"
         );
+    }
+
+    /// Appends `value` as a new trailing input of `node`.
+    ///
+    /// Used when a fold synthesizes an operand the node did not have — a Conv
+    /// with no bias absorbing a BatchNormalization's shift, for instance.
+    pub(crate) fn push_input(&mut self, node: NodeId, value: ValueId) {
+        let Some(target) = self.nodes[node.idx()].as_mut() else {
+            debug_assert!(false, "push_input on a tombstoned node");
+            return;
+        };
+        let port = target.inputs.len() as u32;
+        target.inputs.push(Some(value));
+        self.values[value.idx()].uses.push(Use { node, port });
+        debug_assert!(self.validate().is_ok(), "push_input broke an invariant");
     }
 
     /// Redirects every consumer of `old` to `new`, and transfers graph-output
