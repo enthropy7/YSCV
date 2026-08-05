@@ -312,6 +312,35 @@ fn constants_are_visible_as_values() {
     );
 }
 
+/// A reorder that is not a permutation would drop or duplicate execution of a
+/// node, so both shapes are rejected rather than applied.
+#[test]
+fn set_order_rejects_a_non_permutation() {
+    let mut graph = graph_of(&fanout_bytes());
+    let ids: Vec<NodeId> = graph.node_ids().collect();
+
+    assert!(
+        matches!(
+            graph.set_order(vec![ids[0], ids[1]]),
+            Err(IrError::NotAPermutation { .. })
+        ),
+        "a short order would drop a node"
+    );
+    assert!(
+        matches!(
+            graph.set_order(vec![ids[0], ids[1], ids[1]]),
+            Err(IrError::NotAPermutation { .. })
+        ),
+        "a duplicate would run one node twice and drop another"
+    );
+
+    assert_eq!(graph.set_order(vec![ids[2], ids[1], ids[0]]), Ok(()));
+    assert_eq!(
+        graph.node_ids().collect::<Vec<_>>(),
+        vec![ids[2], ids[1], ids[0]]
+    );
+}
+
 /// `validate` is the safety net for every mutation, so it has to actually
 /// detect a corrupt index rather than always returning `Ok`.
 #[test]
@@ -320,7 +349,10 @@ fn validate_detects_a_corrupted_use_list() {
     let mid = graph.lookup_value("mid").expect("mid exists");
     graph.values[mid.idx()].uses.clear();
 
-    assert!(matches!(graph.validate(), Err(IrError::BadUses { .. })));
+    assert!(matches!(
+        graph.validate(),
+        Err(IrError::InconsistentUses { .. })
+    ));
 }
 
 #[test]
@@ -329,7 +361,7 @@ fn validate_detects_a_stale_def() {
     let mid = graph.lookup_value("mid").expect("mid exists");
     graph.values[mid.idx()].def = None;
 
-    assert!(matches!(graph.validate(), Err(IrError::BadDef { .. })));
+    assert!(matches!(graph.validate(), Err(IrError::StaleDef { .. })));
 }
 
 // ── Lowering ─────────────────────────────────────────────────────────────

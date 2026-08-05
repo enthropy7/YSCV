@@ -18,7 +18,7 @@ use crate::{
     loader::OnnxModel,
     optimizer::{
         eliminate_dead_code::EliminateDeadCode, remove_dropout_nodes::RemoveDropout,
-        reorder_nodes_for_fusion::reorder_nodes_for_fusion,
+        reorder_nodes_for_fusion::ReorderForFusion,
     },
 };
 
@@ -48,59 +48,81 @@ pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 /// treat optimization as best-effort, so the failure is reported on stderr.
 /// Once a genuinely fallible pass lands — constant folding executes the graph,
 /// so it can — this should become a real error return.
-fn run_ir_pipeline(model: &mut OnnxModel) {
+fn run_ir_pipeline(model: &mut OnnxModel, passes: Vec<Box<dyn Pass>>) {
     let mut graph = model.to_ir();
-    let manager = PassManager::new(vec![
-        Box::new(RemoveDropout) as Box<dyn Pass>,
-        Box::new(EliminateSqueezeUnsqueezePairs),
-        Box::new(FuseActivation::conv_relu()),
-        Box::new(FuseActivation::bn_relu()),
-        Box::new(EliminateDeadCode),
-    ]);
-    match manager.run(&mut graph) {
+    match PassManager::new(passes).run(&mut graph) {
         Ok(()) => model.apply_ir(&graph),
         Err(e) => eprintln!("[yscv-onnx] IR pass pipeline failed, graph left unoptimized: {e}"),
     }
+}
+
+/// Cleanup and ordering, run before the passes that are still positional.
+///
+/// `ReorderForFusion` has to come last within the phase — sorting after the
+/// removals avoids ordering nodes that then vanish — but the phase as a whole
+/// has to precede the string-based passes below, which match on `nodes[i + 1]`
+/// and need producer/consumer adjacency restored first.
+fn ir_cleanup_passes() -> Vec<Box<dyn Pass>> {
+    vec![
+        Box::new(RemoveDropout) as Box<dyn Pass>,
+        Box::new(EliminateSqueezeUnsqueezePairs),
+        Box::new(EliminateDeadCode),
+        Box::new(ReorderForFusion),
+    ]
+}
+
+/// Annotation fusion, run after the folding passes have had their turn —
+/// `fold_conv_bn` matches a plain `Conv` and would miss one already retagged
+/// as `Conv_Relu`.
+fn ir_fusion_passes() -> Vec<Box<dyn Pass>> {
+    vec![
+        Box::new(FuseActivation::conv_relu()) as Box<dyn Pass>,
+        Box::new(FuseActivation::bn_relu()),
+        Box::new(EliminateDeadCode),
+        Box::new(ReorderForFusion),
+    ]
 }
 
 /// Optimizes an ONNX model graph in-place for inference.
 ///
 /// Applies load-time passes modeled after ORT's Level-1 optimizer.
 ///
-/// Still matching on positional adjacency, and so dependent on
-/// `reorder_nodes_for_fusion` running first:
-/// - ConvTranspose(k==s) rewrite to Conv1x1 + DepthToSpace (GEMM-backed path,
-///   also unlocks backends without a ConvTranspose kernel)
-/// - Conv-BatchNormalization folding (absorb BN γ/β/μ/σ into Conv weights)
-/// - Conv-Mul(const) scale absorption (absorb scalar/per-channel Mul into weights)
-/// - Conv-Add(const) bias absorption (absorb per-channel Add into Conv bias)
-/// - Constant folding (execute nodes with all-initializer inputs at load)
+/// The migration to the def-use IR runs in three phases, because the passes
+/// still on the string representation match positionally and so must sit
+/// between an ordering repair and the fusions.
 ///
-/// Ported to the def-use IR, where matching is order-independent — see
-/// [`run_ir_pipeline`]:
-/// - Dropout removal (inference-only, rewire consumers to the Dropout input)
-/// - Squeeze/Unsqueeze pair elimination (drop inverse pairs left by PyTorch export)
-/// - Conv+Relu / BN+Relu fusion (annotation-only; the kernel picks the
-///   activation up from the operator type)
-/// - Dead code elimination
+/// 1. [`ir_cleanup_passes`] — Dropout removal, Squeeze/Unsqueeze pair
+///    elimination, dead code, then the topological reorder those positional
+///    passes depend on.
+/// 2. Still string-based, still matching `nodes[i + 1]`:
+///    - ConvTranspose(k==s) rewrite to Conv1x1 + DepthToSpace (GEMM-backed
+///      path, also unlocks backends without a ConvTranspose kernel)
+///    - Conv-BatchNormalization folding (absorb BN γ/β/μ/σ into Conv weights)
+///    - Conv-Mul(const) scale absorption (scalar/per-channel Mul into weights)
+///    - Conv-Add(const) bias absorption (per-channel Add into Conv bias)
+///    - Constant folding (execute nodes with all-initializer inputs at load)
+/// 3. [`ir_fusion_passes`] — Conv+Relu / BN+Relu annotation fusion, then a
+///    final dead-code sweep and reorder.
 ///
-/// Order matters among the first group: `fold_conv_bn` runs before
-/// Conv-Mul/Conv-Add because BN usually absorbs into Conv already, so only
-/// stray scale/bias fall through. It also has to run before the activation
-/// fusions, since it matches a plain `Conv` and would miss one already retagged
-/// as `Conv_Relu`.
+/// Order matters within phase 2: `fold_conv_bn` runs before Conv-Mul/Conv-Add
+/// because BN usually absorbs into Conv already, so only stray scale/bias fall
+/// through. The phase as a whole precedes the activation fusions, since
+/// `fold_conv_bn` matches a plain `Conv` and would miss one already retagged as
+/// `Conv_Relu`.
 ///
 /// The runtime index is rebuilt once here, after every pass has run. Individual
 /// passes must not rebuild it themselves — doing so re-runs plan construction
 /// and weight prepacking once per pass.
 pub fn optimize_onnx_graph(model: &mut OnnxModel) {
-    reorder_nodes_for_fusion(model);
+    run_ir_pipeline(model, ir_cleanup_passes());
+
     rewrite_convtranspose_dts(model);
     fold_conv_bn::run(model);
     fold_conv_mul::run(model);
     fold_conv_add_const::run(model);
     fold_constants::run(model);
-    run_ir_pipeline(model);
+
+    run_ir_pipeline(model, ir_fusion_passes());
     model.rebuild_runtime_index();
 
     if std::env::var("YSCV_NCHWC").as_deref() == Ok("on") {
