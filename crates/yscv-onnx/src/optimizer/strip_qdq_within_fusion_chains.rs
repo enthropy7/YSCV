@@ -18,6 +18,17 @@ use crate::loader::{OnnxModel, OnnxNode};
 ///
 /// Returns the number of Q+DQ pairs removed.
 pub fn strip_qdq_within_fusion_chains(model: &mut OnnxModel) -> usize {
+    let removed = run(model);
+    if removed != 0 {
+        model.rebuild_runtime_index();
+    }
+    removed
+}
+
+/// Strips without rebuilding the runtime index; returns the number of pairs
+/// removed. This pass is not in the driver pipeline — the quantization tools
+/// call the public wrapper above — but it follows the same contract.
+pub(super) fn run(model: &mut OnnxModel) -> usize {
     let conv_like = |op: &str| matches!(op, "Conv" | "Conv_Relu" | "MatMul" | "Gemm");
 
     let mut to_remove: Vec<usize> = Vec::new();
@@ -96,7 +107,6 @@ pub fn strip_qdq_within_fusion_chains(model: &mut OnnxModel) -> usize {
     for &idx in to_remove.iter().rev() {
         model.nodes.remove(idx);
     }
-    model.rebuild_runtime_index();
     removed
 }
 

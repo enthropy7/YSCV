@@ -399,6 +399,10 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     /// Get a mutable reference to a tensor by name.
     /// Clone-on-write: if the tensor is only in initializers, clone it into
     /// the slot first.
+    ///
+    /// Only the GPU backend mutates tensors in place through the env; the CPU
+    /// plan dispatch builds outputs and `insert`s them.
+    #[cfg(feature = "gpu")]
     #[inline]
     pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut Tensor> {
         let id = self.resolve_id(name)?;

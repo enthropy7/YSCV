@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `remove_dropout_nodes` deleted nodes by `NodeProto.name`, which ONNX makes
+  optional. A single unnamed `Dropout` put the empty string into the delete set
+  and took every other unnamed node in the graph with it — on a fully unnamed
+  three-node fixture the pass emptied the graph. It also deleted malformed
+  `Dropout` nodes it had skipped rewiring. Now removes only the nodes it
+  actually rewired, by index.
+- `eliminate_squeeze_unsqueeze_pairs` could accept overlapping inverse pairs
+  `(i, i+1)` and `(i+1, i+2)` from a chain such as `Squeeze -> Unsqueeze ->
+  Squeeze`. The reverse-removal loop then deleted already-shifted indices,
+  taking unrelated nodes with them. Overlapping matches are now skipped.
+
+### Changed
+
+- Optimizer passes no longer rebuild the runtime index individually. Nine of
+  the twelve passes called `rebuild_runtime_index()` on exit, so a single
+  `optimize_onnx_graph` re-ran execution-plan construction and weight
+  prepacking about ten times. The driver now rebuilds once after the whole
+  pipeline; the public per-pass entry points still rebuild for standalone
+  callers.
+
+### Removed
+
+- `run_onnx_model_sequential`, the ~600-line per-inference fusion scanner in
+  `runner/execute.rs`. It re-derived Conv+BN+Relu / Conv+SiLU / Conv+Add
+  patterns on every inference and was reachable only when the load-time
+  execution plan was empty, which no graph with nodes produces. Verified
+  unreachable across the workspace suite before removal. Its now-orphaned
+  helpers went with it: `find_relu_after_identity_chain`, `mark_skip_indices`,
+  `exec_reshape_zerocopy`, and the `use_counts`-taking
+  `try_reshape_nhwc_passthrough` (the plan path's `_inner` variant, and the
+  NHWC-passthrough optimization itself, are unaffected).
+
 ## [0.1.11] — 2026-07-26
 
 ### Added

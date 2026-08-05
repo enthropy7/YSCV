@@ -10,6 +10,17 @@ use crate::runner::run_onnx_model;
 ///
 /// Iterates until a fixed point is reached (no more foldable nodes).
 pub fn fold_constants(model: &mut OnnxModel) {
+    if run(model) {
+        model.rebuild_runtime_index();
+    }
+}
+
+/// Folds without rebuilding the caller's runtime index; returns whether the
+/// graph changed. The driver calls this and rebuilds once for the whole
+/// pipeline. The throwaway `mini_model` built per folded node still rebuilds
+/// its own index — it has to, since it is executed to produce the constant.
+pub(super) fn run(model: &mut OnnxModel) -> bool {
+    let mut changed = false;
     loop {
         let foldable = model.nodes.iter().enumerate().find(|(_, node)| {
             !node.inputs.is_empty()
@@ -85,11 +96,12 @@ pub fn fold_constants(model: &mut OnnxModel) {
                     model.initializers.insert(name, tensor);
                 }
                 model.nodes.remove(idx);
+                changed = true;
             }
             Err(_) => {
                 break;
             }
         }
     }
-    model.rebuild_runtime_index();
+    changed
 }

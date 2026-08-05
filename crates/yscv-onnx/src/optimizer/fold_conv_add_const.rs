@@ -10,7 +10,10 @@ use super::fold_conv_mul::broadcast_scale_to_oc;
 /// Residual (non-constant) Adds are handled at runtime by `NodeAction::ConvAdd`
 /// and are NOT touched here — we only fold when the second Add operand is a
 /// graph initializer broadcastable to OC.
-pub fn fold_conv_add_const(model: &mut OnnxModel) {
+/// Folds without rebuilding the runtime index; returns whether the graph
+/// changed. The driver rebuilds once for the whole pipeline.
+pub(super) fn run(model: &mut OnnxModel) -> bool {
+    let mut changed = false;
     let mut fuse_pairs: Vec<(usize, usize, usize)> = Vec::new();
 
     for i in 0..model.nodes.len().saturating_sub(1) {
@@ -119,6 +122,7 @@ pub fn fold_conv_add_const(model: &mut OnnxModel) {
 
         model.nodes[conv_idx].outputs[0] = add_out;
         model.nodes.remove(add_idx);
+        changed = true;
     }
-    model.rebuild_runtime_index();
+    changed
 }

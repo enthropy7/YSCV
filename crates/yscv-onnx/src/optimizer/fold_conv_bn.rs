@@ -11,6 +11,15 @@ use crate::loader::OnnxModel;
 ///   `b_fused[c] = (b[c] - mean_c) * scale_c + beta_c`
 /// The Conv initializers are replaced and the BN node is removed.
 pub fn fold_conv_bn(model: &mut OnnxModel) {
+    if run(model) {
+        model.rebuild_runtime_index();
+    }
+}
+
+/// Folds without rebuilding the runtime index; returns whether the graph
+/// changed. The driver calls this and rebuilds once for the whole pipeline.
+pub(super) fn run(model: &mut OnnxModel) -> bool {
+    let mut changed = false;
     let mut fuse_pairs: Vec<(usize, usize)> = Vec::new();
 
     for i in 0..model.nodes.len().saturating_sub(1) {
@@ -166,6 +175,7 @@ pub fn fold_conv_bn(model: &mut OnnxModel) {
         model.nodes[conv_idx].outputs[0] = bn_output;
 
         model.nodes.remove(bn_idx);
+        changed = true;
     }
-    model.rebuild_runtime_index();
+    changed
 }

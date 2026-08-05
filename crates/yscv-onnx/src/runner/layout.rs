@@ -49,113 +49,16 @@ pub(crate) fn reshape_nhwc_passthrough_disabled() -> bool {
     *CACHED.get_or_init(|| std::env::var_os("YSCV_RESHAPE_NHWC_PASSTHROUGH_OFF").is_some())
 }
 
-/// Fast path: avoid the `ensure_nchw` permute before a
-/// `Reshape` when the input is NHWC physical rank-4 `[N,H,W,C]` and the
-/// reshape merges spatial dims into `[N, C, H*W]` (the model's NCHW
-/// logical view). The NHWC memory order is already `[N, H*W, C]` which
-/// is what a downstream `Transpose(perm=[0,2,1])+MatMul` consumes as
-/// its post-transpose A — `exec_fused_transpose_matmul` honours the
-/// NHWC tag and switches to a non-transposed matmul kernel.
+/// Fast path: avoid the `ensure_nchw` permute before a `Reshape` when the
+/// input is NHWC physical rank-4 `[N,H,W,C]` and the reshape merges spatial
+/// dims into `[N, C, H*W]` (the model's NCHW logical view). The NHWC memory
+/// order is already `[N, H*W, C]`, which is what a downstream
+/// `Transpose(perm=[0,2,1])+MatMul` consumes as its post-transpose A —
+/// `exec_fused_transpose_matmul` honours the NHWC tag and switches to a
+/// non-transposed matmul kernel.
 ///
-/// Returns `Ok(true)` when the fast path handled the reshape (caller
-/// should skip the default ensure_nchw+reshape path); `Ok(false)`
-/// otherwise.
-pub(crate) fn try_reshape_nhwc_passthrough(
-    node: &OnnxNode,
-    env: &mut TensorEnv,
-    use_counts: &FxHashMap<String, usize>,
-) -> Result<bool, OnnxError> {
-    if node.inputs.len() < 2 || node.inputs[0].is_empty() {
-        return Ok(false);
-    }
-    if !env.is_nhwc(&node.inputs[0]) {
-        return Ok(false);
-    }
-    let output_name = match node.outputs.first() {
-        Some(n) if !n.is_empty() => n,
-        _ => return Ok(false),
-    };
-    if !env.reshape_nhwc_passthrough_safe.contains(output_name) {
-        return Ok(false);
-    }
-    let in_shape = match env.get(&node.inputs[0]) {
-        Some(t) if t.rank() == 4 => t.shape().to_vec(),
-        _ => return Ok(false),
-    };
-    let n = in_shape[0];
-    let h = in_shape[1];
-    let w = in_shape[2];
-    let c = in_shape[3];
-    let total: usize = in_shape.iter().product();
-    let target_raw: Vec<i64> = match env.get(&node.inputs[1]) {
-        Some(t) => t.data().iter().map(|&v| v as i64).collect(),
-        None => return Ok(false),
-    };
-    let mut target: Vec<usize> = Vec::with_capacity(target_raw.len());
-    let mut neg_idx: Option<usize> = None;
-    for (i, &d) in target_raw.iter().enumerate() {
-        if d == -1 {
-            neg_idx = Some(i);
-            target.push(1);
-        } else if d == 0 {
-            target.push(if i < in_shape.len() { in_shape[i] } else { 1 });
-        } else {
-            target.push(d as usize);
-        }
-    }
-    if let Some(idx) = neg_idx {
-        let known: usize = target
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| i != idx)
-            .map(|(_, &d)| d)
-            .product();
-        target[idx] = total.checked_div(known.max(1)).unwrap_or(total);
-    }
-    if target.len() != 3 {
-        return Ok(false);
-    }
-    if target[0] != n || target[1] != c || target[2] != h * w {
-        return Ok(false);
-    }
-    // Metadata-only reshape: keep the NHWC physical data, set the
-    // model's NCHW logical shape, and keep the NHWC tag so the
-    // FusedTransposeMatMul consumer can adjust.
-    let sole_consumer = use_counts
-        .get(node.inputs[0].as_str())
-        .copied()
-        .unwrap_or(0)
-        <= 1;
-    let new_shape = vec![n, c, h * w];
-    let out = if sole_consumer {
-        let input = env
-            .remove(&node.inputs[0])
-            .ok_or_else(|| OnnxError::MissingInput {
-                node: node.name.clone(),
-                input: node.inputs[0].clone(),
-            })?;
-        input
-            .into_reshape(new_shape)
-            .map_err(|e| OnnxError::DecodeFailed {
-                message: e.to_string(),
-            })?
-    } else {
-        let input = get_tensor(env, &node.name, &node.inputs[0])?;
-        input
-            .reshape(new_shape)
-            .map_err(|e| OnnxError::DecodeFailed {
-                message: e.to_string(),
-            })?
-    };
-    env.insert(node.outputs[0].clone(), out);
-    env.mark_nhwc(&node.outputs[0]);
-    Ok(true)
-}
-
-/// Same as [`try_reshape_nhwc_passthrough`] but without a borrowed
-/// `use_counts` table — falls back to `reshape` (CoW clone) rather
-/// than the `remove`+`into_reshape` zero-copy path. Used by the
-/// plan-based `execute_node_with_layout_kind_inner` dispatch.
+/// Returns `Ok(true)` when the fast path handled the reshape (caller should
+/// skip the default ensure_nchw+reshape path); `Ok(false)` otherwise.
 fn try_reshape_nhwc_passthrough_inner(
     node: &OnnxNode,
     env: &mut TensorEnv,
