@@ -9,10 +9,10 @@ pub(super) fn exec_gemm(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
         None
     };
 
-    let alpha = get_attr_float(node, "alpha").unwrap_or(1.0);
-    let beta_val = get_attr_float(node, "beta").unwrap_or(1.0);
-    let trans_a = get_attr_int(node, "transA").unwrap_or(0) != 0;
-    let trans_b = get_attr_int(node, "transB").unwrap_or(0) != 0;
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(1.0);
+    let beta_val = get_attr_float(node, Attr::Beta).unwrap_or(1.0);
+    let trans_a = get_attr_int(node, Attr::TransA).unwrap_or(0) != 0;
+    let trans_b = get_attr_int(node, Attr::TransB).unwrap_or(0) != 0;
 
     // Borrow-or-own pattern: avoid cloning when no transpose needed
     let a_owned;
@@ -363,7 +363,7 @@ pub(super) fn exec_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
 }
 
 pub(super) fn exec_einsum(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
-    let equation = get_attr_string(node, "equation").unwrap_or_default();
+    let equation = get_attr_string(node, Attr::Equation).unwrap_or_default();
 
     if equation == "ij,jk->ik" && node.inputs.len() == 2 {
         let a = get_tensor(env, &node.name, &node.inputs[0])?;
@@ -511,8 +511,8 @@ pub(super) fn exec_grouped_query_attention(
     let k = get_tensor(env, &node.name, &node.inputs[1])?;
     let v = get_tensor(env, &node.name, &node.inputs[2])?;
 
-    let num_q_heads = get_attr_int(node, "num_heads").unwrap_or(1) as usize;
-    let num_kv_heads = get_attr_int(node, "kv_num_heads")
+    let num_q_heads = get_attr_int(node, Attr::NumHeads).unwrap_or(1) as usize;
+    let num_kv_heads = get_attr_int(node, Attr::KvNumHeads)
         .map(|v| v as usize)
         .unwrap_or(num_q_heads);
 

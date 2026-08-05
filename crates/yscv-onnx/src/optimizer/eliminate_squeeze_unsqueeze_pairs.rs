@@ -1,3 +1,4 @@
+use crate::attr::Attr;
 use crate::error::OnnxError;
 use crate::ir::{Changed, Graph, Node, Op, Pass};
 use crate::loader::OnnxAttribute;
@@ -93,7 +94,7 @@ fn axes_of(graph: &Graph, node: &Node) -> Option<Vec<i64>> {
         axes.sort_unstable();
         return Some(axes);
     }
-    if let Some(OnnxAttribute::Ints(axes)) = node.attributes.get("axes") {
+    if let Some(OnnxAttribute::Ints(axes)) = node.attributes.get(&Attr::Axes) {
         let mut axes = axes.clone();
         axes.sort_unstable();
         return Some(axes);

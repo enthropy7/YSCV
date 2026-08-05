@@ -2,19 +2,19 @@ use super::*;
 use rayon::prelude::*;
 
 pub(super) fn exec_constant(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
-    if let Some(OnnxAttribute::Tensor(t)) = node.attributes.get("value") {
+    if let Some(OnnxAttribute::Tensor(t)) = node.attributes.get(&Attr::Value) {
         env.insert(node.outputs[0].clone(), t.clone());
-    } else if let Some(OnnxAttribute::Float(v)) = node.attributes.get("value_float") {
+    } else if let Some(OnnxAttribute::Float(v)) = node.attributes.get(&Attr::ValueFloat) {
         env.insert(node.outputs[0].clone(), Tensor::scalar(*v));
-    } else if let Some(OnnxAttribute::Int(v)) = node.attributes.get("value_int") {
+    } else if let Some(OnnxAttribute::Int(v)) = node.attributes.get(&Attr::ValueInt) {
         env.insert(node.outputs[0].clone(), Tensor::scalar(*v as f32));
-    } else if let Some(OnnxAttribute::Floats(v)) = node.attributes.get("value_floats") {
+    } else if let Some(OnnxAttribute::Floats(v)) = node.attributes.get(&Attr::ValueFloats) {
         let t =
             Tensor::from_vec(vec![v.len()], v.clone()).map_err(|e| OnnxError::DecodeFailed {
                 message: e.to_string(),
             })?;
         env.insert(node.outputs[0].clone(), t);
-    } else if let Some(OnnxAttribute::Ints(v)) = node.attributes.get("value_ints") {
+    } else if let Some(OnnxAttribute::Ints(v)) = node.attributes.get(&Attr::ValueInts) {
         let data: Vec<f32> = v.iter().map(|&i| i as f32).collect();
         let t = Tensor::from_vec(vec![data.len()], data).map_err(|e| OnnxError::DecodeFailed {
             message: e.to_string(),
@@ -121,7 +121,7 @@ pub(super) fn exec_dequantize_linear(
             let zp = zero_point.map_or(0.0f32, |t| t.data()[0]);
             input.data.iter().map(|&v| ((v as f32) - zp) * s).collect()
         } else {
-            let axis = match node.attributes.get("axis") {
+            let axis = match node.attributes.get(&Attr::Axis) {
                 Some(crate::loader::OnnxAttribute::Int(a)) => *a,
                 _ => 1,
             };
@@ -183,7 +183,7 @@ pub(super) fn exec_dequantize_linear(
     } else {
         // Per-channel along `axis` attribute (default 1 per ONNX spec, but
         // most exporters write the attribute explicitly).
-        let axis = match node.attributes.get("axis") {
+        let axis = match node.attributes.get(&Attr::Axis) {
             Some(crate::loader::OnnxAttribute::Int(a)) => *a,
             _ => 1,
         };
@@ -460,7 +460,7 @@ fn increment_multi_coords(coords: &mut [usize], shape: &[usize]) {
 pub(super) fn exec_compress(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let condition = get_tensor(env, &node.name, &node.inputs[1])?;
-    let axis = get_attr_int(node, "axis");
+    let axis = get_attr_int(node, Attr::Axis);
     let cond = condition.data();
 
     if let Some(ax) = axis {
@@ -548,9 +548,10 @@ pub(super) fn exec_cumsum(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
 pub(super) fn exec_grid_sample(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let grid = get_tensor(env, &node.name, &node.inputs[1])?;
-    let mode = get_attr_string(node, "mode").unwrap_or_else(|| "bilinear".to_string());
-    let padding_mode = get_attr_string(node, "padding_mode").unwrap_or_else(|| "zeros".to_string());
-    let align_corners = get_attr_int(node, "align_corners").unwrap_or(0) != 0;
+    let mode = get_attr_string(node, Attr::Mode).unwrap_or_else(|| "bilinear".to_string());
+    let padding_mode =
+        get_attr_string(node, Attr::PaddingMode).unwrap_or_else(|| "zeros".to_string());
+    let align_corners = get_attr_int(node, Attr::AlignCorners).unwrap_or(0) != 0;
     let shape = input.shape();
     let grid_shape = grid.shape();
     if shape.len() != 4 || grid_shape.len() != 4 {
@@ -658,11 +659,11 @@ pub(super) fn exec_roi_align(node: &OnnxNode, env: &mut TensorEnv) -> Result<(),
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let rois = get_tensor(env, &node.name, &node.inputs[1])?;
     let batch_indices = get_tensor(env, &node.name, &node.inputs[2])?;
-    let output_height = get_attr_int(node, "output_height").unwrap_or(1) as usize;
-    let output_width = get_attr_int(node, "output_width").unwrap_or(1) as usize;
-    let sampling_ratio = get_attr_int(node, "sampling_ratio").unwrap_or(0) as usize;
-    let spatial_scale = get_attr_float(node, "spatial_scale").unwrap_or(1.0);
-    let mode = get_attr_string(node, "mode").unwrap_or_else(|| "avg".to_string());
+    let output_height = get_attr_int(node, Attr::OutputHeight).unwrap_or(1) as usize;
+    let output_width = get_attr_int(node, Attr::OutputWidth).unwrap_or(1) as usize;
+    let sampling_ratio = get_attr_int(node, Attr::SamplingRatio).unwrap_or(0) as usize;
+    let spatial_scale = get_attr_float(node, Attr::SpatialScale).unwrap_or(1.0);
+    let mode = get_attr_string(node, Attr::Mode).unwrap_or_else(|| "avg".to_string());
     let shape = input.shape();
     if shape.len() != 4 {
         return Err(OnnxError::ShapeMismatch {

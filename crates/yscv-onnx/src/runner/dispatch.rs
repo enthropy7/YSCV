@@ -16,32 +16,32 @@ pub(crate) fn get_tensor<'a>(
 }
 
 #[inline]
-pub(crate) fn get_attr_ints(node: &OnnxNode, name: &str) -> Option<Vec<i64>> {
-    match node.attributes.get(name) {
+pub(crate) fn get_attr_ints(node: &OnnxNode, name: Attr) -> Option<Vec<i64>> {
+    match node.attributes.get(&name) {
         Some(OnnxAttribute::Ints(v)) => Some(v.clone()),
         _ => None,
     }
 }
 
 #[inline]
-pub(crate) fn get_attr_int(node: &OnnxNode, name: &str) -> Option<i64> {
-    match node.attributes.get(name) {
+pub(crate) fn get_attr_int(node: &OnnxNode, name: Attr) -> Option<i64> {
+    match node.attributes.get(&name) {
         Some(OnnxAttribute::Int(v)) => Some(*v),
         _ => None,
     }
 }
 
 #[inline]
-pub(crate) fn get_attr_float(node: &OnnxNode, name: &str) -> Option<f32> {
-    match node.attributes.get(name) {
+pub(crate) fn get_attr_float(node: &OnnxNode, name: Attr) -> Option<f32> {
+    match node.attributes.get(&name) {
         Some(OnnxAttribute::Float(v)) => Some(*v),
         _ => None,
     }
 }
 
 #[inline]
-pub(crate) fn get_attr_string(node: &OnnxNode, name: &str) -> Option<String> {
-    match node.attributes.get(name) {
+pub(crate) fn get_attr_string(node: &OnnxNode, name: Attr) -> Option<String> {
+    match node.attributes.get(&name) {
         Some(OnnxAttribute::String(v)) => Some(v.clone()),
         _ => None,
     }

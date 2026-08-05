@@ -1,6 +1,7 @@
 //! build_runtime_index: the load-time graph optimizer that classifies
 //! each node (NodeKind), plans fusions (NodeAction), and prepacks weights.
 
+use crate::attr::Attr;
 use rustc_hash::FxBuildHasher;
 
 use super::*;
@@ -174,7 +175,7 @@ pub(super) fn build_runtime_index(
             }
             let strides = node
                 .attributes
-                .get("strides")
+                .get(&Attr::Strides)
                 .and_then(|a| {
                     if let OnnxAttribute::Ints(v) = a {
                         Some(v.clone())
@@ -185,7 +186,7 @@ pub(super) fn build_runtime_index(
                 .unwrap_or_else(|| vec![1, 1]);
             let pads = node
                 .attributes
-                .get("pads")
+                .get(&Attr::Pads)
                 .and_then(|a| {
                     if let OnnxAttribute::Ints(v) = a {
                         Some(v.clone())
@@ -196,7 +197,7 @@ pub(super) fn build_runtime_index(
                 .unwrap_or_else(|| vec![0, 0, 0, 0]);
             let group = node
                 .attributes
-                .get("group")
+                .get(&Attr::Group)
                 .and_then(|a| {
                     if let OnnxAttribute::Int(v) = a {
                         Some(*v as usize)
@@ -279,7 +280,7 @@ pub(super) fn build_runtime_index(
     /// 3-D tensors — the pattern ORT folds into its
     /// `MatmulTransposeFusion` contrib op.
     fn transpose_perm_is_swap_last_two(node: &OnnxNode) -> bool {
-        let perm = match node.attributes.get("perm") {
+        let perm = match node.attributes.get(&Attr::Perm) {
             Some(OnnxAttribute::Ints(p)) => p,
             _ => return false,
         };
@@ -333,11 +334,11 @@ pub(super) fn build_runtime_index(
         if shape.len() != 4 {
             return None;
         }
-        let group = match node.attributes.get("group") {
+        let group = match node.attributes.get(&Attr::Group) {
             Some(OnnxAttribute::Int(v)) => *v,
             _ => 1,
         };
-        let dilations = match node.attributes.get("dilations") {
+        let dilations = match node.attributes.get(&Attr::Dilations) {
             Some(OnnxAttribute::Ints(v)) => v.clone(),
             _ => vec![1, 1],
         };
@@ -363,11 +364,11 @@ pub(super) fn build_runtime_index(
     /// the QLinearConv carries different params we leave it to the per-op
     /// path.
     fn dw_geom_supported(node: &OnnxNode, kh: usize) -> bool {
-        let pads = match node.attributes.get("pads") {
+        let pads = match node.attributes.get(&Attr::Pads) {
             Some(OnnxAttribute::Ints(v)) => v.clone(),
             _ => vec![0, 0, 0, 0],
         };
-        let strides = match node.attributes.get("strides") {
+        let strides = match node.attributes.get(&Attr::Strides) {
             Some(OnnxAttribute::Ints(v)) => v.clone(),
             _ => vec![1, 1],
         };
@@ -1273,15 +1274,15 @@ pub(super) fn build_runtime_index(
         }
     }
 
-    fn attr_int(node: &OnnxNode, name: &str, default: i64) -> i64 {
-        match node.attributes.get(name) {
+    fn attr_int(node: &OnnxNode, name: Attr, default: i64) -> i64 {
+        match node.attributes.get(&name) {
             Some(OnnxAttribute::Int(v)) => *v,
             _ => default,
         }
     }
 
-    fn attr_ints(node: &OnnxNode, name: &str, default: &[i64]) -> Vec<i64> {
-        match node.attributes.get(name) {
+    fn attr_ints(node: &OnnxNode, name: Attr, default: &[i64]) -> Vec<i64> {
+        match node.attributes.get(&name) {
             Some(OnnxAttribute::Ints(v)) => v.clone(),
             _ => default.to_vec(),
         }
@@ -1376,8 +1377,8 @@ pub(super) fn build_runtime_index(
                 if prepacked_i8_weights.contains_key(w_name) {
                     continue;
                 }
-                let group = attr_int(node, "group", 1);
-                let dilations = attr_ints(node, "dilations", &[1, 1]);
+                let group = attr_int(node, Attr::Group, 1);
+                let dilations = attr_ints(node, Attr::Dilations, &[1, 1]);
                 let Some(weight) = initializers.get(w_name) else {
                     continue;
                 };

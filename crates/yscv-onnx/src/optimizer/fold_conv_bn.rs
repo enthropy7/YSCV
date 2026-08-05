@@ -1,3 +1,4 @@
+use crate::attr::Attr;
 use yscv_tensor::Tensor;
 
 use crate::error::OnnxError;
@@ -85,7 +86,7 @@ fn match_fold(graph: &Graph, conv_id: NodeId) -> Option<Fold> {
     let mean = graph.constant((*bn.inputs.get(3)?)?)?.data();
     let var = graph.constant((*bn.inputs.get(4)?)?)?.data();
 
-    let epsilon = match bn.attributes.get("epsilon") {
+    let epsilon = match bn.attributes.get(&Attr::Epsilon) {
         Some(OnnxAttribute::Float(v)) => *v,
         _ => 1e-5,
     };

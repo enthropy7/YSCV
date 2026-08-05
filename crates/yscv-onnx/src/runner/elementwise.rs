@@ -155,7 +155,7 @@ pub(super) fn exec_clip(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
 
 pub(super) fn exec_leaky_relu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let alpha = get_attr_float(node, "alpha").unwrap_or(0.01);
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(0.01);
     let data: Vec<f32> = input
         .data()
         .iter()
@@ -171,7 +171,7 @@ pub(super) fn exec_leaky_relu(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
 
 pub(super) fn exec_elu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let alpha = get_attr_float(node, "alpha").unwrap_or(1.0);
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(1.0);
     let data: Vec<f32> = input
         .data()
         .iter()
@@ -187,8 +187,8 @@ pub(super) fn exec_elu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxE
 
 pub(super) fn exec_selu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let alpha = get_attr_float(node, "alpha").unwrap_or(1.673_263_2);
-    let gamma = get_attr_float(node, "gamma").unwrap_or(1.050_701);
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(1.673_263_2);
+    let gamma = get_attr_float(node, Attr::Gamma).unwrap_or(1.050_701);
     let data: Vec<f32> = input
         .data()
         .iter()
@@ -210,7 +210,7 @@ pub(super) fn exec_selu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
 
 pub(super) fn exec_celu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let alpha = get_attr_float(node, "alpha").unwrap_or(1.0);
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(1.0);
     let data: Vec<f32> = input
         .data()
         .iter()
@@ -226,7 +226,7 @@ pub(super) fn exec_celu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
 
 pub(super) fn exec_thresholded_relu(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let alpha = get_attr_float(node, "alpha").unwrap_or(1.0);
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(1.0);
     let data: Vec<f32> = input
         .data()
         .iter()
@@ -242,8 +242,8 @@ pub(super) fn exec_thresholded_relu(node: &OnnxNode, env: &mut TensorEnv) -> Res
 
 pub(super) fn exec_hard_sigmoid(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let alpha = get_attr_float(node, "alpha").unwrap_or(0.2);
-    let beta = get_attr_float(node, "beta").unwrap_or(0.5);
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(0.2);
+    let beta = get_attr_float(node, Attr::Beta).unwrap_or(0.5);
     let data: Vec<f32> = input
         .data()
         .iter()
@@ -327,7 +327,7 @@ pub(super) fn exec_unary(
 pub(super) fn exec_mod(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let a = get_tensor(env, &node.name, &node.inputs[0])?;
     let b = get_tensor(env, &node.name, &node.inputs[1])?;
-    let fmod = get_attr_int(node, "fmod").unwrap_or(0);
+    let fmod = get_attr_int(node, Attr::Fmod).unwrap_or(0);
     let a_d = a.data();
     let b_d = b.data();
     let data: Vec<f32> = a_d
@@ -351,7 +351,7 @@ pub(super) fn exec_mod(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxE
 pub(super) fn exec_bitshift(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let a = get_tensor(env, &node.name, &node.inputs[0])?;
     let b = get_tensor(env, &node.name, &node.inputs[1])?;
-    let direction = get_attr_string(node, "direction").unwrap_or_default();
+    let direction = get_attr_string(node, Attr::Direction).unwrap_or_default();
     let data: Vec<f32> = a
         .data()
         .iter()

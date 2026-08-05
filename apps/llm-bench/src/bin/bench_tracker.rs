@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use yscv_onnx::{
-    OnnxAttribute, OnnxModel, OnnxNode, OnnxRunner, dump_runner_profile, load_onnx_model_from_file,
-    optimize_onnx_graph, quant_runtime_stats, reset_quant_runtime_stats,
+    Attr, OnnxAttribute, OnnxModel, OnnxNode, OnnxRunner, dump_runner_profile,
+    load_onnx_model_from_file, optimize_onnx_graph, quant_runtime_stats, reset_quant_runtime_stats,
 };
 use yscv_tensor::Tensor;
 
@@ -90,8 +90,8 @@ fn tensor_len(shape: &[usize]) -> usize {
     shape.iter().product()
 }
 
-fn attr_int(node: &OnnxNode, name: &str, default: i64) -> i64 {
-    match node.attributes.get(name) {
+fn attr_int(node: &OnnxNode, name: Attr, default: i64) -> i64 {
+    match node.attributes.get(&name) {
         Some(OnnxAttribute::Int(v)) => *v,
         _ => default,
     }
@@ -109,7 +109,7 @@ fn qlinear_conv_kind(model: &OnnxModel, node: &OnnxNode) -> Option<&'static str>
     if shape.len() != 4 {
         return None;
     }
-    let group = attr_int(node, "group", 1) as usize;
+    let group = attr_int(node, Attr::Group, 1) as usize;
     if group == 1 && shape[2] == 1 && shape[3] == 1 {
         return Some("pw");
     }

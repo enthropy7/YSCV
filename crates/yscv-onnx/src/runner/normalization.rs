@@ -8,7 +8,7 @@ pub(super) fn exec_batch_norm(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
     let beta = get_tensor(env, &node.name, &node.inputs[2])?;
     let mean = get_tensor(env, &node.name, &node.inputs[3])?;
     let var = get_tensor(env, &node.name, &node.inputs[4])?;
-    let epsilon = get_attr_float(node, "epsilon").unwrap_or(1e-5);
+    let epsilon = get_attr_float(node, Attr::Epsilon).unwrap_or(1e-5);
 
     // NCHW fast path — channel dim is contiguous per spatial plane
     if !input_is_nhwc && input.rank() == 4 {
@@ -65,7 +65,7 @@ pub(super) fn exec_batch_norm(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
 pub(super) fn exec_softmax(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let ndim = input.rank();
-    let raw_axis = get_attr_int(node, "axis").unwrap_or(-1);
+    let raw_axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
     let axis = if raw_axis < 0 {
         (ndim as i64 + raw_axis) as usize
     } else {
@@ -111,7 +111,7 @@ pub(super) fn exec_instance_norm(node: &OnnxNode, env: &mut TensorEnv) -> Result
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let scale = get_tensor(env, &node.name, &node.inputs[1])?;
     let bias_t = get_tensor(env, &node.name, &node.inputs[2])?;
-    let eps = get_attr_float(node, "epsilon").unwrap_or(1e-5);
+    let eps = get_attr_float(node, Attr::Epsilon).unwrap_or(1e-5);
 
     let shape = input.shape();
     if shape.len() != 4 {
@@ -155,8 +155,8 @@ pub(super) fn exec_instance_norm(node: &OnnxNode, env: &mut TensorEnv) -> Result
 
 pub(super) fn exec_lp_norm(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let p = get_attr_int(node, "p").unwrap_or(2) as i32;
-    let axis = get_attr_int(node, "axis").unwrap_or(-1);
+    let p = get_attr_int(node, Attr::P).unwrap_or(2) as i32;
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
 
     let shape = input.shape();
     let rank = shape.len() as i64;
@@ -208,8 +208,8 @@ pub(super) fn exec_layer_norm(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
     } else {
         None
     };
-    let eps = get_attr_float(node, "epsilon").unwrap_or(1e-5);
-    let axis = get_attr_int(node, "axis").unwrap_or(-1);
+    let eps = get_attr_float(node, Attr::Epsilon).unwrap_or(1e-5);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
 
     let shape = input.shape();
     let rank = shape.len() as i64;
@@ -253,7 +253,7 @@ pub(super) fn exec_layer_norm(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
 
 pub(super) fn exec_hardmax(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axis = get_attr_int(node, "axis").unwrap_or(-1);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
     let shape = input.shape();
     let rank = shape.len() as i64;
     let axis_idx = if axis < 0 {
@@ -294,10 +294,10 @@ pub(super) fn exec_hardmax(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
 #[allow(clippy::needless_range_loop)]
 pub(super) fn exec_lrn(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let alpha = get_attr_float(node, "alpha").unwrap_or(0.0001);
-    let beta = get_attr_float(node, "beta").unwrap_or(0.75);
-    let bias = get_attr_float(node, "bias").unwrap_or(1.0);
-    let size = get_attr_int(node, "size").unwrap_or(1) as usize;
+    let alpha = get_attr_float(node, Attr::Alpha).unwrap_or(0.0001);
+    let beta = get_attr_float(node, Attr::Beta).unwrap_or(0.75);
+    let bias = get_attr_float(node, Attr::Bias).unwrap_or(1.0);
+    let size = get_attr_int(node, Attr::Size).unwrap_or(1) as usize;
     let shape = input.shape();
     if shape.len() != 4 {
         return Err(OnnxError::ShapeMismatch {

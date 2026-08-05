@@ -47,14 +47,14 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     // requantize. Loader's KHWC permute fires only on `Conv` op_type,
     // so QLinearConv weights stay OIHW here.
     if x_shape.len() == 4 && w.shape().len() == 4 {
-        let group = crate::runner::get_attr_int(node, "group").unwrap_or(1);
+        let group = crate::runner::get_attr_int(node, Attr::Group).unwrap_or(1);
         let dilations =
-            crate::runner::get_attr_ints(node, "dilations").unwrap_or_else(|| vec![1, 1]);
+            crate::runner::get_attr_ints(node, Attr::Dilations).unwrap_or_else(|| vec![1, 1]);
         if x_zp == 0.0 && w_zp == 0.0 && group == 1 && dilations == [1, 1] {
             let pads =
-                crate::runner::get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+                crate::runner::get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
             let strides =
-                crate::runner::get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
+                crate::runner::get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
             let xs = x_shape;
             let ws = w.shape();
             let (n_n, c_in, ih, iw) = (xs[0], xs[1], xs[2], xs[3]);
@@ -184,9 +184,9 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
         }
         if group >= 1 && dilations == [1, 1] {
             let pads =
-                crate::runner::get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+                crate::runner::get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
             let strides =
-                crate::runner::get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
+                crate::runner::get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
             let xs = x_shape;
             let ws = w.shape();
             let (c_out, c_per_g, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
@@ -560,8 +560,8 @@ pub(crate) fn exec_quantized_pw_dw(
         });
     }
 
-    let strides = crate::runner::get_attr_ints(dw, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = crate::runner::get_attr_ints(dw, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let strides = crate::runner::get_attr_ints(dw, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = crate::runner::get_attr_ints(dw, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
     if strides.len() != 2 || pads.len() != 4 {
         return Err(OnnxError::DecodeFailed {
             message: format!("QuantizedPwDw {}: unexpected DW strides/pads", dw.name),
@@ -741,8 +741,8 @@ pub(crate) fn exec_quantized_pw_dw_fork(
         });
     }
 
-    let strides = crate::runner::get_attr_ints(dw, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = crate::runner::get_attr_ints(dw, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let strides = crate::runner::get_attr_ints(dw, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = crate::runner::get_attr_ints(dw, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
     if strides.len() != 2 || pads.len() != 4 {
         return Err(OnnxError::DecodeFailed {
             message: format!("QuantizedPwDwFork {}: unexpected DW strides/pads", dw.name),
@@ -920,8 +920,8 @@ pub(crate) fn exec_quantized_dw_residual(
         });
     }
 
-    let strides = crate::runner::get_attr_ints(dw, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = crate::runner::get_attr_ints(dw, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let strides = crate::runner::get_attr_ints(dw, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = crate::runner::get_attr_ints(dw, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
     if strides.len() != 2 || pads.len() != 4 {
         return Err(OnnxError::DecodeFailed {
             message: format!(
@@ -1373,8 +1373,8 @@ pub(crate) fn exec_quantized_dw_pw(
         });
     }
 
-    let strides = crate::runner::get_attr_ints(dw, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = crate::runner::get_attr_ints(dw, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let strides = crate::runner::get_attr_ints(dw, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = crate::runner::get_attr_ints(dw, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
     if strides.len() != 2 || pads.len() != 4 {
         return Err(OnnxError::DecodeFailed {
             message: format!("QuantizedDwPw {}: unexpected DW strides/pads", dw.name),
@@ -1539,14 +1539,14 @@ pub(crate) fn exec_conv_integer(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     // requantize (ConvInteger output is raw int32). Same gate / layout
     // checks as `exec_qlinear_conv`.
     if x_zp == 0.0 && w_zp == 0.0 && x.shape().len() == 4 && w.shape().len() == 4 {
-        let group = crate::runner::get_attr_int(node, "group").unwrap_or(1);
+        let group = crate::runner::get_attr_int(node, Attr::Group).unwrap_or(1);
         let dilations =
-            crate::runner::get_attr_ints(node, "dilations").unwrap_or_else(|| vec![1, 1]);
+            crate::runner::get_attr_ints(node, Attr::Dilations).unwrap_or_else(|| vec![1, 1]);
         if group == 1 && dilations == [1, 1] {
             let pads =
-                crate::runner::get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+                crate::runner::get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
             let strides =
-                crate::runner::get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
+                crate::runner::get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
             let xs = x.shape();
             let ws = w.shape();
             let (n_n, c_in, ih, iw) = (xs[0], xs[1], xs[2], xs[3]);

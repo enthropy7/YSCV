@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn exec_gather(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let indices = get_tensor(env, &node.name, &node.inputs[1])?;
-    let axis_raw = get_attr_int(node, "axis").unwrap_or(0);
+    let axis_raw = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let rank = input.rank() as i64;
     let axis = if axis_raw < 0 {
         (rank + axis_raw) as usize
@@ -97,7 +97,7 @@ pub(super) fn exec_gather(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
 pub(super) fn exec_gather_elements(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let indices = get_tensor(env, &node.name, &node.inputs[1])?;
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let shape = input.shape();
     let rank = shape.len() as i64;
     let ax = if axis < 0 {
@@ -146,7 +146,7 @@ pub(super) fn exec_scatter_elements(node: &OnnxNode, env: &mut TensorEnv) -> Res
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let indices = get_tensor(env, &node.name, &node.inputs[1])?;
     let updates = get_tensor(env, &node.name, &node.inputs[2])?;
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let shape = input.shape();
     let rank = shape.len() as i64;
     let ax = if axis < 0 {
@@ -227,7 +227,7 @@ pub(super) fn exec_scatter_nd(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
 pub(super) fn exec_gather_nd(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let data = get_tensor(env, &node.name, &node.inputs[0])?;
     let indices = get_tensor(env, &node.name, &node.inputs[1])?;
-    let batch_dims = get_attr_int(node, "batch_dims").unwrap_or(0) as usize;
+    let batch_dims = get_attr_int(node, Attr::BatchDims).unwrap_or(0) as usize;
     let shape = data.shape();
     let idx_shape = indices.shape();
     let idx_data = indices.data();

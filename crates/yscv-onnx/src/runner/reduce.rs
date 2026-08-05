@@ -2,8 +2,8 @@ use super::*;
 
 pub(super) fn exec_reduce_mean(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axes = get_attr_ints(node, "axes").unwrap_or_default();
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
+    let axes = get_attr_ints(node, Attr::Axes).unwrap_or_default();
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
     let out = reduce_op(input, &axes, keepdims, |vals| {
         vals.iter().sum::<f32>() / vals.len() as f32
     })?;
@@ -13,8 +13,8 @@ pub(super) fn exec_reduce_mean(node: &OnnxNode, env: &mut TensorEnv) -> Result<(
 
 pub(super) fn exec_reduce_sum(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axes = get_attr_ints(node, "axes").unwrap_or_default();
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
+    let axes = get_attr_ints(node, Attr::Axes).unwrap_or_default();
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
     let out = reduce_op(input, &axes, keepdims, |vals| vals.iter().sum::<f32>())?;
     env.insert(node.outputs[0].clone(), out);
     Ok(())
@@ -22,8 +22,8 @@ pub(super) fn exec_reduce_sum(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
 
 pub(super) fn exec_reduce_max(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axes = get_attr_ints(node, "axes").unwrap_or_default();
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
+    let axes = get_attr_ints(node, Attr::Axes).unwrap_or_default();
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
     let out = reduce_op(input, &axes, keepdims, |vals| {
         vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
     })?;
@@ -33,8 +33,8 @@ pub(super) fn exec_reduce_max(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
 
 pub(super) fn exec_reduce_min(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axes = get_attr_ints(node, "axes").unwrap_or_default();
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
+    let axes = get_attr_ints(node, Attr::Axes).unwrap_or_default();
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
     let out = reduce_op(input, &axes, keepdims, |vals: &[f32]| {
         vals.iter().copied().fold(f32::INFINITY, f32::min)
     })?;
@@ -44,8 +44,8 @@ pub(super) fn exec_reduce_min(node: &OnnxNode, env: &mut TensorEnv) -> Result<()
 
 pub(super) fn exec_reduce_prod(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axes = get_attr_ints(node, "axes").unwrap_or_default();
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
+    let axes = get_attr_ints(node, Attr::Axes).unwrap_or_default();
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
     let out = reduce_op(input, &axes, keepdims, |vals: &[f32]| vals.iter().product())?;
     env.insert(node.outputs[0].clone(), out);
     Ok(())
@@ -53,8 +53,8 @@ pub(super) fn exec_reduce_prod(node: &OnnxNode, env: &mut TensorEnv) -> Result<(
 
 pub(super) fn exec_reduce_l2(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
-    let axes = get_attr_ints(node, "axes").unwrap_or_default();
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
+    let axes = get_attr_ints(node, Attr::Axes).unwrap_or_default();
     let out = reduce_op(input, &axes, keepdims, |vals| {
         vals.iter().map(|v| v * v).sum::<f32>().sqrt()
     })?;
@@ -64,8 +64,8 @@ pub(super) fn exec_reduce_l2(node: &OnnxNode, env: &mut TensorEnv) -> Result<(),
 
 pub(super) fn exec_reduce_l1(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
-    let axes = get_attr_ints(node, "axes").unwrap_or_default();
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
+    let axes = get_attr_ints(node, Attr::Axes).unwrap_or_default();
     let out = reduce_op(input, &axes, keepdims, |vals| {
         vals.iter().map(|v| v.abs()).sum::<f32>()
     })?;
@@ -213,8 +213,8 @@ pub(super) fn compute_strides(shape: &[usize]) -> Vec<usize> {
 
 pub(super) fn exec_argmax(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
     let shape = input.shape();
     let rank = shape.len() as i64;
     let ax = if axis < 0 {
@@ -259,8 +259,8 @@ pub(super) fn exec_argmax(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), On
 
 pub(super) fn exec_argmin(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
-    let keepdims = get_attr_int(node, "keepdims").unwrap_or(1) != 0;
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
+    let keepdims = get_attr_int(node, Attr::KeepDims).unwrap_or(1) != 0;
     let shape = input.shape();
     let rank = shape.len() as i64;
     let ax = if axis < 0 {
@@ -307,8 +307,8 @@ pub(super) fn exec_topk(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
     let k_tensor = get_tensor(env, &node.name, &node.inputs[1])?;
     let k = k_tensor.data()[0] as usize;
-    let axis = get_attr_int(node, "axis").unwrap_or(-1);
-    let largest = get_attr_int(node, "largest").unwrap_or(1) != 0;
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(-1);
+    let largest = get_attr_int(node, Attr::Largest).unwrap_or(1) != 0;
     let shape = input.shape();
     let rank = shape.len() as i64;
     let ax = if axis < 0 {

@@ -1,3 +1,4 @@
+use crate::attr::Attr;
 use rustc_hash::FxHashMap;
 
 use thiserror::Error;
@@ -214,7 +215,7 @@ fn unary_same_shape(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShap
 }
 
 fn infer_constant(node: &OnnxNode) -> Result<Vec<TensorShape>, ShapeError> {
-    match node.attributes.get("value") {
+    match node.attributes.get(&Attr::Value) {
         Some(OnnxAttribute::Tensor(t)) => Ok(vec![TensorShape::known(t.shape().to_vec())]),
         _ => Err(ShapeError::ConstantWithoutTensor),
     }
@@ -274,9 +275,9 @@ fn infer_conv(
         (w_shape[2], w_shape[3])
     };
 
-    let strides = ints_attr(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let dilations = ints_attr(node, "dilations").unwrap_or_else(|| vec![1, 1]);
-    let pads = ints_attr(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let strides = ints_attr(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let dilations = ints_attr(node, Attr::Dilations).unwrap_or_else(|| vec![1, 1]);
+    let pads = ints_attr(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
     let sh = strides.first().copied().unwrap_or(1).max(1) as usize;
     let sw = strides.get(1).copied().unwrap_or(1).max(1) as usize;
     let dh = dilations.first().copied().unwrap_or(1).max(1) as usize;
@@ -380,7 +381,7 @@ fn infer_concat(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, 
             name: first_name.clone(),
         })?;
     let rank = first.rank();
-    let axis = normalize_axis(int_attr(node, "axis").unwrap_or(0), rank)?;
+    let axis = normalize_axis(int_attr(node, Attr::Axis).unwrap_or(0), rank)?;
     let mut out = first;
     let mut axis_sum = 0usize;
     let mut axis_known = true;
@@ -426,7 +427,8 @@ fn infer_transpose(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape
         .ok_or_else(|| ShapeError::MissingInputShape {
             name: input_name.clone(),
         })?;
-    let perm = ints_attr(node, "perm").unwrap_or_else(|| (0..input.rank() as i64).rev().collect());
+    let perm =
+        ints_attr(node, Attr::Perm).unwrap_or_else(|| (0..input.rank() as i64).rev().collect());
     if perm.len() != input.rank() {
         return Err(ShapeError::TransposePermRankMismatch {
             perm_rank: perm.len(),
@@ -514,7 +516,7 @@ fn infer_flatten(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>,
         .ok_or_else(|| ShapeError::MissingInputShape {
             name: input_name.clone(),
         })?;
-    let axis = normalize_axis(int_attr(node, "axis").unwrap_or(1), input.rank())?;
+    let axis = normalize_axis(int_attr(node, Attr::Axis).unwrap_or(1), input.rank())?;
     let left = product_dims(&input.dims[..axis]);
     let right = product_dims(&input.dims[axis..]);
     Ok(vec![TensorShape {
@@ -663,8 +665,8 @@ fn infer_gemm(
             expected: "rank-2 inputs",
         });
     }
-    let trans_a = int_attr(node, "transA").unwrap_or(0) != 0;
-    let trans_b = int_attr(node, "transB").unwrap_or(0) != 0;
+    let trans_a = int_attr(node, Attr::TransA).unwrap_or(0) != 0;
+    let trans_b = int_attr(node, Attr::TransB).unwrap_or(0) != 0;
     let m = if trans_a { a.dims[1] } else { a.dims[0] };
     let n = if trans_b { b.dims[0] } else { b.dims[1] };
     let out = TensorShape { dims: vec![m, n] };
@@ -697,12 +699,12 @@ fn infer_pool(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, Sh
             expected: "rank-4 NCHW inputs",
         });
     }
-    let kernels = ints_attr(node, "kernel_shape").ok_or(ShapeError::MissingAttribute {
+    let kernels = ints_attr(node, Attr::KernelShape).ok_or(ShapeError::MissingAttribute {
         op_type: node.op_type.clone(),
         name: "kernel_shape",
     })?;
-    let strides = ints_attr(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = ints_attr(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let strides = ints_attr(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = ints_attr(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
     let kh = kernels.first().copied().unwrap_or(1).max(1) as usize;
     let kw = kernels.get(1).copied().unwrap_or(1).max(1) as usize;
     let sh = strides.first().copied().unwrap_or(1).max(1) as usize;
@@ -766,7 +768,7 @@ fn node_axes(model: &OnnxModel, node: &OnnxNode) -> Result<Vec<i64>, ShapeError>
         })?;
         return Ok(t.data().iter().map(|v| *v as i64).collect());
     }
-    if let Some(OnnxAttribute::Ints(axes)) = node.attributes.get("axes") {
+    if let Some(OnnxAttribute::Ints(axes)) = node.attributes.get(&Attr::Axes) {
         return Ok(axes.clone());
     }
     Ok(Vec::new())
@@ -780,15 +782,15 @@ fn normalize_axis(axis: i64, rank: usize) -> Result<usize, ShapeError> {
     Ok(normalized as usize)
 }
 
-fn int_attr(node: &OnnxNode, name: &str) -> Option<i64> {
-    match node.attributes.get(name) {
+fn int_attr(node: &OnnxNode, name: Attr) -> Option<i64> {
+    match node.attributes.get(&name) {
         Some(OnnxAttribute::Int(v)) => Some(*v),
         _ => None,
     }
 }
 
-fn ints_attr(node: &OnnxNode, name: &str) -> Option<Vec<i64>> {
-    match node.attributes.get(name) {
+fn ints_attr(node: &OnnxNode, name: Attr) -> Option<Vec<i64>> {
+    match node.attributes.get(&name) {
         Some(OnnxAttribute::Ints(v)) => Some(v.clone()),
         _ => None,
     }

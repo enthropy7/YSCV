@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn exec_flatten(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let axis = get_attr_int(node, "axis").unwrap_or(1) as usize;
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(1) as usize;
     let shape = input.shape();
 
     let outer: usize = shape[..axis].iter().product();
@@ -91,7 +91,7 @@ pub(super) fn exec_reshape(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
 pub(super) fn exec_transpose(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input_is_nhwc = env.is_nhwc(&node.inputs[0]);
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let perm = get_attr_ints(node, "perm");
+    let perm = get_attr_ints(node, Attr::Perm);
 
     let axes: Vec<usize> = match perm {
         Some(p) => p.iter().map(|&v| v as usize).collect(),
@@ -145,7 +145,7 @@ pub(super) fn exec_transpose(node: &OnnxNode, env: &mut TensorEnv) -> Result<(),
 }
 
 pub(super) fn exec_concat(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
 
     // Check if all 4D inputs are NHWC
     let non_empty: Vec<&String> = node.inputs.iter().filter(|n| !n.is_empty()).collect();
@@ -206,7 +206,7 @@ pub(super) fn exec_unsqueeze(node: &OnnxNode, env: &mut TensorEnv) -> Result<(),
         let axes_tensor = get_tensor(env, &node.name, &node.inputs[1])?;
         axes_tensor.data().iter().map(|&v| v as i64).collect()
     } else {
-        get_attr_ints(node, "axes").unwrap_or_default()
+        get_attr_ints(node, Attr::Axes).unwrap_or_default()
     };
 
     let mut shape = input.shape().to_vec();
@@ -238,7 +238,7 @@ pub(super) fn exec_squeeze(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
         let axes_tensor = get_tensor(env, &node.name, &node.inputs[1])?;
         axes_tensor.data().iter().map(|&v| v as i64).collect()
     } else {
-        get_attr_ints(node, "axes").unwrap_or_default()
+        get_attr_ints(node, Attr::Axes).unwrap_or_default()
     };
 
     let mut shape = input.shape().to_vec();
@@ -316,7 +316,7 @@ pub(super) fn exec_split(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onn
             node: node.name.clone(),
             input: node.inputs[0].clone(),
         })?;
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let shape = input.shape();
     let rank = shape.len();
     let raw_axis = if axis < 0 {
@@ -340,7 +340,7 @@ pub(super) fn exec_split(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onn
         } else {
             equal_split(dim, num_outputs)
         }
-    } else if let Some(s) = get_attr_ints(node, "split") {
+    } else if let Some(s) = get_attr_ints(node, Attr::Split) {
         s.iter().map(|&v| v as usize).collect()
     } else {
         equal_split(dim, num_outputs)
@@ -598,7 +598,7 @@ pub(super) fn exec_pad(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxE
     let pads: Vec<i64> = if let Some(pt) = pads_tensor {
         pt.data().iter().map(|&v| v as i64).collect()
     } else {
-        get_attr_ints(node, "pads").unwrap_or_default()
+        get_attr_ints(node, Attr::Pads).unwrap_or_default()
     };
 
     if pads.iter().all(|&p| p == 0) {
@@ -649,11 +649,12 @@ pub(super) fn exec_pad(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxE
 
 pub(super) fn exec_depth_to_space(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let blocksize = get_attr_int(node, "blocksize").ok_or_else(|| OnnxError::MissingAttribute {
-        node: node.name.clone(),
-        attr: "blocksize".into(),
-    })? as usize;
-    let mode = get_attr_string(node, "mode").unwrap_or_default();
+    let blocksize =
+        get_attr_int(node, Attr::BlockSize).ok_or_else(|| OnnxError::MissingAttribute {
+            node: node.name.clone(),
+            attr: "blocksize".into(),
+        })? as usize;
+    let mode = get_attr_string(node, Attr::Mode).unwrap_or_default();
     let shape = input.shape();
     if shape.len() != 4 {
         return Err(OnnxError::ShapeMismatch {
@@ -727,10 +728,11 @@ pub(super) fn exec_depth_to_space(node: &OnnxNode, env: &mut TensorEnv) -> Resul
 
 pub(super) fn exec_space_to_depth(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let blocksize = get_attr_int(node, "blocksize").ok_or_else(|| OnnxError::MissingAttribute {
-        node: node.name.clone(),
-        attr: "blocksize".into(),
-    })? as usize;
+    let blocksize =
+        get_attr_int(node, Attr::BlockSize).ok_or_else(|| OnnxError::MissingAttribute {
+            node: node.name.clone(),
+            attr: "blocksize".into(),
+        })? as usize;
     let shape = input.shape();
     if shape.len() != 4 {
         return Err(OnnxError::ShapeMismatch {
@@ -786,7 +788,7 @@ pub(super) fn exec_constant_of_shape(
 ) -> Result<(), OnnxError> {
     let shape_t = get_tensor(env, &node.name, &node.inputs[0])?;
     let shape: Vec<usize> = shape_t.data().iter().map(|&v| v as usize).collect();
-    let value = get_attr_float(node, "value").unwrap_or(0.0);
+    let value = get_attr_float(node, Attr::Value).unwrap_or(0.0);
     let out = Tensor::filled(shape, value).map_err(|e| OnnxError::DecodeFailed {
         message: e.to_string(),
     })?;

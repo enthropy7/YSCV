@@ -1,3 +1,4 @@
+use crate::attr::Attr;
 use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
 use crate::shape_infer::{Dim, ShapeInference, ShapeMap, TensorShape};
 use std::fmt::Write as _;
@@ -265,7 +266,7 @@ fn cost_conv(
         cost.reason = Some("Conv weight is not rank 4".to_string());
         return;
     }
-    let group = int_attr(node, "group").unwrap_or(1).max(1) as usize;
+    let group = int_attr(node, Attr::Group).unwrap_or(1).max(1) as usize;
     let (ic_per_group, kh, kw) = if model.khwc_weights.contains(weight_name) {
         (w_shape[2], w_shape[0], w_shape[1])
     } else if model.dw_khwc_weights.contains(weight_name) {
@@ -349,7 +350,7 @@ fn cost_gemm(
         cost.reason = Some("Gemm B is not rank 2".to_string());
         return;
     }
-    let trans_b = int_attr(node, "transB").unwrap_or(0) != 0;
+    let trans_b = int_attr(node, Attr::TransB).unwrap_or(0) != 0;
     let k = if trans_b { b.shape()[1] } else { b.shape()[0] };
     cost.macs = out_numel.saturating_mul(k as u64);
     cost.bytes_written = out_numel.saturating_mul(4);
@@ -392,7 +393,7 @@ fn cost_pool(node: &OnnxNode, output_shape: Option<&TensorShape>, cost: &mut Nod
         cost.reason = Some("pool output shape unknown".to_string());
         return;
     };
-    let kernel = ints_attr(node, "kernel_shape")
+    let kernel = ints_attr(node, Attr::KernelShape)
         .and_then(|v| v.first().zip(v.get(1)).map(|(h, w)| h.max(&1) * w.max(&1)))
         .unwrap_or(1) as u64;
     cost.element_ops = out_numel.saturating_mul(kernel);
@@ -454,8 +455,8 @@ fn matmul_reduction_dim(model: &OnnxModel, shapes: &ShapeMap, a: &str, b: &str) 
         })
 }
 
-fn int_attr(node: &OnnxNode, name: &str) -> Option<i64> {
-    if let Some(OnnxAttribute::Int(v)) = node.attributes.get(name) {
+fn int_attr(node: &OnnxNode, name: Attr) -> Option<i64> {
+    if let Some(OnnxAttribute::Int(v)) = node.attributes.get(&name) {
         Some(*v)
     } else {
         None
@@ -512,8 +513,8 @@ fn format_reason(reason: Option<&str>) -> &str {
     reason.unwrap_or("-")
 }
 
-fn ints_attr(node: &OnnxNode, name: &str) -> Option<Vec<i64>> {
-    if let Some(OnnxAttribute::Ints(v)) = node.attributes.get(name) {
+fn ints_attr(node: &OnnxNode, name: Attr) -> Option<Vec<i64>> {
+    if let Some(OnnxAttribute::Ints(v)) = node.attributes.get(&name) {
         Some(v.clone())
     } else {
         None

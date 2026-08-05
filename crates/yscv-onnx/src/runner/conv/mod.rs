@@ -322,9 +322,9 @@ fn resolve_conv_params(
             p.has_padding,
         )
     } else {
-        let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-        let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-        let group = get_attr_int(node, "group").unwrap_or(1) as usize;
+        let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+        let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
+        let group = get_attr_int(node, Attr::Group).unwrap_or(1) as usize;
         let (pt, pl) = (pads[0] as usize, pads[1] as usize);
         let (pb, pr) = (
             pads.get(2).copied().unwrap_or(0) as usize,
@@ -778,7 +778,7 @@ pub(super) fn exec_conv_transpose(node: &OnnxNode, env: &mut TensorEnv) -> Resul
         None
     };
 
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
     let sh = strides[0] as usize;
     let sw = strides[1] as usize;
 
@@ -827,8 +827,8 @@ pub(super) fn exec_deform_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<(
         None
     };
 
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
 
     let stride = strides[0] as usize;
     // Symmetric padding only — use first pad value
@@ -955,9 +955,9 @@ fn exec_conv_bnns_nchw(
         None
     };
 
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-    let group = get_attr_int(node, "group").unwrap_or(1) as usize;
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let group = get_attr_int(node, Attr::Group).unwrap_or(1) as usize;
     let sh = strides[0] as usize;
     let sw = strides[1] as usize;
     let (pt, pl, pb, pr) = (

@@ -39,6 +39,7 @@ mod weight_layout;
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
+use crate::attr::Attr;
 use crate::loader::OnnxAttribute;
 
 pub(crate) use op::Op;
@@ -110,7 +111,7 @@ pub(crate) struct Node {
     /// as an empty name — a Conv with no bias, say.
     pub(crate) inputs: Vec<Option<ValueId>>,
     pub(crate) outputs: Vec<ValueId>,
-    pub(crate) attributes: FxHashMap<String, OnnxAttribute>,
+    pub(crate) attributes: FxHashMap<Attr, OnnxAttribute>,
 }
 
 /// A model graph in def-use form.

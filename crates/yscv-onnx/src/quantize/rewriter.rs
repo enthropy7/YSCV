@@ -26,6 +26,7 @@
 //! handles the "weight-only" PTQ mode for users with no calibration
 //! dataset.
 
+use crate::attr::Attr;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 
@@ -413,7 +414,7 @@ fn quantize_weight_into(
     );
 
     let mut attrs = FxHashMap::default();
-    attrs.insert("axis".to_string(), OnnxAttribute::Int(0));
+    attrs.insert(Attr::Axis, OnnxAttribute::Int(0));
     node_prefix.push(OnnxNode {
         op_type: "DequantizeLinear".to_string(),
         name: dq_node_name,
@@ -542,10 +543,7 @@ fn rewrite_conv_node_to_qlinear(
             name: format!("{}__qlinear_x_nhwc_to_nchw", node.name),
             inputs: vec![x_q_nhwc],
             outputs: vec![x_q.clone()],
-            attributes: FxHashMap::from_iter([(
-                "perm".to_string(),
-                OnnxAttribute::Ints(vec![0, 3, 1, 2]),
-            )]),
+            attributes: FxHashMap::from_iter([(Attr::Perm, OnnxAttribute::Ints(vec![0, 3, 1, 2]))]),
         });
     }
     out.extend([
@@ -574,10 +572,7 @@ fn rewrite_conv_node_to_qlinear(
             name: format!("{}__qlinear_y_nchw_to_nhwc", node.name),
             inputs: vec![dq_out_nchw],
             outputs: vec![fp32_conv_out.clone()],
-            attributes: FxHashMap::from_iter([(
-                "perm".to_string(),
-                OnnxAttribute::Ints(vec![0, 2, 3, 1]),
-            )]),
+            attributes: FxHashMap::from_iter([(Attr::Perm, OnnxAttribute::Ints(vec![0, 2, 3, 1]))]),
         });
     }
     if node.op_type == "Conv_Relu" {
@@ -744,7 +739,7 @@ fn dequantize_initializer(
         let z = zp.first().copied().unwrap_or(0.0);
         q_data.iter().map(|&v| (v - z) * s).collect()
     } else {
-        let axis = match node.attributes.get("axis") {
+        let axis = match node.attributes.get(&Attr::Axis) {
             Some(OnnxAttribute::Int(axis)) => *axis,
             _ => 1,
         };
@@ -892,7 +887,7 @@ mod tests {
             .expect("weight DequantizeLinear missing");
         assert_eq!(dq.inputs.len(), 3);
         // axis attribute = 0 (per-channel)
-        match dq.attributes.get("axis") {
+        match dq.attributes.get(&Attr::Axis) {
             Some(OnnxAttribute::Int(0)) => {}
             other => panic!("axis attr not Int(0): {other:?}"),
         }
@@ -1113,7 +1108,7 @@ mod tests {
         );
         model.nodes[0]
             .attributes
-            .insert("group".to_string(), OnnxAttribute::Int(2));
+            .insert(Attr::Group, OnnxAttribute::Int(2));
 
         rewrite_to_qdq(&mut model, &FxHashMap::default(), &[]).unwrap();
 
@@ -1133,7 +1128,7 @@ mod tests {
             .iter()
             .find(|n| n.op_type == "DequantizeLinear" && n.outputs[0] == "w_dq")
             .expect("depthwise weight DequantizeLinear missing");
-        match dq.attributes.get("axis") {
+        match dq.attributes.get(&Attr::Axis) {
             Some(OnnxAttribute::Int(0)) => {}
             other => panic!("axis attr not Int(0): {other:?}"),
         }

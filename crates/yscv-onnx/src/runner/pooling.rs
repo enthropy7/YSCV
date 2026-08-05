@@ -4,9 +4,9 @@ use super::*;
 pub(super) fn exec_max_pool(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input_is_nhwc = env.is_nhwc(&node.inputs[0]);
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let kernel_shape = get_attr_ints(node, Attr::KernelShape).unwrap_or_else(|| vec![2, 2]);
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
 
     // NCHW fast path: use the optimized NCHW kernel (parallel + SIMD).
     if !input_is_nhwc && input.rank() == 4 {
@@ -67,9 +67,9 @@ pub(super) fn exec_max_pool(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), 
 pub(super) fn exec_avg_pool(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input_is_nhwc = env.is_nhwc(&node.inputs[0]);
     let input = get_tensor(env, &node.name, &node.inputs[0])?;
-    let kernel_shape = get_attr_ints(node, "kernel_shape").unwrap_or_else(|| vec![2, 2]);
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let kernel_shape = get_attr_ints(node, Attr::KernelShape).unwrap_or_else(|| vec![2, 2]);
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
 
     // NCHW fast path: use the optimized NCHW kernel (parallel + SIMD).
     if !input_is_nhwc && input.rank() == 4 {

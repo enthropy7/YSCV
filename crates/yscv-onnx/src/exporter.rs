@@ -1,3 +1,4 @@
+use crate::attr::Attr;
 use prost::Message;
 use rustc_hash::FxHashSet;
 use yscv_tensor::Tensor;
@@ -188,18 +189,24 @@ pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExpor
             .attributes
             .iter()
             .map(|(k, v)| match v {
-                OnnxAttribute::Int(x) => OnnxExportAttr::Int(k.clone(), *x),
-                OnnxAttribute::Float(x) => OnnxExportAttr::Float(k.clone(), *x),
-                OnnxAttribute::Ints(x) => OnnxExportAttr::Ints(k.clone(), x.clone()),
-                OnnxAttribute::Floats(x) => OnnxExportAttr::Floats(k.clone(), x.clone()),
-                OnnxAttribute::String(x) => OnnxExportAttr::String(k.clone(), x.clone()),
+                OnnxAttribute::Int(x) => OnnxExportAttr::Int(k.as_str().to_owned(), *x),
+                OnnxAttribute::Float(x) => OnnxExportAttr::Float(k.as_str().to_owned(), *x),
+                OnnxAttribute::Ints(x) => OnnxExportAttr::Ints(k.as_str().to_owned(), x.clone()),
+                OnnxAttribute::Floats(x) => {
+                    OnnxExportAttr::Floats(k.as_str().to_owned(), x.clone())
+                }
+                OnnxAttribute::String(x) => {
+                    OnnxExportAttr::String(k.as_str().to_owned(), x.clone())
+                }
                 OnnxAttribute::Tensor(t)
-                    if k == "value"
+                    if *k == Attr::Value
                         && n.outputs.iter().any(|out| int64_tensor_names.contains(out)) =>
                 {
-                    OnnxExportAttr::Int64Tensor(k.clone(), t.clone())
+                    OnnxExportAttr::Int64Tensor(k.as_str().to_owned(), t.clone())
                 }
-                OnnxAttribute::Tensor(t) => OnnxExportAttr::Tensor(k.clone(), t.clone()),
+                OnnxAttribute::Tensor(t) => {
+                    OnnxExportAttr::Tensor(k.as_str().to_owned(), t.clone())
+                }
             })
             .collect();
         if matches!(n.op_type.as_str(), "Conv_Relu" | "BatchNormalization_Relu")
@@ -236,7 +243,12 @@ pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExpor
     let initializers: Vec<(String, Tensor)> = model
         .initializers
         .iter()
-        .map(|(k, v)| (k.clone(), initializer_for_onnx_export(model, k, v)))
+        .map(|(k, v)| {
+            (
+                k.as_str().to_owned(),
+                initializer_for_onnx_export(model, k, v),
+            )
+        })
         .collect();
 
     // OnnxModel only carries names for graph I/O; emit empty shapes which

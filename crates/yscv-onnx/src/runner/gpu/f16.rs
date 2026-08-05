@@ -118,9 +118,9 @@ fn exec_conv_f16(
         None
     };
 
-    let strides = get_attr_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
-    let pads = get_attr_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-    let group = get_attr_int(node, "group").unwrap_or(1) as usize;
+    let strides = get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
+    let pads = get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
+    let group = get_attr_int(node, Attr::Group).unwrap_or(1) as usize;
     let sh = strides[0] as usize;
     let sw = strides[1] as usize;
     let pad4 = [
@@ -230,7 +230,7 @@ fn exec_concat_f16_gpu(
     env: &mut TensorEnv,
     gc: &mut GpuCache,
 ) -> Result<(), OnnxError> {
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let input_names: Vec<&String> = node.inputs.iter().filter(|n| !n.is_empty()).collect();
 
     if input_names.is_empty() {
@@ -374,7 +374,7 @@ fn exec_split_f16_gpu(
     env: &mut TensorEnv,
     gc: &mut GpuCache,
 ) -> Result<(), OnnxError> {
-    let axis = get_attr_int(node, "axis").unwrap_or(0);
+    let axis = get_attr_int(node, Attr::Axis).unwrap_or(0);
     let name = &node.inputs[0];
 
     let on_gpu = gc.contains_key(name.as_str());
@@ -409,7 +409,7 @@ fn exec_split_f16_gpu(
             vec![dim / n_out; n_out]
         }
     } else {
-        let attr_split = get_attr_ints(node, "split");
+        let attr_split = get_attr_ints(node, Attr::Split);
         if let Some(s) = attr_split {
             s.iter().map(|&v| v as usize).collect()
         } else {
@@ -696,10 +696,10 @@ pub fn compile_gpu_plan_f16(
                                     if let Some(at) = env.get(&node.inputs[1]) {
                                         at.data().iter().map(|&v| v as i64).collect()
                                     } else {
-                                        get_attr_ints(node, "axes").unwrap_or_default()
+                                        get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                     }
                                 } else {
-                                    get_attr_ints(node, "axes").unwrap_or_default()
+                                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                 };
                             let mut sorted: Vec<usize> = axes
                                 .iter()
@@ -727,7 +727,7 @@ pub fn compile_gpu_plan_f16(
                                         vec![]
                                     }
                                 } else {
-                                    get_attr_ints(node, "axes").unwrap_or_default()
+                                    get_attr_ints(node, Attr::Axes).unwrap_or_default()
                                 };
                             let mut s = shape;
                             if axes.is_empty() {
