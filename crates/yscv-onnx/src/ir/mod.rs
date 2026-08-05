@@ -439,6 +439,32 @@ impl Graph {
         self.order.retain(|id| nodes[id.idx()].is_some());
     }
 
+    /// Reorders execution to the given sequence of live node ids.
+    ///
+    /// `new_order` must be a permutation of the live nodes. A missing entry
+    /// would silently drop a node from execution and a duplicate would run one
+    /// twice, so both are rejected rather than corrupting the graph.
+    pub(crate) fn set_order(&mut self, new_order: Vec<NodeId>) -> Result<(), IrError> {
+        let live = self.node_count();
+        let bad = || IrError::NotAPermutation {
+            expected: live,
+            got: new_order.len(),
+        };
+        if new_order.len() != live {
+            return Err(bad());
+        }
+        let mut seen = vec![false; self.nodes.len()];
+        for &id in &new_order {
+            let slot = seen.get_mut(id.idx()).ok_or_else(bad)?;
+            if *slot || self.nodes[id.idx()].is_none() {
+                return Err(bad());
+            }
+            *slot = true;
+        }
+        self.order = new_order;
+        Ok(())
+    }
+
     // ── Validation ───────────────────────────────────────────────────────
 
     /// Recomputes the def-use index by brute force and compares it against the
@@ -462,7 +488,7 @@ impl Graph {
             }
             for &out in &node.outputs {
                 if self.values[out.idx()].def != Some(id) {
-                    return Err(IrError::BadDef {
+                    return Err(IrError::StaleDef {
                         value: self.values[out.idx()].name.clone(),
                     });
                 }
@@ -476,14 +502,14 @@ impl Graph {
             actual.sort_by_key(key);
             want.sort_by_key(key);
             if actual != want {
-                return Err(IrError::BadUses {
+                return Err(IrError::InconsistentUses {
                     value: value.name.clone(),
                 });
             }
             if let Some(def) = value.def
                 && self.nodes[def.idx()].is_none()
             {
-                return Err(IrError::BadDef {
+                return Err(IrError::StaleDef {
                     value: value.name.clone(),
                 });
             }
@@ -496,9 +522,11 @@ impl Graph {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum IrError {
     #[error("value '{value}' has a stale or missing definition")]
-    BadDef { value: String },
+    StaleDef { value: String },
     #[error("value '{value}' has a use list that disagrees with the graph")]
-    BadUses { value: String },
+    InconsistentUses { value: String },
+    #[error("reordering must be a permutation of the {expected} live nodes, got {got}")]
+    NotAPermutation { expected: usize, got: usize },
 }
 
 #[cfg(test)]

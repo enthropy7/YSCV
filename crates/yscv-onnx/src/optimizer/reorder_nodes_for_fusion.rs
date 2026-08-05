@@ -1,91 +1,102 @@
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use rustc_hash::FxHashMap;
 
-use crate::loader::OnnxModel;
+use crate::error::OnnxError;
+use crate::ir::{Changed, Graph, NodeId, Pass};
 
-/// Reorder graph nodes into a fusion-friendly topological order.
+/// Reorders nodes into a fusion-friendly topological order.
 ///
-/// ONNX topological order is not unique. Multi-input models — e.g. a Siamese
-/// tracker whose two backbone branches share weights — are often exported with
-/// the branches interleaved: `convA, convB, reluA, reluB, …`. Every positional
-/// fusion pass (`fuse_conv_relu` here, and the runtime planner's `FusedDwPw` /
-/// `FusedPwDw` / `ConvAdd` matchers) inspects only the immediately-following
-/// node, so an interleaved producer/consumer pair never fuses and the whole
-/// inverted bottleneck runs unfused.
+/// ONNX topological order is not unique. Multi-input models — a Siamese tracker
+/// whose two backbone branches share weights, say — are often exported with the
+/// branches interleaved: `convA, convB, reluA, reluB, …`.
 ///
-/// A depth-first topological sort (LIFO ready stack) walks each dependency
+/// The IR passes no longer care: they match through the use list, so a producer
+/// and consumer separated by unrelated nodes still pair up. **The layer-3 plan
+/// builder does.** `build_runtime_index` matches `nodes[i + 1]` and
+/// `nodes[i + 2]` for its `FusedDwPw` / `FusedPwDw` / `ConvAdd` actions, so an
+/// interleaved inverted bottleneck runs entirely unfused unless the order is
+/// repaired first. That is what this pass is for now, and it can retire once
+/// plan construction moves onto the IR.
+///
+/// A depth-first topological sort — a LIFO ready stack — walks each dependency
 /// chain to its join before starting the next, placing every producer directly
-/// ahead of its consumer. That restores positional adjacency for the fusion
-/// passes regardless of export order — the same invariant ORT gets from its
-/// dataflow graph optimizer. The reorder only permutes independent nodes, so
-/// the computation and its outputs are unchanged.
-pub fn reorder_nodes_for_fusion(model: &mut OnnxModel) {
-    if std::env::var_os("YSCV_REORDER_FUSION_OFF").is_some() {
-        return;
-    }
-    let n = model.nodes.len();
-    if n < 2 {
-        return;
+/// ahead of its consumer. Only independent nodes are permuted, so the
+/// computation and its outputs are unchanged.
+pub(crate) struct ReorderForFusion;
+
+impl Pass for ReorderForFusion {
+    fn name(&self) -> &'static str {
+        "reorder_nodes_for_fusion"
     }
 
-    let mut producer: FxHashMap<&str, usize> =
-        FxHashMap::with_capacity_and_hasher(n, FxBuildHasher);
-    for (i, node) in model.nodes.iter().enumerate() {
-        for out in &node.outputs {
-            producer.insert(out.as_str(), i);
+    fn run(&self, graph: &mut Graph) -> Result<Changed, OnnxError> {
+        if std::env::var_os("YSCV_REORDER_FUSION_OFF").is_some() {
+            return Ok(false);
         }
-    }
+        let live: Vec<NodeId> = graph.node_ids().collect();
+        if live.len() < 2 {
+            return Ok(false);
+        }
 
-    let mut in_degree = vec![0usize; n];
-    let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (i, node) in model.nodes.iter().enumerate() {
-        let mut deps: Vec<usize> = Vec::new();
-        for inp in &node.inputs {
-            if let Some(&p) = producer.get(inp.as_str())
-                && p != i
-                && !deps.contains(&p)
-            {
-                deps.push(p);
+        // Dense positions, because node ids are sparse once anything has been
+        // removed.
+        let slot: FxHashMap<NodeId, usize> =
+            live.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+
+        let mut in_degree = vec![0usize; live.len()];
+        let mut consumers: Vec<Vec<usize>> = vec![Vec::new(); live.len()];
+        for (i, &id) in live.iter().enumerate() {
+            let Some(node) = graph.node(id) else { continue };
+            // Distinct producers only: a node reading the same value twice, or
+            // two values from one producer, still depends on it once.
+            let mut deps: Vec<usize> = Vec::new();
+            for value in node.inputs.iter().flatten() {
+                let Some(def) = graph.value(*value).def else {
+                    continue;
+                };
+                let Some(&p) = slot.get(&def) else { continue };
+                if p != i && !deps.contains(&p) {
+                    deps.push(p);
+                }
+            }
+            in_degree[i] = deps.len();
+            for p in deps {
+                consumers[p].push(i);
             }
         }
-        in_degree[i] = deps.len();
-        for p in deps {
-            consumers[p].push(i);
-        }
-    }
 
-    let mut stack: Vec<usize> = Vec::new();
-    for i in (0..n).rev() {
-        if in_degree[i] == 0 {
-            stack.push(i);
-        }
-    }
+        // Seed in reverse so the stack pops roots in their original relative
+        // order, keeping the result stable for graphs that are already sorted.
+        let mut stack: Vec<usize> = (0..live.len())
+            .rev()
+            .filter(|&i| in_degree[i] == 0)
+            .collect();
 
-    let mut order: Vec<usize> = Vec::with_capacity(n);
-    while let Some(node) = stack.pop() {
-        order.push(node);
-        let mut newly: Vec<usize> = Vec::new();
-        for &c in &consumers[node] {
-            in_degree[c] -= 1;
-            if in_degree[c] == 0 {
-                newly.push(c);
+        let mut order: Vec<NodeId> = Vec::with_capacity(live.len());
+        while let Some(i) = stack.pop() {
+            order.push(live[i]);
+            let mut ready: Vec<usize> = Vec::new();
+            for &c in &consumers[i] {
+                in_degree[c] -= 1;
+                if in_degree[c] == 0 {
+                    ready.push(c);
+                }
+            }
+            for &c in ready.iter().rev() {
+                stack.push(c);
             }
         }
-        for &c in newly.iter().rev() {
-            stack.push(c);
+
+        // A short result means a dependency cycle, which is not something this
+        // pass can repair — leave the graph alone rather than dropping nodes.
+        if order.len() != live.len() || order == live {
+            return Ok(false);
         }
-    }
 
-    if order.len() != n {
-        return;
+        graph
+            .set_order(order)
+            .map_err(|e| OnnxError::DecodeFailed {
+                message: format!("reorder_nodes_for_fusion produced an invalid order: {e}"),
+            })?;
+        Ok(true)
     }
-
-    let mut taken: Vec<_> = model.nodes.drain(..).map(Some).collect();
-    model.nodes = order
-        .iter()
-        .map(|&idx| {
-            taken[idx]
-                .take()
-                .expect("permutation visits each node once")
-        })
-        .collect();
 }
