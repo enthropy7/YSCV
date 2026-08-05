@@ -447,12 +447,67 @@ impl Graph {
         );
     }
 
+    /// Replaces one node with a sequence that computes the same thing.
+    ///
+    /// The last replacement inherits the original's output values — names
+    /// included, so a rewrite at a graph output does not rename it — and the
+    /// replacements take the original's place in execution order. Every
+    /// replacement but the last must already declare its own outputs.
+    ///
+    /// This is the shape of an expanding rewrite: `ConvTranspose` becoming
+    /// `Conv1x1` followed by `DepthToSpace`, where the pair has to be spliced in
+    /// atomically because neither half alone defines the original's output.
+    pub(crate) fn replace_node(&mut self, old: NodeId, replacements: Vec<Node>) -> Vec<NodeId> {
+        debug_assert!(!replacements.is_empty(), "replace_node needs a replacement");
+        let Some(old_node) = self.nodes[old.idx()].take() else {
+            debug_assert!(false, "replace_node on a tombstoned node");
+            return Vec::new();
+        };
+        for (port, input) in old_node.inputs.iter().enumerate() {
+            if let Some(v) = input {
+                self.remove_use(*v, old, port as u32);
+            }
+        }
+        for &out in &old_node.outputs {
+            if self.values[out.idx()].def == Some(old) {
+                self.values[out.idx()].def = None;
+            }
+        }
+
+        let last = replacements.len() - 1;
+        let mut ids = Vec::with_capacity(replacements.len());
+        for (i, mut node) in replacements.into_iter().enumerate() {
+            if i == last {
+                node.outputs = old_node.outputs.clone();
+            }
+            let id = NodeId(self.nodes.len() as u32);
+            self.link(id, &node);
+            self.nodes.push(Some(node));
+            ids.push(id);
+        }
+
+        let at = self
+            .order
+            .iter()
+            .position(|&n| n == old)
+            .map(|p| p + 1)
+            .unwrap_or(self.order.len());
+        for (offset, &id) in ids.iter().enumerate() {
+            self.order.insert(at + offset, id);
+        }
+
+        debug_assert!(self.validate().is_ok(), "replace_node broke an invariant");
+        ids
+    }
+
     /// Tombstones a node, unlinking it from every value it touched.
     ///
-    /// The node's outputs keep their names but lose their producer. Callers are
-    /// expected to have rewired consumers first — removing a node whose outputs
-    /// are still read leaves the graph unschedulable, and debug builds trip on
-    /// it.
+    /// The node's outputs keep their names but lose their producer, so each one
+    /// must already have somewhere else to come from: nothing reads it, it is a
+    /// graph output, or it has become a [`ValueKind::Constant`] — which is what
+    /// constant folding leaves behind, and is a definition in its own right.
+    /// Removing a node whose output is still read and has none of those leaves
+    /// the graph unschedulable, and debug builds trip on it.
     pub(crate) fn remove_node(&mut self, id: NodeId) {
         let Some(node) = self.nodes[id.idx()].take() else {
             return;
@@ -464,8 +519,10 @@ impl Graph {
         }
         for &out in &node.outputs {
             debug_assert!(
-                self.values[out.idx()].uses.is_empty() || self.is_graph_output(out),
-                "removed a node whose output {} is still consumed",
+                self.values[out.idx()].uses.is_empty()
+                    || self.is_graph_output(out)
+                    || matches!(self.values[out.idx()].kind, ValueKind::Constant(_)),
+                "removed a node whose output {} is still consumed and has no other definition",
                 self.values[out.idx()].name
             );
             if self.values[out.idx()].def == Some(id) {

@@ -58,6 +58,28 @@ pub(crate) struct TensorEnv<'m, 'i> {
     runtime_inputs: Option<RuntimeInputs<'i>>,
 }
 
+/// The empty model-derived tables a const-eval [`TensorEnv`] borrows.
+///
+/// `TensorEnv` borrows eight collections from the model. For evaluating one
+/// node none of them apply — there are no prepacked weights, no layout tags, no
+/// use counts — but the borrows still need something to point at, so the caller
+/// owns this and hands out a reference. One instance serves every node folded in
+/// a pass.
+#[derive(Default)]
+pub(crate) struct ConstEvalTables {
+    names: FxHashMap<String, usize>,
+    use_counts: Vec<usize>,
+    /// Shared by all three weight-layout sets; a const-eval environment holds
+    /// no pre-permuted weights, so one empty set does for all of them.
+    weight_ids: FxHashSet<usize>,
+    prepacked_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
+    prepacked_i8_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
+    prepacked_i8_depthwise: FxHashMap<String, std::sync::Arc<Vec<i8>>>,
+    initializers: FxHashMap<String, Tensor>,
+    packed_int4_weights: FxHashMap<String, crate::quantize::PackedInt4Weight>,
+    passthrough_safe: FxHashSet<String>,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum RuntimeInputs<'i> {
     Map(&'i FxHashMap<String, Tensor>),
@@ -69,6 +91,43 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     /// Holds a reference to model initializers for zero-copy weight access.
     pub(crate) fn from_model(model: &'m OnnxModel) -> Self {
         Self::from_model_with_inputs(model, None)
+    }
+
+    /// Build a bare environment for evaluating a single node at load time.
+    ///
+    /// Constant folding needs to run one operator, not a session. `from_model`
+    /// cannot serve that: it requires a built `runtime_index`, so the caller
+    /// would have to construct a throwaway model and run the entire plan
+    /// builder — fusion scan, slot assignment, weight prepacking — to evaluate
+    /// one node.
+    ///
+    /// Every model-derived table is empty here, which works because
+    /// [`TensorEnv::insert`] allocates a dynamic slot for any name it does not
+    /// already know. The caller inserts the node's operands, dispatches, and
+    /// takes the result back out.
+    pub(crate) fn for_const_eval(tables: &'m ConstEvalTables) -> Self {
+        TensorEnv {
+            next_dynamic: 0,
+            static_name_to_id: &tables.names,
+            use_counts_by_id: &tables.use_counts,
+            dynamic_name_to_id: FxHashMap::default(),
+            slots: Vec::new(),
+            quant_slots: Vec::new(),
+            nhwc_flags: Vec::new(),
+            nchwc_block_flags: Vec::new(),
+            khwc_weights: &tables.weight_ids,
+            dw_khwc_weights: &tables.weight_ids,
+            group_khwc_weights: &tables.weight_ids,
+            prepacked_weights: &tables.prepacked_weights,
+            prepacked_i8_weights: &tables.prepacked_i8_weights,
+            prepacked_i8_depthwise: &tables.prepacked_i8_depthwise,
+            scratch_i8_a: Vec::new(),
+            scratch_i32: Vec::new(),
+            initializers: &tables.initializers,
+            packed_int4_weights: &tables.packed_int4_weights,
+            reshape_nhwc_passthrough_safe: &tables.passthrough_safe,
+            runtime_inputs: None,
+        }
     }
 
     /// Build from the model with optional borrowed runtime inputs.

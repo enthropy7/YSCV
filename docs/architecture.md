@@ -102,6 +102,8 @@ If you need to change something, these are the most important files:
 | Autograd graph | `crates/yscv-autograd/src/graph.rs` |
 | CPU backend | `crates/yscv-kernels/src/backend/` |
 | ONNX runtime | `crates/yscv-onnx/src/runner/` (`mod.rs` + dispatch submodules) |
+| ONNX optimizer IR | `crates/yscv-onnx/src/ir/` (def-use graph, pass driver) |
+| ONNX optimizer passes | `crates/yscv-onnx/src/optimizer/` (one `Pass` impl per file) |
 | Conv / MatMul kernels | `crates/yscv-kernels/src/ops/conv/`, `ops/matmul/` |
 | Metal plan compiler | `crates/yscv-onnx/src/runner/metal/` |
 | Benchmark harness | `apps/bench/src/main.rs` |

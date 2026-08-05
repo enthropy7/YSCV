@@ -13,6 +13,7 @@ mod rewrite_convtranspose_dts;
 mod strip_qdq_within_fusion_chains;
 
 use crate::{
+    error::OnnxError,
     ir::{Pass, PassManager},
     loader::OnnxModel,
     optimizer::{
@@ -25,7 +26,7 @@ pub use analyze_nchwc::analyze_nchwc;
 /// Re-exported so tests can drive these passes on their own, without the
 /// string-based pipeline reordering the graph first.
 pub(crate) use eliminate_squeeze_unsqueeze_pairs::EliminateSqueezeUnsqueezePairs;
-pub use fold_constants::fold_constants;
+pub(crate) use fold_constants::FoldConstants;
 pub(crate) use fold_conv_bn::FoldConvBatchNorm;
 pub(crate) use fold_conv_const_binary::FoldConvConstBinary;
 pub(crate) use fuse_activation::FuseActivation;
@@ -33,7 +34,7 @@ pub use graph_cost::{
     GraphCost, GraphCostDiff, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
 };
 pub use graph_stats::{GraphStats, graph_stats};
-pub use rewrite_convtranspose_dts::rewrite_convtranspose_dts;
+pub(crate) use rewrite_convtranspose_dts::RewriteConvTransposeToDepthToSpace;
 pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 
 /// Runs the passes that have moved onto the def-use IR.
@@ -48,41 +49,38 @@ pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 /// treat optimization as best-effort, so the failure is reported on stderr.
 /// Once a genuinely fallible pass lands — constant folding executes the graph,
 /// so it can — this should become a real error return.
-fn run_ir_pipeline(model: &mut OnnxModel, passes: Vec<Box<dyn Pass>>) {
+fn run_ir_pipeline(model: &mut OnnxModel) -> Result<(), OnnxError> {
     let mut graph = model.to_ir();
-    match PassManager::new(passes).run(&mut graph) {
-        Ok(()) => model.apply_ir(&graph),
-        Err(e) => eprintln!("[yscv-onnx] IR pass pipeline failed, graph left unoptimized: {e}"),
-    }
+    PassManager::new(pipeline()).run(&mut graph)?;
+    model.apply_ir(&graph);
+    Ok(())
 }
 
-/// Cleanup and ordering, run before the passes that are still positional.
+/// The pass pipeline, in order.
 ///
-/// `ReorderForFusion` has to come last within the phase — sorting after the
-/// removals avoids ordering nodes that then vanish — but the phase as a whole
-/// has to precede the string-based passes below, which match on `nodes[i + 1]`
-/// and need producer/consumer adjacency restored first.
-fn ir_cleanup_passes() -> Vec<Box<dyn Pass>> {
+/// The driver sweeps this to a fixed point, so the order is a starting point
+/// rather than a correctness requirement — every pass matches through the
+/// def-use index and none depends on node adjacency. Two orderings still earn
+/// their place by saving a sweep:
+///
+/// - `FoldConvBatchNorm` before the Conv-Mul / Conv-Add folds, which then only
+///   see the stray scale and bias BatchNormalization did not already absorb.
+/// - The folds before `FuseActivation`, which matches a plain `Conv` and would
+///   miss one already retagged as `Conv_Relu`.
+///
+/// `ReorderForFusion` is last because it is not for these passes at all: the
+/// layer-3 plan builder still matches `nodes[i + 1]`, so the order it leaves
+/// behind is what reaches `build_runtime_index`.
+fn pipeline() -> Vec<Box<dyn Pass>> {
     vec![
         Box::new(RemoveDropout) as Box<dyn Pass>,
         Box::new(EliminateSqueezeUnsqueezePairs),
-        // Ahead of the Conv-Mul / Conv-Add folds below, which only need to
-        // handle the stray scale and bias that BatchNormalization did not
-        // already absorb.
+        Box::new(RewriteConvTransposeToDepthToSpace),
         Box::new(FoldConvBatchNorm),
         Box::new(FoldConvConstBinary::mul()),
         Box::new(FoldConvConstBinary::add()),
-        Box::new(EliminateDeadCode),
-        Box::new(ReorderForFusion),
-    ]
-}
-
-/// Annotation fusion, run after the folding passes have had their turn —
-/// `fold_conv_bn` matches a plain `Conv` and would miss one already retagged
-/// as `Conv_Relu`.
-fn ir_fusion_passes() -> Vec<Box<dyn Pass>> {
-    vec![
-        Box::new(FuseActivation::conv_relu()) as Box<dyn Pass>,
+        Box::new(FoldConstants),
+        Box::new(FuseActivation::conv_relu()),
         Box::new(FuseActivation::bn_relu()),
         Box::new(EliminateDeadCode),
         Box::new(ReorderForFusion),
@@ -119,13 +117,8 @@ fn ir_fusion_passes() -> Vec<Box<dyn Pass>> {
 /// The runtime index is rebuilt once here, after every pass has run. Individual
 /// passes must not rebuild it themselves — doing so re-runs plan construction
 /// and weight prepacking once per pass.
-pub fn optimize_onnx_graph(model: &mut OnnxModel) {
-    run_ir_pipeline(model, ir_cleanup_passes());
-
-    rewrite_convtranspose_dts(model);
-    fold_constants::run(model);
-
-    run_ir_pipeline(model, ir_fusion_passes());
+pub fn optimize_onnx_graph(model: &mut OnnxModel) -> Result<(), OnnxError> {
+    run_ir_pipeline(model)?;
     model.rebuild_runtime_index();
 
     if std::env::var("YSCV_NCHWC").as_deref() == Ok("on") {
@@ -148,4 +141,6 @@ pub fn optimize_onnx_graph(model: &mut OnnxModel) {
             eprintln!("[yscv-onnx] NCHWc top ops: {}", top.join(" "));
         }
     }
+
+    Ok(())
 }
