@@ -71,6 +71,17 @@ fn remove_dropout_keeps_unnamed_siblings() {
         "fixture must have unnamed nodes for this to be a regression test"
     );
 
+    let mut rng = crate::tests::equivalence::Lcg::new(0x0FF1_CE02);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![1, 3, 2, 2]));
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "optimize/unnamed-dropout",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Exact,
+        optimize_onnx_graph,
+    );
+
     optimize_onnx_graph(&mut model);
 
     assert_eq!(
@@ -122,8 +133,21 @@ fn eliminate_squeeze_unsqueeze_handles_overlapping_chain() {
         },
     ];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
-    let mut model = load_onnx_model(&bytes).unwrap();
 
+    // Structural survival is not enough — the chain has to still compute the
+    // same thing after whichever inverse pair the pass claims.
+    let mut rng = crate::tests::equivalence::Lcg::new(0x0FF1_CE01);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![1, 3, 2, 2]));
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "optimize/squeeze-unsqueeze-chain",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Exact,
+        optimize_onnx_graph,
+    );
+
+    let mut model = load_onnx_model(&bytes).unwrap();
     optimize_onnx_graph(&mut model);
 
     // The Relu is the only node that must survive; whichever inverse pair the
@@ -145,6 +169,88 @@ fn eliminate_squeeze_unsqueeze_handles_overlapping_chain() {
             node.op_type
         );
     }
+}
+
+/// The positional matcher required the inverse pair to be adjacent in node
+/// order, which is why `reorder_nodes_for_fusion` had to run before it. On the
+/// def-use IR the pair is found through the use list, so this runs the pass
+/// *directly on the unreordered graph* — no reordering step to rescue it — with
+/// an unrelated node scheduled between the two halves.
+#[test]
+fn eliminate_squeeze_unsqueeze_matches_non_adjacent_pair() {
+    use crate::ir::Pass;
+    use crate::optimizer::EliminateSqueezeUnsqueezePairs;
+    let axes_attr = || make_ints_attr("axes", vec![0]);
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Squeeze".into()),
+            name: Some("sq".into()),
+            input: vec!["x".into()],
+            output: vec!["a".into()],
+            attribute: vec![axes_attr()],
+            ..Default::default()
+        },
+        // Independent of the pair, but sitting between its two halves.
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("interloper".into()),
+            input: vec!["x".into()],
+            output: vec!["side".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Unsqueeze".into()),
+            name: Some("unsq".into()),
+            input: vec!["a".into()],
+            output: vec!["b".into()],
+            attribute: vec![axes_attr()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Add".into()),
+            name: Some("sink".into()),
+            input: vec!["b".into(), "side".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
+
+    let mut rng = crate::tests::equivalence::Lcg::new(0x0FF1_CE03);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![1, 3, 2, 2]));
+
+    // Apply the pass on its own, so nothing has reordered the nodes first.
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "eliminate_squeeze_unsqueeze/non-adjacent",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Exact,
+        |model| {
+            let mut graph = model.to_ir();
+            let fired = EliminateSqueezeUnsqueezePairs
+                .run(&mut graph)
+                .expect("pass runs");
+            assert!(fired, "pass must match across the intervening node");
+            model.apply_ir(&graph);
+        },
+    );
+
+    let mut model = load_onnx_model(&bytes).unwrap();
+    let mut graph = model.to_ir();
+    EliminateSqueezeUnsqueezePairs
+        .run(&mut graph)
+        .expect("pass runs");
+    model.apply_ir(&graph);
+
+    assert!(
+        model
+            .nodes
+            .iter()
+            .all(|n| !matches!(n.op_type.as_str(), "Squeeze" | "Unsqueeze")),
+        "the non-adjacent inverse pair should have been eliminated, got {:?}",
+        model.nodes.iter().map(|n| &n.op_type).collect::<Vec<_>>()
+    );
 }
 
 #[test]
