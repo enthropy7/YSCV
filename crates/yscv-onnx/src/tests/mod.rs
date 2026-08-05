@@ -2,6 +2,7 @@ mod calibration;
 mod conv_pool;
 mod dynamic_shapes;
 mod elementwise;
+mod equivalence;
 mod exporter;
 mod gather_scatter;
 mod gemm_matmul;
