@@ -397,6 +397,179 @@ fn fold_conv_bn_declines_on_a_shared_weight() {
     );
 }
 
+/// `Conv -> Mul(const)` and `Conv -> Add(const)`, with the constant on the
+/// given operand port so both orderings get exercised.
+fn conv_const_binary_bytes(op: &str, const_on_port: usize) -> Vec<u8> {
+    let mut binary_inputs = vec!["c0".to_string(), "k".to_string()];
+    if const_on_port == 0 {
+        binary_inputs.reverse();
+    }
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv0".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["c0".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some(op.into()),
+            name: Some("binop".into()),
+            input: binary_inputs,
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let inits = vec![
+        onnx::TensorProto {
+            name: Some("w".into()),
+            dims: vec![2, 3, 1, 1],
+            data_type: Some(1),
+            float_data: vec![0.3, -0.7, 0.5, 0.2, 0.9, -0.4],
+            ..Default::default()
+        },
+        // `[1, OC, 1, 1]` — the only spelling that broadcasts per-channel
+        // against an NCHW convolution output.
+        onnx::TensorProto {
+            name: Some("k".into()),
+            dims: vec![1, 2, 1, 1],
+            data_type: Some(1),
+            float_data: vec![1.7, -0.6],
+            ..Default::default()
+        },
+    ];
+    build_minimal_onnx_model(nodes, inits, vec!["x"], vec!["y"])
+}
+
+/// Structural coverage for both operators and both operand orders.
+///
+/// No numerical check here: the runtime's elementwise kernels require equal
+/// shapes, so the *unfolded* reference cannot execute a broadcast constant at
+/// all. The scalar case below covers equivalence on a graph that both sides can
+/// run.
+#[test]
+fn fold_conv_const_binary_absorbs_mul_and_add() {
+    for op in ["Mul", "Add"] {
+        for const_on_port in [0usize, 1] {
+            let bytes = conv_const_binary_bytes(op, const_on_port);
+            let mut model = load_onnx_model(&bytes).unwrap();
+            optimize_onnx_graph(&mut model);
+
+            assert_eq!(
+                model.node_count(),
+                1,
+                "{op} with the constant on port {const_on_port} should fold into the Conv"
+            );
+            assert_eq!(model.nodes[0].op_type, "Conv");
+            assert_eq!(model.nodes[0].inputs.len(), 3, "bias should be synthesized");
+        }
+    }
+}
+
+/// A scalar constant broadcasts to everything, so both the folded and unfolded
+/// graphs run and the arithmetic can be compared directly.
+#[test]
+fn fold_conv_scalar_mul_is_numerically_equivalent() {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv0".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["c0".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Mul".into()),
+            name: Some("scale".into()),
+            input: vec!["c0".into(), "k".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let inits = vec![
+        onnx::TensorProto {
+            name: Some("w".into()),
+            dims: vec![2, 3, 1, 1],
+            data_type: Some(1),
+            float_data: vec![0.3, -0.7, 0.5, 0.2, 0.9, -0.4],
+            ..Default::default()
+        },
+        onnx::TensorProto {
+            name: Some("k".into()),
+            dims: vec![1],
+            data_type: Some(1),
+            float_data: vec![1.7],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, inits, vec!["x"], vec!["y"]);
+
+    let mut rng = crate::tests::equivalence::Lcg::new(0x0FF1_CE07);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![1, 3, 4, 4]));
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "fold_conv_mul/scalar",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Abs(1e-5),
+        optimize_onnx_graph,
+    );
+
+    let mut model = load_onnx_model(&bytes).unwrap();
+    optimize_onnx_graph(&mut model);
+    assert_eq!(model.node_count(), 1, "the scalar Mul should fold in");
+}
+
+/// A rank-1 constant aligns against the *width* axis, not channels, so folding
+/// it into the weights as a per-channel scale would compute something else.
+/// The element count alone does not establish that a constant is per-channel.
+#[test]
+fn fold_conv_const_binary_declines_on_non_channel_constant() {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv0".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["c0".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Mul".into()),
+            name: Some("binop".into()),
+            input: vec!["c0".into(), "k".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let inits = vec![
+        onnx::TensorProto {
+            name: Some("w".into()),
+            dims: vec![2, 3, 1, 1],
+            data_type: Some(1),
+            float_data: vec![0.3, -0.7, 0.5, 0.2, 0.9, -0.4],
+            ..Default::default()
+        },
+        // Rank-1 with one element per output channel. Tempting, and what the
+        // string version accepted, but it broadcasts against width.
+        onnx::TensorProto {
+            name: Some("k".into()),
+            dims: vec![2],
+            data_type: Some(1),
+            float_data: vec![1.7, -0.6],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, inits, vec!["x"], vec!["y"]);
+
+    let mut model = load_onnx_model(&bytes).unwrap();
+    optimize_onnx_graph(&mut model);
+    assert_eq!(
+        model.node_count(),
+        2,
+        "a non-per-channel constant must not fold"
+    );
+}
+
 #[test]
 fn optimize_eliminates_dead_nodes() {
     let nodes = vec![
