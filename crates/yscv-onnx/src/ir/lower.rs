@@ -95,7 +95,38 @@ impl OnnxModel {
         debug_assert!(graph.validate().is_ok(), "to_ir produced an invalid graph");
         graph
     }
+}
 
+impl Graph {
+    /// Materializes one IR node as an `OnnxNode`.
+    ///
+    /// The runner's dispatch is written against `OnnxNode`, so constant folding
+    /// needs a node in that shape to evaluate. Building one node is cheap; it is
+    /// building a whole model around it that was not.
+    pub(crate) fn to_onnx_node(&self, id: super::NodeId) -> Option<OnnxNode> {
+        let node = self.node(id)?;
+        Some(OnnxNode {
+            op_type: node.op.as_str().to_string(),
+            name: node.name.clone(),
+            inputs: node
+                .inputs
+                .iter()
+                .map(|slot| match slot {
+                    Some(v) => self.value(*v).name.clone(),
+                    None => String::new(),
+                })
+                .collect(),
+            outputs: node
+                .outputs
+                .iter()
+                .map(|v| self.value(*v).name.clone())
+                .collect(),
+            attributes: node.attributes.clone(),
+        })
+    }
+}
+
+impl OnnxModel {
     /// Writes an optimized graph back over this model.
     ///
     /// Rebuilds `nodes` and `initializers` from the IR. Deliberately leaves the
@@ -104,28 +135,10 @@ impl OnnxModel {
     /// preserve those names, and the index is rebuilt once by the driver after
     /// the whole pipeline.
     pub(crate) fn apply_ir(&mut self, graph: &Graph) {
-        let mut nodes = Vec::with_capacity(graph.node_count());
-        for id in graph.node_ids() {
-            let Some(node) = graph.node(id) else { continue };
-            nodes.push(OnnxNode {
-                op_type: node.op.as_str().to_string(),
-                name: node.name.clone(),
-                inputs: node
-                    .inputs
-                    .iter()
-                    .map(|slot| match slot {
-                        Some(v) => graph.value(*v).name.clone(),
-                        None => String::new(),
-                    })
-                    .collect(),
-                outputs: node
-                    .outputs
-                    .iter()
-                    .map(|v| graph.value(*v).name.clone())
-                    .collect(),
-                attributes: node.attributes.clone(),
-            });
-        }
+        let nodes: Vec<OnnxNode> = graph
+            .node_ids()
+            .filter_map(|id| graph.to_onnx_node(id))
+            .collect();
 
         let mut initializers = FxHashMap::default();
         for idx in 0..graph.value_count() {

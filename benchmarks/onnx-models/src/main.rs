@@ -576,7 +576,7 @@ fn run_case(
     let mut model = load_onnx_model_from_file(model_path)
         .map_err(|e| format!("load {}: {e}", model_path.display()))?;
     let nodes_before = model.node_count();
-    optimize_onnx_graph(&mut model);
+    optimize_onnx_graph(&mut model).map_err(|e| format!("optimize: {e}"))?;
     let nodes_after = model.node_count();
     let runner = if threads == 0 {
         OnnxRunner::new(&model).map_err(|e| format!("runner init: {e}"))?

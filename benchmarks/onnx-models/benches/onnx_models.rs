@@ -18,7 +18,8 @@ fn bench_onnx_models(criterion: &mut Criterion) {
         .map(|case| {
             let mut model = load_onnx_model_from_file(asset_dir.join(&case.model))
                 .unwrap_or_else(|error| panic!("load {}: {error}", case.model));
-            optimize_onnx_graph(&mut model);
+            optimize_onnx_graph(&mut model)
+                .unwrap_or_else(|error| panic!("optimize {}: {error}", case.model));
             let inputs = make_inputs(&case, &asset_dir).expect("build model benchmark inputs");
             PreparedCase {
                 name: case.name,

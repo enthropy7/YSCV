@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `optimize_onnx_graph` now returns `Result<(), OnnxError>`.
+  Constant folding evaluates operators, so the pipeline can genuinely fail, and
+  the previous signature left no way to say so — failures were printed to stderr
+  and the model silently came back unoptimized. A node the evaluator declines is
+  still not an error: it is simply not folded.
+- The ONNX graph optimizer now runs over a def-use IR (`yscv-onnx/src/ir/`)
+  driven to a fixed point by a pass manager, instead of a hard-coded sequence of
+  functions mutating the model's string-keyed node list. Passes match through a
+  use list rather than positional adjacency, so producer/consumer pairs separated
+  by unrelated nodes now fuse. `YSCV_ONNX_PASSES=-name` disables an individual
+  pass; `YSCV_ONNX_PASS_LOG=1` reports each sweep.
+- Constant folding no longer builds a throwaway model and rebuilds the whole
+  execution plan per folded node; it dispatches the operator onto a bare
+  environment. It also folds a chain in one topological sweep rather than
+  rescanning from the start each time, refuses results that balloon far beyond
+  their inputs, and refuses the non-deterministic `Random*`/`Multinomial` family,
+  which would otherwise freeze a single draw into the weights.
+- `fuse_conv_relu`, `fuse_bn_relu`, `fold_conv_bn`, `fold_constants` and
+  `rewrite_convtranspose_dts` are no longer public. They were only ever reachable
+  through `optimize_onnx_graph` outside the crate.
+
 ### Fixed
+
+- Conv weight folding corrupted weights shared between two convolutions — the
+  shape a Siamese tracker's two branches produce. Each convolution folded its own
+  BatchNormalization into the shared tensor, applying the second scale on top of
+  the first. Sharing is now detected and the fold declines.
+- `Conv` + `Mul`/`Add` folding treated any constant with one element per output
+  channel as per-channel, including a rank-1 `[OC]` tensor. ONNX broadcasting
+  aligns trailing axes, so against an NCHW convolution output that scales *width*,
+  not channels. Only a scalar, or a constant whose channel-aligned axis holds the
+  output-channel count with every other axis 1, now qualifies.
+- Synthesized bias operands were named from the node name, which ONNX makes
+  optional, so every unnamed convolution proposed the same name and the second
+  silently aliased the first's tensor.
 
 - `remove_dropout_nodes` deleted nodes by `NodeProto.name`, which ONNX makes
   optional. A single unnamed `Dropout` put the empty string into the delete set

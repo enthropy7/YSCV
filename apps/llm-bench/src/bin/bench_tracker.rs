@@ -203,7 +203,7 @@ fn quant_chain_candidates(model: &OnnxModel) -> usize {
 fn run(args: Args) -> Result<(), String> {
     let mut model =
         load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load: {e}"))?;
-    optimize_onnx_graph(&mut model);
+    optimize_onnx_graph(&mut model).map_err(|e| format!("optimize: {e}"))?;
     let chain_candidates = quant_chain_candidates(&model);
     let runner =
         OnnxRunner::with_threads(&model, args.threads).map_err(|e| format!("runner: {e}"))?;

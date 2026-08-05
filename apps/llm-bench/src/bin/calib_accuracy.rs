@@ -212,7 +212,7 @@ fn collect_real_activations(
     // exec paths rely on. Skipping this step makes Conv kernels see
     // raw OIHW shapes and triggers "bias shape mismatch" on the first
     // conv layer.
-    optimize_onnx_graph(&mut model);
+    optimize_onnx_graph(&mut model).map_err(|e| format!("optimize: {e}"))?;
     let runner = OnnxRunner::new(&model).map_err(|e| format!("runner: {e}"))?;
     let coll = CalibrationCollector::new();
     coll.enable_histograms(true);

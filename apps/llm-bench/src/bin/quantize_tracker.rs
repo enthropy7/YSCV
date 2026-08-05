@@ -444,7 +444,7 @@ fn run(args: Args) -> Result<(), String> {
     eprintln!("loading {}…", args.model);
     let mut model_fp32 =
         load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load fp32: {e}"))?;
-    optimize_onnx_graph(&mut model_fp32);
+    optimize_onnx_graph(&mut model_fp32).map_err(|e| format!("optimize fp32: {e}"))?;
     let runner_fp32 = OnnxRunner::new(&model_fp32).map_err(|e| format!("runner fp32: {e}"))?;
 
     let calibration_samples = if let Some(spec) = args.calibration_jsonl.as_ref() {
@@ -509,7 +509,7 @@ fn run(args: Args) -> Result<(), String> {
     );
     let mut model_qdq =
         load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load q: {e}"))?;
-    optimize_onnx_graph(&mut model_qdq);
+    optimize_onnx_graph(&mut model_qdq).map_err(|e| format!("optimize q: {e}"))?;
     match args.format {
         QuantFormat::Qdq => rewrite_to_qdq(&mut model_qdq, &stats, &args.keep_fp32)
             .map_err(|e| format!("rewrite_to_qdq: {e}"))?,
@@ -556,7 +556,7 @@ fn run(args: Args) -> Result<(), String> {
         let mut reloaded = load_onnx_model_from_file(Path::new(output_path))
             .map_err(|e| format!("reload: {e}"))?;
         if args.format == QuantFormat::Qdq {
-            optimize_onnx_graph(&mut reloaded);
+            optimize_onnx_graph(&mut reloaded).map_err(|e| format!("optimize reload: {e}"))?;
         }
         model_qdq = reloaded;
     }

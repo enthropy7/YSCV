@@ -317,7 +317,7 @@ fn read_single_tensor_stream(name: &str, path: &PathBuf) -> Result<Vec<Tensor>, 
 fn run(args: Args) -> Result<(), CliError> {
     eprintln!("loading {}…", args.input.display());
     let mut model = load_onnx_model_from_file(&args.input)?;
-    optimize_onnx_graph(&mut model);
+    optimize_onnx_graph(&mut model)?;
 
     let cal_path = if args.weights_only {
         None
