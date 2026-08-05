@@ -1,29 +1,56 @@
-use rustc_hash::FxHashSet;
+use crate::error::OnnxError;
+use crate::ir::{Changed, Graph, NodeId, Pass};
 
-use crate::loader::OnnxModel;
+/// Removes nodes whose outputs nothing consumes.
+///
+/// A node is dead when none of its outputs are read by a live node and none are
+/// graph outputs. Removing it can kill its producers in turn, so this is a
+/// worklist: seed with every node, and when one is removed, re-examine the
+/// nodes that defined its inputs.
+///
+/// The pre-IR version reached the same fixpoint by rebuilding a
+/// `FxHashSet<String>` of every consumed tensor name and re-running `retain`
+/// until the node count stopped falling — O(sweeps · N) with a string hash per
+/// edge. Here the use counts are already maintained, so the whole thing is
+/// O(N + E) with no hashing.
+pub(crate) struct EliminateDeadCode;
 
-/// Removes nodes whose outputs are never consumed by any other node or graph output.
-pub fn eliminate_dead_code(model: &mut OnnxModel) {
-    loop {
-        let consumed: FxHashSet<String> = {
-            let mut set: FxHashSet<String> = model.outputs.iter().cloned().collect();
-            for node in &model.nodes {
-                for inp in &node.inputs {
-                    if !inp.is_empty() {
-                        set.insert(inp.clone());
-                    }
-                }
+impl Pass for EliminateDeadCode {
+    fn name(&self) -> &'static str {
+        "eliminate_dead_code"
+    }
+
+    fn run(&self, graph: &mut Graph) -> Result<Changed, OnnxError> {
+        let mut worklist: Vec<NodeId> = graph.node_ids().collect();
+        let mut changed = false;
+
+        while let Some(id) = worklist.pop() {
+            let Some(node) = graph.node(id) else {
+                // Already removed via another path through the worklist.
+                continue;
+            };
+            let live = node
+                .outputs
+                .iter()
+                .any(|&out| graph.use_count(out) > 0 || graph.is_graph_output(out));
+            if live {
+                continue;
             }
-            set
-        };
 
-        let before = model.nodes.len();
-        model
-            .nodes
-            .retain(|node| node.outputs.iter().any(|o| consumed.contains(o)));
+            // Producers of this node's inputs may become dead once it stops
+            // reading them, so queue them before the edges disappear.
+            let producers: Vec<NodeId> = node
+                .inputs
+                .iter()
+                .flatten()
+                .filter_map(|&v| graph.value(v).def)
+                .collect();
 
-        if model.nodes.len() == before {
-            break;
+            graph.remove_node(id);
+            changed = true;
+            worklist.extend(producers);
         }
+
+        Ok(changed)
     }
 }
