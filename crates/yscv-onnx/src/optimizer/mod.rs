@@ -27,7 +27,7 @@ pub use analyze_nchwc::analyze_nchwc;
 /// string-based pipeline reordering the graph first.
 pub(crate) use eliminate_squeeze_unsqueeze_pairs::EliminateSqueezeUnsqueezePairs;
 pub use fold_constants::fold_constants;
-pub use fold_conv_bn::fold_conv_bn;
+pub(crate) use fold_conv_bn::FoldConvBatchNorm;
 pub(crate) use fuse_activation::FuseActivation;
 pub use graph_cost::{
     GraphCost, GraphCostDiff, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
@@ -66,6 +66,10 @@ fn ir_cleanup_passes() -> Vec<Box<dyn Pass>> {
     vec![
         Box::new(RemoveDropout) as Box<dyn Pass>,
         Box::new(EliminateSqueezeUnsqueezePairs),
+        // Ahead of the Conv-Mul / Conv-Add folds below, which only need to
+        // handle the stray scale and bias that BatchNormalization did not
+        // already absorb.
+        Box::new(FoldConvBatchNorm),
         Box::new(EliminateDeadCode),
         Box::new(ReorderForFusion),
     ]
@@ -117,7 +121,6 @@ pub fn optimize_onnx_graph(model: &mut OnnxModel) {
     run_ir_pipeline(model, ir_cleanup_passes());
 
     rewrite_convtranspose_dts(model);
-    fold_conv_bn::run(model);
     fold_conv_mul::run(model);
     fold_conv_add_const::run(model);
     fold_constants::run(model);

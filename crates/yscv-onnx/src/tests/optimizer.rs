@@ -254,6 +254,149 @@ fn eliminate_squeeze_unsqueeze_matches_non_adjacent_pair() {
     );
 }
 
+/// Builds `Conv -> BatchNormalization`, optionally with both Convs sharing one
+/// weight initializer so the aliasing guard can be exercised.
+fn conv_bn_bytes(shared_weight: bool) -> Vec<u8> {
+    let bn_attrs = vec![make_float_attr("epsilon", 1e-5)];
+    let mut nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv0".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["c0".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("BatchNormalization".into()),
+            name: Some("bn0".into()),
+            input: vec![
+                "c0".into(),
+                "gamma".into(),
+                "beta".into(),
+                "mean".into(),
+                "var".into(),
+            ],
+            output: vec!["y".into()],
+            attribute: bn_attrs.clone(),
+            ..Default::default()
+        },
+    ];
+    if shared_weight {
+        nodes.push(onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv1".into()),
+            input: vec!["x2".into(), "w".into()],
+            output: vec!["c1".into()],
+            ..Default::default()
+        });
+        nodes.push(onnx::NodeProto {
+            op_type: Some("BatchNormalization".into()),
+            name: Some("bn1".into()),
+            input: vec![
+                "c1".into(),
+                "gamma".into(),
+                "beta".into(),
+                "mean".into(),
+                "var".into(),
+            ],
+            output: vec!["y2".into()],
+            attribute: bn_attrs,
+            ..Default::default()
+        });
+    }
+
+    let per_channel = |name: &str, data: Vec<f32>| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: vec![2],
+        data_type: Some(1),
+        float_data: data,
+        ..Default::default()
+    };
+    let inits = vec![
+        onnx::TensorProto {
+            name: Some("w".into()),
+            dims: vec![2, 3, 1, 1],
+            data_type: Some(1),
+            float_data: vec![0.3, -0.7, 0.5, 0.2, 0.9, -0.4],
+            ..Default::default()
+        },
+        per_channel("gamma", vec![1.4, 0.8]),
+        per_channel("beta", vec![-0.2, 0.35]),
+        per_channel("mean", vec![0.1, -0.25]),
+        per_channel("var", vec![0.9, 1.3]),
+    ];
+
+    let (inputs, outputs) = if shared_weight {
+        (vec!["x", "x2"], vec!["y", "y2"])
+    } else {
+        (vec!["x"], vec!["y"])
+    };
+    build_minimal_onnx_model(nodes, inits, inputs, outputs)
+}
+
+#[test]
+fn fold_conv_bn_is_numerically_equivalent() {
+    let bytes = conv_bn_bytes(false);
+    let mut rng = crate::tests::equivalence::Lcg::new(0x0FF1_CE05);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![1, 3, 4, 4]));
+
+    // Folding re-associates the arithmetic, so exact equality is not the bar.
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "fold_conv_bn",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Abs(1e-5),
+        optimize_onnx_graph,
+    );
+
+    let mut model = load_onnx_model(&bytes).unwrap();
+    optimize_onnx_graph(&mut model);
+    assert_eq!(
+        model.node_count(),
+        1,
+        "the BatchNormalization should fold in"
+    );
+    assert_eq!(model.nodes[0].op_type, "Conv");
+    assert_eq!(
+        model.nodes[0].inputs.len(),
+        3,
+        "a bias operand should have been synthesized"
+    );
+}
+
+/// Folding rewrites the weight in place, so a weight shared by two Convs — the
+/// two branches of a Siamese tracker, say — would get the second Conv's scale
+/// applied on top of the first's. The pass must decline rather than corrupt it.
+#[test]
+fn fold_conv_bn_declines_on_a_shared_weight() {
+    let bytes = conv_bn_bytes(true);
+    let mut rng = crate::tests::equivalence::Lcg::new(0x0FF1_CE06);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![1, 3, 4, 4]));
+    feed.insert("x2".to_string(), rng.tensor(vec![1, 3, 4, 4]));
+
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "fold_conv_bn/shared-weight",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Abs(1e-5),
+        optimize_onnx_graph,
+    );
+
+    let mut model = load_onnx_model(&bytes).unwrap();
+    optimize_onnx_graph(&mut model);
+    assert_eq!(
+        model
+            .nodes
+            .iter()
+            .filter(|n| n.op_type == "BatchNormalization")
+            .count(),
+        2,
+        "neither BatchNormalization should fold into the shared weight"
+    );
+}
+
 #[test]
 fn optimize_eliminates_dead_nodes() {
     let nodes = vec![
