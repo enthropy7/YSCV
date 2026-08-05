@@ -2,9 +2,8 @@ mod analyze_nchwc;
 mod eliminate_dead_code;
 mod eliminate_squeeze_unsqueeze_pairs;
 mod fold_constants;
-mod fold_conv_add_const;
 mod fold_conv_bn;
-mod fold_conv_mul;
+mod fold_conv_const_binary;
 mod fuse_activation;
 mod graph_cost;
 mod graph_stats;
@@ -28,6 +27,7 @@ pub use analyze_nchwc::analyze_nchwc;
 pub(crate) use eliminate_squeeze_unsqueeze_pairs::EliminateSqueezeUnsqueezePairs;
 pub use fold_constants::fold_constants;
 pub(crate) use fold_conv_bn::FoldConvBatchNorm;
+pub(crate) use fold_conv_const_binary::FoldConvConstBinary;
 pub(crate) use fuse_activation::FuseActivation;
 pub use graph_cost::{
     GraphCost, GraphCostDiff, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
@@ -70,6 +70,8 @@ fn ir_cleanup_passes() -> Vec<Box<dyn Pass>> {
         // handle the stray scale and bias that BatchNormalization did not
         // already absorb.
         Box::new(FoldConvBatchNorm),
+        Box::new(FoldConvConstBinary::mul()),
+        Box::new(FoldConvConstBinary::add()),
         Box::new(EliminateDeadCode),
         Box::new(ReorderForFusion),
     ]
@@ -121,8 +123,6 @@ pub fn optimize_onnx_graph(model: &mut OnnxModel) {
     run_ir_pipeline(model, ir_cleanup_passes());
 
     rewrite_convtranspose_dts(model);
-    fold_conv_mul::run(model);
-    fold_conv_add_const::run(model);
     fold_constants::run(model);
 
     run_ir_pipeline(model, ir_fusion_passes());
