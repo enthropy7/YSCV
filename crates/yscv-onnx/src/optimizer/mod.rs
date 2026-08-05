@@ -5,8 +5,7 @@ mod fold_constants;
 mod fold_conv_add_const;
 mod fold_conv_bn;
 mod fold_conv_mul;
-mod fuse_bn_relu;
-mod fuse_conv_relu;
+mod fuse_activation;
 mod graph_cost;
 mod graph_stats;
 mod remove_dropout_nodes;
@@ -24,13 +23,12 @@ use crate::{
 };
 
 pub use analyze_nchwc::analyze_nchwc;
-/// Re-exported so tests can drive this pass on its own, without the
+/// Re-exported so tests can drive these passes on their own, without the
 /// string-based pipeline reordering the graph first.
 pub(crate) use eliminate_squeeze_unsqueeze_pairs::EliminateSqueezeUnsqueezePairs;
 pub use fold_constants::fold_constants;
 pub use fold_conv_bn::fold_conv_bn;
-pub use fuse_bn_relu::fuse_bn_relu;
-pub use fuse_conv_relu::fuse_conv_relu;
+pub(crate) use fuse_activation::FuseActivation;
 pub use graph_cost::{
     GraphCost, GraphCostDiff, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
 };
@@ -55,6 +53,8 @@ fn run_ir_pipeline(model: &mut OnnxModel) {
     let manager = PassManager::new(vec![
         Box::new(RemoveDropout) as Box<dyn Pass>,
         Box::new(EliminateSqueezeUnsqueezePairs),
+        Box::new(FuseActivation::conv_relu()),
+        Box::new(FuseActivation::bn_relu()),
         Box::new(EliminateDeadCode),
     ]);
     match manager.run(&mut graph) {
@@ -75,19 +75,20 @@ fn run_ir_pipeline(model: &mut OnnxModel) {
 /// - Conv-Mul(const) scale absorption (absorb scalar/per-channel Mul into weights)
 /// - Conv-Add(const) bias absorption (absorb per-channel Add into Conv bias)
 /// - Constant folding (execute nodes with all-initializer inputs at load)
-/// - Conv+Relu / BN+Relu fusion (annotation-only; kernel dispatches on op_type)
 ///
 /// Ported to the def-use IR, where matching is order-independent — see
 /// [`run_ir_pipeline`]:
 /// - Dropout removal (inference-only, rewire consumers to the Dropout input)
 /// - Squeeze/Unsqueeze pair elimination (drop inverse pairs left by PyTorch export)
+/// - Conv+Relu / BN+Relu fusion (annotation-only; the kernel picks the
+///   activation up from the operator type)
 /// - Dead code elimination
 ///
 /// Order matters among the first group: `fold_conv_bn` runs before
 /// Conv-Mul/Conv-Add because BN usually absorbs into Conv already, so only
-/// stray scale/bias fall through. Constant folding runs before the activation
-/// fusions because a folded constant can turn a data-dependent activation into
-/// a plain one.
+/// stray scale/bias fall through. It also has to run before the activation
+/// fusions, since it matches a plain `Conv` and would miss one already retagged
+/// as `Conv_Relu`.
 ///
 /// The runtime index is rebuilt once here, after every pass has run. Individual
 /// passes must not rebuild it themselves — doing so re-runs plan construction
@@ -99,8 +100,6 @@ pub fn optimize_onnx_graph(model: &mut OnnxModel) {
     fold_conv_mul::run(model);
     fold_conv_add_const::run(model);
     fold_constants::run(model);
-    fuse_conv_relu::run(model);
-    fuse_bn_relu::run(model);
     run_ir_pipeline(model);
     model.rebuild_runtime_index();
 

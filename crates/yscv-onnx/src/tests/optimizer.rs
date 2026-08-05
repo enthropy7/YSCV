@@ -1,6 +1,7 @@
 use super::*;
+use crate::ir::Pass;
 use crate::optimizer::{
-    fuse_conv_relu, graph_cost, graph_cost_report, graph_stats, optimize_onnx_graph,
+    FuseActivation, graph_cost, graph_cost_report, graph_stats, optimize_onnx_graph,
 };
 use crate::{TensorShape, infer_shapes};
 
@@ -298,20 +299,72 @@ fn fuse_conv_relu_merges_pair() {
     ];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x", "w"], vec!["y"]);
     let mut model = load_onnx_model(&bytes).unwrap();
-    fuse_conv_relu(&mut model);
+    let mut graph = model.to_ir();
+    assert!(
+        FuseActivation::conv_relu().run(&mut graph).unwrap(),
+        "pass should fire"
+    );
+    model.apply_ir(&graph);
+
     assert_eq!(model.node_count(), 1);
     assert_eq!(model.nodes[0].op_type, "Conv_Relu");
-    assert_eq!(model.nodes[0].outputs[0], "y");
+    assert_eq!(
+        model.nodes[0].outputs[0], "y",
+        "the fused node must keep the Relu's output name, since it is a graph output"
+    );
+    assert_eq!(model.outputs, vec!["y".to_string()]);
 }
 
+/// The fusion rewrites the producer's output in place, so it must decline when
+/// anything else reads that intermediate — otherwise the other reader would
+/// observe post-activation values.
 #[test]
-fn reorder_enables_fusion_on_interleaved_branches() {
-    // Two branches exported interleaved (`convA, convB, reluA, reluB`),
-    // the order multi-input models (e.g. a Siamese tracker) commonly get.
-    // Positional `fuse_conv_relu` only inspects `nodes[i+1]`, so neither
-    // Conv+Relu pair is adjacent and nothing fuses. `optimize_onnx_graph`
-    // reorders into a depth-first topological order first, which walks each
-    // branch to completion and restores producer/consumer adjacency.
+fn fuse_conv_relu_declines_when_intermediate_has_another_reader() {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv0".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["conv_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu0".into()),
+            input: vec!["conv_out".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Sigmoid".into()),
+            name: Some("other".into()),
+            input: vec!["conv_out".into()],
+            output: vec!["z".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x", "w"], vec!["y", "z"]);
+    let model = load_onnx_model(&bytes).unwrap();
+    let mut graph = model.to_ir();
+
+    assert!(
+        !FuseActivation::conv_relu().run(&mut graph).unwrap(),
+        "Conv output feeds a second consumer, so the pass must decline"
+    );
+}
+
+/// Two branches exported interleaved (`convA, convB, reluA, reluB`), the order
+/// multi-input models such as a Siamese tracker commonly get.
+///
+/// This used to be a test that `reorder_nodes_for_fusion` rescued positional
+/// matching: the old `fuse_conv_relu` only inspected `nodes[i + 1]`, so neither
+/// pair was adjacent and nothing fused until the reorder restored adjacency.
+/// The fusion is now def-use based and fuses regardless of order, so what this
+/// pins down is the end-to-end result — both pairs fused — rather than the
+/// mechanism. Reordering still matters, but for the layer-3 plan builder, which
+/// is still positional; see `reorder_restores_producer_consumer_adjacency`.
+#[test]
+fn interleaved_branches_both_fuse() {
     let nodes = vec![
         onnx::NodeProto {
             op_type: Some("Conv".into()),
@@ -342,14 +395,31 @@ fn reorder_enables_fusion_on_interleaved_branches() {
             ..Default::default()
         },
     ];
-    let bytes = build_minimal_onnx_model(nodes, vec![], vec!["xa", "xb", "w"], vec!["ya", "yb"]);
+    let weight = onnx::TensorProto {
+        name: Some("w".into()),
+        dims: vec![2, 3, 1, 1],
+        data_type: Some(1),
+        float_data: vec![0.3, -0.7, 0.5, 0.2, 0.9, -0.4],
+        ..Default::default()
+    };
+    let bytes = build_minimal_onnx_model(nodes, vec![weight], vec!["xa", "xb"], vec!["ya", "yb"]);
+
+    // Activation fusion moves no arithmetic, so it must be bitwise identical.
+    let mut rng = crate::tests::equivalence::Lcg::new(0x0FF1_CE04);
+    let mut feed = FxHashMap::default();
+    feed.insert("xa".to_string(), rng.tensor(vec![1, 3, 4, 4]));
+    feed.insert("xb".to_string(), rng.tensor(vec![1, 3, 4, 4]));
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "optimize/interleaved-conv-relu",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Exact,
+        optimize_onnx_graph,
+    );
+
     let mut model = load_onnx_model(&bytes).unwrap();
     optimize_onnx_graph(&mut model);
-    assert_eq!(
-        model.node_count(),
-        2,
-        "both interleaved Conv+Relu pairs should fuse after reorder"
-    );
+    assert_eq!(model.node_count(), 2, "both Conv+Relu pairs should fuse");
     assert!(
         model.nodes.iter().all(|n| n.op_type == "Conv_Relu"),
         "every node should be a fused Conv_Relu, got {:?}",
@@ -359,6 +429,67 @@ fn reorder_enables_fusion_on_interleaved_branches() {
             .map(|n| n.op_type.clone())
             .collect::<Vec<_>>()
     );
+}
+
+/// The def-use fusion no longer needs reordering, but the layer-3 plan builder
+/// in `build_runtime_index` still matches on `nodes[i + 1]` / `nodes[i + 2]`,
+/// so `reorder_nodes_for_fusion` remains load-bearing until that moves onto the
+/// IR too. This pins the property the plan builder depends on.
+#[test]
+fn reorder_restores_producer_consumer_adjacency() {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv_a".into()),
+            input: vec!["xa".into(), "w".into()],
+            output: vec!["conv_a_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv_b".into()),
+            input: vec!["xb".into(), "w".into()],
+            output: vec!["conv_b_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Sigmoid".into()),
+            name: Some("act_a".into()),
+            input: vec!["conv_a_out".into()],
+            output: vec!["ya".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Sigmoid".into()),
+            name: Some("act_b".into()),
+            input: vec!["conv_b_out".into()],
+            output: vec!["yb".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![], vec!["xa", "xb", "w"], vec!["ya", "yb"]);
+    let mut model = load_onnx_model(&bytes).unwrap();
+    optimize_onnx_graph(&mut model);
+
+    // Sigmoid is not an activation any pass fuses, so all four nodes survive
+    // and only the ordering is under test.
+    assert_eq!(model.node_count(), 4);
+    for (idx, node) in model.nodes.iter().enumerate() {
+        if node.op_type != "Conv" {
+            continue;
+        }
+        let consumer = &model.nodes[idx + 1];
+        assert_eq!(
+            consumer.inputs[0],
+            node.outputs[0],
+            "each Conv should be immediately followed by its consumer, got {:?}",
+            model
+                .nodes
+                .iter()
+                .map(|n| n.name.clone())
+                .collect::<Vec<_>>()
+        );
+    }
 }
 #[test]
 fn graph_cost_report_is_deterministic_and_sorted_by_stable_key() {

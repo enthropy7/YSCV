@@ -298,6 +298,70 @@ impl Graph {
 
     // ── Mutation ─────────────────────────────────────────────────────────
 
+    /// Replaces a node's operator, leaving its edges alone.
+    ///
+    /// Used by the annotation fusions, which express "this Conv also applies a
+    /// Relu" by retagging the operator rather than by rewiring anything.
+    pub(crate) fn set_op(&mut self, id: NodeId, op: Op) {
+        if let Some(node) = self.nodes[id.idx()].as_mut() {
+            node.op = op;
+        }
+    }
+
+    /// Makes `producer` take over `consumer`'s output edges, then removes
+    /// `consumer`.
+    ///
+    /// This is annotation fusion: the fused operator inherits the downstream
+    /// value — crucially including its *name*, so a fused node sitting at a
+    /// graph output does not rename that output — and the intermediate value
+    /// between the two is left orphaned.
+    ///
+    /// The caller must have established that `consumer` is the only thing
+    /// reading `producer`'s outputs, normally via [`Graph::sole_consumer`];
+    /// otherwise the other readers would silently lose their producer.
+    /// Rewiring in the opposite direction (`replace_all_uses_with(consumer_out,
+    /// producer_out)`) would look equivalent but renames graph outputs.
+    pub(crate) fn absorb_consumer(&mut self, producer: NodeId, consumer: NodeId) {
+        let Some(consumer_node) = self.nodes[consumer.idx()].take() else {
+            debug_assert!(false, "absorb_consumer on a tombstoned consumer");
+            return;
+        };
+        for (port, input) in consumer_node.inputs.iter().enumerate() {
+            if let Some(v) = input {
+                self.remove_use(*v, consumer, port as u32);
+            }
+        }
+
+        let Some(producer_node) = self.nodes[producer.idx()].as_ref() else {
+            debug_assert!(false, "absorb_consumer on a tombstoned producer");
+            return;
+        };
+        let orphaned: Vec<ValueId> = producer_node.outputs.clone();
+        let inherited = consumer_node.outputs;
+
+        for old in orphaned {
+            debug_assert!(
+                self.values[old.idx()].uses.is_empty(),
+                "absorbing a consumer that was not the sole reader of '{}'",
+                self.values[old.idx()].name
+            );
+            if self.values[old.idx()].def == Some(producer) {
+                self.values[old.idx()].def = None;
+            }
+        }
+        for &value in &inherited {
+            self.values[value.idx()].def = Some(producer);
+        }
+        if let Some(node) = self.nodes[producer.idx()].as_mut() {
+            node.outputs = inherited;
+        }
+
+        debug_assert!(
+            self.validate().is_ok(),
+            "absorb_consumer broke an invariant"
+        );
+    }
+
     /// Redirects every consumer of `old` to `new`, and transfers graph-output
     /// status.
     ///
