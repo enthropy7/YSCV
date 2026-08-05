@@ -76,7 +76,10 @@ pub use contours::{
     find_contours, fit_circle, fit_ellipse, homography_4pt, hu_moments, min_area_rect,
     min_enclosing_circle, ransac_homography, region_props,
 };
-pub use crop_resize::{crop_resize_bilinear, crop_resize_bilinear_raw};
+pub use crop_resize::{
+    crop_resize_bilinear, crop_resize_bilinear_border, crop_resize_bilinear_border_raw,
+    crop_resize_bilinear_raw,
+};
 pub use draw::{
     Detection as DrawDetection, draw_circle, draw_detections, draw_line, draw_polylines, draw_rect,
     draw_text, draw_text_scaled, fill_poly,

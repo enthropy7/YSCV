@@ -81,6 +81,103 @@ pub fn crop_resize_bilinear(
     Tensor::from_vec(vec![tpl_h, tpl_w, ch], out).map_err(Into::into)
 }
 
+/// Fused crop + bilinear resize with a **constant border**: bilinear taps whose
+/// source pixel lies outside `[0,w) x [0,h)` contribute `border[c]` instead of
+/// the replicated edge pixel (the [`crop_resize_bilinear_raw`] behaviour). This
+/// is OpenCV `copyMakeBorder(BORDER_CONSTANT)` + `resize`, fused — the crop for
+/// context-padded trackers (e.g. FEAR) whose window runs far off the frame and
+/// pads with the image mean. Same coordinate convention as
+/// [`crop_resize_bilinear_raw`], so a region `[x0,y0,rw,rh]` maps to
+/// `cx = x0 + (rw-1)/2`, `cy = y0 + (rh-1)/2`, `win = (rw,rh)`. `border` must
+/// have at least `ch` elements.
+#[allow(clippy::too_many_arguments)]
+pub fn crop_resize_bilinear_border_raw(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+    border: &[f32],
+) -> Vec<f32> {
+    #[cfg(target_arch = "aarch64")]
+    if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
+        // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
+        return unsafe {
+            crop_resize_border_neon(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
+        };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if !cfg!(miri) {
+        // SAFETY: each path is guarded by runtime feature detection; all are
+        // bit-exact vs scalar (parity test). Gather paths (AVX2/AVX512) handle
+        // ch in {1,3}; the SSE channel-lane path handles ch <= 4.
+        let f = &yscv_cpu::host_cpu().features;
+        if (ch == 1 || ch == 3) && f.avx512f {
+            return unsafe {
+                crop_resize_border_avx512(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
+            };
+        }
+        if (ch == 1 || ch == 3) && f.avx2 {
+            return unsafe {
+                crop_resize_border_avx2(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
+            };
+        }
+        if (1..=4).contains(&ch) && f.sse41 {
+            return unsafe {
+                crop_resize_border_sse(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
+            };
+        }
+    }
+    crop_resize_border_scalar(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
+}
+
+/// Tensor wrapper around [`crop_resize_bilinear_border_raw`]. `input` is HWC f32;
+/// the result is `tpl_h x tpl_w x ch`. `border` must have at least `ch` elements.
+#[allow(clippy::too_many_arguments)]
+pub fn crop_resize_bilinear_border(
+    input: &Tensor,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_h: usize,
+    tpl_w: usize,
+    border: &[f32],
+) -> Result<Tensor, ImgProcError> {
+    let (h, w, ch) = hwc_shape(input)?;
+    if tpl_h == 0 || tpl_w == 0 || win_w == 0 || win_h == 0 {
+        return Err(ImgProcError::InvalidOutputDimensions {
+            out_h: tpl_h,
+            out_w: tpl_w,
+        });
+    }
+    if border.len() < ch {
+        return Err(ImgProcError::InvalidOutputDimensions {
+            out_h: border.len(),
+            out_w: ch,
+        });
+    }
+    let out = crop_resize_bilinear_border_raw(
+        input.data(),
+        h,
+        w,
+        ch,
+        cx,
+        cy,
+        win_w,
+        win_h,
+        tpl_w,
+        tpl_h,
+        border,
+    );
+    Tensor::from_vec(vec![tpl_h, tpl_w, ch], out).map_err(Into::into)
+}
+
 // ---- coordinate mapping (shared): cv2 half-pixel + getRectSubPix window offset.
 #[inline(always)]
 fn map_origin(cx: f32, cy: f32, win_w: usize, win_h: usize) -> (f32, f32) {
@@ -533,6 +630,560 @@ unsafe fn crop_resize_avx512(
     out
 }
 
+// ===========================================================================
+// Constant-border variants. Identical structure to the replicate paths above,
+// except a bilinear tap whose *source* index is out of `[0,w)x[0,h)` contributes
+// `border[c]` instead of the clamped edge pixel. Indices are still clamped for
+// the memory access (gather/load); the out-of-bounds value is then masked out.
+// ===========================================================================
+
+#[allow(clippy::too_many_arguments)]
+fn crop_resize_border_scalar(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+    border: &[f32],
+) -> Vec<f32> {
+    let (ox, oy) = map_origin(cx, cy, win_w, win_h);
+    let sx = win_w as f32 / tpl_w as f32;
+    let sy = win_h as f32 / tpl_h as f32;
+    let (wi, hi) = (w as isize, h as isize);
+    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+    for j in 0..tpl_h {
+        let fy = oy + (j as f32 + 0.5) * sy - 0.5;
+        let y0f = fy.floor();
+        let ay = fy - y0f;
+        let iy0 = y0f as isize;
+        let (y0ib, y1ib) = ((0..hi).contains(&iy0), (0..hi).contains(&(iy0 + 1)));
+        let y0 = iy0.clamp(0, hi - 1) as usize;
+        let y1 = (iy0 + 1).clamp(0, hi - 1) as usize;
+        for i in 0..tpl_w {
+            let fx = ox + (i as f32 + 0.5) * sx - 0.5;
+            let x0f = fx.floor();
+            let ax = fx - x0f;
+            let ix0 = x0f as isize;
+            let (x0ib, x1ib) = ((0..wi).contains(&ix0), (0..wi).contains(&(ix0 + 1)));
+            let x0 = ix0.clamp(0, wi - 1) as usize;
+            let x1 = (ix0 + 1).clamp(0, wi - 1) as usize;
+            let (w00, w01) = ((1.0 - ax) * (1.0 - ay), ax * (1.0 - ay));
+            let (w10, w11) = ((1.0 - ax) * ay, ax * ay);
+            let o00 = (y0 * w + x0) * ch;
+            let o01 = (y0 * w + x1) * ch;
+            let o10 = (y1 * w + x0) * ch;
+            let o11 = (y1 * w + x1) * ch;
+            let (m00, m01) = (x0ib && y0ib, x1ib && y0ib);
+            let (m10, m11) = (x0ib && y1ib, x1ib && y1ib);
+            let base = (j * tpl_w + i) * ch;
+            for c in 0..ch {
+                let p00 = if m00 { src[o00 + c] } else { border[c] };
+                let p01 = if m01 { src[o01 + c] } else { border[c] };
+                let p10 = if m10 { src[o10 + c] } else { border[c] };
+                let p11 = if m11 { src[o11 + c] } else { border[c] };
+                out[base + c] = w00 * p00 + w01 * p01 + w10 * p10 + w11 * p11;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
+unsafe fn crop_resize_border_neon(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+    border: &[f32],
+) -> Vec<f32> {
+    use std::arch::aarch64::*;
+
+    #[inline(always)]
+    unsafe fn loadn(src: &[f32], o: usize, ch: usize) -> float32x4_t {
+        let mut v = vdupq_n_f32(0.0);
+        v = vsetq_lane_f32(*src.get_unchecked(o), v, 0);
+        if ch > 1 {
+            v = vsetq_lane_f32(*src.get_unchecked(o + 1), v, 1);
+        }
+        if ch > 2 {
+            v = vsetq_lane_f32(*src.get_unchecked(o + 2), v, 2);
+        }
+        if ch > 3 {
+            v = vsetq_lane_f32(*src.get_unchecked(o + 3), v, 3);
+        }
+        v
+    }
+
+    let (ox, oy) = map_origin(cx, cy, win_w, win_h);
+    let sx = win_w as f32 / tpl_w as f32;
+    let sy = win_h as f32 / tpl_h as f32;
+    let (wi, hi) = (w as isize, h as isize);
+    let bv = loadn(border, 0, ch);
+    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+    for j in 0..tpl_h {
+        let fy = oy + (j as f32 + 0.5) * sy - 0.5;
+        let y0f = fy.floor();
+        let ay = fy - y0f;
+        let iy0 = y0f as isize;
+        let (y0ib, y1ib) = ((0..hi).contains(&iy0), (0..hi).contains(&(iy0 + 1)));
+        let y0 = iy0.clamp(0, hi - 1) as usize;
+        let y1 = (iy0 + 1).clamp(0, hi - 1) as usize;
+        for i in 0..tpl_w {
+            let fx = ox + (i as f32 + 0.5) * sx - 0.5;
+            let x0f = fx.floor();
+            let ax = fx - x0f;
+            let ix0 = x0f as isize;
+            let (x0ib, x1ib) = ((0..wi).contains(&ix0), (0..wi).contains(&(ix0 + 1)));
+            let x0 = ix0.clamp(0, wi - 1) as usize;
+            let x1 = (ix0 + 1).clamp(0, wi - 1) as usize;
+            let (w00, w01) = ((1.0 - ax) * (1.0 - ay), ax * (1.0 - ay));
+            let (w10, w11) = ((1.0 - ax) * ay, ax * ay);
+            let sel = |ib: bool, o: usize| if ib { loadn(src, o, ch) } else { bv };
+            let p00 = sel(x0ib && y0ib, (y0 * w + x0) * ch);
+            let p01 = sel(x1ib && y0ib, (y0 * w + x1) * ch);
+            let p10 = sel(x0ib && y1ib, (y1 * w + x0) * ch);
+            let p11 = sel(x1ib && y1ib, (y1 * w + x1) * ch);
+            let mut acc = vmulq_n_f32(p00, w00);
+            acc = vaddq_f32(acc, vmulq_n_f32(p01, w01));
+            acc = vaddq_f32(acc, vmulq_n_f32(p10, w10));
+            acc = vaddq_f32(acc, vmulq_n_f32(p11, w11));
+            let base = (j * tpl_w + i) * ch;
+            *out.get_unchecked_mut(base) = vgetq_lane_f32(acc, 0);
+            if ch > 1 {
+                *out.get_unchecked_mut(base + 1) = vgetq_lane_f32(acc, 1);
+            }
+            if ch > 2 {
+                *out.get_unchecked_mut(base + 2) = vgetq_lane_f32(acc, 2);
+            }
+            if ch > 3 {
+                *out.get_unchecked_mut(base + 3) = vgetq_lane_f32(acc, 3);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+#[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
+unsafe fn crop_resize_border_sse(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+    border: &[f32],
+) -> Vec<f32> {
+    use std::arch::x86_64::*;
+    #[inline(always)]
+    unsafe fn loadn(src: &[f32], o: usize, ch: usize) -> __m128 {
+        let mut a = [0f32; 4];
+        a[0] = *src.get_unchecked(o);
+        if ch > 1 {
+            a[1] = *src.get_unchecked(o + 1);
+        }
+        if ch > 2 {
+            a[2] = *src.get_unchecked(o + 2);
+        }
+        if ch > 3 {
+            a[3] = *src.get_unchecked(o + 3);
+        }
+        _mm_loadu_ps(a.as_ptr())
+    }
+
+    let (ox, oy) = map_origin(cx, cy, win_w, win_h);
+    let sx = win_w as f32 / tpl_w as f32;
+    let sy = win_h as f32 / tpl_h as f32;
+    let (wi, hi) = (w as isize, h as isize);
+    let bv = loadn(border, 0, ch);
+    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+    for j in 0..tpl_h {
+        let fy = oy + (j as f32 + 0.5) * sy - 0.5;
+        let y0f = fy.floor();
+        let ay = fy - y0f;
+        let iy0 = y0f as isize;
+        let (y0ib, y1ib) = ((0..hi).contains(&iy0), (0..hi).contains(&(iy0 + 1)));
+        let y0 = iy0.clamp(0, hi - 1) as usize;
+        let y1 = (iy0 + 1).clamp(0, hi - 1) as usize;
+        for i in 0..tpl_w {
+            let fx = ox + (i as f32 + 0.5) * sx - 0.5;
+            let x0f = fx.floor();
+            let ax = fx - x0f;
+            let ix0 = x0f as isize;
+            let (x0ib, x1ib) = ((0..wi).contains(&ix0), (0..wi).contains(&(ix0 + 1)));
+            let x0 = ix0.clamp(0, wi - 1) as usize;
+            let x1 = (ix0 + 1).clamp(0, wi - 1) as usize;
+            let (w00, w01) = ((1.0 - ax) * (1.0 - ay), ax * (1.0 - ay));
+            let (w10, w11) = ((1.0 - ax) * ay, ax * ay);
+            let sel = |ib: bool, o: usize| if ib { loadn(src, o, ch) } else { bv };
+            let p00 = sel(x0ib && y0ib, (y0 * w + x0) * ch);
+            let p01 = sel(x1ib && y0ib, (y0 * w + x1) * ch);
+            let p10 = sel(x0ib && y1ib, (y1 * w + x0) * ch);
+            let p11 = sel(x1ib && y1ib, (y1 * w + x1) * ch);
+            let mut acc = _mm_mul_ps(p00, _mm_set1_ps(w00));
+            acc = _mm_add_ps(acc, _mm_mul_ps(p01, _mm_set1_ps(w01)));
+            acc = _mm_add_ps(acc, _mm_mul_ps(p10, _mm_set1_ps(w10)));
+            acc = _mm_add_ps(acc, _mm_mul_ps(p11, _mm_set1_ps(w11)));
+            let mut r = [0f32; 4];
+            _mm_storeu_ps(r.as_mut_ptr(), acc);
+            let base = (j * tpl_w + i) * ch;
+            for c in 0..ch {
+                *out.get_unchecked_mut(base + c) = r[c];
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
+unsafe fn crop_resize_border_avx2(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+    border: &[f32],
+) -> Vec<f32> {
+    use std::arch::x86_64::*;
+
+    let (ox, oy) = map_origin(cx, cy, win_w, win_h);
+    let sx = win_w as f32 / tpl_w as f32;
+    let sy = win_h as f32 / tpl_h as f32;
+    let (wi, hi) = (w as isize, h as isize);
+    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+
+    let one = _mm256_set1_ps(1.0);
+    let ramp = _mm256_set_ps(7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0);
+    let wmax = _mm256_set1_epi32(w as i32 - 1);
+    let zero_i = _mm256_setzero_si256();
+    let neg1_i = _mm256_set1_epi32(-1);
+    let wcount = _mm256_set1_epi32(w as i32);
+    let ch_i = _mm256_set1_epi32(ch as i32);
+    let src_ptr = src.as_ptr();
+
+    for j in 0..tpl_h {
+        let fy = oy + (j as f32 + 0.5) * sy - 0.5;
+        let y0f = fy.floor();
+        let ay = _mm256_set1_ps(fy - y0f);
+        let ay1 = _mm256_sub_ps(one, ay);
+        let iy0 = y0f as isize;
+        let (y0ib, y1ib) = ((0..hi).contains(&iy0), (0..hi).contains(&(iy0 + 1)));
+        let y0 = iy0.clamp(0, hi - 1) as i32;
+        let y1 = (iy0 + 1).clamp(0, hi - 1) as i32;
+        let r0 = _mm256_set1_epi32(y0 * w as i32);
+        let r1 = _mm256_set1_epi32(y1 * w as i32);
+        let ym0 = if y0ib { neg1_i } else { zero_i };
+        let ym1 = if y1ib { neg1_i } else { zero_i };
+
+        let mut i = 0usize;
+        while i + 8 <= tpl_w {
+            let idx = _mm256_add_ps(_mm256_set1_ps(i as f32), ramp);
+            let t = _mm256_mul_ps(_mm256_add_ps(idx, _mm256_set1_ps(0.5)), _mm256_set1_ps(sx));
+            let fx = _mm256_sub_ps(_mm256_add_ps(_mm256_set1_ps(ox), t), _mm256_set1_ps(0.5));
+            let x0f = _mm256_floor_ps(fx);
+            let ax = _mm256_sub_ps(fx, x0f);
+            let ax1 = _mm256_sub_ps(one, ax);
+            let x0t = _mm256_cvttps_epi32(x0f);
+            let x1t = _mm256_add_epi32(x0t, _mm256_set1_epi32(1));
+            // per-lane in-bounds: 0 <= idx <= w-1  ==  (idx > -1) & (w > idx)
+            let x0v = _mm256_and_si256(
+                _mm256_cmpgt_epi32(x0t, neg1_i),
+                _mm256_cmpgt_epi32(wcount, x0t),
+            );
+            let x1v = _mm256_and_si256(
+                _mm256_cmpgt_epi32(x1t, neg1_i),
+                _mm256_cmpgt_epi32(wcount, x1t),
+            );
+            let x0i = _mm256_min_epi32(_mm256_max_epi32(x0t, zero_i), wmax);
+            let x1i = _mm256_min_epi32(_mm256_max_epi32(x1t, zero_i), wmax);
+            let m00 = _mm256_castsi256_ps(_mm256_and_si256(x0v, ym0));
+            let m01 = _mm256_castsi256_ps(_mm256_and_si256(x1v, ym0));
+            let m10 = _mm256_castsi256_ps(_mm256_and_si256(x0v, ym1));
+            let m11 = _mm256_castsi256_ps(_mm256_and_si256(x1v, ym1));
+            let w00 = _mm256_mul_ps(ax1, ay1);
+            let w01 = _mm256_mul_ps(ax, ay1);
+            let w10 = _mm256_mul_ps(ax1, ay);
+            let w11 = _mm256_mul_ps(ax, ay);
+            let b00 = _mm256_mullo_epi32(_mm256_add_epi32(r0, x0i), ch_i);
+            let b01 = _mm256_mullo_epi32(_mm256_add_epi32(r0, x1i), ch_i);
+            let b10 = _mm256_mullo_epi32(_mm256_add_epi32(r1, x0i), ch_i);
+            let b11 = _mm256_mullo_epi32(_mm256_add_epi32(r1, x1i), ch_i);
+            for c in 0..ch as i32 {
+                let cc = _mm256_set1_epi32(c);
+                let bc = _mm256_set1_ps(*border.get_unchecked(c as usize));
+                let g00 = _mm256_blendv_ps(
+                    bc,
+                    _mm256_i32gather_ps::<4>(src_ptr, _mm256_add_epi32(b00, cc)),
+                    m00,
+                );
+                let g01 = _mm256_blendv_ps(
+                    bc,
+                    _mm256_i32gather_ps::<4>(src_ptr, _mm256_add_epi32(b01, cc)),
+                    m01,
+                );
+                let g10 = _mm256_blendv_ps(
+                    bc,
+                    _mm256_i32gather_ps::<4>(src_ptr, _mm256_add_epi32(b10, cc)),
+                    m10,
+                );
+                let g11 = _mm256_blendv_ps(
+                    bc,
+                    _mm256_i32gather_ps::<4>(src_ptr, _mm256_add_epi32(b11, cc)),
+                    m11,
+                );
+                let mut acc = _mm256_mul_ps(w00, g00);
+                acc = _mm256_add_ps(acc, _mm256_mul_ps(w01, g01));
+                acc = _mm256_add_ps(acc, _mm256_mul_ps(w10, g10));
+                acc = _mm256_add_ps(acc, _mm256_mul_ps(w11, g11));
+                if ch == 1 {
+                    _mm256_storeu_ps(out.as_mut_ptr().add(j * tpl_w + i), acc);
+                } else {
+                    let mut tmp = [0f32; 8];
+                    _mm256_storeu_ps(tmp.as_mut_ptr(), acc);
+                    for lane in 0..8 {
+                        *out.get_unchecked_mut((j * tpl_w + i + lane) * ch + c as usize) =
+                            tmp[lane];
+                    }
+                }
+            }
+            i += 8;
+        }
+        for ii in i..tpl_w {
+            let fx = ox + (ii as f32 + 0.5) * sx - 0.5;
+            let x0f = fx.floor();
+            let ax = fx - x0f;
+            let ix0 = x0f as isize;
+            let (x0ib, x1ib) = ((0..wi).contains(&ix0), (0..wi).contains(&(ix0 + 1)));
+            let x0 = ix0.clamp(0, wi - 1) as usize;
+            let x1 = (ix0 + 1).clamp(0, wi - 1) as usize;
+            let ayf = fy - y0f;
+            let (cw00, cw01) = ((1.0 - ax) * (1.0 - ayf), ax * (1.0 - ayf));
+            let (cw10, cw11) = ((1.0 - ax) * ayf, ax * ayf);
+            let o00 = (y0 as usize * w + x0) * ch;
+            let o01 = (y0 as usize * w + x1) * ch;
+            let o10 = (y1 as usize * w + x0) * ch;
+            let o11 = (y1 as usize * w + x1) * ch;
+            let base = (j * tpl_w + ii) * ch;
+            for c in 0..ch {
+                let p00 = if x0ib && y0ib {
+                    src[o00 + c]
+                } else {
+                    border[c]
+                };
+                let p01 = if x1ib && y0ib {
+                    src[o01 + c]
+                } else {
+                    border[c]
+                };
+                let p10 = if x0ib && y1ib {
+                    src[o10 + c]
+                } else {
+                    border[c]
+                };
+                let p11 = if x1ib && y1ib {
+                    src[o11 + c]
+                } else {
+                    border[c]
+                };
+                *out.get_unchecked_mut(base + c) =
+                    cw00 * p00 + cw01 * p01 + cw10 * p10 + cw11 * p11;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
+unsafe fn crop_resize_border_avx512(
+    src: &[f32],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+    border: &[f32],
+) -> Vec<f32> {
+    use std::arch::x86_64::*;
+
+    let (ox, oy) = map_origin(cx, cy, win_w, win_h);
+    let sx = win_w as f32 / tpl_w as f32;
+    let sy = win_h as f32 / tpl_h as f32;
+    let (wi, hi) = (w as isize, h as isize);
+    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+
+    let one = _mm512_set1_ps(1.0);
+    let half = _mm512_set1_ps(0.5);
+    let ramp = _mm512_set_ps(
+        15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0,
+    );
+    let wmax = _mm512_set1_epi32(w as i32 - 1);
+    let zero_i = _mm512_setzero_si512();
+    let one_i = _mm512_set1_epi32(1);
+    let ch_i = _mm512_set1_epi32(ch as i32);
+    let src_ptr = src.as_ptr();
+
+    for j in 0..tpl_h {
+        let fy = oy + (j as f32 + 0.5) * sy - 0.5;
+        let y0f = fy.floor();
+        let ay = _mm512_set1_ps(fy - y0f);
+        let ay1 = _mm512_sub_ps(one, ay);
+        let iy0 = y0f as isize;
+        let (y0ib, y1ib) = ((0..hi).contains(&iy0), (0..hi).contains(&(iy0 + 1)));
+        let y0 = iy0.clamp(0, hi - 1) as i32;
+        let y1 = (iy0 + 1).clamp(0, hi - 1) as i32;
+        let r0 = _mm512_set1_epi32(y0 * w as i32);
+        let r1 = _mm512_set1_epi32(y1 * w as i32);
+        let ym0: __mmask16 = if y0ib { 0xFFFF } else { 0 };
+        let ym1: __mmask16 = if y1ib { 0xFFFF } else { 0 };
+
+        let mut i = 0usize;
+        while i + 16 <= tpl_w {
+            let idx = _mm512_add_ps(_mm512_set1_ps(i as f32), ramp);
+            let t = _mm512_mul_ps(_mm512_add_ps(idx, half), _mm512_set1_ps(sx));
+            let fx = _mm512_sub_ps(_mm512_add_ps(_mm512_set1_ps(ox), t), half);
+            let x0f = _mm512_roundscale_ps::<0x01>(fx);
+            let ax = _mm512_sub_ps(fx, x0f);
+            let ax1 = _mm512_sub_ps(one, ax);
+            let x0t = _mm512_cvttps_epi32(x0f);
+            let x1t = _mm512_add_epi32(x0t, one_i);
+            let x0v = _kand_mask16(
+                _mm512_cmpge_epi32_mask(x0t, zero_i),
+                _mm512_cmple_epi32_mask(x0t, wmax),
+            );
+            let x1v = _kand_mask16(
+                _mm512_cmpge_epi32_mask(x1t, zero_i),
+                _mm512_cmple_epi32_mask(x1t, wmax),
+            );
+            let x0i = _mm512_min_epi32(_mm512_max_epi32(x0t, zero_i), wmax);
+            let x1i = _mm512_min_epi32(_mm512_max_epi32(x1t, zero_i), wmax);
+            let m00 = _kand_mask16(x0v, ym0);
+            let m01 = _kand_mask16(x1v, ym0);
+            let m10 = _kand_mask16(x0v, ym1);
+            let m11 = _kand_mask16(x1v, ym1);
+            let w00 = _mm512_mul_ps(ax1, ay1);
+            let w01 = _mm512_mul_ps(ax, ay1);
+            let w10 = _mm512_mul_ps(ax1, ay);
+            let w11 = _mm512_mul_ps(ax, ay);
+            let b00 = _mm512_mullo_epi32(_mm512_add_epi32(r0, x0i), ch_i);
+            let b01 = _mm512_mullo_epi32(_mm512_add_epi32(r0, x1i), ch_i);
+            let b10 = _mm512_mullo_epi32(_mm512_add_epi32(r1, x0i), ch_i);
+            let b11 = _mm512_mullo_epi32(_mm512_add_epi32(r1, x1i), ch_i);
+            for c in 0..ch as i32 {
+                let cc = _mm512_set1_epi32(c);
+                let bc = _mm512_set1_ps(*border.get_unchecked(c as usize));
+                let g00 = _mm512_mask_blend_ps(
+                    m00,
+                    bc,
+                    _mm512_i32gather_ps::<4>(_mm512_add_epi32(b00, cc), src_ptr),
+                );
+                let g01 = _mm512_mask_blend_ps(
+                    m01,
+                    bc,
+                    _mm512_i32gather_ps::<4>(_mm512_add_epi32(b01, cc), src_ptr),
+                );
+                let g10 = _mm512_mask_blend_ps(
+                    m10,
+                    bc,
+                    _mm512_i32gather_ps::<4>(_mm512_add_epi32(b10, cc), src_ptr),
+                );
+                let g11 = _mm512_mask_blend_ps(
+                    m11,
+                    bc,
+                    _mm512_i32gather_ps::<4>(_mm512_add_epi32(b11, cc), src_ptr),
+                );
+                let mut acc = _mm512_mul_ps(w00, g00);
+                acc = _mm512_add_ps(acc, _mm512_mul_ps(w01, g01));
+                acc = _mm512_add_ps(acc, _mm512_mul_ps(w10, g10));
+                acc = _mm512_add_ps(acc, _mm512_mul_ps(w11, g11));
+                if ch == 1 {
+                    _mm512_storeu_ps(out.as_mut_ptr().add(j * tpl_w + i), acc);
+                } else {
+                    let mut tmp = [0f32; 16];
+                    _mm512_storeu_ps(tmp.as_mut_ptr(), acc);
+                    for lane in 0..16 {
+                        *out.get_unchecked_mut((j * tpl_w + i + lane) * ch + c as usize) =
+                            tmp[lane];
+                    }
+                }
+            }
+            i += 16;
+        }
+        for ii in i..tpl_w {
+            let fx = ox + (ii as f32 + 0.5) * sx - 0.5;
+            let x0f = fx.floor();
+            let ax = fx - x0f;
+            let ix0 = x0f as isize;
+            let (x0ib, x1ib) = ((0..wi).contains(&ix0), (0..wi).contains(&(ix0 + 1)));
+            let x0 = ix0.clamp(0, wi - 1) as usize;
+            let x1 = (ix0 + 1).clamp(0, wi - 1) as usize;
+            let ayf = fy - y0f;
+            let (cw00, cw01) = ((1.0 - ax) * (1.0 - ayf), ax * (1.0 - ayf));
+            let (cw10, cw11) = ((1.0 - ax) * ayf, ax * ayf);
+            let o00 = (y0 as usize * w + x0) * ch;
+            let o01 = (y0 as usize * w + x1) * ch;
+            let o10 = (y1 as usize * w + x0) * ch;
+            let o11 = (y1 as usize * w + x1) * ch;
+            let base = (j * tpl_w + ii) * ch;
+            for c in 0..ch {
+                let p00 = if x0ib && y0ib {
+                    src[o00 + c]
+                } else {
+                    border[c]
+                };
+                let p01 = if x1ib && y0ib {
+                    src[o01 + c]
+                } else {
+                    border[c]
+                };
+                let p10 = if x0ib && y1ib {
+                    src[o10 + c]
+                } else {
+                    border[c]
+                };
+                let p11 = if x1ib && y1ib {
+                    src[o11 + c]
+                } else {
+                    border[c]
+                };
+                *out.get_unchecked_mut(base + c) =
+                    cw00 * p00 + cw01 * p01 + cw10 * p10 + cw11 * p11;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +1196,83 @@ mod tests {
                 (s >> 8) as f32 / 16_777_216.0 * 255.0
             })
             .collect()
+    }
+
+    /// The constant-border variant: every SIMD path bit-identical to the scalar
+    /// border reference, on windows that run off the image edges so the border
+    /// is actually taken (mask + blend / per-tap select), plus a fully-off case.
+    #[test]
+    fn simd_border_matches_scalar() {
+        let (h, w) = (200usize, 240usize);
+        // (win_w, win_h, tpl_w, tpl_h, cx, cy): corners, big context, fully off.
+        let cases = [
+            (300usize, 300usize, 128usize, 128usize, 18.0f32, 12.0f32),
+            (400, 260, 160, 136, 120.0, 100.0),
+            (64, 64, 40, 40, -220.0, -200.0), // entirely off -> all border
+            (150, 150, 48, 48, 236.0, 196.0), // off the bottom-right corner
+        ];
+        let bitexact = |want: &[f32], got: &[f32], label: &str| {
+            let mx = want
+                .iter()
+                .zip(got)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f32::max);
+            assert_eq!(mx, 0.0, "{label} max diff {mx}");
+        };
+        for &ch in &[1usize, 3] {
+            let src = synth(h, w, ch);
+            let border: Vec<f32> = (0..ch).map(|c| 30.0 + 50.0 * c as f32).collect();
+            for &(ww, wh, tw, th, cx, cy) in &cases {
+                let want =
+                    crop_resize_border_scalar(&src, h, w, ch, cx, cy, ww, wh, tw, th, &border);
+                let lbl = format!("ch={ch} win={ww}x{wh} tpl={tw}x{th} c=({cx},{cy})");
+                bitexact(
+                    &want,
+                    &crop_resize_bilinear_border_raw(
+                        &src, h, w, ch, cx, cy, ww, wh, tw, th, &border,
+                    ),
+                    &lbl,
+                );
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx512f") {
+                        bitexact(
+                            &want,
+                            &crop_resize_border_avx512(
+                                &src, h, w, ch, cx, cy, ww, wh, tw, th, &border,
+                            ),
+                            &lbl,
+                        );
+                    }
+                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx2") {
+                        bitexact(
+                            &want,
+                            &crop_resize_border_avx2(
+                                &src, h, w, ch, cx, cy, ww, wh, tw, th, &border,
+                            ),
+                            &lbl,
+                        );
+                    }
+                    if std::is_x86_feature_detected!("sse4.1") {
+                        bitexact(
+                            &want,
+                            &crop_resize_border_sse(
+                                &src, h, w, ch, cx, cy, ww, wh, tw, th, &border,
+                            ),
+                            &lbl,
+                        );
+                    }
+                }
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    bitexact(
+                        &want,
+                        &crop_resize_border_neon(&src, h, w, ch, cx, cy, ww, wh, tw, th, &border),
+                        &lbl,
+                    );
+                }
+            }
+        }
     }
 
     /// Every dispatched SIMD path must be **bit-identical** to the scalar

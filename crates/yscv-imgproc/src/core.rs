@@ -120,6 +120,11 @@ pub use ops::crop;
 /// Fused crop + bilinear resize (Tensor). Samples a `tpl_h x tpl_w x C` template
 /// from a window centred at `(cx, cy)`, cv2 half-pixel + border replicate.
 pub use ops::crop_resize_bilinear;
+/// Fused crop + bilinear resize with a constant border (Tensor). Out-of-image
+/// taps take `border[c]` (cv2 `copyMakeBorder(CONSTANT)` + resize, fused).
+pub use ops::crop_resize_bilinear_border;
+/// Fused crop + bilinear resize with a constant border on a raw HWC f32 slice.
+pub use ops::crop_resize_bilinear_border_raw;
 /// Fused crop + bilinear resize on a raw HWC f32 slice (zero-copy source).
 pub use ops::crop_resize_bilinear_raw;
 /// Dense optical flow (Farneback method). Input: two consecutive `[H, W]` grayscale frames.
