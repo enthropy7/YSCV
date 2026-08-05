@@ -399,19 +399,14 @@ fn graph_stats_reports_op_counts() {
 #[test]
 fn rewrite_convtranspose_dts_is_numerically_identical() {
     use crate::optimizer::rewrite_convtranspose_dts;
+    use crate::tests::equivalence::{Lcg, Tolerance, assert_transform_preserves_numerics};
 
-    // ConvTranspose k=2, s=2: C_in=3, C_out=2, вход 1x3x4x4 (псевдослучайно)
+    // ConvTranspose k=2, s=2: C_in=3, C_out=2, pseudo-random 1x3x4x4 input.
     let (c_in, c_out, k, ih, iw) = (3usize, 2usize, 2usize, 4usize, 4usize);
-    let mut state = 0xABCD_1234_u64;
-    let mut rnd = || {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((state >> 33) % 2000) as f32 / 1000.0 - 1.0
-    };
-    let w: Vec<f32> = (0..c_in * c_out * k * k).map(|_| rnd()).collect();
-    let b: Vec<f32> = (0..c_out).map(|_| rnd()).collect();
-    let x: Vec<f32> = (0..c_in * ih * iw).map(|_| rnd()).collect();
+    let mut rng = Lcg::new(0xABCD_1234);
+    let w: Vec<f32> = rng.vec(c_in * c_out * k * k);
+    let b: Vec<f32> = rng.vec(c_out);
+    let x: Vec<f32> = rng.vec(c_in * ih * iw);
 
     let weight = onnx::TensorProto {
         name: Some("w".into()),
@@ -442,37 +437,40 @@ fn rewrite_convtranspose_dts_is_numerically_identical() {
 
     let input = Tensor::from_vec(vec![1, c_in, ih, iw], x).unwrap();
     let mut feed = FxHashMap::default();
-    feed.insert("x".to_string(), input.clone());
+    feed.insert("x".to_string(), input);
 
-    // эталон: как есть, через ConvTranspose-ядро
-    let model_ref = load_onnx_model(&bytes).unwrap();
-    let reference = run_onnx_model(&model_ref, feed.clone()).unwrap();
-
-    // переписанный граф: Conv1x1 + DepthToSpace(CRD)
-    let mut model_opt = load_onnx_model(&bytes).unwrap();
-    rewrite_convtranspose_dts(&mut model_opt);
-    model_opt.rebuild_runtime_index();
-    assert!(
-        model_opt.nodes.iter().all(|n| n.op_type != "ConvTranspose"),
-        "pass must replace the eligible ConvTranspose"
+    // The rewrite replaces the ConvTranspose kernel with Conv1x1 +
+    // DepthToSpace(CRD), so the arithmetic is re-associated rather than
+    // preserved bit-for-bit.
+    assert_transform_preserves_numerics(
+        "rewrite_convtranspose_dts",
+        &bytes,
+        &feed,
+        Tolerance::Abs(1e-5),
+        |model| {
+            rewrite_convtranspose_dts(model);
+            assert!(
+                model.nodes.iter().all(|n| n.op_type != "ConvTranspose"),
+                "pass must replace the eligible ConvTranspose"
+            );
+            assert!(model.nodes.iter().any(|n| n.op_type == "DepthToSpace"));
+        },
     );
-    assert!(model_opt.nodes.iter().any(|n| n.op_type == "DepthToSpace"));
-    let rewritten = run_onnx_model(&model_opt, feed).unwrap();
 
-    let a = reference["y"].data();
-    let c = rewritten["y"].data();
-    assert_eq!(reference["y"].shape(), rewritten["y"].shape());
-    assert_eq!(reference["y"].shape(), &[1, c_out, ih * k, iw * k]);
-    for (i, (&ra, &rb)) in a.iter().zip(c).enumerate() {
-        assert!((ra - rb).abs() < 1e-5, "mismatch at {i}: {ra} vs {rb}");
-    }
+    // The harness checks shape equality between the two runs; pin the absolute
+    // shape too, so a rewrite that shrinks both sides identically is caught.
+    let model = load_onnx_model(&bytes).unwrap();
+    let out = run_onnx_model(&model, feed).unwrap();
+    assert_eq!(out["y"].shape(), &[1, c_out, ih * k, iw * k]);
 }
 
 #[test]
 fn rewrite_convtranspose_dts_skips_unsafe_cases() {
     use crate::optimizer::rewrite_convtranspose_dts;
+    use crate::tests::equivalence::{Lcg, assert_transform_is_noop};
 
-    // k != s — пасс не должен трогать
+    // k != s puts this outside the rewrite's safe subset, so the pass must
+    // decline. Firing anyway would silently produce a differently-shaped graph.
     let weight = onnx::TensorProto {
         name: Some("w".into()),
         dims: vec![1, 1, 3, 3],
@@ -492,6 +490,18 @@ fn rewrite_convtranspose_dts_skips_unsafe_cases() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![weight], vec!["x"], vec!["y"]);
+
+    let mut rng = Lcg::new(0x5EED_0001);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![1, 1, 4, 4]));
+
+    assert_transform_is_noop(
+        "rewrite_convtranspose_dts/k!=s",
+        &bytes,
+        &feed,
+        rewrite_convtranspose_dts,
+    );
+
     let mut model = load_onnx_model(&bytes).unwrap();
     rewrite_convtranspose_dts(&mut model);
     assert!(model.nodes.iter().any(|n| n.op_type == "ConvTranspose"));
