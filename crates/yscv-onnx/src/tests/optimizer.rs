@@ -1339,3 +1339,91 @@ fn plan_fuses_conv_add_across_an_unrelated_node() {
         model.runtime_index.execution_plan
     );
 }
+
+/// The DW+PW matcher backs off when the pointwise half would instead form the
+/// stronger `ConvAdd`. That back-off used to `break` out of the inner search
+/// loop; when the search became a lookup the `break` was left behind and now
+/// exits the node loop itself, truncating the plan at the first inverted
+/// bottleneck with a residual — i.e. on every MobileNet-shaped model. The plan
+/// must describe every node.
+#[test]
+fn plan_covers_every_node_when_dw_pw_backs_off_to_conv_add() {
+    let dw_weight = onnx::TensorProto {
+        name: Some("dw_w".into()),
+        dims: vec![4, 1, 3, 3],
+        data_type: Some(1),
+        float_data: vec![0.05; 36],
+        ..Default::default()
+    };
+    let pw_weight = onnx::TensorProto {
+        name: Some("pw_w".into()),
+        dims: vec![4, 4, 1, 1],
+        data_type: Some(1),
+        float_data: vec![0.1; 16],
+        ..Default::default()
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("dw".into()),
+            input: vec!["x".into(), "dw_w".into()],
+            output: vec!["dw_out".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![3, 3]),
+                make_ints_attr("pads", vec![1, 1, 1, 1]),
+                make_int_attr("group", 4),
+            ],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("pw".into()),
+            input: vec!["dw_out".into(), "pw_w".into()],
+            output: vec!["pw_out".into()],
+            attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Add".into()),
+            name: Some("residual".into()),
+            input: vec!["pw_out".into(), "skip".into()],
+            output: vec!["sum".into()],
+            ..Default::default()
+        },
+        // Trailing work, to make a truncated plan observable as a missing
+        // output rather than only as a short plan.
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("tail".into()),
+            input: vec!["sum".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![dw_weight, pw_weight],
+        vec!["x", "skip"],
+        vec!["y"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+
+    assert_eq!(
+        model.runtime_index.execution_plan.len(),
+        model.nodes.len(),
+        "plan must cover every node, got {:?}",
+        model.runtime_index.execution_plan
+    );
+
+    let mut feed = FxHashMap::default();
+    feed.insert(
+        "x".to_string(),
+        Tensor::from_vec(vec![1, 4, 4, 4], vec![0.25_f32; 64]).unwrap(),
+    );
+    feed.insert(
+        "skip".to_string(),
+        Tensor::from_vec(vec![1, 4, 4, 4], vec![1.0_f32; 64]).unwrap(),
+    );
+    let out = run_onnx_model(&model, feed).unwrap();
+    assert_eq!(out["y"].shape(), &[1, 4, 4, 4]);
+}
