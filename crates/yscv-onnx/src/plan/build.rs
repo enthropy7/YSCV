@@ -255,6 +255,23 @@ pub(crate) fn build_runtime_index(
         found
     };
 
+    // Is `name` computed by the time plan position `pos` executes?
+    //
+    // Matching by dataflow lets a fusion absorb a consumer that sits well after
+    // the producer, and the fused action runs at the *producer's* position. So
+    // any input that consumer reads besides the value being fused across has to
+    // already exist there. Weights and graph inputs always do — they have no
+    // producing node — but a second activation need not: in a ResNet block both
+    // the main-path Conv and the shortcut Conv feed one Add, each is that Add's
+    // only reader through its own output, and fusing the *earlier* one would
+    // schedule the Add before the other branch had run.
+    //
+    // A producer at a lower node index always executes first, including when it
+    // was itself absorbed, because a fusion is anchored at the first node of its
+    // chain and only ever absorbs nodes after it.
+    let available_at =
+        |name: &str, pos: usize| -> bool { producers.get(name).is_none_or(|&p| p < pos) };
+
     // Build execution plan — pre-compiled dispatch table.
     let mut execution_plan = Vec::with_capacity(nodes.len());
     let mut plan_skip = vec![false; nodes.len()];
@@ -579,6 +596,12 @@ pub(crate) fn build_runtime_index(
                 && !plan_skip[conv_idx]
                 && !plan_skip[add_idx]
                 && !plan_skip[q_idx]
+                // The Add's residual input comes from outside the chain, and
+                // the whole chain executes at `i`, so it has to exist by then.
+                && nodes[add_idx]
+                    .inputs
+                    .iter()
+                    .all(|inp| Some(inp) == nodes[conv_idx].outputs.first() || available_at(inp, i))
                 && nodes[relu_idx].inputs.first() == nodes[dq_idx].outputs.first()
                 && nodes[conv_idx].inputs.first() == nodes[relu_idx].outputs.first()
                 && nodes[q_idx].inputs.first() == nodes[add_idx].outputs.first()
@@ -804,12 +827,14 @@ pub(crate) fn build_runtime_index(
                         && add_node.inputs.len() == 2
                         && !plan_skip[add_idx]
                         && (add_node.inputs[0] == *conv_out || add_node.inputs[1] == *conv_out)
+                        // The residual input has to already exist at `i`: the
+                        // fused action runs there, not at `add_idx`.
+                        && available_at(
+                            &add_node.inputs[usize::from(add_node.inputs[0] == *conv_out)],
+                            i,
+                        )
                     {
-                        let skip_input_idx: u8 = if add_node.inputs[0] == *conv_out {
-                            1
-                        } else {
-                            0
-                        };
+                        let skip_input_idx = u8::from(add_node.inputs[0] == *conv_out);
                         let add_out = &add_node.outputs[0];
                         let (post_activation, relu_idx_field) = match sole_consumer(add_out)
                             .and_then(|r| nodes.get(r).map(|n| (r, n)))

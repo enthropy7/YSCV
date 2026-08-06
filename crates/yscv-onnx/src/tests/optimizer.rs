@@ -1427,3 +1427,72 @@ fn plan_covers_every_node_when_dw_pw_backs_off_to_conv_add() {
     let out = run_onnx_model(&model, feed).unwrap();
     assert_eq!(out["y"].shape(), &[1, 4, 4, 4]);
 }
+
+/// A residual block gives its Add two Conv producers — the main path and the
+/// shortcut — and each is the only reader of its own output, so each one on its
+/// own looks like a `ConvAdd`. The fused action runs at the Conv's position and
+/// reads the other branch from the environment, so only the *later* Conv may
+/// claim the Add; fusing the earlier one schedules the Add before the other
+/// branch has run and it reads a tensor nothing has written yet.
+///
+/// Adjacency hid this: the Add had to sit at `conv_idx + 1`, which only the
+/// later Conv satisfies. Matching by dataflow does not, and resnet-18 stopped
+/// loading with `missing input .../shortcut/convolution/Conv_output_0`.
+#[test]
+fn plan_fuses_conv_add_with_the_later_producer_of_a_residual() {
+    let init = |name: &str, v: f32| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: vec![1, 1, 1, 1],
+        data_type: Some(1),
+        float_data: vec![v],
+        ..Default::default()
+    };
+    let conv = |name: &str, w: &str, out: &str| onnx::NodeProto {
+        op_type: Some("Conv".into()),
+        name: Some(name.into()),
+        input: vec!["x".into(), w.into()],
+        output: vec![out.into()],
+        attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+        ..Default::default()
+    };
+    let nodes = vec![
+        conv("main", "w_main", "main_out"),
+        conv("shortcut", "w_short", "short_out"),
+        onnx::NodeProto {
+            op_type: Some("Add".into()),
+            name: Some("residual".into()),
+            input: vec!["main_out".into(), "short_out".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![init("w_main", 2.0), init("w_short", 3.0)],
+        vec!["x"],
+        vec!["y"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+
+    // The shortcut Conv is the later producer, so it is the one that fuses.
+    assert!(
+        matches!(
+            model.runtime_index.execution_plan.as_slice(),
+            [
+                crate::plan::NodeAction::Conv { node_idx: 0, .. },
+                crate::plan::NodeAction::ConvAdd { conv_idx: 1, .. },
+                crate::plan::NodeAction::Skip,
+            ]
+        ),
+        "the later Conv should own the residual Add, got {:?}",
+        model.runtime_index.execution_plan
+    );
+
+    let mut feed = FxHashMap::default();
+    feed.insert(
+        "x".to_string(),
+        Tensor::from_vec(vec![1, 1, 2, 2], vec![1.0_f32; 4]).unwrap(),
+    );
+    let out = run_onnx_model(&model, feed).unwrap();
+    assert_eq!(out["y"].data(), &[5.0_f32; 4]);
+}
