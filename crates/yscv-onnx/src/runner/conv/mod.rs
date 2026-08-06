@@ -337,6 +337,44 @@ fn resolve_conv_params(
     }
 }
 
+/// Env-cached tuning switches read on the Conv dispatch path.
+///
+/// Each of these was a `std::env::var` evaluated per Conv per inference. They
+/// select a compute path, so they cannot change mid-run without the result
+/// changing underneath the caller; reading them once is both faster and more
+/// honest about that. The plan layer is where these ultimately belong — see
+/// `KernelConfig` in the Stage 3 notes — but caching them is independent of
+/// that move and does not wait on layout assignment.
+mod tuning {
+    use std::sync::OnceLock;
+
+    /// `YSCV_BNNS`: opt in to the Apple Accelerate NCHW path.
+    #[cfg(target_os = "macos")]
+    pub(super) fn bnns_enabled() -> bool {
+        static CACHED: OnceLock<bool> = OnceLock::new();
+        *CACHED.get_or_init(|| std::env::var("YSCV_BNNS").is_ok())
+    }
+
+    /// `YSCV_INDIRECT_MAX_COUT`: output-channel ceiling under which the aarch64
+    /// indirect 3×3 path is used. Zero — the default — disables it entirely.
+    #[cfg(target_arch = "aarch64")]
+    pub(super) fn indirect_max_cout() -> usize {
+        static CACHED: OnceLock<usize> = OnceLock::new();
+        *CACHED.get_or_init(|| {
+            std::env::var("YSCV_INDIRECT_MAX_COUT")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0)
+        })
+    }
+
+    /// `YSCV_NCHWC_DW`: opt in to the native NCHWc depthwise 3×3 kernel.
+    pub(super) fn nchwc_depthwise_enabled() -> bool {
+        static CACHED: OnceLock<bool> = OnceLock::new();
+        *CACHED.get_or_init(|| std::env::var("YSCV_NCHWC_DW").is_ok())
+    }
+}
+
 /// Conv with optional pre-computed params (skips FxHashMap attr lookups).
 ///
 /// Thin wrapper around [`conv_compute_nhwc`]: resolves input/weight/bias
@@ -358,7 +396,7 @@ pub(super) fn exec_conv_with_params(
     // directly without any layout conversion. Opt-in via YSCV_BNNS=1.
     #[cfg(target_os = "macos")]
     if !input_is_nhwc
-        && std::env::var("YSCV_BNNS").is_ok()
+        && tuning::bnns_enabled()
         && let Some(result) = exec_conv_bnns_nchw(node, env, activation)?
     {
         note_conv_kernel(ConvKernel::BnnsNchw);
@@ -480,10 +518,7 @@ fn conv_compute_nhwc(
             // is used. The first-layer 3-channel 3×3 stride-2 Conv keeps its own
             // register-blocked microkernel in conv2d_nhwc_padded.
             let is_first_layer_3ch = input_nhwc.shape()[3] == 3 && sh == 2 && sw == 2;
-            let indirect_max_cout = std::env::var("YSCV_INDIRECT_MAX_COUT")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(0);
+            let indirect_max_cout = tuning::indirect_max_cout();
             if kh == 3
                 && kw == 3
                 && group == 1
@@ -556,7 +591,7 @@ fn conv_compute_nhwc(
             && pr == 1
             && depth_mult == 1
             && c.is_multiple_of(8)
-            && std::env::var("YSCV_NCHWC_DW").is_ok()
+            && tuning::nchwc_depthwise_enabled()
         {
             let dw_kernel_owned;
             let dw_kernel: &Tensor = if is_dw_khwc {

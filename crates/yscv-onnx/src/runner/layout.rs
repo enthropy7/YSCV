@@ -241,6 +241,21 @@ fn is_passthrough_op_with_kind(kind: NodeKind, op_type: &str) -> bool {
     )
 }
 
+/// Env-cached `YSCV_TRACE_SHAPES` diagnostic switch.
+///
+/// Read once rather than per node per inference. The uncached form allocated a
+/// `String` for every node of every run purely to discover the variable was
+/// unset, which on a 200-node model is 200 allocations per inference.
+fn trace_shapes_enabled() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("YSCV_TRACE_SHAPES")
+            .ok()
+            .is_some_and(|v| v != "0")
+    })
+}
+
 /// Execute a node with automatic NHWC layout management.
 #[inline]
 pub(crate) fn execute_node_with_layout_kind(
@@ -248,10 +263,7 @@ pub(crate) fn execute_node_with_layout_kind(
     env: &mut TensorEnv,
     kind: NodeKind,
 ) -> Result<(), OnnxError> {
-    let trace = std::env::var("YSCV_TRACE_SHAPES")
-        .ok()
-        .filter(|v| v != "0")
-        .is_some();
+    let trace = trace_shapes_enabled();
     let result = execute_node_with_layout_kind_inner(node, env, kind);
     if trace && result.is_ok() {
         let shapes: Vec<String> = node
