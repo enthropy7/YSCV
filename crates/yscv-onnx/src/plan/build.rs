@@ -1355,18 +1355,17 @@ pub(crate) fn build_runtime_index(
                     new_plan.push(action.clone());
                     continue;
                 }
-                // Find the immediate consumer of the DW output by scanning
-                // forward past nodes already marked as skipped.
-                let mut pw_reduce_node_idx: Option<usize> = None;
-                for j in (*dw_idx + 1)..nodes.len() {
-                    if plan_skip[j] {
-                        continue;
-                    }
-                    if nodes[j].inputs.first().map(|s| s.as_str()) == Some(dw_out.as_str()) {
-                        pw_reduce_node_idx = Some(j);
-                    }
-                    break;
-                }
+                // The DW output's reader. `dw_uses == 1` above makes it unique,
+                // so it is a lookup — this used to take the first non-skipped
+                // node after the DW, which is adjacency and lost the fusion
+                // whenever the schedule put anything between the two.
+                //
+                // Declining when that reader is already claimed matches what
+                // the scan did: it walked past skipped nodes and then found
+                // nothing reading `dw_out`.
+                let pw_reduce_node_idx = sole_consumer(dw_out).filter(|&j| {
+                    !plan_skip[j] && nodes[j].inputs.first().map(|s| s.as_str()) == Some(dw_out)
+                });
                 let Some(pw_reduce_idx) = pw_reduce_node_idx else {
                     new_plan.push(action.clone());
                     continue;
