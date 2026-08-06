@@ -1207,3 +1207,77 @@ fn rewrite_convtranspose_dts_skips_unsafe_cases() {
     model.apply_ir(&graph);
     assert!(model.nodes.iter().any(|n| n.op_type == "ConvTranspose"));
 }
+
+/// The DW+PW and PW+DW plan fusions used to find their partner by checking the
+/// next non-skipped node, which is adjacency rather than dataflow: an unrelated
+/// node scheduled between the pair silently cost the fusion. Both sites already
+/// required the intermediate to have exactly one reader, so that reader is
+/// unique and is now looked up directly.
+///
+/// This fixture puts a `Relu` on an independent branch between the depthwise
+/// and pointwise convolutions. Node order is `dw, interloper, pw`, so the old
+/// matcher saw `interloper` as the next node and gave up.
+#[test]
+fn plan_fuses_depthwise_pointwise_across_an_unrelated_node() {
+    let dw_weight = onnx::TensorProto {
+        name: Some("dw_w".into()),
+        dims: vec![4, 1, 3, 3],
+        data_type: Some(1),
+        float_data: vec![0.05; 36],
+        ..Default::default()
+    };
+    let pw_weight = onnx::TensorProto {
+        name: Some("pw_w".into()),
+        dims: vec![8, 4, 1, 1],
+        data_type: Some(1),
+        float_data: vec![0.1; 32],
+        ..Default::default()
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("dw".into()),
+            input: vec!["x".into(), "dw_w".into()],
+            output: vec!["dw_out".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![3, 3]),
+                make_ints_attr("pads", vec![1, 1, 1, 1]),
+                make_int_attr("group", 4),
+            ],
+            ..Default::default()
+        },
+        // Independent of the DW/PW pair, but scheduled between its halves.
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("interloper".into()),
+            input: vec!["side_in".into()],
+            output: vec!["side_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("pw".into()),
+            input: vec!["dw_out".into(), "pw_w".into()],
+            output: vec!["y".into()],
+            attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![dw_weight, pw_weight],
+        vec!["x", "side_in"],
+        vec!["y", "side_out"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+
+    assert!(
+        model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::FusedDwPw { .. })),
+        "DW and PW should fuse despite the node between them, got {:?}",
+        model.runtime_index.execution_plan
+    );
+}
