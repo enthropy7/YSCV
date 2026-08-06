@@ -1591,3 +1591,128 @@ fn nchwc_handoff_is_resolved_at_plan_time() {
         vec![false, false, false, false]
     );
 }
+
+/// `FusedPwDwPwReduce` merges a `PW_expand → DW 3×3 → PW_reduce` inverted
+/// bottleneck into one streaming action. It found the PW reduce by taking the
+/// first non-skipped node after the depthwise — adjacency, the pattern the rest
+/// of the fusion scan moved off — so a node scheduled between the depthwise and
+/// its consumer cost the merge and the block fell back to two actions.
+///
+/// The DW output already has to have exactly one reader for the merge to be
+/// legal, so that reader is unique and is now looked up directly.
+#[test]
+fn plan_merges_pw_dw_pw_reduce_across_an_unrelated_node() {
+    let c_in = 16usize;
+    let c_exp = 32usize;
+    let w = |name: &str, dims: Vec<i64>| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: dims.clone(),
+        data_type: Some(1),
+        float_data: vec![0.05; dims.iter().product::<i64>() as usize],
+        ..Default::default()
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("pw_expand".into()),
+            input: vec!["x".into(), "exp_w".into()],
+            output: vec!["exp".into()],
+            attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("dw".into()),
+            input: vec!["exp".into(), "dw_w".into()],
+            output: vec!["dwo".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![3, 3]),
+                make_ints_attr("pads", vec![1, 1, 1, 1]),
+                make_int_attr("group", c_exp as i64),
+            ],
+            ..Default::default()
+        },
+        // Independent of the bottleneck, but scheduled inside it.
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("interloper".into()),
+            input: vec!["side_in".into()],
+            output: vec!["side_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("pw_reduce".into()),
+            input: vec!["dwo".into(), "red_w".into()],
+            output: vec!["y".into()],
+            attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![
+            w("exp_w", vec![c_exp as i64, c_in as i64, 1, 1]),
+            w("dw_w", vec![c_exp as i64, 1, 3, 3]),
+            w("red_w", vec![c_in as i64, c_exp as i64, 1, 1]),
+        ],
+        vec!["x", "side_in"],
+        vec!["y", "side_out"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+
+    assert!(
+        model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::FusedPwDwPwReduce { .. })),
+        "the bottleneck should merge despite the node between its halves, got {:?}",
+        model.runtime_index.execution_plan
+    );
+
+    // The merge rewrites how the block is computed, so check it still computes
+    // the same thing as the unmerged plan.
+    let mut feed = FxHashMap::default();
+    feed.insert(
+        "x".to_string(),
+        Tensor::from_vec(vec![1, c_in, 8, 8], vec![0.25_f32; c_in * 64]).unwrap(),
+    );
+    feed.insert(
+        "side_in".to_string(),
+        Tensor::from_vec(vec![1, 2], vec![1.0_f32, -1.0]).unwrap(),
+    );
+    let merged = run_onnx_model(&model, feed.clone()).unwrap();
+
+    // SAFETY: single-threaded test section; the kill switch is read at load.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("YSCV_FUSED_PW_DW_PW_REDUCE_OFF", "1");
+    }
+    let unmerged_model = load_onnx_model(&bytes).unwrap();
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("YSCV_FUSED_PW_DW_PW_REDUCE_OFF");
+    }
+    assert!(
+        !unmerged_model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::FusedPwDwPwReduce { .. })),
+        "kill switch must disable the merge, or the comparison proves nothing"
+    );
+    let unmerged = run_onnx_model(&unmerged_model, feed).unwrap();
+
+    for (i, (g, e)) in merged["y"]
+        .data()
+        .iter()
+        .zip(unmerged["y"].data().iter())
+        .enumerate()
+    {
+        assert!(
+            (g - e).abs() < 1e-5,
+            "merged/unmerged mismatch at {i}: {g} vs {e}"
+        );
+    }
+}
