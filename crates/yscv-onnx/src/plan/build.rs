@@ -22,264 +22,35 @@ pub(crate) fn build_runtime_index(
     dw_khwc_weights: &FxHashSet<String>,
     group_khwc_weights: &FxHashSet<String>,
 ) -> RuntimeModelIndex {
-    let mut names: FxHashSet<&str> = FxHashSet::default();
-    for name in inputs {
-        names.insert(name.as_str());
-    }
-    for name in outputs {
-        names.insert(name.as_str());
-    }
-    for name in initializers.keys() {
-        names.insert(name.as_str());
-    }
-    for node in nodes {
-        for name in &node.inputs {
-            names.insert(name.as_str());
-        }
-        for name in &node.outputs {
-            names.insert(name.as_str());
-        }
-    }
-    let name_to_id: FxHashMap<String, usize> = names
-        .into_iter()
-        .enumerate()
-        .map(|(id, name)| (name.to_string(), id))
-        .collect();
+    let SlotIndex {
+        name_to_id,
+        khwc_weight_ids,
+        dw_khwc_weight_ids,
+        group_khwc_weight_ids,
+        use_counts,
+        use_counts_by_id,
+        node_kinds,
+        node_branches,
+        node_input_ids,
+        node_output_ids,
+    } = assign_slots(
+        inputs,
+        outputs,
+        initializers,
+        nodes,
+        khwc_weights,
+        dw_khwc_weights,
+        group_khwc_weights,
+    );
 
-    let khwc_weight_ids: FxHashSet<usize> = khwc_weights
-        .iter()
-        .filter_map(|name| name_to_id.get(name.as_str()).copied())
-        .collect();
-    let dw_khwc_weight_ids: FxHashSet<usize> = dw_khwc_weights
-        .iter()
-        .filter_map(|name| name_to_id.get(name.as_str()).copied())
-        .collect();
-    let group_khwc_weight_ids: FxHashSet<usize> = group_khwc_weights
-        .iter()
-        .filter_map(|name| name_to_id.get(name.as_str()).copied())
-        .collect();
-
-    let mut use_counts: FxHashMap<String, usize> = FxHashMap::default();
-    for node in nodes {
-        for inp in &node.inputs {
-            if !inp.is_empty() {
-                *use_counts.entry(inp.clone()).or_insert(0) += 1;
-            }
-        }
-    }
-    let mut use_counts_by_id = vec![0usize; name_to_id.len()];
-    for (name, count) in &use_counts {
-        if let Some(&id) = name_to_id.get(name) {
-            use_counts_by_id[id] = *count;
-        }
-    }
-    let node_kinds: Vec<NodeKind> = nodes
-        .iter()
-        .map(|node| NodeKind::from_op_type(&node.op_type))
-        .collect();
-
-    // Tower-parallel branch classification. For a siamese graph we want two
-    // input-rooted subgraphs to run concurrently, then a merge tail. Nodes
-    // are tagged 0 = reachable from first dynamic input only, 1 = second only,
-    // 2 = shared/merge. If either branch ends up too small, we clear the
-    // vector to signal "no parallel split".
-    let node_branches: Vec<u8> = {
-        let dyn_inputs: Vec<&str> = inputs
-            .iter()
-            .map(|s| s.as_str())
-            .filter(|s| !initializers.contains_key(*s))
-            .collect();
-        if dyn_inputs.len() >= 2 {
-            let mut tensor_branch: FxHashMap<&str, u8> = FxHashMap::default();
-            tensor_branch.insert(dyn_inputs[0], 0);
-            tensor_branch.insert(dyn_inputs[1], 1);
-            let mut branches = Vec::with_capacity(nodes.len());
-            for node in nodes {
-                let mut seen = 0u8; // bitmask: bit 0 = branch 0, bit 1 = branch 1
-                for inp in &node.inputs {
-                    if inp.is_empty() || initializers.contains_key(inp.as_str()) {
-                        continue;
-                    }
-                    match tensor_branch.get(inp.as_str()) {
-                        Some(&0) => seen |= 1,
-                        Some(&1) => seen |= 2,
-                        Some(&2) => seen |= 3,
-                        _ => {}
-                    }
-                }
-                let branch = match seen {
-                    0 => 2, // constant-fed node treated as merge-safe
-                    1 => 0,
-                    2 => 1,
-                    _ => 2,
-                };
-                for out in &node.outputs {
-                    tensor_branch.insert(out.as_str(), branch);
-                }
-                branches.push(branch);
-            }
-            let b0 = branches.iter().filter(|&&b| b == 0).count();
-            let b1 = branches.iter().filter(|&&b| b == 1).count();
-            // Require both branches to carry meaningful work, otherwise the
-            // parallel split's overhead (env fork, rayon::join) dominates.
-            if b0 >= 10 && b1 >= 10 {
-                branches
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    };
-
-    // Pre-resolve input names to slot IDs for O(1) hot-path lookups.
-    let node_input_ids: Vec<Vec<Option<usize>>> = nodes
-        .iter()
-        .map(|node| {
-            node.inputs
-                .iter()
-                .map(|name| {
-                    if name.is_empty() {
-                        None
-                    } else {
-                        name_to_id.get(name).copied()
-                    }
-                })
-                .collect()
-        })
-        .collect();
-
-    // pre-resolve output names to slot IDs. Used by
-    // `env.insert_by_id` on the hot path to skip the FxHashMap lookup
-    // inside `resolve_id`. `node_input_ids` was already cached; this
-    // extends the same optimisation to output slots.
-    let node_output_ids: Vec<Vec<Option<usize>>> = nodes
-        .iter()
-        .map(|node| {
-            node.outputs
-                .iter()
-                .map(|name| {
-                    if name.is_empty() {
-                        None
-                    } else {
-                        name_to_id.get(name).copied()
-                    }
-                })
-                .collect()
-        })
-        .collect();
-
-    // Pre-parse Conv attributes to avoid FxHashMap lookups in hot path.
-    let conv_params: Vec<Option<ConvParams>> = nodes
-        .iter()
-        .zip(node_kinds.iter())
-        .map(|(node, kind)| {
-            if !matches!(
-                kind,
-                NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu
-            ) {
-                return None;
-            }
-            let strides = node
-                .attributes
-                .get(&Attr::Strides)
-                .and_then(|a| {
-                    if let OnnxAttribute::Ints(v) = a {
-                        Some(v.clone())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| vec![1, 1]);
-            let pads = node
-                .attributes
-                .get(&Attr::Pads)
-                .and_then(|a| {
-                    if let OnnxAttribute::Ints(v) = a {
-                        Some(v.clone())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| vec![0, 0, 0, 0]);
-            let group = node
-                .attributes
-                .get(&Attr::Group)
-                .and_then(|a| {
-                    if let OnnxAttribute::Int(v) = a {
-                        Some(*v as usize)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(1);
-            let (pt, pl, pb, pr) = (
-                pads[0] as usize,
-                pads[1] as usize,
-                pads.get(2).copied().unwrap_or(0) as usize,
-                pads.get(3).copied().unwrap_or(0) as usize,
-            );
-            // Determine depthwise/pointwise from weight shape. Weights
-            // may already be permuted to KHWC `[KH, KW, I, O]` by the
-            // load-time normalization above (`khwc_weights` pass) for
-            // group==1 Conv. Check both layouts and infer which applies.
-            //
-            // Must dispatch by layout: KHWC-permuted weights are [KH, KW, I, O]
-            // (shape[2]=I, shape[3]=O), not OIHW. Reading shape[2]/shape[3] as
-            // kernel dims on a KHWC 1×1 weight misclassifies it as non-pointwise
-            // and the Conv_Add fast path never fires.
-            let weight_name = node.inputs.get(1).map(|s| s.as_str()).unwrap_or("");
-            let weight_shape = initializers
-                .get(weight_name)
-                .map(|t| t.shape().to_vec())
-                .unwrap_or_default();
-            let weight_is_khwc = khwc_weights.contains(weight_name);
-            let weight_is_dw_khwc = dw_khwc_weights.contains(weight_name);
-            let weight_is_group_khwc = group_khwc_weights.contains(weight_name);
-            // the loader permutes three KHWC
-            // variants. DW-permuted `[KH, KW, C, dm]` and grouped
-            // `[O, KH, KW, I/G]` previously fell through to the OIHW
-            // branch and produced garbage, wrongly setting
-            // `is_depthwise = false` for every tracker DW conv. That
-            // blocked `FusedDwPw` detection. With the pure-compute
-            // `conv_compute_nhwc` split the fused path now keeps the
-            // DW intermediate as a local `Tensor` (no env traffic),
-            // so enabling this detection no longer regresses tracker.
-            let (o_ch, kh_w, kw_w) = if weight_shape.len() == 4 {
-                if weight_is_dw_khwc {
-                    // Depthwise KHWC: `[KH, KW, C, depth_multiplier]`.
-                    let dm = weight_shape[3];
-                    (weight_shape[2] * dm, weight_shape[0], weight_shape[1])
-                } else if weight_is_group_khwc {
-                    // Grouped KHWC: `[O, KH, KW, I/G]`.
-                    (weight_shape[0], weight_shape[1], weight_shape[2])
-                } else if weight_is_khwc {
-                    // Regular KHWC: `[KH, KW, I, O]`.
-                    (weight_shape[3], weight_shape[0], weight_shape[1])
-                } else {
-                    // Plain OIHW: `[O, I, KH, KW]`.
-                    (weight_shape[0], weight_shape[2], weight_shape[3])
-                }
-            } else {
-                (0, 0, 0)
-            };
-            let is_depthwise = group > 1 && group == o_ch;
-            let is_pointwise = kh_w == 1 && kw_w == 1 && group == 1;
-
-            Some(ConvParams {
-                stride_h: strides[0] as usize,
-                stride_w: strides.get(1).copied().unwrap_or(1) as usize,
-                pad_top: pt,
-                pad_left: pl,
-                pad_bottom: pb,
-                pad_right: pr,
-                group,
-                has_padding: pt > 0 || pl > 0 || pb > 0 || pr > 0,
-                is_depthwise,
-                is_pointwise,
-            })
-        })
-        .collect();
+    let conv_params = resolve_conv_params(
+        nodes,
+        &node_kinds,
+        initializers,
+        khwc_weights,
+        dw_khwc_weights,
+        group_khwc_weights,
+    );
 
     /// Returns `true` when the Transpose node's `perm` attribute swaps
     /// only the last two axes of a rank-3 tensor (i.e. `[0, 2, 1]`).

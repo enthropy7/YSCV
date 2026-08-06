@@ -12,10 +12,14 @@
 //! reviewed, tested and replaced a phase at a time.
 
 mod build;
+mod conv_params;
+mod slots;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 pub(crate) use build::build_runtime_index;
+use conv_params::resolve_conv_params;
+use slots::{SlotIndex, assign_slots};
 
 /// Precomputed runtime metadata built once at model load time.
 #[derive(Debug, Clone, Default)]
