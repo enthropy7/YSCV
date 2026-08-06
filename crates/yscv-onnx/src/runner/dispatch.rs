@@ -131,7 +131,7 @@ fn execute_node_inner_kind_fast(
     node: &OnnxNode,
     env: &mut TensorEnv,
     kind: NodeKind,
-    conv_params: Option<&crate::loader::ConvParams>,
+    conv_params: Option<&crate::plan::ConvParams>,
 ) -> Result<(), OnnxError> {
     match kind {
         NodeKind::Conv => {

@@ -15,6 +15,7 @@ mod ir;
 #[path = "loader/mod.rs"]
 mod loader;
 mod optimizer;
+mod plan;
 mod proto;
 pub mod quantize;
 mod runner;

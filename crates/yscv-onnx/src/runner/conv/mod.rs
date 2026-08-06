@@ -308,7 +308,7 @@ pub(super) fn exec_conv(
 #[inline]
 fn resolve_conv_params(
     node: &OnnxNode,
-    precomputed: Option<&crate::loader::ConvParams>,
+    precomputed: Option<&crate::plan::ConvParams>,
 ) -> (usize, usize, usize, usize, usize, usize, usize, bool) {
     if let Some(p) = precomputed {
         (
@@ -349,7 +349,7 @@ pub(super) fn exec_conv_with_params(
     node: &OnnxNode,
     env: &mut TensorEnv,
     activation: yscv_kernels::Activation,
-    precomputed: Option<&crate::loader::ConvParams>,
+    precomputed: Option<&crate::plan::ConvParams>,
     prepacked_weight: Option<&yscv_kernels::PackedB>,
 ) -> Result<(), OnnxError> {
     let input_is_nhwc = env.is_nhwc(&node.inputs[0]);

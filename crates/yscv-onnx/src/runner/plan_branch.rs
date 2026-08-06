@@ -19,7 +19,7 @@ pub(crate) fn execute_plan_branch(
     other_count: &mut u32,
     do_profile: bool,
 ) -> Result<(), OnnxError> {
-    use crate::loader::NodeAction;
+    use crate::plan::NodeAction;
 
     let nodes = &model.nodes;
     let plan = &model.runtime_index.execution_plan;
