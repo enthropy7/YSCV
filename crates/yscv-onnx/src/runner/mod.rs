@@ -16,7 +16,7 @@ use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
 pub(crate) use crate::plan::NodeKind;
 
 mod compare;
-mod conv;
+pub(crate) mod conv;
 mod elementwise;
 mod gather_scatter;
 #[cfg(feature = "gpu")]
@@ -44,7 +44,7 @@ use pooling::*;
 use reduce::*;
 use reshape::*;
 
-mod conv_kernel;
+pub(crate) mod conv_kernel;
 mod dispatch;
 mod execute;
 mod layout;

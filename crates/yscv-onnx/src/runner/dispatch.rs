@@ -134,15 +134,30 @@ fn execute_node_inner_kind_fast(
     conv_params: Option<&crate::plan::ConvParams>,
 ) -> Result<(), OnnxError> {
     match kind {
-        NodeKind::Conv => {
-            exec_conv_with_params(node, env, yscv_kernels::Activation::None, conv_params, None)
-        }
-        NodeKind::ConvRelu => {
-            exec_conv_with_params(node, env, yscv_kernels::Activation::Relu, conv_params, None)
-        }
-        NodeKind::ConvSilu => {
-            exec_conv_with_params(node, env, yscv_kernels::Activation::Silu, conv_params, None)
-        }
+        NodeKind::Conv => exec_conv_with_params(
+            node,
+            env,
+            yscv_kernels::Activation::None,
+            conv_params,
+            None,
+            None,
+        ),
+        NodeKind::ConvRelu => exec_conv_with_params(
+            node,
+            env,
+            yscv_kernels::Activation::Relu,
+            conv_params,
+            None,
+            None,
+        ),
+        NodeKind::ConvSilu => exec_conv_with_params(
+            node,
+            env,
+            yscv_kernels::Activation::Silu,
+            conv_params,
+            None,
+            None,
+        ),
         NodeKind::Relu => exec_relu(node, env),
         NodeKind::BatchNormalization => exec_batch_norm(node, env),
         NodeKind::Gemm => exec_gemm(node, env),

@@ -1566,6 +1566,15 @@ pub(crate) fn build_runtime_index(
     // Last, because it reads the plan after the `FusedPwDwPwReduce` merge has
     // rewritten and dropped actions.
     let nchwc_handoff = resolve_nchwc_handoff(&execution_plan, nodes, initializers);
+    let conv_kernels = resolve_conv_kernels(
+        nodes,
+        &conv_params,
+        initializers,
+        khwc_weights,
+        dw_khwc_weights,
+        group_khwc_weights,
+        &prepacked_weights,
+    );
 
     RuntimeModelIndex {
         name_to_id,
@@ -1587,5 +1596,6 @@ pub(crate) fn build_runtime_index(
         prepacked_fused_pw_dw_pw_reduce,
         reshape_nhwc_passthrough_safe,
         nchwc_handoff,
+        conv_kernels,
     }
 }

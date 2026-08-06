@@ -6,6 +6,20 @@ use super::*;
 /// Run a subset of the JIT execution plan, filtered by a predicate on the
 /// node's branch assignment. Shared body for both the single-branch path and
 /// the tower-parallel wrapper.
+/// The entry point the plan resolved for this Conv node, if it resolved one.
+#[inline]
+fn planned_conv_kernel(
+    model: &OnnxModel,
+    node_idx: usize,
+) -> Option<crate::runner::conv_kernel::ConvKernel> {
+    model
+        .runtime_index
+        .conv_kernels
+        .get(node_idx)
+        .copied()
+        .flatten()
+}
+
 pub(crate) fn execute_plan_branch(
     model: &OnnxModel,
     env: &mut TensorEnv<'_, '_>,
@@ -84,7 +98,8 @@ pub(crate) fn execute_plan_branch(
                 // single c-block (c=16) loses to the NHWC fast path. Higher-c
                 // backbone convs already go through FusedPwDwPwReduce, which
                 // IS profitable in NCHWc.
-                exec_conv_with_params(node, env, act, cp, prepacked)?;
+                let planned = planned_conv_kernel(model, *node_idx);
+                exec_conv_with_params(node, env, act, cp, prepacked, planned)?;
                 if let Some(oid) = model
                     .runtime_index
                     .node_output_ids
@@ -609,6 +624,7 @@ pub(crate) fn execute_plan_branch(
                     yscv_kernels::Activation::None,
                     cp,
                     prepacked,
+                    planned_conv_kernel(model, *conv_idx),
                 )?;
                 // cached slot IDs for the fallback path too.
                 let conv_out_id = model
