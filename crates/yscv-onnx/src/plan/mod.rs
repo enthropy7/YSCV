@@ -13,6 +13,7 @@
 
 mod build;
 mod conv_params;
+mod kernels;
 mod layouts;
 mod slots;
 
@@ -20,6 +21,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 pub(crate) use build::build_runtime_index;
 use conv_params::resolve_conv_params;
+use kernels::resolve_conv_kernels;
 use layouts::resolve_nchwc_handoff;
 use slots::{SlotIndex, assign_slots};
 
@@ -92,6 +94,9 @@ pub(crate) struct RuntimeModelIndex {
     /// Indexed by position in `execution_plan`, which after the
     /// `FusedPwDwPwReduce` merge is no longer the same as the node index.
     pub(crate) nchwc_handoff: Vec<bool>,
+    /// The `yscv-kernels` entry point each Conv node dispatches to, indexed by
+    /// node index. See [`kernels::resolve_conv_kernels`].
+    pub(crate) conv_kernels: Vec<Option<crate::runner::conv_kernel::ConvKernel>>,
 }
 
 /// Residual-Add metadata for the `FusedPwDwPwReduce` action.

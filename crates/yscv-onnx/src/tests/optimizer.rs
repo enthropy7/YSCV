@@ -1716,3 +1716,48 @@ fn plan_merges_pw_dw_pw_reduce_across_an_unrelated_node() {
         );
     }
 }
+
+/// The plan's kernel choice has to agree with the branch the dispatch takes,
+/// on real graphs — that is the whole basis for later replacing those branches
+/// with a match on the plan. `note_kernel` asserts it per Conv in debug builds,
+/// so running the models is the check.
+///
+/// Ignored by default: it needs the benchmark assets, which are downloaded
+/// rather than committed. Run with `--ignored` when they are present.
+#[test]
+#[ignore]
+fn planned_conv_kernels_match_the_dispatch_on_real_models() {
+    for (file, shape) in [
+        ("resnet-18.onnx", vec![1usize, 3, 224, 224]),
+        ("mobilenet-v3-small.onnx", vec![1, 3, 224, 224]),
+    ] {
+        let path = format!(
+            "{}/../../benchmarks/onnx-models/target/assets/{file}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut model = crate::load_onnx_model_from_file(&path).unwrap_or_else(|e| {
+            panic!(
+                "{file}: {e}. This test needs the benchmark assets; run \
+                 benchmarks/onnx-models/download-assets.sh first."
+            )
+        });
+        optimize_onnx_graph(&mut model).expect("optimize");
+        let planned = model
+            .runtime_index
+            .conv_kernels
+            .iter()
+            .filter(|k| k.is_some())
+            .count();
+        assert!(planned > 0, "{file}: plan resolved no conv kernels");
+
+        let n: usize = shape.iter().product();
+        let mut feed = FxHashMap::default();
+        feed.insert(
+            model.inputs[0].clone(),
+            Tensor::from_vec(shape, vec![0.25_f32; n]).unwrap(),
+        );
+        // The per-Conv debug assertion inside `note_kernel` is what this run
+        // exercises; reaching the end means every dispatch matched the plan.
+        run_onnx_model(&model, feed).expect("run");
+    }
+}

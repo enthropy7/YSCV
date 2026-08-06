@@ -298,7 +298,7 @@ pub(super) fn exec_conv(
     env: &mut TensorEnv,
     activation: yscv_kernels::Activation,
 ) -> Result<(), OnnxError> {
-    exec_conv_with_params(node, env, activation, None, None)
+    exec_conv_with_params(node, env, activation, None, None, None)
 }
 
 /// Resolves `(stride, group, pads, has_padding)` from either precomputed
@@ -345,12 +345,12 @@ fn resolve_conv_params(
 /// honest about that. The plan layer is where these ultimately belong — see
 /// `KernelConfig` in the Stage 3 notes — but caching them is independent of
 /// that move and does not wait on layout assignment.
-mod tuning {
+pub(crate) mod tuning {
     use std::sync::OnceLock;
 
     /// `YSCV_BNNS`: opt in to the Apple Accelerate NCHW path.
     #[cfg(target_os = "macos")]
-    pub(super) fn bnns_enabled() -> bool {
+    pub(crate) fn bnns_enabled() -> bool {
         static CACHED: OnceLock<bool> = OnceLock::new();
         *CACHED.get_or_init(|| std::env::var("YSCV_BNNS").is_ok())
     }
@@ -358,7 +358,7 @@ mod tuning {
     /// `YSCV_INDIRECT_MAX_COUT`: output-channel ceiling under which the aarch64
     /// indirect 3×3 path is used. Zero — the default — disables it entirely.
     #[cfg(target_arch = "aarch64")]
-    pub(super) fn indirect_max_cout() -> usize {
+    pub(crate) fn indirect_max_cout() -> usize {
         static CACHED: OnceLock<usize> = OnceLock::new();
         *CACHED.get_or_init(|| {
             std::env::var("YSCV_INDIRECT_MAX_COUT")
@@ -369,10 +369,28 @@ mod tuning {
     }
 
     /// `YSCV_NCHWC_DW`: opt in to the native NCHWc depthwise 3×3 kernel.
-    pub(super) fn nchwc_depthwise_enabled() -> bool {
+    pub(crate) fn nchwc_depthwise_enabled() -> bool {
         static CACHED: OnceLock<bool> = OnceLock::new();
         *CACHED.get_or_init(|| std::env::var("YSCV_NCHWC_DW").is_ok())
     }
+}
+
+/// Reports the entry point this Conv dispatched to, and checks it against the
+/// one the plan resolved.
+///
+/// The plan is the source of truth for kernel selection; the branches below
+/// still compute it so the two can be held against each other while the
+/// selection moves out of the hot path. A mismatch means
+/// `plan::kernels::select` and `conv_compute_nhwc` have drifted, which would
+/// silently mislabel the profiler today and pick the wrong kernel once the
+/// branches are replaced by a match.
+#[inline]
+fn note_kernel(planned: Option<ConvKernel>, taken: ConvKernel) {
+    debug_assert!(
+        planned.is_none_or(|p| p == taken),
+        "plan resolved conv kernel {planned:?} but dispatch took {taken:?}"
+    );
+    note_conv_kernel(taken);
 }
 
 /// Conv with optional pre-computed params (skips FxHashMap attr lookups).
@@ -389,6 +407,7 @@ pub(super) fn exec_conv_with_params(
     activation: yscv_kernels::Activation,
     precomputed: Option<&crate::plan::ConvParams>,
     prepacked_weight: Option<&yscv_kernels::PackedB>,
+    planned_kernel: Option<ConvKernel>,
 ) -> Result<(), OnnxError> {
     let input_is_nhwc = env.is_nhwc(&node.inputs[0]);
 
@@ -431,6 +450,7 @@ pub(super) fn exec_conv_with_params(
         bias,
         env,
         prepacked_weight,
+        planned_kernel,
         activation,
         sh,
         sw,
@@ -465,6 +485,7 @@ fn conv_compute_nhwc(
     bias: Option<&Tensor>,
     env: &TensorEnv,
     prepacked_weight: Option<&yscv_kernels::PackedB>,
+    planned_kernel: Option<ConvKernel>,
     activation: yscv_kernels::Activation,
     sh: usize,
     sw: usize,
@@ -532,7 +553,7 @@ fn conv_compute_nhwc(
                 .map_err(|e| OnnxError::DecodeFailed {
                     message: e.to_string(),
                 })?;
-                note_conv_kernel(ConvKernel::IndirectNhwc3x3);
+                note_kernel(planned_kernel, ConvKernel::IndirectNhwc3x3);
                 return Ok(t);
             }
         }
@@ -564,13 +585,16 @@ fn conv_compute_nhwc(
             })?;
             (t, true)
         };
-        note_conv_kernel(if has_padding {
-            ConvKernel::NhwcPadded
-        } else if prepacked.is_some() {
-            ConvKernel::NhwcGemmPrepacked
-        } else {
-            ConvKernel::NhwcGemm
-        });
+        note_kernel(
+            planned_kernel,
+            if has_padding {
+                ConvKernel::NhwcPadded
+            } else if prepacked.is_some() {
+                ConvKernel::NhwcGemmPrepacked
+            } else {
+                ConvKernel::NhwcGemm
+            },
+        );
         apply_conv_activation(&mut out_nhwc, activation, activation_fused);
         Ok(out_nhwc)
     } else if group == o_ch && group == input_nhwc.shape()[3] {
@@ -624,7 +648,7 @@ fn conv_compute_nhwc(
                     message: e.to_string(),
                 }
             })?;
-            note_conv_kernel(ConvKernel::DepthwiseNchwc3x3);
+            note_kernel(planned_kernel, ConvKernel::DepthwiseNchwc3x3);
             apply_conv_activation(&mut out_nhwc, activation, true);
             return Ok(out_nhwc);
         }
@@ -665,11 +689,14 @@ fn conv_compute_nhwc(
                 message: e.to_string(),
             })
         }?;
-        note_conv_kernel(if has_padding {
-            ConvKernel::DepthwiseNhwcPadded
-        } else {
-            ConvKernel::DepthwiseNhwc
-        });
+        note_kernel(
+            planned_kernel,
+            if has_padding {
+                ConvKernel::DepthwiseNhwcPadded
+            } else {
+                ConvKernel::DepthwiseNhwc
+            },
+        );
         apply_conv_activation(&mut out_nhwc, activation, activation_fused);
         Ok(out_nhwc)
     } else {
@@ -797,7 +824,7 @@ fn conv_compute_nhwc(
                 message: e.to_string(),
             }
         })?;
-        note_conv_kernel(ConvKernel::Grouped);
+        note_kernel(planned_kernel, ConvKernel::Grouped);
         apply_conv_activation(&mut out_nhwc, activation, relu_fused);
         Ok(out_nhwc)
     }
