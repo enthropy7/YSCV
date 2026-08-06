@@ -887,6 +887,18 @@ pub(crate) fn build_runtime_index(
         }
     }
 
+    // The loop above pushes exactly one action per node, so plan position and
+    // node index are the same thing. Everything downstream relies on it — the
+    // transpose post-pass below assigns through `execution_plan[node_idx]`, and
+    // a short plan silently stops executing the tail of the graph rather than
+    // failing. Worth stating, because an early `break` in the fusion scan broke
+    // it once already.
+    debug_assert_eq!(
+        execution_plan.len(),
+        nodes.len(),
+        "execution plan must hold one action per node"
+    );
+
     // Post-pass: elide Transpose nodes whose every consumer is a
     // `FusedTransposeMatMul` that absorbed them. Counts the number of
     // fused actions pointing at each transpose and compares to the
