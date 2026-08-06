@@ -1281,3 +1281,61 @@ fn plan_fuses_depthwise_pointwise_across_an_unrelated_node() {
         model.runtime_index.execution_plan
     );
 }
+
+/// `ConvAdd` matched `nodes[i + 1]` for the residual Add and `nodes[i + 2]` for
+/// the optional Relu, so a residual block lost its in-place fusion whenever the
+/// schedule put anything between the Conv and its Add — which a topological
+/// sort of a branching graph legitimately can. Both steps already required a
+/// single reader, so both are now looked up through the consumer index.
+#[test]
+fn plan_fuses_conv_add_across_an_unrelated_node() {
+    let weight = onnx::TensorProto {
+        name: Some("w".into()),
+        dims: vec![4, 4, 1, 1],
+        data_type: Some(1),
+        float_data: vec![0.1; 16],
+        ..Default::default()
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["conv_out".into()],
+            attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+            ..Default::default()
+        },
+        // Independent of the residual pair, but scheduled between its halves.
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("interloper".into()),
+            input: vec!["side_in".into()],
+            output: vec!["side_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Add".into()),
+            name: Some("residual".into()),
+            input: vec!["conv_out".into(), "skip".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![weight],
+        vec!["x", "skip", "side_in"],
+        vec!["y", "side_out"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+
+    assert!(
+        model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::ConvAdd { .. })),
+        "Conv and its residual Add should fuse despite the node between them, got {:?}",
+        model.runtime_index.execution_plan
+    );
+}
