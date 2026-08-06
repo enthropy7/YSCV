@@ -202,30 +202,57 @@ pub(crate) fn build_runtime_index(
         m
     };
 
-    // Map tensor name → the node that reads it, for values with exactly one
-    // reader.
+    // Map tensor name → the nodes that read it, one entry per use, in node
+    // order.
     //
-    // The fusion matcher below used to find a producer's consumer by looking at
-    // the next non-skipped node — which is adjacency, not dataflow. It therefore
-    // depended on `ReorderForFusion` having put the pair next to each other, and
-    // silently declined to fuse whenever an unrelated node was scheduled
-    // between them. Every site that did so already required the value to have a
-    // single reader, so that reader is unique and can simply be looked up.
-    //
-    // Restricted to single-reader values on purpose: a fan-out value cannot be
-    // fused into any one of its readers, so recording the rest would invite a
-    // caller to fuse into the wrong one.
-    let sole_consumer: FxHashMap<&str, usize> = {
-        let mut m: FxHashMap<&str, usize> =
+    // The fusion matchers below used to find a producer's consumer by looking
+    // at the next non-skipped node — which is adjacency, not dataflow. They
+    // therefore depended on `ReorderForFusion` having put the chain together,
+    // and silently declined to fuse whenever an unrelated node was scheduled
+    // between two links. This is the index that lets them ask the graph
+    // instead.
+    let consumers: FxHashMap<&str, Vec<usize>> = {
+        let mut m: FxHashMap<&str, Vec<usize>> =
             FxHashMap::with_capacity_and_hasher(nodes.len(), FxBuildHasher);
         for (idx, node) in nodes.iter().enumerate() {
             for inp in &node.inputs {
-                if !inp.is_empty() && use_counts.get(inp.as_str()).copied() == Some(1) {
-                    m.insert(inp.as_str(), idx);
+                if !inp.is_empty() {
+                    m.entry(inp.as_str()).or_default().push(idx);
                 }
             }
         }
         m
+    };
+
+    // The reader of a value used exactly once. Almost every fusion site wants
+    // this: they all require the intermediate to have a single reader before
+    // absorbing it, which makes that reader unique and unambiguous. One use and
+    // one reader are the same condition here because `consumers` records a node
+    // once per use, so a node reading the same value twice lands twice.
+    let sole_consumer = |name: &str| -> Option<usize> {
+        match consumers.get(name).map(Vec::as_slice) {
+            Some([only]) => Some(*only),
+            _ => None,
+        }
+    };
+
+    // The single reader of `name` whose op is `op` and which reads `name` as
+    // its first input; `None` if there is no such reader or more than one.
+    //
+    // For the one matcher that walks *through* a fan-out: `QuantizedForkPair`
+    // exists precisely because the value it crosses has a side consumer, so
+    // `sole_consumer` cannot answer there.
+    let unique_consumer_of_op = |name: &str, op: &str| -> Option<usize> {
+        let mut found = None;
+        for &j in consumers.get(name)?.iter() {
+            if nodes[j].op_type == op && nodes[j].inputs.first().map(String::as_str) == Some(name) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(j);
+            }
+        }
+        found
     };
 
     // Build execution plan — pre-compiled dispatch table.
@@ -256,14 +283,11 @@ pub(crate) fn build_runtime_index(
         {
             let pw_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
             let pw_w_name = nodes[i].inputs.get(3).map(String::as_str).unwrap_or("");
-            let dq_idx = i + 1;
             if !pw_out.is_empty()
                 && !pw_w_name.is_empty()
-                && use_counts.get(pw_out).copied().unwrap_or(0) == 1
                 && !outputs.iter().any(|o| o == pw_out)
-                && nodes
-                    .get(dq_idx)
-                    .is_some_and(|n| n.op_type == "DequantizeLinear")
+                && let Some(dq_idx) = sole_consumer(pw_out)
+                && nodes[dq_idx].op_type == "DequantizeLinear"
                 && !plan_skip[dq_idx]
                 && nodes[dq_idx].inputs.first().map(String::as_str) == Some(pw_out)
             {
@@ -273,30 +297,27 @@ pub(crate) fn build_runtime_index(
                     .map(String::as_str)
                     .unwrap_or("");
                 let mut relu_idx = None;
-                let mut q_idx = dq_idx + 1;
                 let mut q_input = dq_out;
-                if let Some(relu_node) = nodes.get(q_idx)
-                    && relu_node.op_type == "Relu"
-                    && !plan_skip[q_idx]
-                    && relu_node.inputs.first().map(String::as_str) == Some(dq_out)
-                    && use_counts.get(dq_out).copied().unwrap_or(0) == 1
+                let mut q_idx = sole_consumer(dq_out);
+                if let Some(ri) = q_idx
+                    && nodes[ri].op_type == "Relu"
+                    && !plan_skip[ri]
+                    && nodes[ri].inputs.first().map(String::as_str) == Some(dq_out)
                     && !outputs.iter().any(|o| o == dq_out)
                 {
-                    let relu_out = relu_node.outputs.first().map(String::as_str).unwrap_or("");
+                    let relu_out = nodes[ri].outputs.first().map(String::as_str).unwrap_or("");
                     if !relu_out.is_empty() && !outputs.iter().any(|o| o == relu_out) {
-                        relu_idx = Some(q_idx);
+                        relu_idx = Some(ri);
                         q_input = relu_out;
-                        q_idx += 1;
+                        q_idx = sole_consumer(relu_out);
                     }
                 }
                 if !dq_out.is_empty()
                     && !q_input.is_empty()
-                    && nodes
-                        .get(q_idx)
-                        .is_some_and(|n| n.op_type == "QuantizeLinear")
+                    && let Some(q_idx) = q_idx
+                    && nodes[q_idx].op_type == "QuantizeLinear"
                     && !plan_skip[q_idx]
                     && nodes[q_idx].inputs.first().map(String::as_str) == Some(q_input)
-                    && use_counts.get(q_input).copied().unwrap_or(0) == 1
                     && matching_zero_qparams(&nodes[dq_idx], &nodes[q_idx], initializers)
                 {
                     let q_out = nodes[q_idx]
@@ -304,13 +325,10 @@ pub(crate) fn build_runtime_index(
                         .first()
                         .map(String::as_str)
                         .unwrap_or("");
-                    let dw_idx = q_idx + 1;
                     if !q_out.is_empty()
                         && !outputs.iter().any(|o| o == q_out)
-                        && use_counts.get(q_out).copied().unwrap_or(0) == 1
-                        && nodes
-                            .get(dw_idx)
-                            .is_some_and(|n| n.op_type == "QLinearConv")
+                        && let Some(dw_idx) = sole_consumer(q_out)
+                        && nodes[dw_idx].op_type == "QLinearConv"
                         && !plan_skip[dw_idx]
                         && nodes[dw_idx].inputs.first().map(String::as_str) == Some(q_out)
                         && qlc_kind(&nodes[dw_idx], initializers) == Some("dw")
@@ -371,13 +389,10 @@ pub(crate) fn build_runtime_index(
             let kh = dw_w_shape.get(2).copied().unwrap_or(0);
             if dw_geom_supported(&nodes[i], kh) {
                 let dw_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
-                let dq_idx = i + 1;
                 if !dw_out.is_empty()
-                    && use_counts.get(dw_out).copied().unwrap_or(0) == 1
                     && !outputs.iter().any(|o| o == dw_out)
-                    && nodes
-                        .get(dq_idx)
-                        .is_some_and(|n| n.op_type == "DequantizeLinear")
+                    && let Some(dq_idx) = sole_consumer(dw_out)
+                    && nodes[dq_idx].op_type == "DequantizeLinear"
                     && !plan_skip[dq_idx]
                     && nodes[dq_idx].inputs.first().map(String::as_str) == Some(dw_out)
                 {
@@ -387,30 +402,27 @@ pub(crate) fn build_runtime_index(
                         .map(String::as_str)
                         .unwrap_or("");
                     let mut relu_idx = None;
-                    let mut q_idx = dq_idx + 1;
                     let mut q_input = dq_out;
-                    if let Some(relu_node) = nodes.get(q_idx)
-                        && relu_node.op_type == "Relu"
-                        && !plan_skip[q_idx]
-                        && relu_node.inputs.first().map(String::as_str) == Some(dq_out)
-                        && use_counts.get(dq_out).copied().unwrap_or(0) == 1
+                    let mut q_idx = sole_consumer(dq_out);
+                    if let Some(ri) = q_idx
+                        && nodes[ri].op_type == "Relu"
+                        && !plan_skip[ri]
+                        && nodes[ri].inputs.first().map(String::as_str) == Some(dq_out)
                         && !outputs.iter().any(|o| o == dq_out)
                     {
-                        let relu_out = relu_node.outputs.first().map(String::as_str).unwrap_or("");
+                        let relu_out = nodes[ri].outputs.first().map(String::as_str).unwrap_or("");
                         if !relu_out.is_empty() && !outputs.iter().any(|o| o == relu_out) {
-                            relu_idx = Some(q_idx);
+                            relu_idx = Some(ri);
                             q_input = relu_out;
-                            q_idx += 1;
+                            q_idx = sole_consumer(relu_out);
                         }
                     }
                     if !dq_out.is_empty()
                         && !q_input.is_empty()
-                        && nodes
-                            .get(q_idx)
-                            .is_some_and(|n| n.op_type == "QuantizeLinear")
+                        && let Some(q_idx) = q_idx
+                        && nodes[q_idx].op_type == "QuantizeLinear"
                         && !plan_skip[q_idx]
                         && nodes[q_idx].inputs.first().map(String::as_str) == Some(q_input)
-                        && use_counts.get(q_input).copied().unwrap_or(0) == 1
                         && matching_zero_qparams(&nodes[dq_idx], &nodes[q_idx], initializers)
                     {
                         let q_out = nodes[q_idx]
@@ -418,13 +430,10 @@ pub(crate) fn build_runtime_index(
                             .first()
                             .map(String::as_str)
                             .unwrap_or("");
-                        let pw_idx = q_idx + 1;
                         if !q_out.is_empty()
                             && !outputs.iter().any(|o| o == q_out)
-                            && use_counts.get(q_out).copied().unwrap_or(0) == 1
-                            && nodes
-                                .get(pw_idx)
-                                .is_some_and(|n| n.op_type == "QLinearConv")
+                            && let Some(pw_idx) = sole_consumer(q_out)
+                            && nodes[pw_idx].op_type == "QLinearConv"
                             && !plan_skip[pw_idx]
                             && nodes[pw_idx].inputs.first().map(String::as_str) == Some(q_out)
                             && qlc_kind(&nodes[pw_idx], initializers) == Some("pw")
@@ -459,13 +468,10 @@ pub(crate) fn build_runtime_index(
             && let Some(first_kind) = qlc_kind(&nodes[i], initializers)
         {
             let first_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
-            let dq_idx = i + 1;
             if !first_out.is_empty()
-                && use_counts.get(first_out).copied().unwrap_or(0) == 1
                 && !outputs.iter().any(|o| o == first_out)
-                && nodes
-                    .get(dq_idx)
-                    .is_some_and(|n| n.op_type == "DequantizeLinear")
+                && let Some(dq_idx) = sole_consumer(first_out)
+                && nodes[dq_idx].op_type == "DequantizeLinear"
                 && !plan_skip[dq_idx]
                 && nodes[dq_idx].inputs.first().map(String::as_str) == Some(first_out)
             {
@@ -475,41 +481,41 @@ pub(crate) fn build_runtime_index(
                     .map(String::as_str)
                     .unwrap_or("");
                 let mut relu_idx = None;
-                let mut q_idx = dq_idx + 1;
                 let mut q_input = dq_out;
-                if let Some(relu_node) = nodes.get(q_idx)
-                    && relu_node.op_type == "Relu"
-                    && !plan_skip[q_idx]
-                    && relu_node.inputs.first().map(String::as_str) == Some(dq_out)
+                // Absorbing the Relu means the fused kernel writes the Relu's
+                // output as the side value and never materializes `dq_out`, so
+                // the Relu has to be its only reader. The positional form did
+                // not check that, and left any second reader of `dq_out`
+                // looking for a tensor nothing produced.
+                if let Some(ri) = sole_consumer(dq_out)
+                    && nodes[ri].op_type == "Relu"
+                    && !plan_skip[ri]
+                    && nodes[ri].inputs.first().map(String::as_str) == Some(dq_out)
                 {
-                    let relu_out = relu_node.outputs.first().map(String::as_str).unwrap_or("");
+                    let relu_out = nodes[ri].outputs.first().map(String::as_str).unwrap_or("");
                     if !relu_out.is_empty() {
-                        relu_idx = Some(q_idx);
+                        relu_idx = Some(ri);
                         q_input = relu_out;
-                        q_idx += 1;
                     }
                 }
+                // The fork itself: `q_input` is read by the QuantizeLinear that
+                // continues the INT8 chain *and* by something else, which is
+                // why the stricter `QuantizedPwDw` above declined it.
                 if !q_input.is_empty()
-                    && nodes
-                        .get(q_idx)
-                        .is_some_and(|n| n.op_type == "QuantizeLinear")
-                    && !plan_skip[q_idx]
-                    && nodes[q_idx].inputs.first().map(String::as_str) == Some(q_input)
                     && use_counts.get(q_input).copied().unwrap_or(0) > 1
+                    && let Some(q_idx) = unique_consumer_of_op(q_input, "QuantizeLinear")
+                    && !plan_skip[q_idx]
                 {
                     let q_out = nodes[q_idx]
                         .outputs
                         .first()
                         .map(String::as_str)
                         .unwrap_or("");
-                    let second_idx = q_idx + 1;
                     let want_second = if first_kind == "pw" { "dw" } else { "pw" };
                     if !q_out.is_empty()
                         && !outputs.iter().any(|o| o == q_out)
-                        && use_counts.get(q_out).copied().unwrap_or(0) == 1
-                        && nodes
-                            .get(second_idx)
-                            .is_some_and(|n| n.op_type == "QLinearConv")
+                        && let Some(second_idx) = sole_consumer(q_out)
+                        && nodes[second_idx].op_type == "QLinearConv"
                         && !plan_skip[second_idx]
                         && nodes[second_idx].inputs.first().map(String::as_str) == Some(q_out)
                         && qlc_kind(&nodes[second_idx], initializers) == Some(want_second)
@@ -541,70 +547,41 @@ pub(crate) fn build_runtime_index(
         if nodes[i].op_type == "QLinearConv"
             && let Some(kind) = qlc_kind(&nodes[i], initializers)
         {
+            // Every value inside the chain is consumed by the next link and by
+            // nothing else, because `exec_quantized_dw_residual` writes only the
+            // final quantized output — it never materializes the intermediates.
+            // Walking the chain through `sole_consumer` states that directly:
+            // each step both finds the next node and proves the value crossing
+            // into it has exactly one reader.
+            let link = |from: usize| -> Option<usize> {
+                let out = nodes[from].outputs.first().map(String::as_str)?;
+                if out.is_empty() || outputs.iter().any(|o| o == out) {
+                    return None;
+                }
+                sole_consumer(out)
+            };
             let qconv_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
-            let dq_idx = i + 1;
-            let relu_idx = i + 2;
-            let conv_idx = i + 3;
-            let add_idx = i + 4;
-            let q_idx = i + 5;
             if !qconv_out.is_empty()
-                && use_counts.get(qconv_out).copied().unwrap_or(0) == 1
                 && !outputs.iter().any(|o| o == qconv_out)
-                && nodes
-                    .get(dq_idx)
-                    .is_some_and(|n| n.op_type == "DequantizeLinear")
-                && nodes.get(relu_idx).is_some_and(|n| n.op_type == "Relu")
-                && nodes.get(conv_idx).is_some_and(|n| n.op_type == "Conv")
-                && nodes.get(add_idx).is_some_and(|n| n.op_type == "Add")
-                && nodes
-                    .get(q_idx)
-                    .is_some_and(|n| n.op_type == "QuantizeLinear")
+                && let Some(dq_idx) = sole_consumer(qconv_out)
+                && nodes[dq_idx].op_type == "DequantizeLinear"
+                && nodes[dq_idx].inputs.first().map(String::as_str) == Some(qconv_out)
+                && let Some(relu_idx) = link(dq_idx)
+                && nodes[relu_idx].op_type == "Relu"
+                && let Some(conv_idx) = link(relu_idx)
+                && nodes[conv_idx].op_type == "Conv"
+                && let Some(add_idx) = link(conv_idx)
+                && nodes[add_idx].op_type == "Add"
+                && let Some(q_idx) = link(add_idx)
+                && nodes[q_idx].op_type == "QuantizeLinear"
                 && !plan_skip[dq_idx]
                 && !plan_skip[relu_idx]
                 && !plan_skip[conv_idx]
                 && !plan_skip[add_idx]
                 && !plan_skip[q_idx]
-                && nodes[dq_idx].inputs.first().map(String::as_str) == Some(qconv_out)
                 && nodes[relu_idx].inputs.first() == nodes[dq_idx].outputs.first()
                 && nodes[conv_idx].inputs.first() == nodes[relu_idx].outputs.first()
-                && nodes[add_idx]
-                    .inputs
-                    .iter()
-                    .any(|input| Some(input) == nodes[conv_idx].outputs.first())
                 && nodes[q_idx].inputs.first() == nodes[add_idx].outputs.first()
-                && use_counts
-                    .get(
-                        nodes[dq_idx]
-                            .outputs
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or(""),
-                    )
-                    .copied()
-                    .unwrap_or(0)
-                    == 1
-                && use_counts
-                    .get(
-                        nodes[relu_idx]
-                            .outputs
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or(""),
-                    )
-                    .copied()
-                    .unwrap_or(0)
-                    == 1
-                && use_counts
-                    .get(
-                        nodes[conv_idx]
-                            .outputs
-                            .first()
-                            .map(String::as_str)
-                            .unwrap_or(""),
-                    )
-                    .copied()
-                    .unwrap_or(0)
-                    == 1
             {
                 execution_plan.push(NodeAction::QuantizedResidualChain {
                     qconv_idx: i,
@@ -627,13 +604,10 @@ pub(crate) fn build_runtime_index(
             && let Some(kind) = qlc_kind(&nodes[i], initializers)
         {
             let qconv_out = nodes[i].outputs.first().map(String::as_str).unwrap_or("");
-            let dq_idx = i + 1;
             if !qconv_out.is_empty()
-                && use_counts.get(qconv_out).copied().unwrap_or(0) == 1
                 && !outputs.iter().any(|o| o == qconv_out)
-                && nodes
-                    .get(dq_idx)
-                    .is_some_and(|n| n.op_type == "DequantizeLinear")
+                && let Some(dq_idx) = sole_consumer(qconv_out)
+                && nodes[dq_idx].op_type == "DequantizeLinear"
                 && !plan_skip[dq_idx]
                 && nodes[dq_idx].inputs.first().map(String::as_str) == Some(qconv_out)
                 && nodes[dq_idx]
@@ -659,20 +633,20 @@ pub(crate) fn build_runtime_index(
                 && !outputs.iter().any(|o| o == dequant_out)
             {
                 let mut relu_idx = None;
-                let mut quant_idx = i + 1;
-                if let Some(relu_node) = nodes.get(i + 1)
-                    && !plan_skip[i + 1]
-                    && node_kinds[i + 1] == NodeKind::Relu
-                    && relu_node.inputs.len() == 1
-                    && relu_node.inputs[0] == dequant_out
-                    && use_counts.get(dequant_out).copied().unwrap_or(0) == 1
-                    && !outputs.iter().any(|o| o == &relu_node.outputs[0])
+                let mut quant_idx = sole_consumer(dequant_out);
+                if let Some(ri) = quant_idx
+                    && !plan_skip[ri]
+                    && node_kinds[ri] == NodeKind::Relu
+                    && nodes[ri].inputs.len() == 1
+                    && nodes[ri].inputs[0] == dequant_out
+                    && !outputs.iter().any(|o| o == &nodes[ri].outputs[0])
                 {
-                    relu_idx = Some(i + 1);
-                    quant_idx = i + 2;
+                    relu_idx = Some(ri);
+                    quant_idx = sole_consumer(&nodes[ri].outputs[0]);
                 }
 
-                if let Some(quant_node) = nodes.get(quant_idx)
+                if let Some(quant_idx) = quant_idx
+                    && let quant_node = &nodes[quant_idx]
                     && !plan_skip[quant_idx]
                     && quant_node.op_type == "QuantizeLinear"
                     && quant_node.inputs.len() >= 3
@@ -681,7 +655,6 @@ pub(crate) fn build_runtime_index(
                         || relu_idx
                             .map(|ri| quant_node.inputs[0] == nodes[ri].outputs[0])
                             .unwrap_or(false))
-                    && use_counts.get(&quant_node.inputs[0]).copied().unwrap_or(0) == 1
                     && matching_zero_qparams(&nodes[i], quant_node, initializers)
                 {
                     execution_plan.push(NodeAction::QuantizedQdq {
@@ -718,7 +691,7 @@ pub(crate) fn build_runtime_index(
                     let dw_out = &nodes[i].outputs[0];
                     let dw_uses = use_counts.get(dw_out).copied().unwrap_or(0);
                     if dw_uses == 1
-                        && let Some(&j) = sole_consumer.get(dw_out.as_str())
+                        && let Some(j) = sole_consumer(dw_out)
                         && !plan_skip[j]
                     {
                         {
@@ -743,7 +716,7 @@ pub(crate) fn build_runtime_index(
                                 // — through the consumer index, not at j + 1.
                                 let pw_has_convadd = pw_kind_plain
                                     && pw_out_uses == 1
-                                    && sole_consumer.get(pw_out.as_str()).is_some_and(|&a| {
+                                    && sole_consumer(pw_out).is_some_and(|a| {
                                         node_kinds[a] == NodeKind::Add
                                             && !plan_skip[a]
                                             && nodes[a].inputs.len() == 2
@@ -788,7 +761,7 @@ pub(crate) fn build_runtime_index(
                     let pw_out = &nodes[i].outputs[0];
                     let pw_uses = use_counts.get(pw_out).copied().unwrap_or(0);
                     if pw_uses == 1
-                        && let Some(&j) = sole_consumer.get(pw_out.as_str())
+                        && let Some(j) = sole_consumer(pw_out)
                         && !plan_skip[j]
                     {
                         {
@@ -825,7 +798,7 @@ pub(crate) fn build_runtime_index(
                     let mut conv_add_emitted = false;
                     if conv_out_uses == 1
                         && activation == 0
-                        && let Some(&add_idx) = sole_consumer.get(conv_out.as_str())
+                        && let Some(add_idx) = sole_consumer(conv_out)
                         && let Some(add_node) = nodes.get(add_idx)
                         && node_kinds[add_idx] == NodeKind::Add
                         && add_node.inputs.len() == 2
@@ -838,9 +811,7 @@ pub(crate) fn build_runtime_index(
                             0
                         };
                         let add_out = &add_node.outputs[0];
-                        let (post_activation, relu_idx_field) = match sole_consumer
-                            .get(add_out.as_str())
-                            .copied()
+                        let (post_activation, relu_idx_field) = match sole_consumer(add_out)
                             .and_then(|r| nodes.get(r).map(|n| (r, n)))
                         {
                             Some((relu_idx, relu_node))
