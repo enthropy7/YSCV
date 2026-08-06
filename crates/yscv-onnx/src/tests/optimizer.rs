@@ -1496,3 +1496,98 @@ fn plan_fuses_conv_add_with_the_later_producer_of_a_residual() {
     let out = run_onnx_model(&model, feed).unwrap();
     assert_eq!(out["y"].data(), &[5.0_f32; 4]);
 }
+
+/// Two chained depthwise+pointwise blocks, both wide enough for the AVX-512
+/// NCHWc16 kernel. The first should hand its output to the second in blocked
+/// form; the second has no eligible consumer and must convert back.
+///
+/// `channels` picks whether the blocked kernel is eligible at all — it needs
+/// both channel counts to be a multiple of 16.
+fn nchwc_handoff_for_chained_blocks(channels: usize) -> Vec<bool> {
+    let c = channels as i64;
+    let dw_w = |name: &str| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: vec![c, 1, 3, 3],
+        data_type: Some(1),
+        float_data: vec![0.05; channels * 9],
+        ..Default::default()
+    };
+    let pw_w = |name: &str| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: vec![c, c, 1, 1],
+        data_type: Some(1),
+        float_data: vec![0.1; channels * channels],
+        ..Default::default()
+    };
+    let dw = |name: &str, w: &str, inp: &str, out: &str| onnx::NodeProto {
+        op_type: Some("Conv".into()),
+        name: Some(name.into()),
+        input: vec![inp.into(), w.into()],
+        output: vec![out.into()],
+        attribute: vec![
+            make_ints_attr("kernel_shape", vec![3, 3]),
+            make_ints_attr("pads", vec![1, 1, 1, 1]),
+            make_int_attr("group", c),
+        ],
+        ..Default::default()
+    };
+    let pw = |name: &str, w: &str, inp: &str, out: &str| onnx::NodeProto {
+        op_type: Some("Conv".into()),
+        name: Some(name.into()),
+        input: vec![inp.into(), w.into()],
+        output: vec![out.into()],
+        attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+        ..Default::default()
+    };
+    let nodes = vec![
+        dw("dw1", "dw1_w", "x", "dw1_out"),
+        pw("pw1", "pw1_w", "dw1_out", "pw1_out"),
+        dw("dw2", "dw2_w", "pw1_out", "dw2_out"),
+        pw("pw2", "pw2_w", "dw2_out", "y"),
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![dw_w("dw1_w"), pw_w("pw1_w"), dw_w("dw2_w"), pw_w("pw2_w")],
+        vec!["x"],
+        vec!["y"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        matches!(
+            model.runtime_index.execution_plan.as_slice(),
+            [
+                crate::plan::NodeAction::FusedDwPw { .. },
+                crate::plan::NodeAction::Skip,
+                crate::plan::NodeAction::FusedDwPw { .. },
+                crate::plan::NodeAction::Skip,
+            ]
+        ),
+        "fixture must produce two chained FusedDwPw actions, got {:?}",
+        model.runtime_index.execution_plan
+    );
+    model.runtime_index.nchwc_handoff.clone()
+}
+
+/// The runner used to decide the NCHWc handoff per action per inference, by
+/// walking forward through the plan and pulling weight shapes back out of the
+/// tensor environment. Every input to that decision is fixed at load time.
+///
+/// Checked here rather than through a run because the kernel that consumes the
+/// flag is gated on AVX-512, which the development host does not have — the
+/// predicate itself is what changed, so the predicate is what gets pinned.
+#[test]
+fn nchwc_handoff_is_resolved_at_plan_time() {
+    // c = 16: both blocks clear the blocked kernel's channel gate, so the
+    // first hands off to the second. The second has nothing after it.
+    assert_eq!(
+        nchwc_handoff_for_chained_blocks(16),
+        vec![true, false, false, false]
+    );
+
+    // c = 8: the kernel would fall back to the NHWC path, and handing it a
+    // blocked tensor there is a crash rather than a slowdown.
+    assert_eq!(
+        nchwc_handoff_for_chained_blocks(8),
+        vec![false, false, false, false]
+    );
+}
