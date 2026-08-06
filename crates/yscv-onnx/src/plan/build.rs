@@ -202,6 +202,32 @@ pub(crate) fn build_runtime_index(
         m
     };
 
+    // Map tensor name → the node that reads it, for values with exactly one
+    // reader.
+    //
+    // The fusion matcher below used to find a producer's consumer by looking at
+    // the next non-skipped node — which is adjacency, not dataflow. It therefore
+    // depended on `ReorderForFusion` having put the pair next to each other, and
+    // silently declined to fuse whenever an unrelated node was scheduled
+    // between them. Every site that did so already required the value to have a
+    // single reader, so that reader is unique and can simply be looked up.
+    //
+    // Restricted to single-reader values on purpose: a fan-out value cannot be
+    // fused into any one of its readers, so recording the rest would invite a
+    // caller to fuse into the wrong one.
+    let sole_consumer: FxHashMap<&str, usize> = {
+        let mut m: FxHashMap<&str, usize> =
+            FxHashMap::with_capacity_and_hasher(nodes.len(), FxBuildHasher);
+        for (idx, node) in nodes.iter().enumerate() {
+            for inp in &node.inputs {
+                if !inp.is_empty() && use_counts.get(inp.as_str()).copied() == Some(1) {
+                    m.insert(inp.as_str(), idx);
+                }
+            }
+        }
+        m
+    };
+
     // Build execution plan — pre-compiled dispatch table.
     let mut execution_plan = Vec::with_capacity(nodes.len());
     let mut plan_skip = vec![false; nodes.len()];
@@ -691,11 +717,11 @@ pub(crate) fn build_runtime_index(
                     // Look ahead for pointwise consuming our output
                     let dw_out = &nodes[i].outputs[0];
                     let dw_uses = use_counts.get(dw_out).copied().unwrap_or(0);
-                    if dw_uses == 1 {
-                        for j in (i + 1)..nodes.len() {
-                            if plan_skip[j] {
-                                continue;
-                            }
+                    if dw_uses == 1
+                        && let Some(&j) = sole_consumer.get(dw_out.as_str())
+                        && !plan_skip[j]
+                    {
+                        {
                             let nk = node_kinds[j];
                             if matches!(
                                 nk,
@@ -736,7 +762,6 @@ pub(crate) fn build_runtime_index(
                                 plan_skip[j] = true;
                                 fused = true;
                             }
-                            break; // only check next non-skipped
                         }
                     }
                 }
@@ -758,11 +783,11 @@ pub(crate) fn build_runtime_index(
                 {
                     let pw_out = &nodes[i].outputs[0];
                     let pw_uses = use_counts.get(pw_out).copied().unwrap_or(0);
-                    if pw_uses == 1 {
-                        for j in (i + 1)..nodes.len() {
-                            if plan_skip[j] {
-                                continue;
-                            }
+                    if pw_uses == 1
+                        && let Some(&j) = sole_consumer.get(pw_out.as_str())
+                        && !plan_skip[j]
+                    {
+                        {
                             let nk = node_kinds[j];
                             if matches!(
                                 nk,
@@ -786,7 +811,6 @@ pub(crate) fn build_runtime_index(
                                 plan_skip[j] = true;
                                 fused = true;
                             }
-                            break; // only check next non-skipped
                         }
                     }
                 }
