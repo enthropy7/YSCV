@@ -821,10 +821,11 @@ pub(crate) fn build_runtime_index(
                     let mut conv_add_emitted = false;
                     if conv_out_uses == 1
                         && activation == 0
-                        && let Some(add_node) = nodes.get(i + 1)
-                        && node_kinds[i + 1] == NodeKind::Add
+                        && let Some(&add_idx) = sole_consumer.get(conv_out.as_str())
+                        && let Some(add_node) = nodes.get(add_idx)
+                        && node_kinds[add_idx] == NodeKind::Add
                         && add_node.inputs.len() == 2
-                        && !plan_skip[i + 1]
+                        && !plan_skip[add_idx]
                         && (add_node.inputs[0] == *conv_out || add_node.inputs[1] == *conv_out)
                     {
                         let skip_input_idx: u8 = if add_node.inputs[0] == *conv_out {
@@ -833,29 +834,29 @@ pub(crate) fn build_runtime_index(
                             0
                         };
                         let add_out = &add_node.outputs[0];
-                        let (post_activation, relu_idx_field) =
-                            if let Some(relu_node) = nodes.get(i + 2) {
-                                if node_kinds[i + 2] == NodeKind::Relu
-                                    && !plan_skip[i + 2]
+                        let (post_activation, relu_idx_field) = match sole_consumer
+                            .get(add_out.as_str())
+                            .copied()
+                            .and_then(|r| nodes.get(r).map(|n| (r, n)))
+                        {
+                            Some((relu_idx, relu_node))
+                                if node_kinds[relu_idx] == NodeKind::Relu
+                                    && !plan_skip[relu_idx]
                                     && relu_node.inputs.len() == 1
-                                    && relu_node.inputs[0] == *add_out
-                                    && use_counts.get(add_out).copied().unwrap_or(0) == 1
-                                {
-                                    (1u8, (i + 2) as u32)
-                                } else {
-                                    (0u8, 0u32)
-                                }
-                            } else {
-                                (0u8, 0u32)
-                            };
+                                    && relu_node.inputs[0] == *add_out =>
+                            {
+                                (1u8, relu_idx as u32)
+                            }
+                            _ => (0u8, 0u32),
+                        };
                         execution_plan.push(NodeAction::ConvAdd {
                             conv_idx: i,
-                            add_idx: i + 1,
+                            add_idx,
                             skip_input_idx,
                             post_activation,
                             relu_idx: relu_idx_field,
                         });
-                        plan_skip[i + 1] = true;
+                        plan_skip[add_idx] = true;
                         if post_activation == 1 {
                             plan_skip[relu_idx_field as usize] = true;
                         }
