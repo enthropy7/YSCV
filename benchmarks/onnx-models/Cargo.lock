@@ -1801,11 +1801,11 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "yscv-cpu"
-version = "0.1.10"
+version = "0.1.11"
 
 [[package]]
 name = "yscv-detect"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "rustc-hash 2.1.3",
  "thiserror",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-kernels"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "bytemuck",
  "cblas-sys",
@@ -1832,7 +1832,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-onnx"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "prost",
  "prost-build",
@@ -1862,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-tensor"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "rayon",
  "thiserror",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-threadpool"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "crossbeam-deque",
  "libc",
@@ -1880,7 +1880,7 @@ dependencies = [
 
 [[package]]
 name = "yscv-video"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "arc-swap",
  "bytes",
