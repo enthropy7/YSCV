@@ -613,33 +613,33 @@ fn packed_int4_matmul_routes_through_gemv() {
     }
 }
 
-/// End-to-end bitwise check for `NodeAction::QuantizedPwDw`: build a
-/// synthetic `QuantizeLinear -> QLinearConv(pw 1×1) -> DequantizeLinear ->
-/// [Relu] -> QuantizeLinear -> QLinearConv(dw kxk) -> DequantizeLinear`
-/// graph with all-zero zero-points and matching boundary scale, run it
-/// twice — once with the chain enabled (default) and once with
-/// `YSCV_QUANT_INT8_FAST=0` forcing the unfused per-op path — and assert
-/// the f32 outputs are bit-for-bit identical. The test runs three
-/// shapes covering Relu / no-Relu, stride 1 / 2, and 3×3 / 5×5 DW so
-/// the bitwise contract is exercised across every code branch the
-/// chain action has.
-#[test]
-fn quantized_pw_dw_chain_bitwise_matches_unfused() {
-    let _env_guard = lock_shared_state();
-    fn run_case(
-        c_in: usize,
-        c_exp: usize,
-        h: usize,
-        w: usize,
-        kh: usize,
-        stride: usize,
-        with_relu: bool,
-        x_scale: f32,
-        pw_w_scale: f32,
-        boundary_scale: f32,
-        dw_w_scale: f32,
-        y_scale: f32,
-    ) {
+/// Builds a synthetic `QuantizeLinear -> QLinearConv(pw 1×1) ->
+/// DequantizeLinear -> [Relu] -> QuantizeLinear -> QLinearConv(dw kxk) ->
+/// DequantizeLinear` graph with all-zero zero-points and matching boundary
+/// scale, asserts the loader fuses it into `NodeAction::QuantizedPwDw`, then
+/// runs it twice — once with the chain enabled (default) and once with
+/// `YSCV_QUANT_INT8_FAST=0` forcing the unfused per-op path — and asserts the
+/// f32 outputs are bit-for-bit identical.
+///
+/// `interleave` schedules an unrelated node between every pair of links in
+/// the chain, without changing its dataflow.
+#[allow(clippy::too_many_arguments)]
+fn run_quantized_pw_dw_case(
+    c_in: usize,
+    c_exp: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    stride: usize,
+    with_relu: bool,
+    interleave: bool,
+    x_scale: f32,
+    pw_w_scale: f32,
+    boundary_scale: f32,
+    dw_w_scale: f32,
+    y_scale: f32,
+) {
+    {
         let pad = (kh - 1) / 2;
         let pw_w_int: Vec<i32> = (0..(c_exp * c_in))
             .map(|v| ((v as i32 * 11) % 23) - 11)
@@ -660,6 +660,23 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
         let x_data: Vec<f32> = x_int.iter().map(|&v| v as f32 * x_scale).collect();
 
         let mut nodes = Vec::new();
+        let mut side_outputs: Vec<String> = Vec::new();
+        // An independent node, reading a dedicated constant so it shares
+        // nothing with the chain, scheduled between two of its links.
+        let interpose = |nodes: &mut Vec<onnx::NodeProto>, side: &mut Vec<String>| {
+            if !interleave {
+                return;
+            }
+            let name = format!("side_{}", side.len());
+            nodes.push(onnx::NodeProto {
+                op_type: Some("Relu".into()),
+                name: Some(format!("interloper_{}", side.len())),
+                input: vec!["side_c".into()],
+                output: vec![name.clone()],
+                ..Default::default()
+            });
+            side.push(name);
+        };
         nodes.push(onnx::NodeProto {
             op_type: Some("QuantizeLinear".into()),
             name: Some("q_in".into()),
@@ -689,6 +706,7 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
             ],
             ..Default::default()
         });
+        interpose(&mut nodes, &mut side_outputs);
         nodes.push(onnx::NodeProto {
             op_type: Some("DequantizeLinear".into()),
             name: Some("dq".into()),
@@ -696,6 +714,7 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
             output: vec!["pw_f".into()],
             ..Default::default()
         });
+        interpose(&mut nodes, &mut side_outputs);
         let q_input = if with_relu {
             nodes.push(onnx::NodeProto {
                 op_type: Some("Relu".into()),
@@ -704,6 +723,7 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
                 output: vec!["pw_relu".into()],
                 ..Default::default()
             });
+            interpose(&mut nodes, &mut side_outputs);
             "pw_relu".to_string()
         } else {
             "pw_f".to_string()
@@ -715,6 +735,7 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
             output: vec!["dw_x".into()],
             ..Default::default()
         });
+        interpose(&mut nodes, &mut side_outputs);
         nodes.push(onnx::NodeProto {
             op_type: Some("QLinearConv".into()),
             name: Some("dw".into()),
@@ -771,16 +792,18 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
             scalar_init("y_s", y_scale),
             scalar_init("y_zp", 0.0),
             vec_init("dw_b", vec![c_exp as i64], dw_b_data.clone()),
+            scalar_init("side_c", 1.0),
         ];
-        let bytes = build_minimal_onnx_model(
-            nodes,
-            inits,
-            vec![
-                "x_s", "x_zp", "pw_w", "pw_w_s", "pw_w_zp", "pw_y_s", "pw_y_zp", "pw_b", "q_s",
-                "q_zp", "dw_w", "dw_w_s", "dw_w_zp", "y_s", "y_zp", "dw_b",
-            ],
-            vec!["y"],
-        );
+        let mut model_inputs = vec![
+            "x_s", "x_zp", "pw_w", "pw_w_s", "pw_w_zp", "pw_y_s", "pw_y_zp", "pw_b", "q_s", "q_zp",
+            "dw_w", "dw_w_s", "dw_w_zp", "y_s", "y_zp", "dw_b",
+        ];
+        if interleave {
+            model_inputs.push("side_c");
+        }
+        let mut model_outputs = vec!["y"];
+        model_outputs.extend(side_outputs.iter().map(String::as_str));
+        let bytes = build_minimal_onnx_model(nodes, inits, model_inputs, model_outputs);
         let model = load_onnx_model(&bytes).unwrap();
         assert!(
             model
@@ -788,7 +811,8 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
                 .execution_plan
                 .iter()
                 .any(|a| matches!(a, crate::plan::NodeAction::QuantizedPwDw { .. })),
-            "loader should have emitted QuantizedPwDw for the synthetic chain"
+            "loader should have emitted QuantizedPwDw for the synthetic chain, got {:?}",
+            model.runtime_index.execution_plan
         );
 
         let x_tensor = Tensor::from_vec(vec![1, c_in, h, w], x_data.clone()).unwrap();
@@ -829,16 +853,41 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
             );
         }
     }
+}
 
-    // Three coverage shapes for the chain action:
-    //   * 3×3 stride 1 with Relu
-    //   * 3×3 stride 2 without Relu
-    //   * 5×5 stride 1 with Relu
-    // c_in=4 c_exp=16 satisfies the load-time prepack gate
-    // (`c_in >= 4 && c_exp.is_multiple_of(16)`).
-    run_case(4, 16, 8, 8, 3, 1, true, 0.04, 0.06, 0.10, 0.05, 0.20);
-    run_case(4, 16, 8, 8, 3, 2, false, 0.05, 0.07, 0.12, 0.04, 0.22);
-    run_case(4, 16, 12, 12, 5, 1, true, 0.03, 0.05, 0.09, 0.06, 0.18);
+/// Three coverage shapes for `NodeAction::QuantizedPwDw`:
+///   * 3×3 stride 1 with Relu
+///   * 3×3 stride 2 without Relu
+///   * 5×5 stride 1 with Relu
+///
+/// c_in=4 c_exp=16 satisfies the load-time prepack gate
+/// (`c_in >= 4 && c_exp.is_multiple_of(16)`).
+#[test]
+fn quantized_pw_dw_chain_bitwise_matches_unfused() {
+    let _env_guard = lock_shared_state();
+    run_quantized_pw_dw_case(4, 16, 8, 8, 3, 1, true, false, 0.04, 0.06, 0.10, 0.05, 0.20);
+    run_quantized_pw_dw_case(
+        4, 16, 8, 8, 3, 2, false, false, 0.05, 0.07, 0.12, 0.04, 0.22,
+    );
+    run_quantized_pw_dw_case(
+        4, 16, 12, 12, 5, 1, true, false, 0.03, 0.05, 0.09, 0.06, 0.18,
+    );
+}
+
+/// The quantized chains walked their links positionally — DQ at `i + 1`, then
+/// the Relu and the Q and the closing conv at the indices after it — so any
+/// node the schedule placed inside the chain cost the fusion, and the whole
+/// INT8 sequence fell back to per-op dispatch. Each link is now followed from
+/// the value it produces to the node that reads it.
+///
+/// This runs the same fixture with an unrelated node between every pair of
+/// links. The dataflow is untouched, so the chain must still fuse and must
+/// still be bit-for-bit identical to the unfused path.
+#[test]
+fn quantized_pw_dw_chain_fuses_across_unrelated_nodes() {
+    let _env_guard = lock_shared_state();
+    run_quantized_pw_dw_case(4, 16, 8, 8, 3, 1, true, true, 0.04, 0.06, 0.10, 0.05, 0.20);
+    run_quantized_pw_dw_case(4, 16, 8, 8, 3, 2, false, true, 0.05, 0.07, 0.12, 0.04, 0.22);
 }
 
 /// End-to-end bitwise check for `NodeAction::QuantizedDwPw`: build a
