@@ -738,29 +738,33 @@ pub(crate) fn build_runtime_index(
                                 let pw_kind_plain = matches!(nk, NodeKind::Conv);
                                 let pw_out = &nodes[j].outputs[0];
                                 let pw_out_uses = use_counts.get(pw_out).copied().unwrap_or(0);
+                                // Asks the same question the `ConvAdd` matcher
+                                // below answers, so it must ask it the same way
+                                // — through the consumer index, not at j + 1.
                                 let pw_has_convadd = pw_kind_plain
                                     && pw_out_uses == 1
-                                    && nodes.get(j + 1).is_some_and(|n| {
-                                        node_kinds[j + 1] == NodeKind::Add
-                                            && n.inputs.len() == 2
-                                            && (n.inputs[0] == *pw_out || n.inputs[1] == *pw_out)
+                                    && sole_consumer.get(pw_out.as_str()).is_some_and(|&a| {
+                                        node_kinds[a] == NodeKind::Add
+                                            && !plan_skip[a]
+                                            && nodes[a].inputs.len() == 2
+                                            && (nodes[a].inputs[0] == *pw_out
+                                                || nodes[a].inputs[1] == *pw_out)
                                     });
-                                if pw_has_convadd {
-                                    break;
+                                if !pw_has_convadd {
+                                    let pw_act = match nk {
+                                        NodeKind::ConvRelu => 1,
+                                        NodeKind::ConvSilu => 2,
+                                        _ => 0,
+                                    };
+                                    execution_plan.push(NodeAction::FusedDwPw {
+                                        dw_idx: i,
+                                        pw_idx: j,
+                                        dw_activation: activation,
+                                        pw_activation: pw_act,
+                                    });
+                                    plan_skip[j] = true;
+                                    fused = true;
                                 }
-                                let pw_act = match nk {
-                                    NodeKind::ConvRelu => 1,
-                                    NodeKind::ConvSilu => 2,
-                                    _ => 0,
-                                };
-                                execution_plan.push(NodeAction::FusedDwPw {
-                                    dw_idx: i,
-                                    pw_idx: j,
-                                    dw_activation: activation,
-                                    pw_activation: pw_act,
-                                });
-                                plan_skip[j] = true;
-                                fused = true;
                             }
                         }
                     }
