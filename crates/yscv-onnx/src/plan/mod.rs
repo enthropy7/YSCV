@@ -13,12 +13,14 @@
 
 mod build;
 mod conv_params;
+mod layouts;
 mod slots;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 pub(crate) use build::build_runtime_index;
 use conv_params::resolve_conv_params;
+use layouts::resolve_nchwc_handoff;
 use slots::{SlotIndex, assign_slots};
 
 /// Precomputed runtime metadata built once at model load time.
@@ -83,6 +85,13 @@ pub(crate) struct RuntimeModelIndex {
     /// NHWC-flagged inputs via the non-trans matmul path. Built once at
     /// load time after `FusedTransposeMatMul` detection.
     pub(crate) reshape_nhwc_passthrough_safe: FxHashSet<String>,
+    /// Per plan position: whether the fused conv action there leaves its output
+    /// in blocked NCHWc16 for the next action to consume directly, instead of
+    /// converting back to NHWC. See [`layouts::resolve_nchwc_handoff`].
+    ///
+    /// Indexed by position in `execution_plan`, which after the
+    /// `FusedPwDwPwReduce` merge is no longer the same as the node index.
+    pub(crate) nchwc_handoff: Vec<bool>,
 }
 
 /// Residual-Add metadata for the `FusedPwDwPwReduce` action.

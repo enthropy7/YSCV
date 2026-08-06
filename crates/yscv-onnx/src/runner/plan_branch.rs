@@ -47,6 +47,16 @@ pub(crate) fn execute_plan_branch(
             continue;
         }
 
+        // Whether this action leaves its output in blocked NCHWc16 for the next
+        // one to read directly. Resolved at plan time — the walk that used to
+        // answer it here read nothing that changes between inferences.
+        let nchwc_handoff = model
+            .runtime_index
+            .nchwc_handoff
+            .get(action_idx)
+            .copied()
+            .unwrap_or(false);
+
         let t0 = timing_enabled.then(std::time::Instant::now);
 
         match action {
@@ -122,74 +132,6 @@ pub(crate) fn execute_plan_branch(
                     .get(*dw_idx)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                // M3 enclave lookahead: if the next non-Skip plan action
-                // is another FusedDwPw whose DW input is this PW output,
-                // the chain can skip the round-trip nchwc→nhwc +
-                // nhwc→nchwc. Caller (exec_fused_dw_pw AVX-512 path)
-                // honours `leave_nchwc_output` and marks the env-slot
-                // via `mark_nchwc`. Absorbed Relu nodes become
-                // `NodeAction::Skip` in the plan — walk past them so
-                // genuine FusedDwPw chains (e.g. cls_dw/enc.0 →
-                // cls_tower.0 connected by an absorbed Relu) are found.
-                let leave_nchwc_output = {
-                    let mut found = false;
-                    let mut probe = action_idx + 1;
-                    while let Some(next) = plan.get(probe) {
-                        match next {
-                            NodeAction::Skip => {
-                                probe += 1;
-                                continue;
-                            }
-                            NodeAction::FusedDwPw {
-                                dw_idx: next_dw_idx,
-                                pw_idx: next_pw_idx,
-                                ..
-                            } => {
-                                let next_dw = &nodes[*next_dw_idx];
-                                let next_pw = &nodes[*next_pw_idx];
-                                let next_dw_ws = next_dw
-                                    .inputs
-                                    .get(1)
-                                    .and_then(|n| env.get(n))
-                                    .map(|t| t.shape().to_vec())
-                                    .unwrap_or_default();
-                                let next_pw_ws = next_pw
-                                    .inputs
-                                    .get(1)
-                                    .and_then(|n| env.get(n))
-                                    .map(|t| t.shape().to_vec())
-                                    .unwrap_or_default();
-                                // Same gate conditions as the AVX-512 path
-                                // inside exec_fused_dw_pw: must be 3×3 DW
-                                // SAME-pad, 1×1 PW, both c dims multiple
-                                // of 16. Without this, the next op fails
-                                // the gate and falls into NHWC path with
-                                // NCHWc input → crash.
-                                let next_gate_ok = next_dw.inputs.len() >= 2
-                                    && next_pw.inputs.len() >= 2
-                                    && next_dw_ws.len() == 4
-                                    && next_pw_ws.len() == 4
-                                    && next_dw_ws[0] == 3
-                                    && next_dw_ws[1] == 3
-                                    && next_dw_ws[3] == 1
-                                    && next_pw_ws[0] == 1
-                                    && next_pw_ws[1] == 1
-                                    && next_pw_ws[2] == next_dw_ws[2]
-                                    && next_dw_ws[2].is_multiple_of(16)
-                                    && next_pw_ws[3].is_multiple_of(16);
-                                if !next_dw.inputs.is_empty()
-                                    && next_dw.inputs[0] == pw_node.outputs[0]
-                                    && next_gate_ok
-                                {
-                                    found = true;
-                                }
-                                break;
-                            }
-                            _ => break,
-                        }
-                    }
-                    found
-                };
                 exec_fused_dw_pw(
                     dw_node,
                     pw_node,
@@ -201,7 +143,7 @@ pub(crate) fn execute_plan_branch(
                     dw_input_ids_slice,
                     remaining_uses,
                     output_id_mask,
-                    leave_nchwc_output,
+                    nchwc_handoff,
                 )?;
             }
 
@@ -239,42 +181,6 @@ pub(crate) fn execute_plan_branch(
                     .get(*pw_idx)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                // NCHWc chain lookahead: leave NCHWc when the next op is
-                // another FusedPwDwPwReduce/FusedPwDw whose input is this
-                // FusedPwDw's DW output (`dw_node.outputs[0]`).
-                let this_output_name = &dw_node.outputs[0];
-                let leave_nchwc_output = {
-                    let mut found = false;
-                    let mut probe = action_idx + 1;
-                    while let Some(next) = plan.get(probe) {
-                        match next {
-                            NodeAction::Skip => {
-                                probe += 1;
-                                continue;
-                            }
-                            NodeAction::FusedPwDwPwReduce {
-                                pw_expand_idx: next_idx,
-                                ..
-                            }
-                            | NodeAction::FusedPwDw {
-                                pw_idx: next_idx, ..
-                            }
-                            | NodeAction::ConvAdd {
-                                conv_idx: next_idx, ..
-                            } => {
-                                let next_node = &nodes[*next_idx];
-                                if !next_node.inputs.is_empty()
-                                    && next_node.inputs[0] == *this_output_name
-                                {
-                                    found = true;
-                                }
-                                break;
-                            }
-                            _ => break,
-                        }
-                    }
-                    found
-                };
                 exec_fused_pw_dw(
                     pw_node,
                     dw_node,
@@ -286,7 +192,7 @@ pub(crate) fn execute_plan_branch(
                     pw_input_ids_slice,
                     remaining_uses,
                     output_id_mask,
-                    leave_nchwc_output,
+                    nchwc_handoff,
                 )?;
             }
 
@@ -356,47 +262,6 @@ pub(crate) fn execute_plan_branch(
                             relu_node,
                         )
                     });
-                // Backbone NCHWc chaining lookahead: leave NCHWc output when
-                // the next plan action is another FusedPwDwPwReduce whose
-                // first input is this node's final output (accounting for
-                // absorbed Add+Relu).
-                let this_output_name: &str = match &residual_meta_tuple {
-                    Some((_, _, 1, Some(relu_node))) => &relu_node.outputs[0],
-                    Some((add_node, _, _, _)) => &add_node.outputs[0],
-                    None => &pw_reduce_node.outputs[0],
-                };
-                let leave_nchwc_output = {
-                    let mut found = false;
-                    let mut probe = action_idx + 1;
-                    while let Some(next) = plan.get(probe) {
-                        match next {
-                            NodeAction::Skip => {
-                                probe += 1;
-                                continue;
-                            }
-                            NodeAction::FusedPwDwPwReduce {
-                                pw_expand_idx: next_idx,
-                                ..
-                            }
-                            | NodeAction::FusedPwDw {
-                                pw_idx: next_idx, ..
-                            }
-                            | NodeAction::ConvAdd {
-                                conv_idx: next_idx, ..
-                            } => {
-                                let next_node = &nodes[*next_idx];
-                                if !next_node.inputs.is_empty()
-                                    && next_node.inputs[0] == *this_output_name
-                                {
-                                    found = true;
-                                }
-                                break;
-                            }
-                            _ => break,
-                        }
-                    }
-                    found
-                };
                 exec_fused_pw_dw_pw_reduce(
                     pw_expand_node,
                     dw_node,
@@ -413,7 +278,7 @@ pub(crate) fn execute_plan_branch(
                     *dw_kernel_size,
                     remaining_uses,
                     output_id_mask,
-                    leave_nchwc_output,
+                    nchwc_handoff,
                 )?;
             }
 
