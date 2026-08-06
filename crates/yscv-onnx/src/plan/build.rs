@@ -1,12 +1,19 @@
-//! build_runtime_index: the load-time graph optimizer that classifies
-//! each node (NodeKind), plans fusions (NodeAction), and prepacks weights.
+//! Plan construction: classifies each node ([`NodeKind`]), selects fusions
+//! ([`NodeAction`]), resolves convolution parameters and prepacks weights.
+//!
+//! Still one large function. Splitting it into named phases is the next step;
+//! moving it out of `loader/` came first so the boundary is where it belongs
+//! before the internals are rearranged.
+
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
+use yscv_tensor::Tensor;
 
 use crate::attr::Attr;
-use rustc_hash::FxBuildHasher;
+use crate::loader::{OnnxAttribute, OnnxNode};
 
 use super::*;
 
-pub(super) fn build_runtime_index(
+pub(crate) fn build_runtime_index(
     inputs: &[String],
     outputs: &[String],
     initializers: &FxHashMap<String, Tensor>,

@@ -1,6 +1,6 @@
 use crate::error::OnnxError;
 use crate::ir::{Changed, Graph, NodeId, Op, Pass, ValueId, WeightLayout};
-use crate::loader::NodeKind;
+use crate::plan::NodeKind;
 use crate::runner::{ConstEvalTables, TensorEnv, execute_node_kind};
 
 /// Evaluates nodes whose inputs are all load-time constants and replaces them

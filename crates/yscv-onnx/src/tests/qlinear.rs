@@ -127,7 +127,7 @@ fn qlinear_matching_dq_relu_q_runs_in_quant_domain() {
     assert!(
         model.runtime_index.execution_plan.iter().any(|a| matches!(
             a,
-            crate::loader::NodeAction::QuantizedQdq {
+            crate::plan::NodeAction::QuantizedQdq {
                 relu_idx: Some(_),
                 ..
             }
@@ -787,7 +787,7 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
                 .runtime_index
                 .execution_plan
                 .iter()
-                .any(|a| matches!(a, crate::loader::NodeAction::QuantizedPwDw { .. })),
+                .any(|a| matches!(a, crate::plan::NodeAction::QuantizedPwDw { .. })),
             "loader should have emitted QuantizedPwDw for the synthetic chain"
         );
 
@@ -1013,7 +1013,7 @@ fn quantized_dw_pw_chain_bitwise_matches_unfused() {
                 .runtime_index
                 .execution_plan
                 .iter()
-                .any(|a| matches!(a, crate::loader::NodeAction::QuantizedDwPw { .. })),
+                .any(|a| matches!(a, crate::plan::NodeAction::QuantizedDwPw { .. })),
             "loader should have emitted QuantizedDwPw for the synthetic chain"
         );
 
