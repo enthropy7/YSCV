@@ -22,6 +22,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub(crate) use build::build_runtime_index;
 use conv_params::resolve_conv_params;
 use kernels::resolve_conv_kernels;
+pub(crate) use kernels::{ConvShape, select_conv_kernel};
 use layouts::resolve_nchwc_handoff;
 use slots::{SlotIndex, assign_slots};
 

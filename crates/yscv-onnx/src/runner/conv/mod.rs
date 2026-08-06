@@ -515,6 +515,28 @@ fn conv_compute_nhwc(
         (w_shape[0], w_shape[1], w_shape[2], w_shape[3])
     };
 
+    // The entry point for this Conv. `plan::kernels::select_conv_kernel` is the
+    // one place the conditions live; the plan resolves it at load time for
+    // every Conv it dispatches, and the fused and slow paths — which have no
+    // plan entry — ask the same function here.
+    let kernel = planned_kernel.unwrap_or_else(|| {
+        crate::plan::select_conv_kernel(&crate::plan::ConvShape {
+            group,
+            has_padding,
+            stride_h: sh,
+            stride_w: sw,
+            pad_top: pt,
+            pad_left: pl,
+            pad_bottom: pb,
+            pad_right: pr,
+            out_channels: o_ch,
+            in_per_group: i_per_g,
+            kernel_h: kh,
+            kernel_w: kw,
+            has_prepack: prepacked_weight.is_some() || env.prepacked_b(&node.inputs[1]).is_some(),
+        })
+    });
+
     if group == 1 {
         // Use pre-permuted weight if available (OIHW→KHWC done once upfront).
         let w_nhwc_owned;
@@ -538,22 +560,14 @@ fn conv_compute_nhwc(
             // YSCV_INDIRECT_MAX_COUT sets an output-channel ceiling under which it
             // is used. The first-layer 3-channel 3×3 stride-2 Conv keeps its own
             // register-blocked microkernel in conv2d_nhwc_padded.
-            let is_first_layer_3ch = input_nhwc.shape()[3] == 3 && sh == 2 && sw == 2;
-            let indirect_max_cout = tuning::indirect_max_cout();
-            if kh == 3
-                && kw == 3
-                && group == 1
-                && !cfg!(miri)
-                && !is_first_layer_3ch
-                && o_ch <= indirect_max_cout
-            {
+            if kernel == ConvKernel::IndirectNhwc3x3 {
                 let t = yscv_kernels::conv2d_nhwc_indirect_padded(
                     input_nhwc, w_nhwc, bias, sh, sw, pt, pl, pb, pr, activation,
                 )
                 .map_err(|e| OnnxError::DecodeFailed {
                     message: e.to_string(),
                 })?;
-                note_kernel(planned_kernel, ConvKernel::IndirectNhwc3x3);
+                note_kernel(planned_kernel, kernel);
                 return Ok(t);
             }
         }
@@ -585,16 +599,7 @@ fn conv_compute_nhwc(
             })?;
             (t, true)
         };
-        note_kernel(
-            planned_kernel,
-            if has_padding {
-                ConvKernel::NhwcPadded
-            } else if prepacked.is_some() {
-                ConvKernel::NhwcGemmPrepacked
-            } else {
-                ConvKernel::NhwcGemm
-            },
-        );
+        note_kernel(planned_kernel, kernel);
         apply_conv_activation(&mut out_nhwc, activation, activation_fused);
         Ok(out_nhwc)
     } else if group == o_ch && group == input_nhwc.shape()[3] {
@@ -605,18 +610,7 @@ fn conv_compute_nhwc(
         // `YSCV_NCHWC_DW=1`, default OFF: the current intrinsics path loses to
         // the mature NHWC im2col+SIMD+MT path. Kept wired so a future
         // inline-asm tuning pass can flip the default.
-        if kh == 3
-            && kw == 3
-            && sh == 1
-            && sw == 1
-            && pt == 1
-            && pl == 1
-            && pb == 1
-            && pr == 1
-            && depth_mult == 1
-            && c.is_multiple_of(8)
-            && tuning::nchwc_depthwise_enabled()
-        {
+        if kernel == ConvKernel::DepthwiseNchwc3x3 {
             let dw_kernel_owned;
             let dw_kernel: &Tensor = if is_dw_khwc {
                 weight
@@ -648,7 +642,7 @@ fn conv_compute_nhwc(
                     message: e.to_string(),
                 }
             })?;
-            note_kernel(planned_kernel, ConvKernel::DepthwiseNchwc3x3);
+            note_kernel(planned_kernel, kernel);
             apply_conv_activation(&mut out_nhwc, activation, true);
             return Ok(out_nhwc);
         }
@@ -689,14 +683,7 @@ fn conv_compute_nhwc(
                 message: e.to_string(),
             })
         }?;
-        note_kernel(
-            planned_kernel,
-            if has_padding {
-                ConvKernel::DepthwiseNhwcPadded
-            } else {
-                ConvKernel::DepthwiseNhwc
-            },
-        );
+        note_kernel(planned_kernel, kernel);
         apply_conv_activation(&mut out_nhwc, activation, activation_fused);
         Ok(out_nhwc)
     } else {
@@ -824,7 +811,7 @@ fn conv_compute_nhwc(
                 message: e.to_string(),
             }
         })?;
-        note_kernel(planned_kernel, ConvKernel::Grouped);
+        note_kernel(planned_kernel, kernel);
         apply_conv_activation(&mut out_nhwc, activation, relu_fused);
         Ok(out_nhwc)
     }
