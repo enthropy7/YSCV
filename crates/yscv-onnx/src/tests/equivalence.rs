@@ -16,13 +16,31 @@ use yscv_tensor::Tensor;
 use super::super::loader::{OnnxModel, load_onnx_model};
 use super::super::runner::run_onnx_model;
 
-/// Serializes tests that mutate the process environment.
+/// Serializes tests that mutate *or read* the process environment.
 ///
 /// `std::env::set_var` is not thread-safe and `cargo test` runs tests on a
 /// thread pool, so a test toggling a `YSCV_*` switch can otherwise change the
 /// behaviour of an unrelated test running beside it. Poison-tolerant: a panic
 /// in one test must not cascade into every other.
-pub(in crate::tests) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Proof that the holder has exclusive use of the process environment.
+///
+/// Held for a whole test rather than just the window where a variable is set,
+/// because *reading* the environment is equally unsafe here: plan construction
+/// consults these switches, so a test asserting the shape of a plan it just
+/// built is racing anything that toggles one. That is not hypothetical — the
+/// plan-merge tests asserted their plan outside the lock and failed
+/// intermittently in the full suite while passing alone.
+///
+/// Unforgeable outside this module, so a helper that needs the lock can demand
+/// a `&EnvGuard` and be unable to deadlock by taking it a second time.
+pub(in crate::tests) struct EnvGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+/// Takes the environment lock for the rest of the current scope.
+pub(in crate::tests) fn lock_env() -> EnvGuard {
+    EnvGuard(ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 /// Deterministic linear-congruential generator.
 ///
@@ -115,24 +133,24 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
 /// test was asserting.
 ///
 /// `kill_switch` is the `YSCV_*` variable that disables the fusion under test.
-/// Serializes on [`ENV_LOCK`] internally, so callers need no discipline of
-/// their own.
+/// Takes an [`EnvGuard`] rather than locking internally: the caller has to hold
+/// the lock across its *own* plan assertions too, and a second acquisition here
+/// would deadlock.
 pub(in crate::tests) fn assert_plan_fusion_preserves_numerics(
+    _env: &EnvGuard,
     label: &str,
     model_bytes: &[u8],
     feed: &FxHashMap<String, Tensor>,
     tolerance: Tolerance,
     kill_switch: &str,
 ) {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let fused = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: fused load: {e}"));
 
     // SAFETY: `set_var`/`remove_var` are not thread-safe and `cargo test` runs
-    // tests concurrently, so every environment mutation in this crate's tests
-    // happens under `ENV_LOCK`, held for the whole window in which the variable
-    // is set. The load below is the only thing that reads it, and the variable
-    // is cleared before the lock is released — including on a failed load,
-    // since the result is only unwrapped afterwards.
+    // tests concurrently. The `EnvGuard` the caller passed proves this thread
+    // has exclusive use of the environment for the whole test, so no other test
+    // can observe the variable while it is set. It is cleared before returning,
+    // including on a failed load, since the result is only unwrapped afterwards.
     #[allow(unsafe_code)]
     unsafe {
         std::env::set_var(kill_switch, "1");

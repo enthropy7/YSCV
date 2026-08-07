@@ -1602,6 +1602,9 @@ fn nchwc_handoff_is_resolved_at_plan_time() {
 /// legal, so that reader is unique and is now looked up directly.
 #[test]
 fn plan_merges_pw_dw_pw_reduce_across_an_unrelated_node() {
+    // Held for the whole test: the plan assertion below reads the same switch
+    // the harness toggles, so it races a sibling test without this.
+    let env = crate::tests::equivalence::lock_env();
     let c_in = 16usize;
     let c_exp = 32usize;
     let w = |name: &str, dims: Vec<i64>| onnx::TensorProto {
@@ -1683,6 +1686,7 @@ fn plan_merges_pw_dw_pw_reduce_across_an_unrelated_node() {
         Tensor::from_vec(vec![1, 2], vec![1.0_f32, -1.0]).unwrap(),
     );
     crate::tests::equivalence::assert_plan_fusion_preserves_numerics(
+        &env,
         "FusedPwDwPwReduce/non-adjacent",
         &bytes,
         &feed,
@@ -1795,6 +1799,7 @@ fn pw_dw_pw_reduce_residual_fixture(
 /// The merge now takes over whatever `ConvAdd` resolved, or declines.
 #[test]
 fn plan_merge_keeps_a_non_adjacent_residual_add() {
+    let env = crate::tests::equivalence::lock_env();
     let (bytes, feed) = pw_dw_pw_reduce_residual_fixture(true);
     let model = load_onnx_model(&bytes).unwrap();
     assert!(
@@ -1808,6 +1813,7 @@ fn plan_merge_keeps_a_non_adjacent_residual_add() {
     );
 
     crate::tests::equivalence::assert_plan_fusion_preserves_numerics(
+        &env,
         "FusedPwDwPwReduce/non-adjacent-residual",
         &bytes,
         &feed,
@@ -1826,6 +1832,7 @@ fn plan_merge_keeps_a_non_adjacent_residual_add() {
 /// failed with `MissingInput { node: "residual", input: "mid" }`.
 #[test]
 fn plan_merge_declines_a_residual_produced_inside_the_block() {
+    let _env = crate::tests::equivalence::lock_env();
     let (bytes, feed) = pw_dw_pw_reduce_residual_fixture(false);
     let model = load_onnx_model(&bytes).unwrap();
 
