@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fuse_conv_relu`, `fuse_bn_relu`, `fold_conv_bn`, `fold_constants` and
   `rewrite_convtranspose_dts` are no longer public. They were only ever reachable
   through `optimize_onnx_graph` outside the crate.
+- Optimizer passes no longer rebuild the runtime index individually. Nine of
+  the twelve passes called `rebuild_runtime_index()` on exit, so a single
+  `optimize_onnx_graph` re-ran execution-plan construction and weight
+  prepacking about ten times. The driver now rebuilds once after the whole
+  pipeline; the public per-pass entry points still rebuild for standalone
+  callers.
 
 ### Fixed
 
@@ -52,26 +58,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Synthesized bias operands were named from the node name, which ONNX makes
   optional, so every unnamed convolution proposed the same name and the second
   silently aliased the first's tensor.
-
 - `remove_dropout_nodes` deleted nodes by `NodeProto.name`, which ONNX makes
   optional. A single unnamed `Dropout` put the empty string into the delete set
   and took every other unnamed node in the graph with it — on a fully unnamed
   three-node fixture the pass emptied the graph. It also deleted malformed
   `Dropout` nodes it had skipped rewiring. Now removes only the nodes it
   actually rewired, by index.
+- `Transpose` + `MatMul` fusion fired even when the transposed value had a
+  consumer that could not absorb it. The fused action reads the value *before*
+  the transpose, so when another consumer forced the `Transpose` to run anyway,
+  running it consumed that value and the fusion then read a tensor that was
+  gone — a `Transpose` feeding both a `MatMul` and any other op failed the
+  inference outright. The matcher now requires every reader of the transposed
+  value to be an absorbing `MatMul`, which is what its own comment always
+  claimed.
+- The `PW_expand → DW → PW_reduce` merge matched its residual `Add`
+  positionally while every other matcher worked by dataflow. When the two
+  disagreed the merge absorbed the pointwise reduction without its `Add`, and
+  the addition was dropped from the execution plan entirely — inference
+  returned successfully with a graph output missing. It now takes over whatever
+  the `Conv`+`Add` matcher resolved, or declines.
 - `eliminate_squeeze_unsqueeze_pairs` could accept overlapping inverse pairs
   `(i, i+1)` and `(i+1, i+2)` from a chain such as `Squeeze -> Unsqueeze ->
   Squeeze`. The reverse-removal loop then deleted already-shifted indices,
   taking unrelated nodes with them. Overlapping matches are now skipped.
-
-### Changed
-
-- Optimizer passes no longer rebuild the runtime index individually. Nine of
-  the twelve passes called `rebuild_runtime_index()` on exit, so a single
-  `optimize_onnx_graph` re-ran execution-plan construction and weight
-  prepacking about ten times. The driver now rebuilds once after the whole
-  pipeline; the public per-pass entry points still rebuild for standalone
-  callers.
 
 ### Removed
 

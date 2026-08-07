@@ -37,18 +37,17 @@ pub use graph_stats::{GraphStats, graph_stats};
 pub(crate) use rewrite_convtranspose_dts::RewriteConvTransposeToDepthToSpace;
 pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 
-/// Runs the passes that have moved onto the def-use IR.
+/// Lowers the model to the def-use IR, runs the pass pipeline to a fixpoint,
+/// and writes the result back.
 ///
-/// The migration is incremental, so the two representations coexist: the
-/// string-based passes run first, then the model is lowered once and the IR
-/// pipeline runs to a fixpoint. Each pass ported in a later change moves from
-/// the list above into this pipeline.
+/// A pass failure propagates rather than being logged and swallowed, and leaves
+/// the model exactly as it was: `apply_ir` only runs once the whole pipeline has
+/// succeeded, so a half-transformed graph never reaches the caller. Constant
+/// folding is what made this genuinely fallible — it executes nodes.
 ///
-/// A pass failure leaves the model exactly as it was rather than applying a
-/// half-transformed graph. `optimize_onnx_graph` returns `()` and its callers
-/// treat optimization as best-effort, so the failure is reported on stderr.
-/// Once a genuinely fallible pass lands — constant folding executes the graph,
-/// so it can — this should become a real error return.
+/// Note the distinction that draws: a node the evaluator declines is *not
+/// foldable* and is skipped silently. Only a structurally broken graph is an
+/// error.
 fn run_ir_pipeline(model: &mut OnnxModel) -> Result<(), OnnxError> {
     let mut graph = model.to_ir();
     PassManager::new(pipeline()).run(&mut graph)?;
@@ -68,9 +67,10 @@ fn run_ir_pipeline(model: &mut OnnxModel) -> Result<(), OnnxError> {
 /// - The folds before `FuseActivation`, which matches a plain `Conv` and would
 ///   miss one already retagged as `Conv_Relu`.
 ///
-/// `ReorderForFusion` is last because it is not for these passes at all: the
-/// layer-3 plan builder still matches `nodes[i + 1]`, so the order it leaves
-/// behind is what reaches `build_runtime_index`.
+/// `ReorderForFusion` is last because it is not for these passes at all — nor,
+/// any longer, for the plan builder, which matches by dataflow too. The order
+/// it leaves behind is what reaches `build_runtime_index`, and what that order
+/// now decides is peak memory rather than which fusions fire.
 fn pipeline() -> Vec<Box<dyn Pass>> {
     vec![
         Box::new(RemoveDropout) as Box<dyn Pass>,
@@ -91,28 +91,21 @@ fn pipeline() -> Vec<Box<dyn Pass>> {
 ///
 /// Applies load-time passes modeled after ORT's Level-1 optimizer.
 ///
-/// The migration to the def-use IR runs in three phases, because the passes
-/// still on the string representation match positionally and so must sit
-/// between an ordering repair and the fusions.
+/// Every pass runs over the def-use IR, from a single pipeline driven to a
+/// bounded fixpoint. See the private `pipeline` function for the order and why
+/// it is what it is.
 ///
-/// 1. [`ir_cleanup_passes`] — Dropout removal, Squeeze/Unsqueeze pair
-///    elimination, dead code, then the topological reorder those positional
-///    passes depend on.
-/// 2. Still string-based, still matching `nodes[i + 1]`:
-///    - ConvTranspose(k==s) rewrite to Conv1x1 + DepthToSpace (GEMM-backed
-///      path, also unlocks backends without a ConvTranspose kernel)
-///    - Conv-BatchNormalization folding (absorb BN γ/β/μ/σ into Conv weights)
-///    - Conv-Mul(const) scale absorption (scalar/per-channel Mul into weights)
-///    - Conv-Add(const) bias absorption (per-channel Add into Conv bias)
-///    - Constant folding (execute nodes with all-initializer inputs at load)
-/// 3. [`ir_fusion_passes`] — Conv+Relu / BN+Relu annotation fusion, then a
-///    final dead-code sweep and reorder.
+/// What the passes do, in the order they are listed there: Dropout removal and
+/// Squeeze/Unsqueeze pair elimination; the ConvTranspose(k==s) rewrite to
+/// Conv1x1 + DepthToSpace (GEMM-backed, and it unlocks backends with no
+/// ConvTranspose kernel); Conv-BatchNormalization folding; Conv-Mul and
+/// Conv-Add constant absorption into weights and bias; constant folding;
+/// Conv+Relu and BN+Relu annotation fusion; dead code; and the topological
+/// reorder.
 ///
-/// Order matters within phase 2: `fold_conv_bn` runs before Conv-Mul/Conv-Add
-/// because BN usually absorbs into Conv already, so only stray scale/bias fall
-/// through. The phase as a whole precedes the activation fusions, since
-/// `fold_conv_bn` matches a plain `Conv` and would miss one already retagged as
-/// `Conv_Relu`.
+/// Matching is by def-use, so a pass finds its pattern wherever the operands
+/// sit rather than needing them adjacent — which is what lets the pipeline run
+/// to a fixpoint instead of depending on a hand-tuned order.
 ///
 /// The runtime index is rebuilt once here, after every pass has run. Individual
 /// passes must not rebuild it themselves — doing so re-runs plan construction
