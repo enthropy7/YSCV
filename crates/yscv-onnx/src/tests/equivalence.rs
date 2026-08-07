@@ -136,6 +136,9 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
 /// Takes an [`EnvGuard`] rather than locking internally: the caller has to hold
 /// the lock across its *own* plan assertions too, and a second acquisition here
 /// would deadlock.
+// Only the pre-permuted (CPU-only) weight layout produces the fused plans
+// this checks; GPU builds keep ONNX-native OIHW and take a different path.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
 pub(in crate::tests) fn assert_plan_fusion_preserves_numerics(
     _env: &EnvGuard,
     label: &str,
