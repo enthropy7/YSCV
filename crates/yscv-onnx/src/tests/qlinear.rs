@@ -1142,3 +1142,448 @@ fn qlinear_matmul_asymmetric_uses_fp32_fallback() {
         assert!(v.is_finite());
     }
 }
+
+/// `QuantizedConvDq` folds a `QLinearConv → DequantizeLinear` pair into one
+/// action so the dequantize happens inside the conv kernel's epilogue rather
+/// than as a separate pass over the output.
+///
+/// Along with `QuantizedForkPair` and `QuantizedResidualChain` below, this
+/// action had no test at all: the quantized matchers were rewritten from
+/// positional to dataflow with only the PW+DW chain covered.
+#[test]
+fn quantized_conv_dq_pair_matches_the_unfused_result() {
+    let _guard = lock_shared_state();
+    let (c_in, c_out, h, w) = (4usize, 16usize, 8usize, 8usize);
+    let x_scale = 0.05_f32;
+    let w_scale = 0.07_f32;
+    let y_scale = 0.11_f32;
+    let w_data: Vec<f32> = (0..(c_out * c_in))
+        .map(|v| (((v as i32 * 11) % 23) - 11) as f32)
+        .collect();
+    let x_data: Vec<f32> = (0..(c_in * h * w))
+        .map(|v| ((((v as i32) * 7) % 31) - 15) as f32 * x_scale)
+        .collect();
+
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("QuantizeLinear".into()),
+            name: Some("q_in".into()),
+            input: vec!["x".into(), "x_s".into(), "x_zp".into()],
+            output: vec!["xq".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("QLinearConv".into()),
+            name: Some("pw".into()),
+            input: vec![
+                "xq".into(),
+                "x_s".into(),
+                "x_zp".into(),
+                "pw_w".into(),
+                "pw_w_s".into(),
+                "pw_w_zp".into(),
+                "y_s".into(),
+                "y_zp".into(),
+            ],
+            output: vec!["yq".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![1, 1]),
+                make_ints_attr("strides", vec![1, 1]),
+                make_ints_attr("pads", vec![0, 0, 0, 0]),
+            ],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("DequantizeLinear".into()),
+            name: Some("dq".into()),
+            input: vec!["yq".into(), "y_s".into(), "y_zp".into()],
+            output: vec!["y_f".into()],
+            ..Default::default()
+        },
+        // The pair only fuses when the dequantized value is not itself a graph
+        // output — the fused epilogue writes it, but the action is accounted as
+        // one step, so a consumer has to exist for the fusion to be worth it.
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("sink".into()),
+            input: vec!["y_f".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let inits = vec![
+        scalar_init("x_s", x_scale),
+        scalar_init("x_zp", 0.0),
+        vec_init("pw_w", vec![c_out as i64, c_in as i64, 1, 1], w_data),
+        scalar_init("pw_w_s", w_scale),
+        scalar_init("pw_w_zp", 0.0),
+        scalar_init("y_s", y_scale),
+        scalar_init("y_zp", 0.0),
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        inits,
+        vec!["x_s", "x_zp", "pw_w", "pw_w_s", "pw_w_zp", "y_s", "y_zp"],
+        vec!["y"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::QuantizedConvDq { .. })),
+        "loader should have fused the QLinearConv+DQ pair, got {:?}",
+        model.runtime_index.execution_plan
+    );
+
+    let mut feed = FxHashMap::default();
+    feed.insert(
+        "x".to_string(),
+        Tensor::from_vec(vec![1, c_in, h, w], x_data).unwrap(),
+    );
+    assert_quant_fast_path_matches_unfused("QuantizedConvDq", &model, &feed);
+}
+
+/// A `QLinearConv → DQ → Relu → Q → QLinearConv` chain whose dequantized value
+/// has a second consumer. The strict `QuantizedPwDw` declines it — it would
+/// have to consume the QDQ boundary exclusively — and `QuantizedForkPair`
+/// schedules the pair as one action while still materializing the side value.
+///
+/// The side branch is what makes this worth pinning: the fused kernel writes
+/// the Relu output as a real tensor, and a matcher that absorbed it without
+/// doing so would leave the second consumer reading nothing.
+#[test]
+fn quantized_fork_pair_still_materializes_the_side_value() {
+    let _guard = lock_shared_state();
+    let (c_in, c_exp, h, w) = (4usize, 16usize, 8usize, 8usize);
+    let (x_scale, pw_w_scale, boundary, dw_w_scale, y_scale) = (0.04, 0.06, 0.10, 0.05, 0.20);
+    let pw_w: Vec<f32> = (0..(c_exp * c_in))
+        .map(|v| (((v as i32 * 11) % 23) - 11) as f32)
+        .collect();
+    let dw_w: Vec<f32> = (0..(c_exp * 9))
+        .map(|v| (((v as i32 * 7) % 17) - 8) as f32)
+        .collect();
+    let x_data: Vec<f32> = (0..(c_in * h * w))
+        .map(|v| ((((v as i32) * 7) % 31) - 15) as f32 * x_scale)
+        .collect();
+
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("QuantizeLinear".into()),
+            name: Some("q_in".into()),
+            input: vec!["x".into(), "x_s".into(), "x_zp".into()],
+            output: vec!["xq".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("QLinearConv".into()),
+            name: Some("pw".into()),
+            input: vec![
+                "xq".into(),
+                "x_s".into(),
+                "x_zp".into(),
+                "pw_w".into(),
+                "pw_w_s".into(),
+                "pw_w_zp".into(),
+                "pw_y_s".into(),
+                "pw_y_zp".into(),
+            ],
+            output: vec!["pw_q".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![1, 1]),
+                make_ints_attr("strides", vec![1, 1]),
+                make_ints_attr("pads", vec![0, 0, 0, 0]),
+            ],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("DequantizeLinear".into()),
+            name: Some("dq".into()),
+            input: vec!["pw_q".into(), "pw_y_s".into(), "pw_y_zp".into()],
+            output: vec!["pw_f".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu".into()),
+            input: vec!["pw_f".into()],
+            output: vec!["pw_relu".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("QuantizeLinear".into()),
+            name: Some("q".into()),
+            input: vec!["pw_relu".into(), "q_s".into(), "q_zp".into()],
+            output: vec!["dw_x".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("QLinearConv".into()),
+            name: Some("dw".into()),
+            input: vec![
+                "dw_x".into(),
+                "q_s".into(),
+                "q_zp".into(),
+                "dw_w".into(),
+                "dw_w_s".into(),
+                "dw_w_zp".into(),
+                "y_s".into(),
+                "y_zp".into(),
+            ],
+            output: vec!["dw_q".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![3, 3]),
+                make_ints_attr("strides", vec![1, 1]),
+                make_ints_attr("pads", vec![1, 1, 1, 1]),
+                make_int_attr("group", c_exp as i64),
+            ],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("DequantizeLinear".into()),
+            name: Some("dq_out".into()),
+            input: vec!["dw_q".into(), "y_s".into(), "y_zp".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+        // The fork: a second reader of the Relu output, which is what stops
+        // `QuantizedPwDw` from claiming the chain.
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("side".into()),
+            input: vec!["pw_relu".into()],
+            output: vec!["side_out".into()],
+            ..Default::default()
+        },
+    ];
+    let inits = vec![
+        scalar_init("x_s", x_scale),
+        scalar_init("x_zp", 0.0),
+        vec_init("pw_w", vec![c_exp as i64, c_in as i64, 1, 1], pw_w),
+        scalar_init("pw_w_s", pw_w_scale),
+        scalar_init("pw_w_zp", 0.0),
+        scalar_init("pw_y_s", boundary),
+        scalar_init("pw_y_zp", 0.0),
+        scalar_init("q_s", boundary),
+        scalar_init("q_zp", 0.0),
+        vec_init("dw_w", vec![c_exp as i64, 1, 3, 3], dw_w),
+        scalar_init("dw_w_s", dw_w_scale),
+        scalar_init("dw_w_zp", 0.0),
+        scalar_init("y_s", y_scale),
+        scalar_init("y_zp", 0.0),
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        inits,
+        vec![
+            "x_s", "x_zp", "pw_w", "pw_w_s", "pw_w_zp", "pw_y_s", "pw_y_zp", "q_s", "q_zp", "dw_w",
+            "dw_w_s", "dw_w_zp", "y_s", "y_zp",
+        ],
+        vec!["y", "side_out"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::QuantizedForkPair { .. })),
+        "loader should have emitted QuantizedForkPair for the forked chain, got {:?}",
+        model.runtime_index.execution_plan
+    );
+
+    let mut feed = FxHashMap::default();
+    feed.insert(
+        "x".to_string(),
+        Tensor::from_vec(vec![1, c_in, h, w], x_data).unwrap(),
+    );
+    assert_quant_fast_path_matches_unfused("QuantizedForkPair", &model, &feed);
+}
+
+/// Runs `model` with the INT8 fast path on and off and asserts both agree
+/// bitwise, including on *which* outputs came back.
+///
+/// The output-name comparison is the point: a chain matcher that absorbs a node
+/// without materializing what it produced drops a graph output, and a test
+/// checking only the values of the outputs it did get back will not notice.
+fn assert_quant_fast_path_matches_unfused(
+    label: &str,
+    model: &crate::loader::OnnxModel,
+    feed: &FxHashMap<String, Tensor>,
+) {
+    // SAFETY: `set_var` is not thread-safe and `cargo test` is concurrent; the
+    // module lock the caller holds is what serializes this, and the variable is
+    // cleared before the lock is released.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("YSCV_QUANT_INT8_FAST");
+    }
+    let fast = run_onnx_model(model, feed.clone()).unwrap_or_else(|e| panic!("{label} fast: {e}"));
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("YSCV_QUANT_INT8_FAST", "0");
+    }
+    let slow = run_onnx_model(model, feed.clone());
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("YSCV_QUANT_INT8_FAST");
+    }
+    let slow = slow.unwrap_or_else(|e| panic!("{label} slow: {e}"));
+
+    let mut fast_names: Vec<&String> = fast.keys().collect();
+    let mut slow_names: Vec<&String> = slow.keys().collect();
+    fast_names.sort();
+    slow_names.sort();
+    assert_eq!(fast_names, slow_names, "{label}: output names diverged");
+
+    for name in fast_names {
+        let (f, s) = (&fast[name], &slow[name]);
+        assert_eq!(f.shape(), s.shape(), "{label}/{name}: shape diverged");
+        for (i, (g, e)) in f.data().iter().zip(s.data().iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                e.to_bits(),
+                "{label}/{name}: bitwise mismatch at {i}: {g} vs {e}"
+            );
+        }
+    }
+}
+
+/// `QuantizedResidualChain` keeps a `QLinearConv → DQ → Relu → Conv → Add → Q`
+/// suffix in one plan slot. b683634 added guards to it — every value crossing
+/// the chain must have a single reader and must not be a graph output, because
+/// the fused kernel writes only the final quantized value — and those guards
+/// had no test.
+#[test]
+fn quantized_residual_chain_matches_the_unfused_result() {
+    let _guard = lock_shared_state();
+    let (c, h, w) = (16usize, 8usize, 8usize);
+    let (x_scale, w_scale, mid_scale, y_scale) = (0.04_f32, 0.06_f32, 0.10_f32, 0.20_f32);
+    let dw_w: Vec<f32> = (0..(c * 9))
+        .map(|v| (((v as i32 * 7) % 17) - 8) as f32)
+        .collect();
+    let conv_w: Vec<f32> = (0..(c * c))
+        .map(|v| (((v as i32 * 5) % 13) - 6) as f32 * 0.02)
+        .collect();
+    let x_data: Vec<f32> = (0..(c * h * w))
+        .map(|v| ((((v as i32) * 7) % 31) - 15) as f32 * x_scale)
+        .collect();
+    let res_data: Vec<f32> = (0..(c * h * w)).map(|v| (v % 5) as f32 * 0.1).collect();
+
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("QuantizeLinear".into()),
+            name: Some("q_in".into()),
+            input: vec!["x".into(), "x_s".into(), "x_zp".into()],
+            output: vec!["xq".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("QLinearConv".into()),
+            name: Some("dw".into()),
+            input: vec![
+                "xq".into(),
+                "x_s".into(),
+                "x_zp".into(),
+                "dw_w".into(),
+                "dw_w_s".into(),
+                "dw_w_zp".into(),
+                "mid_s".into(),
+                "mid_zp".into(),
+            ],
+            output: vec!["dw_q".into()],
+            attribute: vec![
+                make_ints_attr("kernel_shape", vec![3, 3]),
+                make_ints_attr("strides", vec![1, 1]),
+                make_ints_attr("pads", vec![1, 1, 1, 1]),
+                make_int_attr("group", c as i64),
+            ],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("DequantizeLinear".into()),
+            name: Some("dq".into()),
+            input: vec!["dw_q".into(), "mid_s".into(), "mid_zp".into()],
+            output: vec!["dw_f".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu".into()),
+            input: vec!["dw_f".into()],
+            output: vec!["relu_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("pw".into()),
+            input: vec!["relu_out".into(), "conv_w".into()],
+            output: vec!["conv_out".into()],
+            attribute: vec![make_ints_attr("kernel_shape", vec![1, 1])],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Add".into()),
+            name: Some("residual".into()),
+            input: vec!["conv_out".into(), "res".into()],
+            output: vec!["sum".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("QuantizeLinear".into()),
+            name: Some("q_out".into()),
+            input: vec!["sum".into(), "y_s".into(), "y_zp".into()],
+            output: vec!["yq".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("DequantizeLinear".into()),
+            name: Some("dq_out".into()),
+            input: vec!["yq".into(), "y_s".into(), "y_zp".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let inits = vec![
+        scalar_init("x_s", x_scale),
+        scalar_init("x_zp", 0.0),
+        vec_init("dw_w", vec![c as i64, 1, 3, 3], dw_w),
+        scalar_init("dw_w_s", w_scale),
+        scalar_init("dw_w_zp", 0.0),
+        scalar_init("mid_s", mid_scale),
+        scalar_init("mid_zp", 0.0),
+        vec_init("conv_w", vec![c as i64, c as i64, 1, 1], conv_w),
+        scalar_init("y_s", y_scale),
+        scalar_init("y_zp", 0.0),
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        inits,
+        vec![
+            "x_s", "x_zp", "dw_w", "dw_w_s", "dw_w_zp", "mid_s", "mid_zp", "conv_w", "y_s", "y_zp",
+        ],
+        vec!["y"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::QuantizedResidualChain { .. })),
+        "loader should have emitted QuantizedResidualChain, got {:?}",
+        model.runtime_index.execution_plan
+    );
+
+    let mut feed = FxHashMap::default();
+    feed.insert(
+        "x".to_string(),
+        Tensor::from_vec(vec![1, c, h, w], x_data).unwrap(),
+    );
+    feed.insert(
+        "res".to_string(),
+        Tensor::from_vec(vec![1, c, h, w], res_data).unwrap(),
+    );
+    assert_quant_fast_path_matches_unfused("QuantizedResidualChain", &model, &feed);
+}
