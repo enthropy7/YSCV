@@ -2,6 +2,14 @@ use crate::loader::OnnxModel;
 
 /// Fuse `Conv` -> `Relu` node pairs into a single fused-activation Conv.
 pub fn fuse_conv_relu(model: &mut OnnxModel) {
+    if run(model) {
+        model.rebuild_runtime_index();
+    }
+}
+
+/// Fuses without rebuilding the runtime index; returns whether the graph
+/// changed. The driver calls this and rebuilds once for the whole pipeline.
+pub(super) fn run(model: &mut OnnxModel) -> bool {
     let mut fuse_pairs: Vec<(usize, usize)> = Vec::new();
     for i in 0..model.nodes.len().saturating_sub(1) {
         if model.nodes[i].op_type == "Conv"
@@ -29,5 +37,5 @@ pub fn fuse_conv_relu(model: &mut OnnxModel) {
         model.nodes[conv_idx].op_type = "Conv_Relu".to_string();
         model.nodes.remove(relu_idx);
     }
-    model.rebuild_runtime_index();
+    !fuse_pairs.is_empty()
 }

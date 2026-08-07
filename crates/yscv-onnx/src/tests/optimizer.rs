@@ -39,6 +39,114 @@ fn optimize_removes_dropout_nodes() {
     assert_eq!(model.nodes[1].inputs[0], "relu_out");
 }
 
+/// `NodeProto.name` is optional. The pass used to delete Dropouts by name via
+/// `retain`, so a single unnamed Dropout put the empty string in the delete set
+/// and took every other unnamed node in the graph with it.
+#[test]
+fn remove_dropout_keeps_unnamed_siblings() {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            input: vec!["x".into()],
+            output: vec!["relu_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Dropout".into()),
+            input: vec!["relu_out".into()],
+            output: vec!["drop_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            input: vec!["drop_out".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
+    let mut model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        model.nodes.iter().all(|n| n.name.is_empty()),
+        "fixture must have unnamed nodes for this to be a regression test"
+    );
+
+    optimize_onnx_graph(&mut model);
+
+    assert_eq!(
+        model.node_count(),
+        2,
+        "only the Dropout should go, not every unnamed node"
+    );
+    assert!(model.nodes.iter().all(|n| n.op_type == "Relu"));
+    assert_eq!(model.nodes[1].inputs[0], "relu_out");
+}
+
+/// A Squeeze -> Unsqueeze -> Squeeze chain with matching axes matches the
+/// inverse-pair predicate at both `i` and `i + 1`. Accepting both made the
+/// reverse-removal loop delete already-shifted indices.
+#[test]
+fn eliminate_squeeze_unsqueeze_handles_overlapping_chain() {
+    let axes_attr = || make_ints_attr("axes", vec![0]);
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Squeeze".into()),
+            name: Some("sq0".into()),
+            input: vec!["x".into()],
+            output: vec!["a".into()],
+            attribute: vec![axes_attr()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Unsqueeze".into()),
+            name: Some("unsq0".into()),
+            input: vec!["a".into()],
+            output: vec!["b".into()],
+            attribute: vec![axes_attr()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Squeeze".into()),
+            name: Some("sq1".into()),
+            input: vec!["b".into()],
+            output: vec!["c".into()],
+            attribute: vec![axes_attr()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("sink".into()),
+            input: vec!["c".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
+    let mut model = load_onnx_model(&bytes).unwrap();
+
+    optimize_onnx_graph(&mut model);
+
+    // The Relu is the only node that must survive; whichever inverse pair the
+    // pass claims, it must not corrupt the graph around it.
+    let sink = model
+        .nodes
+        .iter()
+        .find(|n| n.op_type == "Relu")
+        .expect("Relu sink must survive");
+    assert_eq!(model.outputs, vec!["y".to_string()]);
+    assert!(
+        !sink.inputs[0].is_empty(),
+        "sink input must stay wired to a real value"
+    );
+    for node in &model.nodes {
+        assert!(
+            matches!(node.op_type.as_str(), "Squeeze" | "Unsqueeze" | "Relu"),
+            "unrelated node type {} appeared",
+            node.op_type
+        );
+    }
+}
+
 #[test]
 fn optimize_eliminates_dead_nodes() {
     let nodes = vec![

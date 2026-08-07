@@ -446,45 +446,6 @@ fn tensor_use_count(
         .unwrap_or_else(|| fallback_use_counts.get(name).copied().unwrap_or(0))
 }
 
-#[inline]
-fn find_relu_after_identity_chain(
-    nodes: &[OnnxNode],
-    node_kinds: &[NodeKind],
-    start_idx: usize,
-    expected_input: &str,
-) -> Option<(usize, Vec<usize>)> {
-    let mut idx = start_idx;
-    let mut current_input = expected_input.to_string();
-    let mut identity_idxs = Vec::new();
-    while let Some(node) = nodes.get(idx) {
-        let kind = node_kind(node_kinds, nodes, idx);
-        if node.op_type == "Identity"
-            && node.inputs.len() == 1
-            && !node.outputs.is_empty()
-            && node.inputs[0] == current_input
-        {
-            identity_idxs.push(idx);
-            current_input = node.outputs[0].clone();
-            idx += 1;
-            continue;
-        }
-        if kind == NodeKind::Relu && node.inputs.len() == 1 && node.inputs[0] == current_input {
-            return Some((idx, identity_idxs));
-        }
-        break;
-    }
-    None
-}
-
-#[inline]
-fn mark_skip_indices(skip: &mut [bool], indices: &[usize]) {
-    for &idx in indices {
-        if idx < skip.len() {
-            skip[idx] = true;
-        }
-    }
-}
-
 fn run_onnx_model_inner(
     model: &OnnxModel,
     env: TensorEnv<'_, '_>,
@@ -497,12 +458,10 @@ fn run_onnx_model_inner_specialized(
     env: TensorEnv<'_, '_>,
     specialization: Option<&ShapeSpecialization>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
-    // Use JIT execution plan if available (pre-compiled dispatch, no per-node matching)
-    if !model.runtime_index.execution_plan.is_empty() {
-        return run_onnx_model_jit(model, env, specialization);
-    }
-
-    run_onnx_model_sequential(model, env)
+    // The execution plan is built at load time and has one entry per node, so
+    // it covers every graph; an empty plan just means an empty graph, which the
+    // JIT path handles by walking nothing and collecting the outputs.
+    run_onnx_model_jit(model, env, specialization)
 }
 
 #[inline]

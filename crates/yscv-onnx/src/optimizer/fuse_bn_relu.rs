@@ -4,6 +4,14 @@ use crate::loader::OnnxModel;
 /// (annotation-only; execution still handles them separately, but this
 /// reduces graph traversal overhead for large models).
 pub fn fuse_bn_relu(model: &mut OnnxModel) {
+    if run(model) {
+        model.rebuild_runtime_index();
+    }
+}
+
+/// Fuses without rebuilding the runtime index; returns whether the graph
+/// changed. The driver calls this and rebuilds once for the whole pipeline.
+pub(super) fn run(model: &mut OnnxModel) -> bool {
     let mut fuse_pairs: Vec<(usize, usize)> = Vec::new();
     for i in 0..model.nodes.len().saturating_sub(1) {
         if model.nodes[i].op_type == "BatchNormalization"
@@ -31,5 +39,5 @@ pub fn fuse_bn_relu(model: &mut OnnxModel) {
         model.nodes[bn_idx].op_type = "BatchNormalization_Relu".to_string();
         model.nodes.remove(relu_idx);
     }
-    model.rebuild_runtime_index();
+    !fuse_pairs.is_empty()
 }

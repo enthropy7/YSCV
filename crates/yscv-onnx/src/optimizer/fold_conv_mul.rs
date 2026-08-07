@@ -64,7 +64,10 @@ fn scale_weight_inplace(
 /// Conv output is only consumed by the Mul. After fusion:
 ///   W'[c] = W[c] · s[c]
 ///   b'[c] = b[c] · s[c]
-pub fn fold_conv_mul(model: &mut OnnxModel) {
+/// Folds without rebuilding the runtime index; returns whether the graph
+/// changed. The driver rebuilds once for the whole pipeline.
+pub(super) fn run(model: &mut OnnxModel) -> bool {
+    let mut changed = false;
     let mut fuse_pairs: Vec<(usize, usize, usize)> = Vec::new();
 
     for i in 0..model.nodes.len().saturating_sub(1) {
@@ -171,6 +174,7 @@ pub fn fold_conv_mul(model: &mut OnnxModel) {
 
         model.nodes[conv_idx].outputs[0] = mul_out;
         model.nodes.remove(mul_idx);
+        changed = true;
     }
-    model.rebuild_runtime_index();
+    changed
 }

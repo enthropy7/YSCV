@@ -1,14 +1,19 @@
-use rustc_hash::FxHashSet;
-
 use crate::loader::OnnxModel;
 
 /// Removes Dropout nodes by rewiring their consumers to the Dropout's input.
 pub fn remove_dropout_nodes(model: &mut OnnxModel) {
     let mut rewire: Vec<(String, String)> = Vec::new();
+    // Indices of the Dropouts we actually rewired, ascending. Deleting by node
+    // name instead would be wrong twice over: `NodeProto.name` is optional in
+    // ONNX, so one unnamed Dropout would take every other unnamed node in the
+    // graph with it, and a malformed Dropout that was skipped above would be
+    // deleted without its consumers ever being rewired.
+    let mut drop_indices: Vec<usize> = Vec::new();
 
-    for node in &model.nodes {
+    for (idx, node) in model.nodes.iter().enumerate() {
         if node.op_type == "Dropout" && !node.inputs.is_empty() && !node.outputs.is_empty() {
             rewire.push((node.outputs[0].clone(), node.inputs[0].clone()));
+            drop_indices.push(idx);
         }
     }
 
@@ -31,11 +36,7 @@ pub fn remove_dropout_nodes(model: &mut OnnxModel) {
         }
     }
 
-    let dropout_names: FxHashSet<String> = model
-        .nodes
-        .iter()
-        .filter(|n| n.op_type == "Dropout")
-        .map(|n| n.name.clone())
-        .collect();
-    model.nodes.retain(|n| !dropout_names.contains(&n.name));
+    for &idx in drop_indices.iter().rev() {
+        model.nodes.remove(idx);
+    }
 }

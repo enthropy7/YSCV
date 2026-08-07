@@ -17,10 +17,6 @@ pub(super) fn exec_flatten(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
     Ok(())
 }
 
-pub(super) fn exec_reshape(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
-    exec_reshape_inner(node, env, None)
-}
-
 /// Reshape using the runner's cached shape-inference result. This is used only
 /// for ordinary NCHW inputs; layout-aware reshapes retain the generic path.
 pub(super) fn exec_reshape_known(
@@ -42,22 +38,7 @@ pub(super) fn exec_reshape_known(
     Ok(())
 }
 
-/// Reshape with optional use-count awareness: when the data input has exactly
-/// one remaining consumer we can `remove` it from the environment and call
-/// `into_reshape` (zero-copy). Otherwise we fall back to a cloning `reshape`.
-pub(super) fn exec_reshape_zerocopy(
-    node: &OnnxNode,
-    env: &mut TensorEnv,
-    use_counts: &FxHashMap<String, usize>,
-) -> Result<(), OnnxError> {
-    exec_reshape_inner(node, env, Some(use_counts))
-}
-
-fn exec_reshape_inner(
-    node: &OnnxNode,
-    env: &mut TensorEnv,
-    use_counts: Option<&FxHashMap<String, usize>>,
-) -> Result<(), OnnxError> {
+pub(super) fn exec_reshape(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     // Compute new_shape without cloning the shape tensor data. We iterate the
     // shape-tensor slice directly inside the borrow scope, then drop the
     // borrow before touching env mutably.
@@ -94,31 +75,16 @@ fn exec_reshape_inner(
     };
     let _ = total;
 
-    // With Tensor::reshape now O(1) (Arc-shared storage with copy-on-write on
-    // subsequent writes), both paths are cheap. We still prefer the explicit
-    // `remove` + `into_reshape` when the node is the sole remaining consumer,
-    // because that drops the env slot early so downstream writes never even
-    // consider a CoW clone.
-    let sole_consumer = use_counts
-        .map(|uc| uc.get(node.inputs[0].as_str()).copied().unwrap_or(0) <= 1)
-        .unwrap_or(false);
-
-    if sole_consumer && let Some(input) = env.remove(&node.inputs[0]) {
-        let out = input
-            .into_reshape(new_shape)
-            .map_err(|e| OnnxError::DecodeFailed {
-                message: e.to_string(),
-            })?;
-        env.insert(node.outputs[0].clone(), out);
-    } else {
-        let input = get_tensor(env, &node.name, &node.inputs[0])?;
-        let out = input
-            .reshape(new_shape)
-            .map_err(|e| OnnxError::DecodeFailed {
-                message: e.to_string(),
-            })?;
-        env.insert(node.outputs[0].clone(), out);
-    }
+    // `Tensor::reshape` is O(1) — Arc-shared storage with copy-on-write on
+    // subsequent writes — so there is nothing to gain from taking the tensor
+    // out of the env first.
+    let input = get_tensor(env, &node.name, &node.inputs[0])?;
+    let out = input
+        .reshape(new_shape)
+        .map_err(|e| OnnxError::DecodeFailed {
+            message: e.to_string(),
+        })?;
+    env.insert(node.outputs[0].clone(), out);
     Ok(())
 }
 

@@ -6,8 +6,16 @@ use crate::loader::OnnxNode;
 /// Squeeze(Unsqueeze(x, axes=A), axes=A) and Unsqueeze(Squeeze(x, axes=A), axes=A).
 pub fn eliminate_squeeze_unsqueeze_pairs(model: &mut OnnxModel) {
     let mut remove_pairs: Vec<(usize, usize, String, String)> = Vec::new();
+    // Index of the first node not already claimed by an accepted pair. A chain
+    // like Squeeze -> Unsqueeze -> Squeeze matches at both `i` and `i + 1`;
+    // accepting both would make the reverse-removal loop below delete shifted
+    // indices, taking unrelated nodes with them.
+    let mut next_free = 0usize;
 
     for i in 0..model.nodes.len().saturating_sub(1) {
+        if i < next_free {
+            continue;
+        }
         let first = &model.nodes[i];
         let second = &model.nodes[i + 1];
         let is_pair = (first.op_type == "Squeeze" && second.op_type == "Unsqueeze")
@@ -38,6 +46,7 @@ pub fn eliminate_squeeze_unsqueeze_pairs(model: &mut OnnxModel) {
             continue;
         }
         remove_pairs.push((i, i + 1, first.inputs[0].clone(), second.outputs[0].clone()));
+        next_free = i + 2;
     }
 
     for &(first_idx, second_idx, ref producer_input, ref consumer_output) in
@@ -58,7 +67,6 @@ pub fn eliminate_squeeze_unsqueeze_pairs(model: &mut OnnxModel) {
         model.nodes.remove(second_idx);
         model.nodes.remove(first_idx);
     }
-    model.rebuild_runtime_index();
 }
 
 fn node_axes(model: &OnnxModel, node: &OnnxNode) -> Option<Vec<i64>> {
