@@ -1,17 +1,19 @@
 use super::*;
 
-// Serialise every test in this module that runs an ONNX model. The
-// runner increments process-global `QuantRuntimeStats` atomic counters
-// and reads the `YSCV_QUANT_INT8_FAST` env var; the counter-asserting
-// test (`qlinear_conv_symmetric_fast_path_with_bias`) and the env-var
-// toggling test (`quantized_pw_dw_chain_bitwise_matches_unfused`)
-// would otherwise race other concurrent model executions. The mutex
-// is poison-tolerant so a panic in one test does not cascade.
-static SHARED_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+// Serialise every test in this module that runs an ONNX model. The runner
+// increments process-global `QuantRuntimeStats` atomic counters and reads
+// `YSCV_QUANT_INT8_FAST`; the counter-asserting test
+// (`qlinear_conv_symmetric_fast_path_with_bias`) and the env-toggling chain
+// tests would otherwise race other concurrent model executions.
+//
+// This is the *same* lock the plan tests use, deliberately. Both families
+// mutate the process environment, and two independent mutexes over one global
+// resource serialize neither against the other — a plan test toggling a fusion
+// switch would still be free to run beside a model load here. Sharing one lock
+// costs a little test parallelism and removes the whole class.
 #[track_caller]
-fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
-    SHARED_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+fn lock_shared_state() -> crate::tests::equivalence::EnvGuard {
+    crate::tests::equivalence::lock_env()
 }
 
 fn scalar_init(name: &str, value: f32) -> onnx::TensorProto {
@@ -1412,9 +1414,9 @@ fn assert_quant_fast_path_matches_unfused(
     model: &crate::loader::OnnxModel,
     feed: &FxHashMap<String, Tensor>,
 ) {
-    // SAFETY: `set_var` is not thread-safe and `cargo test` is concurrent; the
-    // module lock the caller holds is what serializes this, and the variable is
-    // cleared before the lock is released.
+    // SAFETY: `set_var` is not thread-safe and `cargo test` is concurrent. Every
+    // caller holds the shared `EnvGuard` for its whole body, so no other test
+    // can observe the variable while it is set; it is cleared before returning.
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var("YSCV_QUANT_INT8_FAST");
