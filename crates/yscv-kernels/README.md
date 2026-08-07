@@ -62,8 +62,11 @@ Cascade dispatch: 48→32→16→8→4→scalar columns. k-loop unrolled by 2
 with doubled accumulator sets to break FMA latency dependency chains
 (FMA latency = 4 cycles, 2 FMA ports on Zen 4 — spacing accumulator
 reuse to 4+ cycles eliminates pipeline stalls). Four-row transposed-A tiles
-prefetch strided B panels four K iterations ahead for the measured
-`M >= 128, K <= 32` AVX/FMA range and in-order Cortex-A53/A55 kernels.
+prefetch strided B panels four K iterations ahead, with the gate hoisted out
+of the k-loop into a split range so the disabled path stays branch-free.
+Restricted to the in-order Cortex-A53/A55 on aarch64 and to `M >= 128,
+K <= 32` on AVX/FMA: elsewhere the hardware prefetcher already covers this
+stride and the hint measures as neutral (`YSCV_MATMUL_PREFETCH_OFF` to A/B).
 
 ### Depthwise Conv SIMD
 

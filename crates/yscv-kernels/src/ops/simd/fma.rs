@@ -2,6 +2,10 @@
 // fma_slice_dispatch + impls, matmul_row_dispatch + impls
 // ===========================================================================
 
+#[cfg(target_arch = "aarch64")]
+use super::super::prefetch::{
+    PREFETCH_AHEAD, matmul_prefetch_disabled, prefetch_l1_keep, prefetch_split,
+};
 use super::{SimdDispatchPath, dispatch_path};
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{float32x4_t, vdupq_n_f32, vfmaq_f32, vld1q_f32, vst1q_f32};
@@ -17,17 +21,6 @@ use std::arch::x86_64::{
     _mm256_add_ps, _mm256_loadu_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_setzero_ps,
     _mm256_storeu_ps,
 };
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn prefetch_l1_keep(p: *const f32) {
-    core::arch::asm!(
-        "prfm pldl1keep, [{p}]",
-        p = in(reg) p,
-        options(nostack, preserves_flags, readonly),
-    );
-}
 
 // ===========================================================================
 // FMA dispatch (conv2d inner loop helper)
@@ -709,25 +702,12 @@ unsafe fn matmul_row_set_avx_fma(
     n: usize,
 ) {
     #[cfg(target_arch = "x86")]
-    use std::arch::x86::{_MM_HINT_T0, _mm_prefetch, _mm256_fmadd_ps};
+    use std::arch::x86::_mm256_fmadd_ps;
     #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch, _mm256_fmadd_ps};
+    use std::arch::x86_64::_mm256_fmadd_ps;
 
     let mut col = 0usize;
     while col + 48 <= n {
-        let k2 = k & !1;
-        let mut p = 0usize;
-        let mut bb = right;
-        let mut bc = right;
-        if k != 0 {
-            bb = right.add(col);
-            _mm_prefetch::<_MM_HINT_T0>(bb as *const i8);
-            if k2 != 0 {
-                bc = right.add(n + col);
-                _mm_prefetch::<_MM_HINT_T0>(bc as *const i8);
-            }
-        }
-
         let mut a0 = _mm256_setzero_ps();
         let mut a1 = _mm256_setzero_ps();
         let mut a2 = _mm256_setzero_ps();
@@ -740,19 +720,11 @@ unsafe fn matmul_row_set_avx_fma(
         let mut b3 = _mm256_setzero_ps();
         let mut b4 = _mm256_setzero_ps();
         let mut b5 = _mm256_setzero_ps();
+        let k2 = k & !1;
+        let mut p = 0usize;
         while p < k2 {
-            let mut next_bb = bb;
-            let mut next_bc = bc;
-            if p + 2 < k {
-                next_bb = bb.add(2 * n);
-                _mm_prefetch::<_MM_HINT_T0>(next_bb as *const i8);
-                if p + 3 < k {
-                    next_bc = bc.add(2 * n);
-                    _mm_prefetch::<_MM_HINT_T0>(next_bc as *const i8);
-                }
-            }
-
             let va = _mm256_set1_ps(*left_row.add(p));
+            let bb = right.add(p * n + col);
             a0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb), a0);
             a1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(8)), a1);
             a2 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(16)), a2);
@@ -760,18 +732,18 @@ unsafe fn matmul_row_set_avx_fma(
             a4 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(32)), a4);
             a5 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(40)), a5);
             let vb = _mm256_set1_ps(*left_row.add(p + 1));
+            let bc = right.add((p + 1) * n + col);
             b0 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc), b0);
             b1 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(8)), b1);
             b2 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(16)), b2);
             b3 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(24)), b3);
             b4 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(32)), b4);
             b5 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(40)), b5);
-            bb = next_bb;
-            bc = next_bc;
             p += 2;
         }
         if p < k {
             let va = _mm256_set1_ps(*left_row.add(p));
+            let bb = right.add(p * n + col);
             a0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb), a0);
             a1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(8)), a1);
             a2 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(16)), a2);
@@ -788,19 +760,6 @@ unsafe fn matmul_row_set_avx_fma(
         col += 48;
     }
     while col + 32 <= n {
-        let k2 = k & !1;
-        let mut p = 0usize;
-        let mut bb = right;
-        let mut bc = right;
-        if k != 0 {
-            bb = right.add(col);
-            _mm_prefetch::<_MM_HINT_T0>(bb as *const i8);
-            if k2 != 0 {
-                bc = right.add(n + col);
-                _mm_prefetch::<_MM_HINT_T0>(bc as *const i8);
-            }
-        }
-
         let mut a0 = _mm256_setzero_ps();
         let mut a1 = _mm256_setzero_ps();
         let mut a2 = _mm256_setzero_ps();
@@ -809,34 +768,26 @@ unsafe fn matmul_row_set_avx_fma(
         let mut b1 = _mm256_setzero_ps();
         let mut b2 = _mm256_setzero_ps();
         let mut b3 = _mm256_setzero_ps();
+        let k2 = k & !1;
+        let mut p = 0usize;
         while p < k2 {
-            let mut next_bb = bb;
-            let mut next_bc = bc;
-            if p + 2 < k {
-                next_bb = bb.add(2 * n);
-                _mm_prefetch::<_MM_HINT_T0>(next_bb as *const i8);
-                if p + 3 < k {
-                    next_bc = bc.add(2 * n);
-                    _mm_prefetch::<_MM_HINT_T0>(next_bc as *const i8);
-                }
-            }
-
             let va = _mm256_set1_ps(*left_row.add(p));
+            let bb = right.add(p * n + col);
             a0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb), a0);
             a1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(8)), a1);
             a2 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(16)), a2);
             a3 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(24)), a3);
             let vb = _mm256_set1_ps(*left_row.add(p + 1));
+            let bc = right.add((p + 1) * n + col);
             b0 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc), b0);
             b1 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(8)), b1);
             b2 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(16)), b2);
             b3 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(24)), b3);
-            bb = next_bb;
-            bc = next_bc;
             p += 2;
         }
         if p < k {
             let va = _mm256_set1_ps(*left_row.add(p));
+            let bb = right.add(p * n + col);
             a0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb), a0);
             a1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(8)), a1);
             a2 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(16)), a2);
@@ -849,47 +800,26 @@ unsafe fn matmul_row_set_avx_fma(
         col += 32;
     }
     while col + 16 <= n {
-        let k2 = k & !1;
-        let mut p = 0usize;
-        let mut bb = right;
-        let mut bc = right;
-        if k != 0 {
-            bb = right.add(col);
-            _mm_prefetch::<_MM_HINT_T0>(bb as *const i8);
-            if k2 != 0 {
-                bc = right.add(n + col);
-                _mm_prefetch::<_MM_HINT_T0>(bc as *const i8);
-            }
-        }
-
         let mut a0 = _mm256_setzero_ps();
         let mut a1 = _mm256_setzero_ps();
         let mut b0 = _mm256_setzero_ps();
         let mut b1 = _mm256_setzero_ps();
+        let k2 = k & !1;
+        let mut p = 0usize;
         while p < k2 {
-            let mut next_bb = bb;
-            let mut next_bc = bc;
-            if p + 2 < k {
-                next_bb = bb.add(2 * n);
-                _mm_prefetch::<_MM_HINT_T0>(next_bb as *const i8);
-                if p + 3 < k {
-                    next_bc = bc.add(2 * n);
-                    _mm_prefetch::<_MM_HINT_T0>(next_bc as *const i8);
-                }
-            }
-
             let va = _mm256_set1_ps(*left_row.add(p));
+            let bb = right.add(p * n + col);
             a0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb), a0);
             a1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(8)), a1);
             let vb = _mm256_set1_ps(*left_row.add(p + 1));
+            let bc = right.add((p + 1) * n + col);
             b0 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc), b0);
             b1 = _mm256_fmadd_ps(vb, _mm256_loadu_ps(bc.add(8)), b1);
-            bb = next_bb;
-            bc = next_bc;
             p += 2;
         }
         if p < k {
             let va = _mm256_set1_ps(*left_row.add(p));
+            let bb = right.add(p * n + col);
             a0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb), a0);
             a1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(bb.add(8)), a1);
         }
@@ -1044,25 +974,27 @@ unsafe fn matmul_row_set_neon(
     k: usize,
     n: usize,
 ) {
-    const PREFETCH_AHEAD: usize = 8;
-
+    // `right` is read down a column at stride `n * 4` bytes, which the in-order
+    // A53/A55 prefetcher misses once `n` grows. The split keeps the hint out of
+    // the k-loop body: a per-iteration branch here costs that core more than the
+    // hint recovers, and out-of-order cores need neither.
+    let sp = prefetch_split(
+        crate::host_cpu().uarch.is_in_order() && !matmul_prefetch_disabled(),
+        k,
+    );
     let mut col = 0usize;
     while col + 4 <= n {
         let mut acc = vdupq_n_f32(0.0);
-        let prefetch_end = k.saturating_sub(PREFETCH_AHEAD);
-        let mut p = 0usize;
-        while p < prefetch_end {
+        for p in 0..sp {
             prefetch_l1_keep(right.add((p + PREFETCH_AHEAD) * n + col));
             let a = vdupq_n_f32(*left_row.add(p));
             let b = vld1q_f32(right.add(p * n + col));
             acc = vfmaq_f32(acc, a, b);
-            p += 1;
         }
-        while p < k {
+        for p in sp..k {
             let a = vdupq_n_f32(*left_row.add(p));
             let b = vld1q_f32(right.add(p * n + col));
             acc = vfmaq_f32(acc, a, b);
-            p += 1;
         }
         vst1q_f32(out_row.add(col), acc);
         col += 4;

@@ -2,26 +2,11 @@
 //! transposed-A 4-row × NR=16 outer-product tiles (AVX-512/AVX2/NEON) and
 //! their dispatchers.
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+use super::super::prefetch::{
+    PREFETCH_AHEAD, matmul_prefetch_disabled, prefetch_l1_keep, prefetch_split,
+};
 use super::*;
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
-const MATMUL_PREFETCH_AHEAD: usize = 4;
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
-#[inline(always)]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn prefetch_l1_keep(p: *const f32) {
-    #[cfg(target_arch = "x86")]
-    std::arch::x86::_mm_prefetch::<{ std::arch::x86::_MM_HINT_T0 }>(p as *const i8);
-    #[cfg(target_arch = "x86_64")]
-    std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(p as *const i8);
-    #[cfg(target_arch = "aarch64")]
-    core::arch::asm!(
-        "prfm pldl1keep, [{p}]",
-        p = in(reg) p,
-        options(nostack, preserves_flags, readonly),
-    );
-}
 
 pub(super) fn non_trans_4row_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -948,8 +933,7 @@ unsafe fn trans_a_4row_avx2(
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
-    let prefetch = m >= 128 && n > 16 && k <= 32;
-    let prefetch_end = k.saturating_sub(MATMUL_PREFETCH_AHEAD);
+    let prefetch = m >= 128 && n > 16 && k <= 32 && !matmul_prefetch_disabled();
     unsafe {
         let r0 = out_4rows.as_mut_ptr();
         let r1 = r0.add(n);
@@ -960,6 +944,9 @@ unsafe fn trans_a_4row_avx2(
         let blocks = n / 16;
         let tail_chunks = (n % 16) / 8;
         let zero = _mm256_setzero_ps();
+        // `0..sp` carries the hint, `sp..k` runs plain. Testing the flag inside
+        // the k-loop instead would put a branch on every FMA iteration.
+        let sp = prefetch_split(prefetch, k);
         for block in 0..blocks {
             let col = block * 16;
             let mut c00 = zero;
@@ -970,26 +957,33 @@ unsafe fn trans_a_4row_avx2(
             let mut c21 = zero;
             let mut c30 = zero;
             let mut c31 = zero;
-            for ki in 0..k {
-                let a_row = a_kt.as_ptr().add(ki * m + mi_base);
-                let a0 = _mm256_set1_ps(*a_row);
-                let a1 = _mm256_set1_ps(*a_row.add(1));
-                let a2 = _mm256_set1_ps(*a_row.add(2));
-                let a3 = _mm256_set1_ps(*a_row.add(3));
-                if prefetch && ki < prefetch_end {
-                    prefetch_l1_keep(b.as_ptr().add((ki + MATMUL_PREFETCH_AHEAD) * n + col));
-                }
-                let bptr = b.as_ptr().add(ki * n + col);
-                let b0 = _mm256_loadu_ps(bptr);
-                let b1 = _mm256_loadu_ps(bptr.add(8));
-                c00 = _mm256_fmadd_ps(a0, b0, c00);
-                c01 = _mm256_fmadd_ps(a0, b1, c01);
-                c10 = _mm256_fmadd_ps(a1, b0, c10);
-                c11 = _mm256_fmadd_ps(a1, b1, c11);
-                c20 = _mm256_fmadd_ps(a2, b0, c20);
-                c21 = _mm256_fmadd_ps(a2, b1, c21);
-                c30 = _mm256_fmadd_ps(a3, b0, c30);
-                c31 = _mm256_fmadd_ps(a3, b1, c31);
+            macro_rules! block16_step {
+                ($ki:expr) => {{
+                    let ki = $ki;
+                    let a_row = a_kt.as_ptr().add(ki * m + mi_base);
+                    let a0 = _mm256_set1_ps(*a_row);
+                    let a1 = _mm256_set1_ps(*a_row.add(1));
+                    let a2 = _mm256_set1_ps(*a_row.add(2));
+                    let a3 = _mm256_set1_ps(*a_row.add(3));
+                    let bptr = b.as_ptr().add(ki * n + col);
+                    let b0 = _mm256_loadu_ps(bptr);
+                    let b1 = _mm256_loadu_ps(bptr.add(8));
+                    c00 = _mm256_fmadd_ps(a0, b0, c00);
+                    c01 = _mm256_fmadd_ps(a0, b1, c01);
+                    c10 = _mm256_fmadd_ps(a1, b0, c10);
+                    c11 = _mm256_fmadd_ps(a1, b1, c11);
+                    c20 = _mm256_fmadd_ps(a2, b0, c20);
+                    c21 = _mm256_fmadd_ps(a2, b1, c21);
+                    c30 = _mm256_fmadd_ps(a3, b0, c30);
+                    c31 = _mm256_fmadd_ps(a3, b1, c31);
+                }};
+            }
+            for ki in 0..sp {
+                prefetch_l1_keep(b.as_ptr().add((ki + PREFETCH_AHEAD) * n + col));
+                block16_step!(ki);
+            }
+            for ki in sp..k {
+                block16_step!(ki);
             }
             _mm256_storeu_ps(r0.add(col), c00);
             _mm256_storeu_ps(r0.add(col + 8), c01);
@@ -1039,8 +1033,9 @@ unsafe fn trans_a_4row_neon(
     n: usize,
     out_4rows: &mut [f32],
 ) {
-    let prefetch = n > 16 && crate::host_cpu().uarch.is_in_order();
-    let prefetch_end = k.saturating_sub(MATMUL_PREFETCH_AHEAD);
+    // Out-of-order aarch64 cores (A76, Apple, Graviton) already cover this
+    // stride in hardware; only the in-order A53/A55 stall on the missed load.
+    let prefetch = n > 16 && crate::host_cpu().uarch.is_in_order() && !matmul_prefetch_disabled();
     unsafe {
         let r0 = out_4rows.as_mut_ptr();
         let r1 = r0.add(n);
@@ -1049,6 +1044,9 @@ unsafe fn trans_a_4row_neon(
         // NEON has 32 q-regs: 4 rows × 4 NR=4 panels = 16 acc + 4 b + 4 a = 24.
         let blocks = n / 16;
         let tail_chunks = (n % 16) / 4;
+        // Hoisted split: the A53 pays more for a per-iteration branch here than
+        // the hint recovers.
+        let sp = prefetch_split(prefetch, k);
         let zero = vdupq_n_f32(0.0);
         for block in 0..blocks {
             let col = block * 16;
@@ -1068,36 +1066,43 @@ unsafe fn trans_a_4row_neon(
             let mut c31 = zero;
             let mut c32 = zero;
             let mut c33 = zero;
-            for ki in 0..k {
-                let a_row = a_kt.as_ptr().add(ki * m + mi_base);
-                let a0 = vdupq_n_f32(*a_row);
-                let a1 = vdupq_n_f32(*a_row.add(1));
-                let a2 = vdupq_n_f32(*a_row.add(2));
-                let a3 = vdupq_n_f32(*a_row.add(3));
-                if prefetch && ki < prefetch_end {
-                    prefetch_l1_keep(b.as_ptr().add((ki + MATMUL_PREFETCH_AHEAD) * n + col));
-                }
-                let bptr = b.as_ptr().add(ki * n + col);
-                let b0 = vld1q_f32(bptr);
-                let b1 = vld1q_f32(bptr.add(4));
-                let b2 = vld1q_f32(bptr.add(8));
-                let b3 = vld1q_f32(bptr.add(12));
-                c00 = vfmaq_f32(c00, a0, b0);
-                c01 = vfmaq_f32(c01, a0, b1);
-                c02 = vfmaq_f32(c02, a0, b2);
-                c03 = vfmaq_f32(c03, a0, b3);
-                c10 = vfmaq_f32(c10, a1, b0);
-                c11 = vfmaq_f32(c11, a1, b1);
-                c12 = vfmaq_f32(c12, a1, b2);
-                c13 = vfmaq_f32(c13, a1, b3);
-                c20 = vfmaq_f32(c20, a2, b0);
-                c21 = vfmaq_f32(c21, a2, b1);
-                c22 = vfmaq_f32(c22, a2, b2);
-                c23 = vfmaq_f32(c23, a2, b3);
-                c30 = vfmaq_f32(c30, a3, b0);
-                c31 = vfmaq_f32(c31, a3, b1);
-                c32 = vfmaq_f32(c32, a3, b2);
-                c33 = vfmaq_f32(c33, a3, b3);
+            macro_rules! block16_step {
+                ($ki:expr) => {{
+                    let ki = $ki;
+                    let a_row = a_kt.as_ptr().add(ki * m + mi_base);
+                    let a0 = vdupq_n_f32(*a_row);
+                    let a1 = vdupq_n_f32(*a_row.add(1));
+                    let a2 = vdupq_n_f32(*a_row.add(2));
+                    let a3 = vdupq_n_f32(*a_row.add(3));
+                    let bptr = b.as_ptr().add(ki * n + col);
+                    let b0 = vld1q_f32(bptr);
+                    let b1 = vld1q_f32(bptr.add(4));
+                    let b2 = vld1q_f32(bptr.add(8));
+                    let b3 = vld1q_f32(bptr.add(12));
+                    c00 = vfmaq_f32(c00, a0, b0);
+                    c01 = vfmaq_f32(c01, a0, b1);
+                    c02 = vfmaq_f32(c02, a0, b2);
+                    c03 = vfmaq_f32(c03, a0, b3);
+                    c10 = vfmaq_f32(c10, a1, b0);
+                    c11 = vfmaq_f32(c11, a1, b1);
+                    c12 = vfmaq_f32(c12, a1, b2);
+                    c13 = vfmaq_f32(c13, a1, b3);
+                    c20 = vfmaq_f32(c20, a2, b0);
+                    c21 = vfmaq_f32(c21, a2, b1);
+                    c22 = vfmaq_f32(c22, a2, b2);
+                    c23 = vfmaq_f32(c23, a2, b3);
+                    c30 = vfmaq_f32(c30, a3, b0);
+                    c31 = vfmaq_f32(c31, a3, b1);
+                    c32 = vfmaq_f32(c32, a3, b2);
+                    c33 = vfmaq_f32(c33, a3, b3);
+                }};
+            }
+            for ki in 0..sp {
+                prefetch_l1_keep(b.as_ptr().add((ki + PREFETCH_AHEAD) * n + col));
+                block16_step!(ki);
+            }
+            for ki in sp..k {
+                block16_step!(ki);
             }
             vst1q_f32(r0.add(col), c00);
             vst1q_f32(r0.add(col + 4), c01);
