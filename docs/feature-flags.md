@@ -577,6 +577,25 @@ Canonical env var reference (every variable, with defaults and scope):
 [`env-vars.md`](env-vars.md). Kernel routing map and tracker reproduction
 commands: [`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
 
+### Graph optimizer toggles
+
+These act on the load-time optimizer rather than on a kernel, so they change
+the graph the runner is handed rather than how a single op computes.
+
+- `YSCV_ONNX_PASSES=-<name>[,-<name>…]` — disable individual optimizer passes
+  by name. Use it to bisect which pass changed a result: `-fold_constants`,
+  `-fold_conv_batchnorm`, `-fuse_activation`, and so on. Pass names are the
+  ones printed by `YSCV_ONNX_PASS_LOG`.
+- `YSCV_ONNX_PASS_LOG=1` — print each pass as it runs, with the node count and
+  graph-cost delta it produced. The first thing to reach for when a model
+  optimizes to something unexpected.
+- `YSCV_REORDER_FUSION_OFF=1` — skip the topological reorder. Fusion no longer
+  depends on it, so this is a way to check that: a model whose plan changes
+  with this set has a matcher still relying on node adjacency.
+- `YSCV_FUSED_PW_DW_PW_REDUCE_OFF=1` — keep `PW_expand → DW → PW_reduce` blocks
+  as separate plan actions instead of merging them into the streaming kernel.
+  The reference path when checking the merge's arithmetic.
+
 ---
 
 ## Combination recipes

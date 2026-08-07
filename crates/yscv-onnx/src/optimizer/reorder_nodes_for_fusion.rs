@@ -9,13 +9,19 @@ use crate::ir::{Changed, Graph, NodeId, Pass};
 /// whose two backbone branches share weights, say — are often exported with the
 /// branches interleaved: `convA, convB, reluA, reluB, …`.
 ///
-/// The IR passes no longer care: they match through the use list, so a producer
-/// and consumer separated by unrelated nodes still pair up. **The layer-3 plan
-/// builder does.** `build_runtime_index` matches `nodes[i + 1]` and
-/// `nodes[i + 2]` for its `FusedDwPw` / `FusedPwDw` / `ConvAdd` actions, so an
-/// interleaved inverted bottleneck runs entirely unfused unless the order is
-/// repaired first. That is what this pass is for now, and it can retire once
-/// plan construction moves onto the IR.
+/// Neither the IR passes nor the plan builder need the repair any more: both
+/// match through the use list, so a producer and consumer separated by
+/// unrelated nodes still pair up. Fusion is no longer why this pass exists.
+///
+/// What it is for now is memory. The schedule *determines* peak working set:
+/// the same nodes in a different topological order leave a different number of
+/// live ranges overlapping, because the order is what fixes how many
+/// intermediates coexist. That makes this register-pressure scheduling, with a
+/// measurable objective rather than a matcher to appease.
+///
+/// The name is now wrong and should follow the purpose — `ScheduleForMemory` or
+/// similar — once the buffer arena that consumes the property lands and there
+/// is something to measure the rename against.
 ///
 /// A depth-first topological sort — a LIFO ready stack — walks each dependency
 /// chain to its join before starting the next, placing every producer directly

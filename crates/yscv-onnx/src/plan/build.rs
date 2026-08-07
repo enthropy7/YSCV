@@ -1,9 +1,14 @@
 //! Plan construction: classifies each node ([`NodeKind`]), selects fusions
 //! ([`NodeAction`]), resolves convolution parameters and prepacks weights.
 //!
-//! Still one large function. Splitting it into named phases is the next step;
-//! moving it out of `loader/` came first so the boundary is where it belongs
-//! before the internals are rearranged.
+//! Slot assignment, conv-parameter resolution, layout handoff and kernel
+//! selection have moved into their own modules alongside this one. What remains
+//! here is the fusion scan — subgraph patterns to [`NodeAction`]s — plus weight
+//! prepacking, which is the next thing to lift out.
+//!
+//! Every matcher below works by dataflow: it walks from a value to the node
+//! that reads it, through the `consumers` index built once at the top. None of
+//! them depends on where the schedule happened to put a node.
 
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use yscv_tensor::Tensor;
