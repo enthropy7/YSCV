@@ -501,10 +501,12 @@ pub(crate) fn build_runtime_index(
                 let mut q_input = dq_out;
                 // Absorbing the Relu means the fused kernel writes the Relu's
                 // output as the side value and never materializes `dq_out`, so
-                // the Relu has to be its only reader. The positional form did
-                // not check that, and left any second reader of `dq_out`
+                // the Relu has to be its only reader — and `dq_out` must not be
+                // a graph output, which no reader appears in. The positional
+                // form checked neither, and left anything expecting `dq_out`
                 // looking for a tensor nothing produced.
                 if let Some(ri) = sole_consumer(dq_out)
+                    && !outputs.iter().any(|o| o == dq_out)
                     && nodes[ri].op_type == "Relu"
                     && !plan_skip[ri]
                     && nodes[ri].inputs.first().map(String::as_str) == Some(dq_out)
@@ -881,6 +883,22 @@ pub(crate) fn build_runtime_index(
                 // fusion (Transpose has other consumers) still pays
                 // the materialization cost once, so we don't fuse.
                 let left_input = nodes[i].inputs.first().map(|s| s.as_str()).unwrap_or("");
+                // "every consumer ... can absorb it" is load-bearing, not just a
+                // profitability rule. The fused action reads the value *before*
+                // the Transpose; when some consumer cannot absorb it the
+                // Transpose still runs, and running it consumes that
+                // pre-transpose value if this was its last use — leaving the
+                // fused action reading a tensor that is gone.
+                let absorbable = |value: &str| {
+                    !value.is_empty()
+                        && !outputs.iter().any(|o| o == value)
+                        && consumers.get(value).is_some_and(|readers| {
+                            readers.iter().all(|&r| {
+                                node_kinds[r] == NodeKind::MatMul
+                                    && nodes[r].inputs.first().map(String::as_str) == Some(value)
+                            })
+                        })
+                };
                 let mut emitted = false;
                 if !left_input.is_empty()
                     && let Some(&t_idx) = producers.get(left_input)
@@ -888,6 +906,7 @@ pub(crate) fn build_runtime_index(
                     && node_kinds[t_idx] == NodeKind::Transpose
                     && !plan_skip[t_idx]
                     && transpose_perm_is_swap_last_two(&nodes[t_idx])
+                    && absorbable(left_input)
                 {
                     execution_plan.push(NodeAction::FusedTransposeMatMul {
                         transpose_idx: t_idx,

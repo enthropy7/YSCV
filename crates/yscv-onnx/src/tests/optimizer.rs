@@ -1887,3 +1887,93 @@ fn planned_conv_kernels_match_the_dispatch_on_real_models() {
         run_onnx_model(&model, feed).expect("run");
     }
 }
+
+/// `FusedTransposeMatMul` elides a `Transpose(perm=[0,2,1])` feeding a MatMul's
+/// left input by dispatching a `transA=1` GEMM instead. It had no test.
+///
+/// Two things need pinning. The fusion must fire, and — because the post-pass
+/// only turns the Transpose into `Skip` when *every* consumer absorbed it — a
+/// Transpose with a second, non-MatMul consumer must still be materialized.
+#[test]
+fn plan_fuses_transpose_into_matmul_and_keeps_a_shared_transpose() {
+    let b_init = onnx::TensorProto {
+        name: Some("b".into()),
+        dims: vec![1, 2, 3],
+        data_type: Some(1),
+        float_data: (0..6).map(|v| v as f32 * 0.25).collect(),
+        ..Default::default()
+    };
+    let build = |extra_consumer: bool| {
+        let mut nodes = vec![
+            onnx::NodeProto {
+                op_type: Some("Transpose".into()),
+                name: Some("t".into()),
+                input: vec!["x".into()],
+                output: vec!["xt".into()],
+                attribute: vec![make_ints_attr("perm", vec![0, 2, 1])],
+                ..Default::default()
+            },
+            onnx::NodeProto {
+                op_type: Some("MatMul".into()),
+                name: Some("mm".into()),
+                input: vec!["xt".into(), "b".into()],
+                output: vec!["y".into()],
+                ..Default::default()
+            },
+        ];
+        let mut outs = vec!["y"];
+        if extra_consumer {
+            nodes.push(onnx::NodeProto {
+                op_type: Some("Relu".into()),
+                name: Some("side".into()),
+                input: vec!["xt".into()],
+                output: vec!["side_out".into()],
+                ..Default::default()
+            });
+            outs.push("side_out");
+        }
+        build_minimal_onnx_model(nodes, vec![b_init.clone()], vec!["x"], outs)
+    };
+
+    let mut rng = crate::tests::equivalence::Lcg::new(0x7EA5_0001);
+    let feed_for = |rng: &mut crate::tests::equivalence::Lcg| {
+        let mut f = FxHashMap::default();
+        f.insert("x".to_string(), rng.tensor(vec![1, 2, 2]));
+        f
+    };
+
+    // Sole consumer: the Transpose is absorbed and its own slot becomes Skip.
+    let bytes = build(false);
+    let model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        matches!(
+            model.runtime_index.execution_plan.as_slice(),
+            [
+                crate::plan::NodeAction::Skip,
+                crate::plan::NodeAction::FusedTransposeMatMul { .. },
+            ]
+        ),
+        "sole-consumer Transpose should be absorbed, got {:?}",
+        model.runtime_index.execution_plan
+    );
+    let out = run_onnx_model(&model, feed_for(&mut rng)).unwrap();
+    assert_eq!(out["y"].shape(), &[1, 2, 3]);
+
+    // Shared: `side` also reads the transposed value, so eliding the Transpose
+    // would leave it reading a tensor nothing wrote.
+    let bytes = build(true);
+    let model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        !model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::FusedTransposeMatMul { .. })),
+        "a Transpose with a non-MatMul consumer must not be fused away, got {:?}",
+        model.runtime_index.execution_plan
+    );
+    let out = run_onnx_model(&model, feed_for(&mut rng)).unwrap();
+    let mut names: Vec<&String> = out.keys().collect();
+    names.sort();
+    assert_eq!(names, vec!["side_out", "y"], "output names diverged");
+}
