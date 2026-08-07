@@ -1,3 +1,4 @@
+use crate::attr::Attr;
 use ::metal::*;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;

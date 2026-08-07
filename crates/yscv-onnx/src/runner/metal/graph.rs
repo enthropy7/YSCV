@@ -2,6 +2,7 @@
 //! Builds an MPSGraph from the ONNX model, compiles it once,
 //! then executes as a single GPU dispatch — no per-op encoder transitions.
 
+use crate::attr::Attr;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::cell::{Cell, RefCell};
 
