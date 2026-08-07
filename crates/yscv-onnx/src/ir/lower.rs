@@ -12,7 +12,7 @@
 //! means fixing the loader and the exporter together, which is not this
 //! change's job.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{Graph, Node, Op, ValueKind, WeightLayout};
 use crate::loader::{OnnxModel, OnnxNode};
@@ -129,11 +129,17 @@ impl Graph {
 impl OnnxModel {
     /// Writes an optimized graph back over this model.
     ///
-    /// Rebuilds `nodes` and `initializers` from the IR. Deliberately leaves the
-    /// loader's weight-layout side tables (`khwc_weights` and friends) and the
-    /// runtime index alone: layout tags are keyed by weight name and passes
-    /// preserve those names, and the index is rebuilt once by the driver after
-    /// the whole pipeline.
+    /// Rebuilds `nodes`, `initializers` and the loader's weight-layout side
+    /// tables from the IR. The runtime index is left alone — the driver rebuilds
+    /// it once after the whole pipeline.
+    ///
+    /// The side tables cannot be carried over by name. A pass that rewrites a
+    /// weight is free to give the result a new one, and the runtime reads the
+    /// tables by the name the Conv actually points at, so a renamed weight
+    /// silently reverts to being read as ONNX-native OIHW — a pre-permuted
+    /// depthwise `[KH, KW, C, 1]` then parses as `[O, I, KH, KW]`, and the
+    /// output-channel count comes back as the kernel height. `weight_layouts`
+    /// is keyed by value, survives the rename, and is the authority here.
     pub(crate) fn apply_ir(&mut self, graph: &Graph) {
         let nodes: Vec<OnnxNode> = graph
             .node_ids()
@@ -141,15 +147,28 @@ impl OnnxModel {
             .collect();
 
         let mut initializers = FxHashMap::default();
+        let mut khwc_weights = FxHashSet::default();
+        let mut dw_khwc_weights = FxHashSet::default();
+        let mut group_khwc_weights = FxHashSet::default();
         for idx in 0..graph.value_count() {
-            let value = graph.value(super::ValueId(idx as u32));
+            let id = super::ValueId(idx as u32);
+            let value = graph.value(id);
             if let ValueKind::Constant(tensor) = &value.kind {
                 initializers.insert(value.name.clone(), tensor.clone());
+                match graph.weight_layout(id) {
+                    WeightLayout::Khwc => khwc_weights.insert(value.name.clone()),
+                    WeightLayout::DepthwiseKhwc => dw_khwc_weights.insert(value.name.clone()),
+                    WeightLayout::GroupKhwc => group_khwc_weights.insert(value.name.clone()),
+                    WeightLayout::Oihw => false,
+                };
             }
         }
 
         self.nodes = nodes;
         self.initializers = initializers;
+        self.khwc_weights = khwc_weights;
+        self.dw_khwc_weights = dw_khwc_weights;
+        self.group_khwc_weights = group_khwc_weights;
         self.inputs = graph
             .graph_inputs()
             .iter()

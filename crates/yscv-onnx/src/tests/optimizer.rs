@@ -580,6 +580,89 @@ fn const_tensor(name: &str, dims: Vec<i64>, data: Vec<f32>) -> onnx::TensorProto
     }
 }
 
+/// An `Identity` aliasing a pre-permuted depthwise weight folds away, and the
+/// layout tag follows the bytes to the new name.
+///
+/// Leaving it unfolded is not the conservative choice: the node survives to run
+/// time and hands the Conv a `[KH, KW, C, 1]` tensor the runtime has no tag for,
+/// so the Conv parses it as `[O, I, KH, KW]` and reports the kernel height as
+/// its output-channel count.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
+#[test]
+fn fold_constants_carries_weight_layout_through_identity() {
+    // The weight is read twice: once straight, which is what makes the loader
+    // permute and register it, and once through an `Identity`. Only the second
+    // reader loses the tag, which is why a model has to contain both to fail.
+    let c = 16i64;
+    let dw_attrs = || {
+        vec![
+            make_ints_attr("kernel_shape", vec![3, 3]),
+            make_ints_attr("pads", vec![1, 1, 1, 1]),
+            make_int_attr("group", c),
+        ]
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("dw_direct".into()),
+            input: vec!["x".into(), "dw_w".into()],
+            output: vec!["h".into()],
+            attribute: dw_attrs(),
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Identity".into()),
+            name: Some("alias".into()),
+            input: vec!["dw_w".into()],
+            output: vec!["dw_w_alias".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("dw_aliased".into()),
+            input: vec!["h".into(), "dw_w_alias".into()],
+            output: vec!["y".into()],
+            attribute: dw_attrs(),
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![onnx::TensorProto {
+            name: Some("dw_w".into()),
+            dims: vec![c, 1, 3, 3],
+            data_type: Some(1),
+            float_data: vec![0.05; 16 * 9],
+            ..Default::default()
+        }],
+        vec!["x"],
+        vec!["y"],
+    );
+    let mut model = load_onnx_model(&bytes).unwrap();
+    assert!(
+        model.dw_khwc_weights.contains("dw_w"),
+        "fixture must start from a pre-permuted depthwise weight"
+    );
+
+    optimize_onnx_graph(&mut model).unwrap();
+
+    for node in model.nodes.iter().filter(|n| n.op_type.starts_with("Conv")) {
+        let w = &node.inputs[1];
+        assert!(
+            model.dw_khwc_weights.contains(w),
+            "`{}` reads `{w}`, which lost its depthwise-KHWC tag across the \
+             fold; registered: {:?}",
+            node.name,
+            model.dw_khwc_weights
+        );
+        assert_eq!(
+            model.initializers[w].shape(),
+            &[3, 3, 16, 1],
+            "and the bytes `{w}` points at are the permuted ones"
+        );
+    }
+}
+
 /// A chain of constant nodes folds in a single sweep: each fold makes its
 /// output constant, which can only enable nodes later in topological order.
 #[test]
@@ -1503,6 +1586,11 @@ fn plan_fuses_conv_add_with_the_later_producer_of_a_residual() {
 ///
 /// `channels` picks whether the blocked kernel is eligible at all — it needs
 /// both channel counts to be a multiple of 16.
+// Depends on the loader pre-permuting conv weights: the fusion and
+// handoff gates below match on the permuted shapes. GPU builds keep the
+// ONNX-native OIHW layout, so the plan legitimately comes out different
+// there and the shape this pins is not the one to expect.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
 fn nchwc_handoff_for_chained_blocks(channels: usize) -> Vec<bool> {
     let c = channels as i64;
     let dw_w = |name: &str| onnx::TensorProto {
@@ -1575,6 +1663,7 @@ fn nchwc_handoff_for_chained_blocks(channels: usize) -> Vec<bool> {
 /// Checked here rather than through a run because the kernel that consumes the
 /// flag is gated on AVX-512, which the development host does not have — the
 /// predicate itself is what changed, so the predicate is what gets pinned.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
 #[test]
 fn nchwc_handoff_is_resolved_at_plan_time() {
     // c = 16: both blocks clear the blocked kernel's channel gate, so the
@@ -1600,6 +1689,7 @@ fn nchwc_handoff_is_resolved_at_plan_time() {
 ///
 /// The DW output already has to have exactly one reader for the merge to be
 /// legal, so that reader is unique and is now looked up directly.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
 #[test]
 fn plan_merges_pw_dw_pw_reduce_across_an_unrelated_node() {
     // Held for the whole test: the plan assertion below reads the same switch
@@ -1797,6 +1887,7 @@ fn pw_dw_pw_reduce_residual_fixture(
 /// with the graph output missing — no error anywhere.
 ///
 /// The merge now takes over whatever `ConvAdd` resolved, or declines.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
 #[test]
 fn plan_merge_keeps_a_non_adjacent_residual_add() {
     let env = crate::tests::equivalence::lock_env();

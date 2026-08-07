@@ -84,7 +84,18 @@ impl Pass for FoldConstants {
                 continue;
             };
             let output = node.outputs[0];
+            // An `Identity` folded away leaves its operand's bytes under a new
+            // name. The layout tag has to travel with them, or the consumer
+            // reads a permuted weight as ONNX-native OIHW.
+            let carried = (node.op == Op::Identity)
+                .then(|| node.inputs.first().copied().flatten())
+                .flatten()
+                .map(|src| graph.weight_layout(src))
+                .filter(|l| *l != WeightLayout::Oihw);
             graph.set_constant(output, folded);
+            if let Some(layout) = carried {
+                graph.set_weight_layout(output, layout);
+            }
             graph.remove_node(node_id);
             changed = true;
         }
@@ -112,8 +123,12 @@ fn foldable_inputs(graph: &Graph, node_id: NodeId) -> Option<Vec<(String, ValueI
         graph.constant(*value)?;
         // A pre-permuted weight's bytes no longer match the graph's logical
         // view of it, so evaluating an operator against one would compute
-        // against the wrong layout.
-        if graph.weight_layout(*value) != WeightLayout::Oihw {
+        // against the wrong layout. `Identity` is the exception: it copies
+        // bytes without interpreting them, and refusing it is not the safe
+        // choice — the node then survives to run time, where it hands its
+        // consumer a permuted tensor carrying no layout tag, and the Conv
+        // reading it parses `[KH, KW, C, 1]` as `[O, I, KH, KW]`.
+        if graph.weight_layout(*value) != WeightLayout::Oihw && node.op != Op::Identity {
             return None;
         }
         operands.push((graph.value(*value).name.clone(), *value));
