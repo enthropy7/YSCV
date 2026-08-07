@@ -507,23 +507,12 @@ unsafe fn binary_same_shape_avx(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind:
     let out_ptr = out.as_mut_ptr();
     let mut index = 0usize;
 
-    // 4x unrolled: process 32 floats per iteration with software prefetch.
-    // Matches vDSP throughput by keeping the OoO pipeline fully saturated.
+    // 4x unrolled: process 32 floats per iteration. The access is unit-stride
+    // over three streams, which every hardware prefetcher tracks, so an
+    // explicit hint only adds uops to a bandwidth-bound loop.
     match kind {
         BinaryKind::Add => {
             while index + 32 <= len {
-                #[cfg(target_arch = "x86")]
-                {
-                    use std::arch::x86::_mm_prefetch;
-                    _mm_prefetch::<3>(left_ptr.add(index + 32) as *const i8);
-                    _mm_prefetch::<3>(right_ptr.add(index + 32) as *const i8);
-                }
-                #[cfg(target_arch = "x86_64")]
-                {
-                    use std::arch::x86_64::_mm_prefetch;
-                    _mm_prefetch::<3>(left_ptr.add(index + 32) as *const i8);
-                    _mm_prefetch::<3>(right_ptr.add(index + 32) as *const i8);
-                }
                 let a0 = _mm256_loadu_ps(left_ptr.add(index));
                 let b0 = _mm256_loadu_ps(right_ptr.add(index));
                 let a1 = _mm256_loadu_ps(left_ptr.add(index + 8));
@@ -541,18 +530,6 @@ unsafe fn binary_same_shape_avx(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind:
         }
         BinaryKind::Sub => {
             while index + 32 <= len {
-                #[cfg(target_arch = "x86")]
-                {
-                    use std::arch::x86::_mm_prefetch;
-                    _mm_prefetch::<3>(left_ptr.add(index + 32) as *const i8);
-                    _mm_prefetch::<3>(right_ptr.add(index + 32) as *const i8);
-                }
-                #[cfg(target_arch = "x86_64")]
-                {
-                    use std::arch::x86_64::_mm_prefetch;
-                    _mm_prefetch::<3>(left_ptr.add(index + 32) as *const i8);
-                    _mm_prefetch::<3>(right_ptr.add(index + 32) as *const i8);
-                }
                 let a0 = _mm256_loadu_ps(left_ptr.add(index));
                 let b0 = _mm256_loadu_ps(right_ptr.add(index));
                 let a1 = _mm256_loadu_ps(left_ptr.add(index + 8));
@@ -570,18 +547,6 @@ unsafe fn binary_same_shape_avx(lhs: &[f32], rhs: &[f32], out: &mut [f32], kind:
         }
         BinaryKind::Mul => {
             while index + 32 <= len {
-                #[cfg(target_arch = "x86")]
-                {
-                    use std::arch::x86::_mm_prefetch;
-                    _mm_prefetch::<3>(left_ptr.add(index + 32) as *const i8);
-                    _mm_prefetch::<3>(right_ptr.add(index + 32) as *const i8);
-                }
-                #[cfg(target_arch = "x86_64")]
-                {
-                    use std::arch::x86_64::_mm_prefetch;
-                    _mm_prefetch::<3>(left_ptr.add(index + 32) as *const i8);
-                    _mm_prefetch::<3>(right_ptr.add(index + 32) as *const i8);
-                }
                 let a0 = _mm256_loadu_ps(left_ptr.add(index));
                 let b0 = _mm256_loadu_ps(right_ptr.add(index));
                 let a1 = _mm256_loadu_ps(left_ptr.add(index + 8));

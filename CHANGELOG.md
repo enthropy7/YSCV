@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `use_avx512_mr12` documented itself as "DEFAULT ON" with a
+  `YSCV_AVX512_SGEMM=0` kill switch. The gate it calls is opt-in on the exact
+  value `1`, so the AVX-512 MR=12×NR=32 GEMM is off unless asked for — the
+  comment claimed the opposite of the code directly below it.
 - `remove_dropout_nodes` deleted nodes by `NodeProto.name`, which ONNX makes
   optional. A single unnamed `Dropout` put the empty string into the delete set
   and took every other unnamed node in the graph with it — on a fully unnamed
@@ -19,6 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(i, i+1)` and `(i+1, i+2)` from a chain such as `Squeeze -> Unsqueeze ->
   Squeeze`. The reverse-removal loop then deleted already-shifted indices,
   taking unrelated nodes with them. Overlapping matches are now skipped.
+
+### Changed
+
+- The `prfm pldl1keep` helper lived in three copies across `conv/pointwise.rs`,
+  and is now a single `ops::prefetch::prefetch_l1_keep` documenting when a hint
+  is worth adding: hoist the gate out of the K-loop, and only hint operands
+  whose stride actually defeats the hardware prefetcher.
+- Dropped the software prefetch from the AVX `binary_same_shape` loops. The
+  access is unit-stride over three streams, which every hardware prefetcher
+  tracks; measured on Zen 4 the hint is within run-to-run drift (the A/B flips
+  sign depending on run order), so it only added uops to a bandwidth-bound loop.
+
+### Added
+
+- `rebuild_runtime_index` now debug-asserts one execution-plan action per node.
+  With the sequential fallback gone the runner walks the plan and nothing else,
+  so a short plan would silently skip trailing nodes.
+- Benchmarks for the two kernels that had none: `trans_a_m64_k256_n256` (the
+  tracker's `FusedTransposeMatMul` shape, the only caller of the transposed-A
+  tiles) and raw-slice `binary_same_shape_dispatch` add/mul.
 
 ### Changed
 

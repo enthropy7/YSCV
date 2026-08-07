@@ -400,6 +400,15 @@ impl OnnxModel {
             &self.dw_khwc_weights,
             &self.group_khwc_weights,
         );
+        // Execution now has no non-plan fallback: the runner walks the plan and
+        // nothing else. A plan shorter than the node list would silently skip
+        // the trailing nodes, so hold the one-action-per-node invariant here,
+        // where it is established, rather than at the point it would be missed.
+        debug_assert_eq!(
+            self.runtime_index.execution_plan.len(),
+            self.nodes.len(),
+            "execution plan must carry one action per node"
+        );
     }
 }
 

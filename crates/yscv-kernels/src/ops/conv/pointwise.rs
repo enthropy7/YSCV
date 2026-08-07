@@ -1239,16 +1239,14 @@ unsafe fn pointwise_nx16_direct_rows_avx2(
     }
 }
 
-/// L1 prefetch hint (`prfm pldl1keep`) for the strided PW-reduce weight stream.
-/// The weight stride is `n*4` bytes (96-448 B for tracker reduce shapes) — too
-/// large for the in-order A53's HW prefetcher stride detector, so a manual hint
-/// several K-iters ahead hides the load latency behind the FMA pipe.
+/// L1 prefetch hint for the strided PW-reduce weight stream. The weight stride
+/// is `n*4` bytes (96-448 B for tracker reduce shapes) — too large for the
+/// in-order A53's HW prefetcher stride detector, so a manual hint several
+/// K-iters ahead hides the load latency behind the FMA pipe. The local
+/// `PREFETCH_AHEAD` of 8 below is tuned for this weight stream and is
+/// deliberately longer than the shared GEMM default.
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn prefetch_l1_keep(p: *const f32) {
-    core::arch::asm!("prfm pldl1keep, [{p}]", p = in(reg) p, options(nostack, preserves_flags, readonly));
-}
+use super::super::prefetch::prefetch_l1_keep;
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]

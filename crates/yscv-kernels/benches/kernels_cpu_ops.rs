@@ -2,12 +2,12 @@ use std::num::NonZeroUsize;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use yscv_kernels::{
-    Backend, BatchNorm2dParams, LayerNormLastDimParams, ParallelElementwiseConfig,
+    Backend, BatchNorm2dParams, BinaryKind, LayerNormLastDimParams, ParallelElementwiseConfig,
     ParallelMatmulConfig, SeparableConv2dParams, ThreadedCpuBackend, ThreadedCpuBackendConfig, add,
-    avg_pool2d_nhwc, batch_norm2d_nhwc, conv2d_nhwc, conv2d_nhwc_indirect_padded,
-    conv2d_nhwc_padded, depthwise_conv2d_nhwc, layer_norm_last_dim, log_softmax_last_dim,
-    logsumexp_last_dim, matmul_2d, matmul_2d_sequential, max_pool2d_nhwc, relu,
-    separable_conv2d_nhwc, sigmoid, softmax_last_dim,
+    avg_pool2d_nhwc, batch_norm2d_nhwc, binary_same_shape_dispatch, conv2d_nhwc,
+    conv2d_nhwc_indirect_padded, conv2d_nhwc_padded, depthwise_conv2d_nhwc, layer_norm_last_dim,
+    log_softmax_last_dim, logsumexp_last_dim, matmul_2d, matmul_2d_sequential, max_pool2d_nhwc,
+    relu, separable_conv2d_nhwc, sigmoid, softmax_last_dim,
 };
 use yscv_tensor::Tensor;
 
@@ -61,6 +61,26 @@ fn bench_matmul_modes(c: &mut Criterion) {
                 .matmul_2d(black_box(&lhs_square), black_box(&rhs_square))
                 .expect("matmul square threaded");
             black_box(out);
+        });
+    });
+
+    // Transposed-A 4-row tile at the tracker's FusedTransposeMatMul shape
+    // (correlation head: A^T is [k=256, m=64], B is [256, 256]). This is the
+    // only caller of the trans_a kernels, so it is the shape their prefetch
+    // and tiling choices have to be judged on.
+    let a_kt_ftmm = vec![0.31f32; 256 * 64];
+    let b_ftmm = vec![0.17f32; 256 * 256];
+    let mut out_ftmm = vec![0.0f32; 64 * 256];
+    group.bench_function("trans_a_m64_k256_n256", |b| {
+        b.iter(|| {
+            yscv_kernels::matmul_2d_slices_trans_a(
+                black_box(&a_kt_ftmm),
+                64,
+                256,
+                black_box(&b_ftmm),
+                256,
+                black_box(&mut out_ftmm),
+            );
         });
     });
 
@@ -168,6 +188,29 @@ fn bench_elementwise_modes(c: &mut Criterion) {
         b.iter(|| {
             let out = add(black_box(&lhs), black_box(&rhs)).expect("add same shape");
             black_box(out);
+        });
+    });
+    // Raw-slice entry point: no Tensor allocation per iteration, so the SIMD
+    // loop itself is what gets timed rather than the surrounding bookkeeping.
+    let mut raw_out = vec![0.0; lhs.data().len()];
+    group.bench_function("add_same_shape_raw_slice", |b| {
+        b.iter(|| {
+            binary_same_shape_dispatch(
+                black_box(lhs.data()),
+                black_box(rhs.data()),
+                black_box(&mut raw_out),
+                BinaryKind::Add,
+            );
+        });
+    });
+    group.bench_function("mul_same_shape_raw_slice", |b| {
+        b.iter(|| {
+            binary_same_shape_dispatch(
+                black_box(lhs.data()),
+                black_box(rhs.data()),
+                black_box(&mut raw_out),
+                BinaryKind::Mul,
+            );
         });
     });
     group.bench_function("add_same_shape_threaded_2", |b| {

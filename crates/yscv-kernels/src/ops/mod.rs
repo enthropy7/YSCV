@@ -22,6 +22,7 @@ pub mod nchwc_pack;
 mod nchwc_pointwise;
 mod norm;
 mod pool;
+mod prefetch;
 pub mod quantize;
 pub mod rope;
 pub mod simd;

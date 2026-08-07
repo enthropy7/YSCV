@@ -245,7 +245,8 @@ pub(super) fn pack_b_panel_nr32(
 /// - m >= 12 (tail rows handled via tail_tile in gebp)
 /// - k >= 16 (smaller k doesn't amortize the blocked-GEMM setup)
 ///
-/// DEFAULT ON. Kill-switch: `YSCV_AVX512_SGEMM=0` disables.
+/// DEFAULT OFF — opt in with the exact value `YSCV_AVX512_SGEMM=1`. See
+/// `avx512_mr12_enabled` below for why Zen 4 loses to the AVX2 4×24 tile.
 /// All epilogue combinations supported: None/Relu (in asm),
 /// SiLU (ZMM post-store via apply_silu_zmm_tile), residual.
 #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
