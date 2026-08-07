@@ -1235,7 +1235,7 @@ mod tests {
                 );
                 #[cfg(target_arch = "x86_64")]
                 unsafe {
-                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx512f") {
+                    if (ch == 1 || ch == 3) && yscv_cpu::host_cpu().features.avx512f {
                         bitexact(
                             &want,
                             &crop_resize_border_avx512(
@@ -1244,7 +1244,7 @@ mod tests {
                             &lbl,
                         );
                     }
-                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx2") {
+                    if (ch == 1 || ch == 3) && yscv_cpu::host_cpu().features.avx2 {
                         bitexact(
                             &want,
                             &crop_resize_border_avx2(
@@ -1253,7 +1253,7 @@ mod tests {
                             &lbl,
                         );
                     }
-                    if std::is_x86_feature_detected!("sse4.1") {
+                    if yscv_cpu::host_cpu().features.sse41 {
                         bitexact(
                             &want,
                             &crop_resize_border_sse(
@@ -1311,21 +1311,21 @@ mod tests {
                 // and each individual SIMD path the host supports
                 #[cfg(target_arch = "x86_64")]
                 unsafe {
-                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx512f") {
+                    if (ch == 1 || ch == 3) && yscv_cpu::host_cpu().features.avx512f {
                         bitexact(
                             &want,
                             &crop_resize_avx512(&src, h, w, ch, cx, cy, ww, wh, tw, th),
                             &lbl,
                         );
                     }
-                    if (ch == 1 || ch == 3) && std::is_x86_feature_detected!("avx2") {
+                    if (ch == 1 || ch == 3) && yscv_cpu::host_cpu().features.avx2 {
                         bitexact(
                             &want,
                             &crop_resize_avx2(&src, h, w, ch, cx, cy, ww, wh, tw, th),
                             &lbl,
                         );
                     }
-                    if std::is_x86_feature_detected!("sse4.1") {
+                    if yscv_cpu::host_cpu().features.sse41 {
                         bitexact(
                             &want,
                             &crop_resize_sse(&src, h, w, ch, cx, cy, ww, wh, tw, th),
