@@ -1672,7 +1672,7 @@ fn plan_merges_pw_dw_pw_reduce_across_an_unrelated_node() {
     );
 
     // The merge rewrites how the block is computed, so check it still computes
-    // the same thing as the unmerged plan.
+    // the same thing as the unmerged plan — every output of it, not just `y`.
     let mut feed = FxHashMap::default();
     feed.insert(
         "x".to_string(),
@@ -1682,39 +1682,165 @@ fn plan_merges_pw_dw_pw_reduce_across_an_unrelated_node() {
         "side_in".to_string(),
         Tensor::from_vec(vec![1, 2], vec![1.0_f32, -1.0]).unwrap(),
     );
-    let merged = run_onnx_model(&model, feed.clone()).unwrap();
+    crate::tests::equivalence::assert_plan_fusion_preserves_numerics(
+        "FusedPwDwPwReduce/non-adjacent",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Abs(1e-5),
+        "YSCV_FUSED_PW_DW_PW_REDUCE_OFF",
+    );
+}
 
-    // SAFETY: single-threaded test section; the kill switch is read at load.
-    #[allow(unsafe_code)]
-    unsafe {
-        std::env::set_var("YSCV_FUSED_PW_DW_PW_REDUCE_OFF", "1");
-    }
-    let unmerged_model = load_onnx_model(&bytes).unwrap();
-    #[allow(unsafe_code)]
-    unsafe {
-        std::env::remove_var("YSCV_FUSED_PW_DW_PW_REDUCE_OFF");
-    }
+/// Builds `PW_expand → DW 3×3 → PW_reduce → Add(residual)` plus one unrelated
+/// `Relu`, and returns the model bytes with a feed.
+///
+/// `residual_from_input` selects between the two ways the merge and `ConvAdd`
+/// can disagree, which need the interloper in different places:
+///
+/// * `true` — residual is the graph input, interloper scheduled *between the PW
+///   reduce and the Add*, so the Add is not at `pw_reduce_idx + 1`.
+/// * `false` — residual is the interloper's output and the interloper is
+///   scheduled *inside the block*, so it is computed after the merged action's
+///   anchor but before the PW reduce.
+fn pw_dw_pw_reduce_residual_fixture(
+    residual_from_input: bool,
+) -> (Vec<u8>, FxHashMap<String, Tensor>) {
+    let c_in = 16usize;
+    let c_exp = 32usize;
+    let w = |name: &str, dims: Vec<i64>| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: dims.clone(),
+        data_type: Some(1),
+        float_data: vec![0.05; dims.iter().product::<i64>() as usize],
+        ..Default::default()
+    };
+    let conv = |name: &str, wn: &str, i: &str, o: &str, k: Vec<i64>, extra: Vec<_>| {
+        let mut attribute = vec![make_ints_attr("kernel_shape", k)];
+        attribute.extend(extra);
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some(name.into()),
+            input: vec![i.into(), wn.into()],
+            output: vec![o.into()],
+            attribute,
+            ..Default::default()
+        }
+    };
+    let interloper = onnx::NodeProto {
+        op_type: Some("Relu".into()),
+        name: Some("interloper".into()),
+        input: vec!["x".into()],
+        output: vec!["mid".into()],
+        ..Default::default()
+    };
+    let dw = conv(
+        "dw",
+        "dw_w",
+        "exp",
+        "dwo",
+        vec![3, 3],
+        vec![
+            make_ints_attr("pads", vec![1, 1, 1, 1]),
+            make_int_attr("group", c_exp as i64),
+        ],
+    );
+    let pw_expand = conv("pw_expand", "exp_w", "x", "exp", vec![1, 1], vec![]);
+    let pw_reduce = conv("pw_reduce", "red_w", "dwo", "red", vec![1, 1], vec![]);
+    let add = |operand: &str| onnx::NodeProto {
+        op_type: Some("Add".into()),
+        name: Some("residual".into()),
+        input: vec!["red".into(), operand.into()],
+        output: vec!["y".into()],
+        ..Default::default()
+    };
+    let nodes = if residual_from_input {
+        vec![pw_expand, dw, pw_reduce, interloper, add("x")]
+    } else {
+        vec![pw_expand, interloper, dw, pw_reduce, add("mid")]
+    };
+    // `mid` is a graph output in the first case so the interloper is not dead
+    // code; in the second the Add already consumes it.
+    let outputs: Vec<&str> = if residual_from_input {
+        vec!["y", "mid"]
+    } else {
+        vec!["y"]
+    };
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![
+            w("exp_w", vec![c_exp as i64, c_in as i64, 1, 1]),
+            w("dw_w", vec![c_exp as i64, 1, 3, 3]),
+            w("red_w", vec![c_in as i64, c_exp as i64, 1, 1]),
+        ],
+        vec!["x"],
+        outputs,
+    );
+    let mut feed = FxHashMap::default();
+    feed.insert(
+        "x".to_string(),
+        Tensor::from_vec(vec![1, c_in, 8, 8], vec![0.25_f32; c_in * 64]).unwrap(),
+    );
+    (bytes, feed)
+}
+
+/// `FusedPwDwPwReduce` looked for its residual `Add` at `pw_reduce_idx + 1`
+/// after every other matcher had moved to dataflow, so the two disagreed.
+///
+/// When `ConvAdd` claimed a non-adjacent `Add`, the merge absorbed the PW
+/// reduce without noticing the `Add`; the `retain` that drops actions whose
+/// node was absorbed then deleted the whole `ConvAdd`, and the `Add`'s own plan
+/// slot was already `Skip`. The addition vanished and the run returned `Ok`
+/// with the graph output missing — no error anywhere.
+///
+/// The merge now takes over whatever `ConvAdd` resolved, or declines.
+#[test]
+fn plan_merge_keeps_a_non_adjacent_residual_add() {
+    let (bytes, feed) = pw_dw_pw_reduce_residual_fixture(true);
+    let model = load_onnx_model(&bytes).unwrap();
     assert!(
-        !unmerged_model
+        model
             .runtime_index
             .execution_plan
             .iter()
             .any(|a| matches!(a, crate::plan::NodeAction::FusedPwDwPwReduce { .. })),
-        "kill switch must disable the merge, or the comparison proves nothing"
+        "fixture must exercise the merge, got {:?}",
+        model.runtime_index.execution_plan
     );
-    let unmerged = run_onnx_model(&unmerged_model, feed).unwrap();
 
-    for (i, (g, e)) in merged["y"]
-        .data()
-        .iter()
-        .zip(unmerged["y"].data().iter())
-        .enumerate()
-    {
-        assert!(
-            (g - e).abs() < 1e-5,
-            "merged/unmerged mismatch at {i}: {g} vs {e}"
-        );
-    }
+    crate::tests::equivalence::assert_plan_fusion_preserves_numerics(
+        "FusedPwDwPwReduce/non-adjacent-residual",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Abs(1e-5),
+        "YSCV_FUSED_PW_DW_PW_REDUCE_OFF",
+    );
+}
+
+/// The mirror of the above: the merged action runs at the PW expand's position,
+/// so a residual operand produced *inside* the block does not exist yet.
+/// `ConvAdd` declines this through `available_at`; the merge used to absorb it
+/// regardless and fail the run with a missing input.
+/// No kill-switch comparison here: the merge declines either way, so toggling
+/// it would prove nothing. What this pins is that it declines at all — before
+/// the fix the merged action read a tensor nothing had written and the run
+/// failed with `MissingInput { node: "residual", input: "mid" }`.
+#[test]
+fn plan_merge_declines_a_residual_produced_inside_the_block() {
+    let (bytes, feed) = pw_dw_pw_reduce_residual_fixture(false);
+    let model = load_onnx_model(&bytes).unwrap();
+
+    assert!(
+        !model
+            .runtime_index
+            .execution_plan
+            .iter()
+            .any(|a| matches!(a, crate::plan::NodeAction::FusedPwDwPwReduce { .. })),
+        "merge must decline when the residual is produced inside the block, got {:?}",
+        model.runtime_index.execution_plan
+    );
+
+    let out = run_onnx_model(&model, feed).expect("plan must be executable");
+    assert!(out.contains_key("y"), "graph output dropped from the plan");
 }
 
 /// The plan's kernel choice has to agree with the branch the dispatch takes,

@@ -16,6 +16,14 @@ use yscv_tensor::Tensor;
 use super::super::loader::{OnnxModel, load_onnx_model};
 use super::super::runner::run_onnx_model;
 
+/// Serializes tests that mutate the process environment.
+///
+/// `std::env::set_var` is not thread-safe and `cargo test` runs tests on a
+/// thread pool, so a test toggling a `YSCV_*` switch can otherwise change the
+/// behaviour of an unrelated test running beside it. Poison-tolerant: a panic
+/// in one test must not cascade into every other.
+pub(in crate::tests) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Deterministic linear-congruential generator.
 ///
 /// Test inputs need to be pseudo-random — zeros and ones hide sign errors,
@@ -89,6 +97,65 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
         .unwrap_or_else(|e| panic!("{label}: transformed run: {e}"));
 
     assert_outputs_match(label, &reference, &transformed, tolerance);
+}
+
+/// Runs `model_bytes` with a plan-level kill switch set and unset, and asserts
+/// both produce the same outputs within `tolerance`.
+///
+/// The counterpart of [`assert_transform_preserves_numerics`] for changes that
+/// live in plan construction rather than in a graph pass. Those changes are not
+/// expressible as a transform on `OnnxModel` — they happen during
+/// `rebuild_runtime_index`, so the only way to get an unfused reference is to
+/// build the plan twice under different switches.
+///
+/// Worth routing plan tests through even when they already check the plan's
+/// shape: a fusion that absorbs a node without computing it drops a graph
+/// output, and comparing *which* outputs came back is what catches that. A
+/// shape assertion alone will not — the malformed plan is exactly the shape the
+/// test was asserting.
+///
+/// `kill_switch` is the `YSCV_*` variable that disables the fusion under test.
+/// Serializes on [`ENV_LOCK`] internally, so callers need no discipline of
+/// their own.
+pub(in crate::tests) fn assert_plan_fusion_preserves_numerics(
+    label: &str,
+    model_bytes: &[u8],
+    feed: &FxHashMap<String, Tensor>,
+    tolerance: Tolerance,
+    kill_switch: &str,
+) {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let fused = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: fused load: {e}"));
+
+    // SAFETY: `set_var`/`remove_var` are not thread-safe and `cargo test` runs
+    // tests concurrently, so every environment mutation in this crate's tests
+    // happens under `ENV_LOCK`, held for the whole window in which the variable
+    // is set. The load below is the only thing that reads it, and the variable
+    // is cleared before the lock is released — including on a failed load,
+    // since the result is only unwrapped afterwards.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var(kill_switch, "1");
+    }
+    let unfused = load_onnx_model(model_bytes);
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var(kill_switch);
+    }
+    let unfused = unfused.unwrap_or_else(|e| panic!("{label}: unfused load: {e}"));
+
+    assert_ne!(
+        format!("{:?}", fused.runtime_index.execution_plan),
+        format!("{:?}", unfused.runtime_index.execution_plan),
+        "{label}: {kill_switch} did not change the plan, so the comparison \
+         proves nothing"
+    );
+
+    let reference = run_onnx_model(&unfused, feed.clone())
+        .unwrap_or_else(|e| panic!("{label}: unfused run: {e}"));
+    let actual =
+        run_onnx_model(&fused, feed.clone()).unwrap_or_else(|e| panic!("{label}: fused run: {e}"));
+    assert_outputs_match(label, &reference, &actual, tolerance);
 }
 
 /// Compares two output maps, reporting the first mismatch with enough context
