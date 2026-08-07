@@ -419,11 +419,13 @@ Metal too), the pipeline can't overlap and degrades to sync latency.
 
 ### "I want to see what MPSGraph actually did"
 
-Set env var:
+Set env var (needs the `profile` Cargo feature):
 ```bash
-YSCV_MPS_DEBUG=1 ./my-app 2>&1 | head -50
+METAL_DEBUG=1 ./my-app 2>&1 | head -50
 ```
-Prints the compile step plan + per-op routing decisions.
+Prints the compile step plan + per-op routing decisions. For the MPSGraph
+op-construction walk specifically, use `MPSGRAPH_DEBUG=1`. Both are listed with
+the rest of the Metal knobs in [`env-vars.md`](env-vars.md#apple-metal--mpsgraph-yscv-onnx-metal-backend).
 
 ---
 

@@ -110,7 +110,9 @@ is currently NEON intrinsics (including PW2X mode), not inline asm.
 ## Runtime env knobs (A/B / rollback)
 
 These vars are primarily for measurement and controlled rollback, not for
-default production tuning:
+default production tuning. The table below is the CPU-kernel subset that the
+tracker reproduction commands use; for every environment variable the workspace
+reads see [`env-vars.md`](env-vars.md).
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -118,14 +120,14 @@ default production tuning:
 | `YSCV_FUSED_PW_DW_PW2X_OFF=1` | unset | Disable NEON two-column PW path (PW2X). |
 | `YSCV_FUSED_PW_DW_W_TILE=<N>` | auto | Override strip-mining tile width in `fused_pw_dw_3x3`. |
 | `YSCV_FUSED_DW_PW_STREAM_OFF=1` | unset | Disable `FusedDwPw` streaming path. |
-| `YSCV_FUSED_DW_PW_STREAM_MT=1` | unset | Allow `FusedDwPw` streaming in multi-thread mode. |
+| `YSCV_FUSED_DW_PW_STREAM_ON=1` | unset | Re-enable `FusedDwPw` streaming on aarch64, where it is off by default. |
 | `YSCV_FUSED_DW_PW_STREAM_PADDED=1` | unset | Enable padded streaming variant for `FusedDwPw`. |
 | `YSCV_FUSED_DW_PW_TRUE_FUSED_ON=1` | unset | Force true-fused DM=1 path (kernel-level A/B). |
 | `YSCV_FUSED_DW_PW_TRUE_FUSED_OFF=1` | unset | Force-disable true-fused DM=1 path. |
 | `YSCV_QUANT_INT8_FAST=0` | unset | Disable internal quant-domain boundary folding while keeping standard QLinear kernels enabled. |
 | `YSCV_DIRECT_CONV_WORK_MAX=<N>` | arch/thread auto | Threshold for direct 3x3 conv path. |
 | `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` | unset | Disable aarch64 low-k blocked matmul route. |
-| `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` | 500000 | Low-k blocked matmul activation threshold. |
+| `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` | 1048576 | Low-k blocked matmul activation threshold. |
 
 ## Reproduction commands (tracker)
 

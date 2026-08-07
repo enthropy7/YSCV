@@ -62,6 +62,10 @@ Pick your starting point.
 - **[feature-flags.md](feature-flags.md)** — canonical reference for
   every Cargo feature flag across the workspace: what it does, setup
   per platform, combination recipes.
+- **[env-vars.md](env-vars.md)** — canonical reference for every
+  environment variable the workspace reads: kernel A/B knobs, thread
+  pool, profiling, Metal/wgpu, benches and CI scripts, with defaults
+  and value-parsing rules.
 - **[../crates/yscv-pipeline/README.md](../crates/yscv-pipeline/README.md)** —
   multi-accelerator dispatcher, recovery, hot-reload, watchdog.
 - **[../crates/yscv-onnx/README.md](../crates/yscv-onnx/README.md)** —

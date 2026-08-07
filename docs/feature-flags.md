@@ -526,7 +526,10 @@ baseline-vs-change comparison of the same model.
 Cargo features select backend code at build time. For ONNX CPU
 micro-tuning and A/B you also have runtime env toggles.
 
-Most used knobs:
+The most-used knobs are listed below. This is a curated subset — the complete
+list of every environment variable yscv reads (kernels, runner, thread pool,
+Metal, wgpu, benches, CI scripts), with defaults and parsing rules, is
+[`env-vars.md`](env-vars.md).
 
 - `YSCV_FUSED_PW_DW_STREAM_OFF=1` — disable PW->DW streaming fused path.
 - `YSCV_FUSED_PW_DW_PW2X_OFF=1` — disable NEON PW2X inner-loop variant.
@@ -534,10 +537,8 @@ Most used knobs:
 - `YSCV_FUSED_PW_DW_DW_INTERIOR=1` — opt into the experimental AVX-512
   stride-1/stride-2 depthwise interior fast path inside PW->DW fusion.
 - `YSCV_FUSED_DW_PW_STREAM_OFF=1` — disable DW->PW streaming fused path.
-- `YSCV_FUSED_DW_PW_STREAM_PADDED=1` — enable padded streaming variant
-  on non-x86; x86_64 enables it by default.
-- `YSCV_FUSED_DW_PW_STREAM_PADDED_OFF=1` — disable x86_64 default padded
-  DW->PW streaming.
+- `YSCV_FUSED_DW_PW_STREAM_PADDED=1` — enable the padded DW->PW streaming
+  variant (off by default on every target).
 - `YSCV_FUSED_DW_PW_ROW_BATCH=<N>` — override DW->PW streaming y-band size.
 - `YSCV_DIRECT_CONV_WORK_MAX=<N>` — direct-3x3 routing threshold.
 - `YSCV_NO_POINTWISE_16X16_DIRECT=1` — disable the direct NHWC 1×1
@@ -572,8 +573,9 @@ edges write direct i8 side-table tensors via the shared scalar/AVX2/AVX-512F/
 NEON quantizer; x86 paths pack SIMD lanes directly to i8, avoiding the old scalar collection path for real quant-domain
 storage.
 
-Canonical reference (with defaults, scope, and reproduction commands):
-[`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
+Canonical env var reference (every variable, with defaults and scope):
+[`env-vars.md`](env-vars.md). Kernel routing map and tracker reproduction
+commands: [`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
 
 ---
 

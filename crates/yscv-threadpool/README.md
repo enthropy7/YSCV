@@ -45,10 +45,14 @@ rayon on the actual workload, not in isolation.
 
 ```
 YSCV_POOL={rayon|yscv}              backend selection (default: rayon)
-YSCV_POOL_AFFINITY={none|big|physical}  worker pinning policy (yscv only)
+YSCV_POOL_AFFINITY={none|big|physical}  worker pinning policy, yscv only (default: physical)
+YSCV_POOL_SPIN_US=<N>               idle spin before parking, µs (default: 0)
+YSCV_POOL_SLEEPY_ROUNDS=<N>         steal rounds before sleeping (default: 32)
 YSCV_SESSION_POOL=1                 enable PersistentSection (experimental)
 YSCV_ALLOW_SMT=1                    let `OnnxRunner::with_threads(N)` go above physical cores
 ```
+
+Full semantics and every other yscv env var: [`docs/env-vars.md`](../../docs/env-vars.md).
 
 ## Status
 
