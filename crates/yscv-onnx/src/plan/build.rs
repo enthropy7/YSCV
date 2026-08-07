@@ -1314,6 +1314,36 @@ pub(crate) fn build_runtime_index(
         let mut skip_pw_reduce_actions: FxHashSet<usize> = FxHashSet::default();
         let mut fused_count = 0usize;
         let mut pwdw_total = 0usize;
+        // Residual Adds the `ConvAdd` matcher already claimed, keyed by the Conv
+        // they fused into.
+        //
+        // When the PW reduce this merge absorbs is that Conv, the merge must
+        // take over the whole `ConvAdd` — the Add included — because absorbing
+        // the Conv alone deletes the `ConvAdd` action in the `retain` below and
+        // the Add's own slot is already `Skip`. Reusing what `ConvAdd` resolved,
+        // rather than re-deriving it, is also what keeps the two matchers from
+        // disagreeing about which Add belongs to which Conv.
+        let conv_add_residuals: FxHashMap<usize, FusedPwDwPwReduceResidual> = execution_plan
+            .iter()
+            .filter_map(|a| match a {
+                NodeAction::ConvAdd {
+                    conv_idx,
+                    add_idx,
+                    skip_input_idx,
+                    post_activation,
+                    relu_idx,
+                } => Some((
+                    *conv_idx,
+                    FusedPwDwPwReduceResidual {
+                        add_idx: *add_idx,
+                        residual_skip_input: *skip_input_idx,
+                        post_activation: *post_activation,
+                        relu_idx: *relu_idx,
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
         for action in execution_plan.iter() {
             if let NodeAction::FusedPwDw {
                 pw_idx,
@@ -1391,34 +1421,65 @@ pub(crate) fn build_runtime_index(
                 // Note: don't check plan_skip on Add/Relu — those will be
                 // set because the existing ConvAdd fusion has already
                 // absorbed them. Our pass subsumes that ConvAdd entirely.
-                let residual_meta: Option<FusedPwDwPwReduceResidual> = if pw_out_uses == 1
-                    && let Some(add_node) = nodes.get(pw_reduce_idx + 1)
-                    && node_kinds[pw_reduce_idx + 1] == NodeKind::Add
-                    && add_node.inputs.len() == 2
-                    && (add_node.inputs[0] == *pw_out || add_node.inputs[1] == *pw_out)
-                {
-                    let residual_skip_input: u8 = if add_node.inputs[0] == *pw_out { 1 } else { 0 };
-                    let add_out = &add_node.outputs[0];
-                    let (post_activation, relu_idx) = if let Some(relu_node) =
-                        nodes.get(pw_reduce_idx + 2)
-                        && node_kinds[pw_reduce_idx + 2] == NodeKind::Relu
-                        && relu_node.inputs.len() == 1
-                        && relu_node.inputs[0] == *add_out
-                        && use_counts.get(add_out).copied().unwrap_or(0) == 1
-                    {
-                        (1u8, (pw_reduce_idx + 2) as u32)
-                    } else {
-                        (0u8, 0u32)
+                let residual_meta: Option<FusedPwDwPwReduceResidual> =
+                    match conv_add_residuals.get(&pw_reduce_idx) {
+                        // Already resolved by `ConvAdd`, by dataflow. Take that
+                        // rather than re-deriving it, so the two matchers cannot
+                        // disagree about which Add belongs to this Conv.
+                        Some(r) => Some(*r),
+                        // No `ConvAdd` here — it declines a PW reduce carrying a
+                        // fused activation, which this kernel can still absorb. Find
+                        // the Add the same way `ConvAdd` would have.
+                        None if pw_out_uses == 1 => sole_consumer(pw_out)
+                            .filter(|&add_idx| {
+                                node_kinds[add_idx] == NodeKind::Add
+                                    && nodes[add_idx].inputs.len() == 2
+                                    && (nodes[add_idx].inputs[0] == *pw_out
+                                        || nodes[add_idx].inputs[1] == *pw_out)
+                            })
+                            .map(|add_idx| {
+                                let add_node = &nodes[add_idx];
+                                let add_out = &add_node.outputs[0];
+                                let (post_activation, relu_idx) = match sole_consumer(add_out) {
+                                    Some(ri)
+                                        if node_kinds[ri] == NodeKind::Relu
+                                            && nodes[ri].inputs.len() == 1
+                                            && nodes[ri].inputs[0] == *add_out =>
+                                    {
+                                        (1u8, ri as u32)
+                                    }
+                                    _ => (0u8, 0u32),
+                                };
+                                FusedPwDwPwReduceResidual {
+                                    add_idx,
+                                    residual_skip_input: u8::from(add_node.inputs[0] == *pw_out),
+                                    post_activation,
+                                    relu_idx,
+                                }
+                            }),
+                        None => None,
                     };
-                    Some(FusedPwDwPwReduceResidual {
-                        add_idx: pw_reduce_idx + 1,
-                        residual_skip_input,
-                        post_activation,
-                        relu_idx,
-                    })
-                } else {
-                    None
-                };
+
+                // The merged action runs at the PW expand, which is earlier than
+                // either the PW reduce or the Add. So a residual operand that
+                // was available where `ConvAdd` fused it need not be available
+                // here — `ConvAdd`'s own `available_at` check was made against a
+                // later position and does not carry over.
+                let residual_meta = residual_meta.filter(|r| {
+                    available_at(
+                        &nodes[r.add_idx].inputs[usize::from(r.residual_skip_input)],
+                        *pw_idx,
+                    )
+                });
+
+                // Absorbing the PW reduce deletes any `ConvAdd` built on it, so
+                // failing to also absorb that Add would drop the addition from
+                // the plan entirely — silently, since the Add's own slot is
+                // already `Skip`. Decline the merge instead.
+                if conv_add_residuals.contains_key(&pw_reduce_idx) && residual_meta.is_none() {
+                    new_plan.push(action.clone());
+                    continue;
+                }
                 // Resolve PW reduce weight from initializers.
                 let Some(w_name) = nodes[pw_reduce_idx].inputs.get(1) else {
                     new_plan.push(action.clone());
@@ -1550,6 +1611,14 @@ pub(crate) fn build_runtime_index(
                 let add_absorbed = skip_pw_reduce_actions.contains(add_idx);
                 let relu_absorbed =
                     *post_activation == 1 && skip_pw_reduce_actions.contains(&(*relu_idx as usize));
+                // Dropping this action is only safe because absorbing the Conv
+                // means the merge also took the Add — it declines otherwise.
+                // Were that not so, the addition would vanish from the plan
+                // with nothing reporting it: the Add's own slot is `Skip`.
+                debug_assert!(
+                    !conv_absorbed || add_absorbed,
+                    "FusedPwDwPwReduce absorbed the Conv of a ConvAdd without its Add"
+                );
                 !(conv_absorbed || add_absorbed || relu_absorbed)
             }
             _ => true,
