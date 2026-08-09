@@ -10,6 +10,7 @@ mod integration;
 mod loader;
 mod normalization;
 mod optimizer;
+mod prepack;
 mod qlinear;
 mod reshape;
 mod shape_infer;
