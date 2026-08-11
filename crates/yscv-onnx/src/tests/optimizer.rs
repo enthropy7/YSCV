@@ -1503,10 +1503,10 @@ fn plan_fuses_conv_add_with_the_later_producer_of_a_residual() {
 ///
 /// `channels` picks whether the blocked kernel is eligible at all — it needs
 /// both channel counts to be a multiple of 16.
-// Depends on the loader pre-permuting conv weights: the fusion and
-// handoff gates below match on the permuted shapes. GPU builds keep the
-// ONNX-native OIHW layout, so the plan legitimately comes out different
-// there and the shape this pins is not the one to expect.
+// Depends on the plan prepacking conv weights: the fusion and handoff gates
+// below match on the packed shapes. Accelerator builds skip the depthwise
+// prepack, so the plan legitimately comes out different there and the shape
+// this pins is not the one to expect.
 #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
 fn nchwc_handoff_for_chained_blocks(channels: usize) -> Vec<bool> {
     let c = channels as i64;

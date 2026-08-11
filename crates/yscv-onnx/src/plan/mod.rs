@@ -10,6 +10,11 @@
 //! planning are separate concerns — the loader decodes a model, the plan decides
 //! how to run it — and separating them is what lets the selection logic be
 //! reviewed, tested and replaced a phase at a time.
+//!
+//! The loader now only decodes. Weight layout was the last thing it decided,
+//! and it decided it by overwriting the initializer, which left the model
+//! unable to say what its own weights meant; [`prepack`] keeps the permuted
+//! copies here instead, so passes read ONNX-native OIHW throughout.
 
 mod build;
 mod conv_params;
