@@ -21,7 +21,9 @@ fn hardswish_dispatch_matches_scalar() {
     // Covers the saturating knees (<-3, >3) and the linear middle, and a
     // length that is not a multiple of the SIMD width to exercise the tail.
     for &n in &[1usize, 3, 7, 16, 17, 64, 1000, 1003] {
-        let input: Vec<f32> = (0..n).map(|i| (i as f32 - n as f32 / 2.0) * 0.031).collect();
+        let input: Vec<f32> = (0..n)
+            .map(|i| (i as f32 - n as f32 / 2.0) * 0.031)
+            .collect();
         let mut out = vec![0f32; n];
         super::hardswish_slice_dispatch(&input, &mut out);
         let reference: Vec<f32> = input.iter().map(|&v| hardswish_ref(v)).collect();

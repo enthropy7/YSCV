@@ -11,13 +11,15 @@ use std::arch::aarch64::{
 use std::arch::x86::{
     _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_min_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps,
     _mm_storeu_ps, _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps,
-    _mm256_min_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm256_min_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps,
+    _mm256_sub_ps,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_min_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps,
     _mm_storeu_ps, _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps,
-    _mm256_min_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm256_min_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps,
+    _mm256_sub_ps,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
