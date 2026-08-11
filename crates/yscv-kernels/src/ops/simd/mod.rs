@@ -208,8 +208,9 @@ pub(crate) fn x86_memory_simd_forces_avx2() -> bool {
 // From activation
 pub use activation::{
     bias_add_nhwc_dispatch, bias_relu_nhwc_dispatch, bias_silu_nhwc_dispatch,
-    fused_row_epilogue_dispatch, gelu_sigmoid_slice_dispatch, relu_slice_dispatch,
-    relu_to_slice_dispatch, sigmoid_slice_dispatch, silu_inplace, silu_slice_dispatch,
+    fused_row_epilogue_dispatch, gelu_sigmoid_slice_dispatch, hardswish_slice_dispatch,
+    relu_slice_dispatch, relu_to_slice_dispatch, sigmoid_slice_dispatch, silu_inplace,
+    silu_slice_dispatch,
 };
 #[allow(unused_imports)]
 pub(crate) use activation::{sigmoid_scalar, sigmoid_slice};

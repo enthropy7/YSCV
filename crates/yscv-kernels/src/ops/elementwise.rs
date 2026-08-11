@@ -7,8 +7,9 @@ use super::config::{
 };
 use super::simd::{
     binary_broadcast_lastdim_dispatch, binary_same_shape_dispatch, exp_slice_dispatch,
-    gelu_sigmoid_slice_dispatch, relu_slice_dispatch, relu_to_slice_dispatch,
-    sigmoid_slice_dispatch, silu_slice_dispatch, tanh_slice_dispatch,
+    gelu_sigmoid_slice_dispatch, hardswish_slice_dispatch, mul_scalar_inplace_dispatch,
+    relu_slice_dispatch, relu_to_slice_dispatch, sigmoid_slice_dispatch, silu_slice_dispatch,
+    tanh_slice_dispatch,
 };
 
 // 48K floats gives exp enough rows per task to amortize rayon wake-up while
@@ -153,6 +154,37 @@ pub fn sigmoid_with_config_and_pool(
         );
     } else {
         sigmoid_slice_dispatch(input_data, &mut output);
+    }
+    Tensor::from_raw_parts(input.shape(), input.strides(), output)
+}
+
+/// Elementwise HardSwish activation: `x * clamp(x + 3, 0, 6) / 6` (ONNX HardSwish).
+pub fn hardswish(input: &Tensor) -> Tensor {
+    hardswish_with_config(input, ParallelElementwiseConfig::disabled())
+}
+
+/// Elementwise HardSwish with explicit parallelization heuristics.
+///
+/// # Safety
+/// `AlignedVec::uninitialized` allocates without zeroing. `hardswish_slice_dispatch`
+/// writes every element before anything reads from the buffer.
+#[allow(unsafe_code)]
+pub fn hardswish_with_config(input: &Tensor, config: ParallelElementwiseConfig) -> Tensor {
+    let input_data = input.data();
+    let len = input_data.len();
+    let mut output = AlignedVec::<f32>::uninitialized(len);
+    if should_parallelize_len(len, config.min_parallel_elements, None) {
+        super::super::scope_ctx::par_chunks_mut_dispatch(
+            output.as_mut_slice(),
+            PARALLEL_SLICE_CHUNK_ELEMENTS,
+            |chunk_idx, out_chunk| {
+                let start = chunk_idx * PARALLEL_SLICE_CHUNK_ELEMENTS;
+                let end = start + out_chunk.len();
+                hardswish_slice_dispatch(&input_data[start..end], out_chunk);
+            },
+        );
+    } else {
+        hardswish_slice_dispatch(input_data, &mut output);
     }
     Tensor::from_raw_parts(input.shape(), input.strides(), output)
 }
@@ -452,6 +484,70 @@ pub fn mul_out_with_config(
     binary_out_with_config_and_pool(lhs, rhs, output, config, None, BinaryKind::Mul)
 }
 
+/// Default (C-contiguous, row-major) strides for `shape`.
+fn is_default_contiguous(shape: &[usize], strides: &[usize]) -> bool {
+    if shape.len() != strides.len() {
+        return false;
+    }
+    let mut expected = 1usize;
+    for i in (0..shape.len()).rev() {
+        if shape[i] != 1 && strides[i] != expected {
+            return false;
+        }
+        expected *= shape[i];
+    }
+    true
+}
+
+/// Per-axis broadcast fast path: `rhs` broadcasts over every axis but one (the
+/// NCHW per-channel `[1,C,1,1]` SE-scale — and the NHWC `[1,1,1,C]` case, though
+/// that one is already caught by the last-dim path). `lhs` C-contiguous, so each
+/// channel is a contiguous `inner`-block scaled by one `rhs` element — a single
+/// SIMD scalar-mul per block instead of the strided per-element fallback.
+/// Mul only (the hot case); other kinds fall through. Returns `None` when the
+/// pattern doesn't match, so semantics are unchanged.
+fn binary_broadcast_axis(lhs: &Tensor, rhs: &Tensor, kind: BinaryKind) -> Option<Tensor> {
+    if !matches!(kind, BinaryKind::Mul) {
+        return None;
+    }
+    let ls = lhs.shape();
+    let rs = rhs.shape();
+    if ls.len() != rs.len() || !is_default_contiguous(ls, lhs.strides()) {
+        return None;
+    }
+    // Exactly one rhs axis is non-1, and it matches lhs on that axis.
+    let mut ax = None;
+    for i in 0..ls.len() {
+        if rs[i] == 1 {
+            continue;
+        }
+        if rs[i] != ls[i] || ax.is_some() {
+            return None;
+        }
+        ax = Some(i);
+    }
+    let ax = ax?;
+    let g = ls[ax];
+    let scale = rhs.data();
+    if scale.len() != g {
+        return None;
+    }
+    let inner: usize = ls[ax + 1..].iter().product();
+    let outer: usize = ls[..ax].iter().product();
+    let lhs_d = lhs.data();
+    let mut output = AlignedVec::<f32>::uninitialized(lhs_d.len());
+    let out = output.as_mut_slice();
+    for oi in 0..outer {
+        for (gi, &s) in scale.iter().enumerate() {
+            let base = (oi * g + gi) * inner;
+            let dst = &mut out[base..base + inner];
+            dst.copy_from_slice(&lhs_d[base..base + inner]);
+            mul_scalar_inplace_dispatch(dst, s);
+        }
+    }
+    Some(Tensor::from_raw_parts(lhs.shape(), lhs.strides(), output))
+}
+
 fn binary_with_config_and_pool(
     lhs: &Tensor,
     rhs: &Tensor,
@@ -464,6 +560,9 @@ fn binary_with_config_and_pool(
             binary_broadcast_lastdim_with_config_and_pool(lhs, rhs, config, thread_pool, kind)
         {
             return result;
+        }
+        if let Some(result) = binary_broadcast_axis(lhs, rhs, kind) {
+            return Ok(result);
         }
         return binary_fallback(lhs, rhs, kind);
     }
