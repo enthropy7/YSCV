@@ -1,10 +1,17 @@
 //! Plan construction: classifies each node ([`NodeKind`]), selects fusions
 //! ([`NodeAction`]), resolves convolution parameters and prepacks weights.
 //!
-//! Slot assignment, conv-parameter resolution, layout handoff and kernel
-//! selection have moved into their own modules alongside this one. What remains
-//! here is the fusion scan — subgraph patterns to [`NodeAction`]s — plus weight
-//! prepacking, which is the next thing to lift out.
+//! Slot assignment, conv-parameter resolution, weight prepacking, layout
+//! handoff and kernel selection have moved into their own modules alongside
+//! this one. What remains here is the fusion scan — subgraph patterns to
+//! [`NodeAction`]s — plus the GEMM and INT8 weight packs, which are driven by
+//! the fusions they serve and so have stayed with them.
+//!
+//! A note on reading weights here. `initializers` is ONNX-native OIHW;
+//! `conv_weight` returns the channel-last copy [`prepack`] made. Anything
+//! packing bytes for a kernel, or matching on the shape a kernel will see,
+//! wants the latter — that distinction is what the `Khwc`-shaped comments
+//! below are about.
 //!
 //! Every matcher below works by dataflow: it walks from a value to the node
 //! that reads it, through the `consumers` index built once at the top. None of
