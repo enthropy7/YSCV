@@ -10,6 +10,38 @@ use crate::{
 use super::{assert_slice_close, build_tensor};
 
 #[test]
+fn mul_per_channel_broadcast_matches_reference() {
+    // NCHW SE-scale: [1,C,H,W] * [1,C,1,1] — the axis-broadcast fast path.
+    for &(c, h, w) in &[(3usize, 2usize, 4usize), (16, 8, 8), (17, 5, 3)] {
+        let n = c * h * w;
+        let lhs = Tensor::from_vec(
+            vec![1, c, h, w],
+            (0..n).map(|i| (i as f32 * 0.013 - 1.7).sin()).collect(),
+        )
+        .unwrap();
+        let scale: Vec<f32> = (0..c).map(|k| 0.5 + k as f32 * 0.1).collect();
+        let rhs = Tensor::from_vec(vec![1, c, 1, 1], scale.clone()).unwrap();
+
+        let out = mul(&lhs, &rhs).unwrap();
+        assert_eq!(out.shape(), &[1, c, h, w]);
+        let ld = lhs.data();
+        let od = out.data();
+        for ci in 0..c {
+            for p in 0..(h * w) {
+                let idx = ci * h * w + p;
+                let expect = ld[idx] * scale[ci];
+                assert!(
+                    (od[idx] - expect).abs() <= 1e-6,
+                    "c{ci} p{p}: {} vs {}",
+                    od[idx],
+                    expect
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn relu_clamps_negative_values() {
     let input = Tensor::from_vec(vec![4], vec![-1.0, 0.0, 1.5, -3.5]).unwrap();
     let out = relu(&input);

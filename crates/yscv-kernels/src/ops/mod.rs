@@ -35,9 +35,10 @@ pub use config::{
 };
 pub use elementwise::{
     add_inplace, add_out, add_out_with_config, add_relu_inplace, add_with_config, exp,
-    exp_with_config, gelu, mish, mul_out, mul_out_with_config, mul_with_config, relu, relu_inplace,
-    relu_out, relu_out_with_config, relu_with_config, sigmoid, sigmoid_with_config, silu_inplace,
-    silu_with_config, sub_out, sub_out_with_config, sub_with_config, tanh_act,
+    exp_with_config, gelu, hardswish_with_config, mish, mul_out, mul_out_with_config,
+    mul_with_config, relu, relu_inplace, relu_out, relu_out_with_config, relu_with_config, sigmoid,
+    sigmoid_with_config, silu_inplace, silu_with_config, sub_out, sub_out_with_config,
+    sub_with_config, tanh_act,
     tanh_act_with_config,
 };
 #[cfg(target_arch = "aarch64")]

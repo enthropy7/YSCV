@@ -4,24 +4,25 @@
 
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{
-    vaddq_f32, vdivq_f32, vdupq_n_f32, vld1q_f32, vmaxq_f32, vmulq_f32, vnegq_f32, vst1q_f32,
+    vaddq_f32, vdivq_f32, vdupq_n_f32, vld1q_f32, vmaxq_f32, vminq_f32, vmulq_f32, vnegq_f32,
+    vst1q_f32,
 };
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
-    _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps, _mm_storeu_ps,
-    _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps,
-    _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_min_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps,
+    _mm_storeu_ps, _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps,
+    _mm256_min_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps, _mm_storeu_ps,
-    _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_mul_ps,
-    _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_min_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps,
+    _mm_storeu_ps, _mm_sub_ps, _mm256_add_ps, _mm256_div_ps, _mm256_loadu_ps, _mm256_max_ps,
+    _mm256_min_ps, _mm256_mul_ps, _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    _mm512_add_ps, _mm512_div_ps, _mm512_loadu_ps, _mm512_max_ps, _mm512_mul_ps, _mm512_set1_ps,
-    _mm512_setzero_ps, _mm512_storeu_ps, _mm512_sub_ps,
+    _mm512_add_ps, _mm512_div_ps, _mm512_loadu_ps, _mm512_max_ps, _mm512_min_ps, _mm512_mul_ps,
+    _mm512_set1_ps, _mm512_setzero_ps, _mm512_storeu_ps, _mm512_sub_ps,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -1980,5 +1981,172 @@ unsafe fn silu_slice_avx(input: &[f32], output: &mut [f32]) {
 
     if index < len {
         silu_slice_sse(&input[index..], &mut output[index..]);
+    }
+}
+
+// ===========================================================================
+// HardSwish dispatch + implementations
+//   hardswish(x) = x * clamp(x + 3, 0, 6) / 6      (ONNX HardSwish)
+// Elementwise single pass. The scalar body is bit-identical to the closure the
+// runner used before (`v * ((v + 3.0).clamp(0.0, 6.0) / 6.0)`), so SIMD paths
+// stay within f32 rounding of it.
+// ===========================================================================
+
+/// Elementwise HardSwish into `output`, SIMD-dispatched (NEON / AVX-512 / AVX /
+/// SSE / scalar) by the host ISA.
+#[allow(unsafe_code)]
+#[inline]
+pub fn hardswish_slice_dispatch(input: &[f32], output: &mut [f32]) {
+    debug_assert_eq!(input.len(), output.len());
+
+    if cfg!(miri) {
+        hardswish_slice_scalar(input, output);
+        return;
+    }
+
+    let path = dispatch_path(true, false);
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if path == SimdDispatchPath::Neon {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+            unsafe { hardswish_slice_neon(input, output) };
+            return;
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        #[cfg(target_arch = "x86_64")]
+        if path == SimdDispatchPath::Avx512 {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+            unsafe { hardswish_slice_avx512(input, output) };
+            return;
+        }
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+            unsafe { hardswish_slice_avx(input, output) };
+            return;
+        }
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: guarded by runtime feature detection in `dispatch_path`.
+            unsafe { hardswish_slice_sse(input, output) };
+            return;
+        }
+    }
+
+    hardswish_slice_scalar(input, output);
+}
+
+fn hardswish_slice_scalar(input: &[f32], output: &mut [f32]) {
+    for (o, &v) in output.iter_mut().zip(input.iter()) {
+        *o = v * ((v + 3.0).clamp(0.0, 6.0) / 6.0);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, dead_code)]
+#[allow(unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn hardswish_slice_neon(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let ip = input.as_ptr();
+    let op = output.as_mut_ptr();
+    let three = vdupq_n_f32(3.0);
+    let six = vdupq_n_f32(6.0);
+    let zero = vdupq_n_f32(0.0);
+    let mut i = 0usize;
+    while i + 16 <= len {
+        for k in 0..4 {
+            let off = i + k * 4;
+            let x = vld1q_f32(ip.add(off));
+            let t = vminq_f32(vmaxq_f32(vaddq_f32(x, three), zero), six);
+            vst1q_f32(op.add(off), vmulq_f32(x, vdivq_f32(t, six)));
+        }
+        i += 16;
+    }
+    while i + 4 <= len {
+        let x = vld1q_f32(ip.add(i));
+        let t = vminq_f32(vmaxq_f32(vaddq_f32(x, three), zero), six);
+        vst1q_f32(op.add(i), vmulq_f32(x, vdivq_f32(t, six)));
+        i += 4;
+    }
+    while i < len {
+        let v = *ip.add(i);
+        *op.add(i) = v * ((v + 3.0).clamp(0.0, 6.0) / 6.0);
+        i += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+unsafe fn hardswish_slice_sse(input: &[f32], output: &mut [f32]) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::_mm_div_ps;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::_mm_div_ps;
+
+    let len = input.len();
+    let ip = input.as_ptr();
+    let op = output.as_mut_ptr();
+    let three = _mm_set1_ps(3.0);
+    let six = _mm_set1_ps(6.0);
+    let zero = _mm_setzero_ps();
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let x = _mm_loadu_ps(ip.add(i));
+        let t = _mm_min_ps(_mm_max_ps(_mm_add_ps(x, three), zero), six);
+        _mm_storeu_ps(op.add(i), _mm_mul_ps(x, _mm_div_ps(t, six)));
+        i += 4;
+    }
+    while i < len {
+        let v = *ip.add(i);
+        *op.add(i) = v * ((v + 3.0).clamp(0.0, 6.0) / 6.0);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn hardswish_slice_avx512(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let ip = input.as_ptr();
+    let op = output.as_mut_ptr();
+    let three = _mm512_set1_ps(3.0);
+    let six = _mm512_set1_ps(6.0);
+    let zero = _mm512_setzero_ps();
+    let mut i = 0usize;
+    while i + 16 <= len {
+        let x = _mm512_loadu_ps(ip.add(i));
+        let t = _mm512_min_ps(_mm512_max_ps(_mm512_add_ps(x, three), zero), six);
+        _mm512_storeu_ps(op.add(i), _mm512_mul_ps(x, _mm512_div_ps(t, six)));
+        i += 16;
+    }
+    if i < len {
+        hardswish_slice_avx(&input[i..], &mut output[i..]);
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx")]
+unsafe fn hardswish_slice_avx(input: &[f32], output: &mut [f32]) {
+    let len = input.len();
+    let ip = input.as_ptr();
+    let op = output.as_mut_ptr();
+    let three = _mm256_set1_ps(3.0);
+    let six = _mm256_set1_ps(6.0);
+    let zero = _mm256_setzero_ps();
+    let mut i = 0usize;
+    while i + 8 <= len {
+        let x = _mm256_loadu_ps(ip.add(i));
+        let t = _mm256_min_ps(_mm256_max_ps(_mm256_add_ps(x, three), zero), six);
+        _mm256_storeu_ps(op.add(i), _mm256_mul_ps(x, _mm256_div_ps(t, six)));
+        i += 8;
+    }
+    if i < len {
+        hardswish_slice_sse(&input[i..], &mut output[i..]);
     }
 }

@@ -172,6 +172,16 @@ pub fn gelu(input: &Tensor) -> Tensor {
     ops::gelu(input)
 }
 
+/// Elementwise HardSwish activation: `x * clamp(x + 3, 0, 6) / 6` (ONNX HardSwish).
+pub fn hardswish(input: &Tensor) -> Tensor {
+    ops::hardswish_with_config(input, ParallelElementwiseConfig::default())
+}
+
+/// Elementwise HardSwish with explicit elementwise parallelization heuristics.
+pub fn hardswish_with_config(input: &Tensor, config: ParallelElementwiseConfig) -> Tensor {
+    ops::hardswish_with_config(input, config)
+}
+
 /// Elementwise SiLU (Swish) activation: `x * sigmoid(x)`.
 pub fn silu(input: &Tensor) -> Tensor {
     ops::silu_with_config(input, ParallelElementwiseConfig::default())
