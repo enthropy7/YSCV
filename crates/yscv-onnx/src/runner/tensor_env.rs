@@ -274,6 +274,24 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     /// allocated dynamically (this handles temporary names created by
     /// quantization ops, etc.).
     #[inline]
+    /// Seeds every model weight into its slot, preferring the packed copy.
+    ///
+    /// The accelerator paths pre-populate the environment rather than relying
+    /// on the lazy fallback in [`Self::get`]. Inserting the raw initializer
+    /// would put ONNX-native bytes into a slot that
+    /// [`Self::conv_weight_layout`] describes as channel-last, and the reader
+    /// believes the layout — so the two have to be seeded together.
+    #[cfg(any(feature = "gpu", feature = "metal-backend"))]
+    pub(crate) fn insert_model_weights(&mut self, model: &'m OnnxModel) {
+        for (name, tensor) in &model.initializers {
+            let packed = self
+                .resolve_id(name)
+                .and_then(|id| self.prepacked_conv_weight(id))
+                .cloned();
+            self.insert(name.clone(), packed.unwrap_or_else(|| tensor.clone()));
+        }
+    }
+
     pub(crate) fn insert(&mut self, name: String, tensor: Tensor) {
         crate::quantize::calibrate::record_activation(&name, &tensor);
         if let Some(id) = self.resolve_id(&name) {

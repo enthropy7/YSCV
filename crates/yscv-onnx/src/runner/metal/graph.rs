@@ -143,31 +143,15 @@ pub fn compile_mpsgraph_plan(
         input_placeholders_f32.push((placeholder_f32, shape));
     }
 
-    // Upload initializers as constants.
-    // Conv weights may have been pre-permuted OIHW→KHWC by the loader.
-    // MPSGraph needs OIHW, so we reverse-permute KHWC weights back.
+    // Upload initializers as constants. MPSGraph needs OIHW, which is what
+    // `initializers` holds: the channel-last copies the CPU kernels read are
+    // owned by the plan and never written back (see `plan::prepack`), so there
+    // is no permute to reverse here.
     for (name, tensor) in &model.initializers {
         let shape = tensor.shape();
         let data = tensor.data();
 
-        let (final_data, final_shape) = if model.khwc_weights.contains(name) && shape.len() == 4 {
-            // KHWC [kh, kw, ic, oc] → OIHW [oc, ic, kh, kw]
-            let (kh, kw, ic, oc) = (shape[0], shape[1], shape[2], shape[3]);
-            let mut oihw = vec![0.0f32; data.len()];
-            for o in 0..oc {
-                for i in 0..ic {
-                    for h in 0..kh {
-                        for w in 0..kw {
-                            oihw[((o * ic + i) * kh + h) * kw + w] =
-                                data[((h * kw + w) * ic + i) * oc + o];
-                        }
-                    }
-                }
-            }
-            (oihw, vec![oc, ic, kh, kw])
-        } else {
-            (data.to_vec(), shape.to_vec())
-        };
+        let (final_data, final_shape) = (data.to_vec(), shape.to_vec());
 
         // MPSGraph requires at least rank-1 shapes for constants
         if final_shape.is_empty() {
