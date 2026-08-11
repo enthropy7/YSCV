@@ -15,6 +15,7 @@ mod build;
 mod conv_params;
 mod kernels;
 mod layouts;
+mod prepack;
 mod slots;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -24,6 +25,8 @@ use conv_params::resolve_conv_params;
 use kernels::resolve_conv_kernels;
 pub(crate) use kernels::{ConvShape, select_conv_kernel};
 use layouts::resolve_nchwc_handoff;
+pub(crate) use prepack::ConvWeightLayout;
+use prepack::{PrepackedConvWeights, debug_assert_layouts_match_kernels, prepack_conv_weights};
 use slots::{SlotIndex, assign_slots};
 
 /// Precomputed runtime metadata built once at model load time.
@@ -31,12 +34,12 @@ use slots::{SlotIndex, assign_slots};
 pub(crate) struct RuntimeModelIndex {
     /// Dense slot id per tensor name for TensorEnv hot-path lookups.
     pub(crate) name_to_id: FxHashMap<String, usize>,
-    /// Slot ids for weights pre-permuted OIHW -> KHWC.
-    pub(crate) khwc_weight_ids: FxHashSet<usize>,
-    /// Slot ids for depthwise weights pre-permuted [O,1,KH,KW] -> [KH,KW,C,dm].
-    pub(crate) dw_khwc_weight_ids: FxHashSet<usize>,
-    /// Slot ids for grouped-conv weights pre-permuted [O,I/G,KH,KW] -> [O,KH,KW,I/G].
-    pub(crate) group_khwc_weight_ids: FxHashSet<usize>,
+    /// Conv weights permuted at plan time into the layout their kernel reads,
+    /// by slot id. `model.initializers` keeps the ONNX-native OIHW tensor; this
+    /// is what the runtime hands the kernel. See [`prepack`].
+    pub(crate) prepacked_conv_weights: Vec<Option<yscv_tensor::Tensor>>,
+    /// Which layout each entry above is in, by slot id.
+    pub(crate) conv_weight_layouts: Vec<ConvWeightLayout>,
     /// Number of graph uses per value name (input edge count).
     pub(crate) use_counts: FxHashMap<String, usize>,
     /// Dense use-count table indexed by runtime slot id.

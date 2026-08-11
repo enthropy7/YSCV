@@ -19,9 +19,6 @@ use super::*;
 /// Everything downstream phases address values and nodes by.
 pub(super) struct SlotIndex {
     pub(super) name_to_id: FxHashMap<String, usize>,
-    pub(super) khwc_weight_ids: FxHashSet<usize>,
-    pub(super) dw_khwc_weight_ids: FxHashSet<usize>,
-    pub(super) group_khwc_weight_ids: FxHashSet<usize>,
     pub(super) use_counts: FxHashMap<String, usize>,
     pub(super) use_counts_by_id: Vec<usize>,
     pub(super) node_kinds: Vec<NodeKind>,
@@ -35,9 +32,6 @@ pub(super) fn assign_slots(
     outputs: &[String],
     initializers: &FxHashMap<String, Tensor>,
     nodes: &[OnnxNode],
-    khwc_weights: &FxHashSet<String>,
-    dw_khwc_weights: &FxHashSet<String>,
-    group_khwc_weights: &FxHashSet<String>,
 ) -> SlotIndex {
     let mut names: FxHashSet<&str> = FxHashSet::default();
     for name in inputs {
@@ -61,19 +55,6 @@ pub(super) fn assign_slots(
         .into_iter()
         .enumerate()
         .map(|(id, name)| (name.to_string(), id))
-        .collect();
-
-    let khwc_weight_ids: FxHashSet<usize> = khwc_weights
-        .iter()
-        .filter_map(|name| name_to_id.get(name.as_str()).copied())
-        .collect();
-    let dw_khwc_weight_ids: FxHashSet<usize> = dw_khwc_weights
-        .iter()
-        .filter_map(|name| name_to_id.get(name.as_str()).copied())
-        .collect();
-    let group_khwc_weight_ids: FxHashSet<usize> = group_khwc_weights
-        .iter()
-        .filter_map(|name| name_to_id.get(name.as_str()).copied())
         .collect();
 
     let mut use_counts: FxHashMap<String, usize> = FxHashMap::default();
@@ -188,9 +169,6 @@ pub(super) fn assign_slots(
 
     SlotIndex {
         name_to_id,
-        khwc_weight_ids,
-        dw_khwc_weight_ids,
-        group_khwc_weight_ids,
         use_counts,
         use_counts_by_id,
         node_kinds,

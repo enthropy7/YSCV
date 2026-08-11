@@ -84,7 +84,6 @@ pub fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
 
 #[cfg(test)]
 mod nchwc_stats_tests {
-    use rustc_hash::FxHashSet;
 
     use super::*;
     use crate::loader::OnnxNode;
@@ -109,9 +108,6 @@ mod nchwc_stats_tests {
             outputs: vec![],
             initializers: FxHashMap::default(),
             nodes: vec![],
-            khwc_weights: FxHashSet::default(),
-            dw_khwc_weights: FxHashSet::default(),
-            group_khwc_weights: FxHashSet::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };

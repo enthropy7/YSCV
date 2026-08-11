@@ -34,7 +34,6 @@
 mod lower;
 mod op;
 mod pass;
-mod weight_layout;
 
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
@@ -44,7 +43,6 @@ use crate::loader::OnnxAttribute;
 
 pub(crate) use op::Op;
 pub(crate) use pass::{Changed, Pass, PassManager};
-pub(crate) use weight_layout::WeightLayout;
 
 /// Index of a node in [`Graph::nodes`]. Stable across mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -131,10 +129,6 @@ pub(crate) struct Graph {
     /// Name lookup for values. Kept in sync so lowering and tests can address
     /// values the way the source model does.
     by_name: FxHashMap<String, ValueId>,
-    /// Physical layout of pre-permuted conv weights. Only weights the loader
-    /// permuted appear; everything else is [`WeightLayout::Oihw`]. Temporary —
-    /// see [`weight_layout`].
-    weight_layouts: FxHashMap<ValueId, WeightLayout>,
 }
 
 impl Graph {
@@ -151,7 +145,6 @@ impl Graph {
             inputs: Vec::new(),
             outputs: Vec::new(),
             by_name: FxHashMap::default(),
-            weight_layouts: FxHashMap::default(),
         }
     }
 
@@ -285,16 +278,6 @@ impl Graph {
             disambiguator += 1;
         }
         candidate
-    }
-
-    /// Physical layout of a conv weight, defaulting to ONNX-native OIHW.
-    pub(crate) fn weight_layout(&self, id: ValueId) -> WeightLayout {
-        self.weight_layouts.get(&id).copied().unwrap_or_default()
-    }
-
-    /// Records that the loader pre-permuted this weight.
-    pub(crate) fn set_weight_layout(&mut self, id: ValueId, layout: WeightLayout) {
-        self.weight_layouts.insert(id, layout);
     }
 
     pub(crate) fn set_graph_inputs(&mut self, ids: Vec<ValueId>) {
