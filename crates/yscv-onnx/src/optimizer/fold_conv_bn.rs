@@ -16,9 +16,9 @@ use crate::loader::OnnxAttribute;
 /// b'[c]    = (b[c] - mean[c]) * scale[c] + beta[c]
 /// ```
 ///
-/// The three duplicated layout branches the string version carried — output
-/// channels live on a different axis depending on how the loader pre-permuted
-/// the weight — are now one `WeightLayout` lookup.
+/// Reads the weight as ONNX-native `[O, I/G, KH, KW]`: output channel on axis
+/// 0, so each owns one contiguous block. The three layout branches this used to
+/// carry went away with the loader-side permute (see `plan::prepack`).
 pub(crate) struct FoldConvBatchNorm;
 
 impl Pass for FoldConvBatchNorm {
@@ -91,9 +91,11 @@ fn match_fold(graph: &Graph, conv_id: NodeId) -> Option<Fold> {
         _ => 1e-5,
     };
 
-    let layout = graph.weight_layout(weight);
     let shape = w.shape().to_vec();
-    let out_channels = layout.out_channels(&shape)?;
+    let out_channels = *shape.first()?;
+    if out_channels == 0 || shape.len() < 4 {
+        return None;
+    }
     if gamma.len() < out_channels
         || beta.len() < out_channels
         || mean.len() < out_channels
@@ -107,8 +109,9 @@ fn match_fold(graph: &Graph, conv_id: NodeId) -> Option<Fold> {
         .collect();
 
     let mut w_data = w.data().to_vec();
+    let per_channel = w_data.len() / out_channels;
     for (i, v) in w_data.iter_mut().enumerate() {
-        *v *= scale[layout.channel_of(i, &shape, out_channels)];
+        *v *= scale[i / per_channel];
     }
     let fused_weight = Tensor::from_vec(shape, w_data).ok()?;
 

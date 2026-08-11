@@ -93,11 +93,7 @@ pub fn rewrite_to_qdq(
             && stored.len() > 16
             && !new_initializers.contains_key(&format!("{weight_name}_q"))
         {
-            let weight = if node.op_type == "Conv" {
-                conv_weight_as_oihw(model, weight_name, &stored)?
-            } else {
-                stored
-            };
+            let weight = stored;
             quantize_weight_into(
                 weight_name,
                 &weight,
@@ -452,7 +448,7 @@ fn rewrite_conv_node_to_qlinear(
     let Some(stored_weight) = model.initializers.get(w_name) else {
         return Ok(None);
     };
-    let weight = conv_weight_as_oihw(model, w_name, stored_weight)?;
+    let weight = stored_weight.clone();
     if weight.rank() != 4 || weight.len() <= 16 {
         return Ok(None);
     }
@@ -466,11 +462,11 @@ fn rewrite_conv_node_to_qlinear(
 
     let x_scale = format!("{x_name}__qlinear_x_scale");
     let x_zp = format!("{x_name}__qlinear_x_zp");
-    // QLinear export targets standard ONNX/ORT semantics. The loader may keep
-    // Conv weights in an internal KHWC/DW-KHWC layout for yscv execution, but
-    // `conv_weight_as_oihw` above converts the quantized initializer back to
-    // OIHW. Graph activations therefore stay in the public ONNX NCHW layout;
-    // inserting NHWC<->NCHW transposes here corrupts residual Add shapes.
+    // QLinear export targets standard ONNX/ORT semantics, and the initializer
+    // is already ONNX-native OIHW — the channel-last copies the kernels read
+    // live in the plan, not here. Graph activations likewise stay in the public
+    // ONNX NCHW layout; inserting NHWC<->NCHW transposes here corrupts residual
+    // Add shapes.
     let needs_io_transpose = false;
     let node_key = if node.name.is_empty() {
         y_name
@@ -778,61 +774,6 @@ fn dequantize_initializer(
     })
 }
 
-fn conv_weight_as_oihw(
-    model: &OnnxModel,
-    weight_name: &str,
-    weight: &Tensor,
-) -> Result<Tensor, OnnxError> {
-    if model.khwc_weights.contains(weight_name) && weight.rank() == 4 {
-        return weight
-            .permute(&[3, 2, 0, 1])
-            .map_err(|e| OnnxError::DecodeFailed {
-                message: format!("KHWC->OIHW permute failed for {weight_name}: {e}"),
-            });
-    }
-    if model.group_khwc_weights.contains(weight_name) && weight.rank() == 4 {
-        return weight
-            .permute(&[0, 3, 1, 2])
-            .map_err(|e| OnnxError::DecodeFailed {
-                message: format!("group KHWC->OIHW permute failed for {weight_name}: {e}"),
-            });
-    }
-    if model.dw_khwc_weights.contains(weight_name) && weight.rank() == 4 {
-        return depthwise_khwc_to_oihw(weight, weight_name);
-    }
-    Ok(weight.clone())
-}
-
-fn depthwise_khwc_to_oihw(weight: &Tensor, weight_name: &str) -> Result<Tensor, OnnxError> {
-    let shape = weight.shape();
-    if shape.len() != 4 {
-        return Ok(weight.clone());
-    }
-    let (kh, kw, channels, depth_mult) = (shape[0], shape[1], shape[2], shape[3]);
-    let out_channels = channels
-        .checked_mul(depth_mult)
-        .ok_or_else(|| OnnxError::DecodeFailed {
-            message: format!("depthwise weight channel overflow for {weight_name}"),
-        })?;
-    let mut data = vec![0.0_f32; out_channels * kh * kw];
-    let src = weight.data();
-    for c in 0..channels {
-        for dm in 0..depth_mult {
-            let oc = c * depth_mult + dm;
-            for ki in 0..kh {
-                for kj in 0..kw {
-                    let src_idx = ((ki * kw + kj) * channels + c) * depth_mult + dm;
-                    let dst_idx = (oc * kh + ki) * kw + kj;
-                    data[dst_idx] = src[src_idx];
-                }
-            }
-        }
-    }
-    Tensor::from_vec(vec![out_channels, 1, kh, kw], data).map_err(|e| OnnxError::DecodeFailed {
-        message: format!("depthwise OIHW tensor for {weight_name}: {e}"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,9 +801,6 @@ mod tests {
                 outputs: vec!["y".to_string()],
                 attributes: FxHashMap::default(),
             }],
-            khwc_weights: Default::default(),
-            dw_khwc_weights: Default::default(),
-            group_khwc_weights: Default::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         }
@@ -1006,12 +944,11 @@ mod tests {
     }
 
     #[test]
-    fn qlinear_rewrite_keeps_public_nchw_activations_for_internal_khwc_weight() {
+    fn qlinear_rewrite_keeps_public_nchw_activations() {
         let mut model = build_minimal_model();
-        model.khwc_weights.insert("w".to_string());
         model.initializers.insert(
             "w".to_string(),
-            Tensor::from_vec(vec![1, 1, 16, 2], vec![0.05; 32]).unwrap(),
+            Tensor::from_vec(vec![2, 16, 1, 1], vec![0.05; 32]).unwrap(),
         );
         let mut stats = FxHashMap::default();
         stats.insert(
@@ -1099,12 +1036,11 @@ mod tests {
     }
 
     #[test]
-    fn qdq_rewrite_quantizes_depthwise_khwc_weight_as_oihw() {
+    fn qdq_rewrite_quantizes_a_depthwise_weight_per_output_channel() {
         let mut model = build_minimal_model();
-        model.dw_khwc_weights.insert("w".to_string());
         model.initializers.insert(
             "w".to_string(),
-            Tensor::from_vec(vec![3, 3, 2, 1], (0..18).map(|i| i as f32 - 9.0).collect()).unwrap(),
+            Tensor::from_vec(vec![2, 1, 3, 3], (0..18).map(|i| i as f32 - 9.0).collect()).unwrap(),
         );
         model.nodes[0]
             .attributes

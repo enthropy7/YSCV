@@ -232,6 +232,57 @@ fn a_conv_weight_shared_by_two_branches_computes_the_same() {
     );
 }
 
+/// A Conv that an optimizer pass has renamed still gets its weight packed.
+///
+/// `fuse_conv_relu` rewrites `Conv` to `Conv_Relu`, and the plan is built after
+/// it runs. Selecting weights to pack by the op-type string therefore skips
+/// every fused Conv — on mobilenet-v3-small that was all nine squeeze-excite
+/// `fc1` layers, which quietly fell back to repacking on every inference.
+///
+/// Invisible until the permute moved out of the loader, which ran before any
+/// pass could rename anything. Asserted on the layout rather than on output
+/// values because the fallback is slower, not wrong: nothing about the numbers
+/// says the pack went missing.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
+#[test]
+fn a_conv_renamed_by_fusion_keeps_its_packed_weight() {
+    let bytes = build_minimal_onnx_model(
+        vec![
+            conv("pw", vec!["x", "w"], "h", 1, 1),
+            onnx::NodeProto {
+                op_type: Some("Relu".into()),
+                name: Some("act".into()),
+                input: vec!["h".into()],
+                output: vec!["y".into()],
+                ..Default::default()
+            },
+        ],
+        vec![weight("w", vec![8, 8, 1, 1], 0xFEED)],
+        vec!["x"],
+        vec!["y"],
+    );
+
+    let mut model = load_onnx_model(&bytes).expect("load");
+    optimize_onnx_graph(&mut model).expect("optimize");
+
+    assert!(
+        model.nodes.iter().any(|n| n.op_type == "Conv_Relu"),
+        "fixture must reach the rename, or it is not testing anything; got {:?}",
+        model.nodes.iter().map(|n| &n.op_type).collect::<Vec<_>>()
+    );
+
+    let id = model.runtime_index.name_to_id["w"];
+    assert_eq!(
+        model.runtime_index.conv_weight_layouts[id],
+        crate::plan::ConvWeightLayout::Khwc,
+        "`w` is read by a fused pointwise Conv and must still be packed KHWC"
+    );
+    assert!(
+        model.runtime_index.prepacked_weights.contains_key("w"),
+        "and must still have its load-time packed B"
+    );
+}
+
 /// A Conv whose kernel arrives at run time computes the same as one whose
 /// kernel is baked in.
 ///

@@ -108,83 +108,76 @@ fn export_to_file_roundtrip() {
     assert_eq!(model.node_count(), 1);
 }
 
+/// Loading and exporting a model returns its Conv weights unchanged, byte for
+/// byte.
+///
+/// The export used to have to undo three internal permutations, because
+/// `load_onnx_model` rewrote the initializers in place. Now the permuted copies
+/// belong to the plan and the initializers stay as ONNX wrote them, so this is
+/// a pass-through — and a round trip is the direct way to say so. It fails the
+/// moment anything starts writing packed bytes back into `initializers`, which
+/// is what made the export need an inverse in the first place.
 #[test]
-fn onnx_model_export_unpermutes_internal_conv_layouts() {
-    let mut initializers = FxHashMap::default();
-    // Regular Conv internal KHWC [KH, KW, IC, OC] -> ONNX OIHW [OC, IC, KH, KW].
-    initializers.insert(
-        "regular".to_string(),
-        Tensor::from_vec(vec![2, 3, 4, 5], (0..120).map(|v| v as f32).collect()).unwrap(),
-    );
-    // Depthwise internal [KH, KW, C, dm] -> ONNX [C*dm, 1, KH, KW].
-    initializers.insert(
-        "dw".to_string(),
-        Tensor::from_vec(vec![3, 3, 7, 1], (0..63).map(|v| v as f32).collect()).unwrap(),
-    );
-    // Grouped internal [O, KH, KW, I/G] -> ONNX [O, I/G, KH, KW].
-    initializers.insert(
-        "group".to_string(),
-        Tensor::from_vec(vec![6, 3, 3, 2], (0..108).map(|v| v as f32).collect()).unwrap(),
-    );
-
-    let mut model = OnnxModel {
-        ir_version: 7,
-        opset_version: 13,
-        producer_name: "test".to_string(),
-        graph_name: "g".to_string(),
-        inputs: vec!["x".to_string()],
-        outputs: vec!["y".to_string()],
-        initializers,
-        nodes: vec![OnnxNode {
-            op_type: "Conv".to_string(),
-            name: "conv".to_string(),
-            inputs: vec!["x".to_string(), "regular".to_string()],
-            outputs: vec!["y".to_string()],
-            attributes: FxHashMap::default(),
-        }],
-        khwc_weights: Default::default(),
-        dw_khwc_weights: Default::default(),
-        group_khwc_weights: Default::default(),
-        packed_int4_weights: Default::default(),
-        runtime_index: Default::default(),
+fn onnx_model_export_round_trips_conv_weights_unchanged() {
+    let conv = |name: &str, weight: &str, group: i64| onnx::NodeProto {
+        op_type: Some("Conv".into()),
+        name: Some(name.into()),
+        input: vec!["x".into(), weight.into()],
+        output: vec![format!("{name}_out")],
+        attribute: vec![
+            make_ints_attr("kernel_shape", vec![3, 3]),
+            make_int_attr("group", group),
+        ],
+        ..Default::default()
     };
-    model.khwc_weights.insert("regular".to_string());
-    model.dw_khwc_weights.insert("dw".to_string());
-    model.group_khwc_weights.insert("group".to_string());
+    let init = |name: &str, dims: Vec<i64>| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: dims.clone(),
+        data_type: Some(1),
+        float_data: (0..dims.iter().product::<i64>())
+            .map(|v| v as f32)
+            .collect(),
+        ..Default::default()
+    };
+    // One weight per layout the plan packs into: group-1, depthwise, grouped.
+    let bytes = build_minimal_onnx_model(
+        vec![
+            conv("plain", "w_plain", 1),
+            conv("dw", "w_dw", 8),
+            conv("grouped", "w_group", 2),
+        ],
+        vec![
+            init("w_plain", vec![8, 4, 3, 3]),
+            init("w_dw", vec![8, 1, 3, 3]),
+            init("w_group", vec![8, 4, 3, 3]),
+        ],
+        vec!["x"],
+        vec!["plain_out"],
+    );
 
+    let model = load_onnx_model(&bytes).expect("load");
     let graph = crate::exporter::onnx_model_to_export_graph(&model);
-    let regular = graph
-        .initializers
-        .iter()
-        .find(|(name, _)| name == "regular")
-        .unwrap()
-        .1
-        .clone();
-    let dw = graph
-        .initializers
-        .iter()
-        .find(|(name, _)| name == "dw")
-        .unwrap()
-        .1
-        .clone();
-    let group = graph
-        .initializers
-        .iter()
-        .find(|(name, _)| name == "group")
-        .unwrap()
-        .1
-        .clone();
 
-    assert_eq!(regular.shape(), &[5, 4, 2, 3]);
-    assert_eq!(dw.shape(), &[7, 1, 3, 3]);
-    assert_eq!(group.shape(), &[6, 2, 3, 3]);
-
-    let dw_src = model.initializers["dw"].data();
-    let dw_exported = dw.data();
-    // c=2, dm=0, kh=1, kw=2 maps to oc=2 in OIHW.
-    let src_idx = ((3 + 2) * 7) + 2;
-    let dst_idx = (2 * 3 + 1) * 3 + 2;
-    assert_eq!(dw_exported[dst_idx], dw_src[src_idx]);
+    for name in ["w_plain", "w_dw", "w_group"] {
+        let exported = graph
+            .initializers
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("`{name}` missing from the export"))
+            .1
+            .clone();
+        let expected: Vec<f32> = (0..exported.data().len()).map(|v| v as f32).collect();
+        assert_eq!(
+            exported.shape(),
+            &[8, if name == "w_dw" { 1 } else { 4 }, 3, 3],
+            "`{name}` changed shape across the round trip"
+        );
+        assert_eq!(
+            exported.data(),
+            expected.as_slice(),
+            "`{name}` changed values across the round trip"
+        );
+    }
 }
 
 #[test]
@@ -213,9 +206,6 @@ fn export_graph_defuses_relu_annotations_and_loads_int8_initializers() {
             outputs: vec!["y".to_string()],
             attributes: FxHashMap::default(),
         }],
-        khwc_weights: Default::default(),
-        dw_khwc_weights: Default::default(),
-        group_khwc_weights: Default::default(),
         packed_int4_weights: Default::default(),
         runtime_index: Default::default(),
     };

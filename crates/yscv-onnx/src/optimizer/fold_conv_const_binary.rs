@@ -119,9 +119,11 @@ impl FoldConvConstBinary {
             return None;
         }
 
-        let layout = graph.weight_layout(weight);
         let shape = w.shape().to_vec();
-        let out_channels = layout.out_channels(&shape)?;
+        let out_channels = *shape.first()?;
+        if out_channels == 0 || shape.len() < 4 {
+            return None;
+        }
         let k = broadcast_to_channels(graph, constant_value, out_channels)?;
 
         let bias = conv.inputs.get(2).copied().flatten();
@@ -140,8 +142,9 @@ impl FoldConvConstBinary {
 
         let (fused_weight, fused_bias_data) = if self.scales_weight() {
             let mut w_data = w.data().to_vec();
+            let per_channel = w_data.len() / out_channels;
             for (i, v) in w_data.iter_mut().enumerate() {
-                *v *= k[layout.channel_of(i, &shape, out_channels)];
+                *v *= k[i / per_channel];
             }
             let bias = (0..out_channels).map(|c| old_bias[c] * k[c]).collect();
             (Some(Tensor::from_vec(shape, w_data).ok()?), bias)

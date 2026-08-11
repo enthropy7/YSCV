@@ -5,12 +5,11 @@
 //! inferences. Resolving them here keeps attribute-map lookups out of the
 //! per-inference Conv dispatch.
 //!
-//! Note the weight-shape reading has to account for the loader having
-//! pre-permuted conv weights into one of four layouts — the same leak the IR's
-//! `WeightLayout` works around, and which this stage is eventually meant to fix
-//! by moving the permute into `prepack_weights`.
+//! Weight shapes are read as ONNX wrote them. Prepacking happens after this
+//! phase and keeps its permuted copies to itself ([`super::prepack`]), so there
+//! is one layout to interpret here rather than four.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
 use crate::attr::Attr;
@@ -22,9 +21,6 @@ pub(super) fn resolve_conv_params(
     nodes: &[OnnxNode],
     node_kinds: &[NodeKind],
     initializers: &FxHashMap<String, Tensor>,
-    khwc_weights: &FxHashSet<String>,
-    dw_khwc_weights: &FxHashSet<String>,
-    group_khwc_weights: &FxHashSet<String>,
 ) -> Vec<Option<ConvParams>> {
     // Pre-parse Conv attributes to avoid FxHashMap lookups in hot path.
     nodes
@@ -76,47 +72,15 @@ pub(super) fn resolve_conv_params(
                 pads.get(2).copied().unwrap_or(0) as usize,
                 pads.get(3).copied().unwrap_or(0) as usize,
             );
-            // Determine depthwise/pointwise from weight shape. Weights
-            // may already be permuted to KHWC `[KH, KW, I, O]` by the
-            // load-time normalization above (`khwc_weights` pass) for
-            // group==1 Conv. Check both layouts and infer which applies.
-            //
-            // Must dispatch by layout: KHWC-permuted weights are [KH, KW, I, O]
-            // (shape[2]=I, shape[3]=O), not OIHW. Reading shape[2]/shape[3] as
-            // kernel dims on a KHWC 1×1 weight misclassifies it as non-pointwise
-            // and the Conv_Add fast path never fires.
+            // Depthwise/pointwise follow from the weight's shape, read as
+            // ONNX-native `[O, I/G, KH, KW]`.
             let weight_name = node.inputs.get(1).map(|s| s.as_str()).unwrap_or("");
             let weight_shape = initializers
                 .get(weight_name)
                 .map(|t| t.shape().to_vec())
                 .unwrap_or_default();
-            let weight_is_khwc = khwc_weights.contains(weight_name);
-            let weight_is_dw_khwc = dw_khwc_weights.contains(weight_name);
-            let weight_is_group_khwc = group_khwc_weights.contains(weight_name);
-            // the loader permutes three KHWC
-            // variants. DW-permuted `[KH, KW, C, dm]` and grouped
-            // `[O, KH, KW, I/G]` previously fell through to the OIHW
-            // branch and produced garbage, wrongly setting
-            // `is_depthwise = false` for every tracker DW conv. That
-            // blocked `FusedDwPw` detection. With the pure-compute
-            // `conv_compute_nhwc` split the fused path now keeps the
-            // DW intermediate as a local `Tensor` (no env traffic),
-            // so enabling this detection no longer regresses tracker.
             let (o_ch, kh_w, kw_w) = if weight_shape.len() == 4 {
-                if weight_is_dw_khwc {
-                    // Depthwise KHWC: `[KH, KW, C, depth_multiplier]`.
-                    let dm = weight_shape[3];
-                    (weight_shape[2] * dm, weight_shape[0], weight_shape[1])
-                } else if weight_is_group_khwc {
-                    // Grouped KHWC: `[O, KH, KW, I/G]`.
-                    (weight_shape[0], weight_shape[1], weight_shape[2])
-                } else if weight_is_khwc {
-                    // Regular KHWC: `[KH, KW, I, O]`.
-                    (weight_shape[3], weight_shape[0], weight_shape[1])
-                } else {
-                    // Plain OIHW: `[O, I, KH, KW]`.
-                    (weight_shape[0], weight_shape[2], weight_shape[3])
-                }
+                (weight_shape[0], weight_shape[2], weight_shape[3])
             } else {
                 (0, 0, 0)
             };

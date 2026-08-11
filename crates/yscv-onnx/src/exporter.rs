@@ -240,15 +240,13 @@ pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExpor
         }
     }
 
+    // Straight through: initializers are ONNX-native OIHW. Weights the kernels
+    // want channel-last are permuted into copies the plan keeps to itself, so
+    // there is no load-time layout for the exporter to undo.
     let initializers: Vec<(String, Tensor)> = model
         .initializers
         .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_owned(),
-                initializer_for_onnx_export(model, k, v),
-            )
-        })
+        .map(|(k, v)| (k.as_str().to_owned(), v.clone()))
         .collect();
 
     // OnnxModel only carries names for graph I/O; emit empty shapes which
@@ -311,58 +309,6 @@ fn infer_int64_tensor_names(nodes: &[crate::loader::OnnxNode]) -> FxHashSet<Stri
         }
     }
     names
-}
-
-fn initializer_for_onnx_export(
-    model: &crate::loader::OnnxModel,
-    name: &str,
-    tensor: &Tensor,
-) -> Tensor {
-    if model.khwc_weights.contains(name)
-        && tensor.rank() == 4
-        && let Ok(t) = tensor.permute(&[3, 2, 0, 1])
-    {
-        return t;
-    }
-
-    if model.group_khwc_weights.contains(name)
-        && tensor.rank() == 4
-        && let Ok(t) = tensor.permute(&[0, 3, 1, 2])
-    {
-        return t;
-    }
-
-    if model.dw_khwc_weights.contains(name)
-        && let Some(t) = depthwise_khwc_to_oihw(tensor)
-    {
-        return t;
-    }
-
-    tensor.clone()
-}
-
-fn depthwise_khwc_to_oihw(tensor: &Tensor) -> Option<Tensor> {
-    let shape = tensor.shape();
-    if shape.len() != 4 {
-        return None;
-    }
-    let (kh, kw, channels, depth_mult) = (shape[0], shape[1], shape[2], shape[3]);
-    let out_channels = channels.checked_mul(depth_mult)?;
-    let mut data = vec![0.0_f32; out_channels * kh * kw];
-    let src = tensor.data();
-    for c in 0..channels {
-        for dm in 0..depth_mult {
-            let oc = c * depth_mult + dm;
-            for ki in 0..kh {
-                for kj in 0..kw {
-                    let src_idx = ((ki * kw + kj) * channels + c) * depth_mult + dm;
-                    let dst_idx = (oc * kh + ki) * kw + kj;
-                    data[dst_idx] = src[src_idx];
-                }
-            }
-        }
-    }
-    Tensor::from_vec(vec![out_channels, 1, kh, kw], data).ok()
 }
 
 /// Save an [`crate::loader::OnnxModel`] back to an ONNX file. Convenience

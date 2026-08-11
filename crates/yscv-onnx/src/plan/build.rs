@@ -23,39 +23,25 @@ pub(crate) fn build_runtime_index(
     outputs: &[String],
     initializers: &FxHashMap<String, Tensor>,
     nodes: &[OnnxNode],
-    khwc_weights: &FxHashSet<String>,
-    dw_khwc_weights: &FxHashSet<String>,
-    group_khwc_weights: &FxHashSet<String>,
 ) -> RuntimeModelIndex {
     let SlotIndex {
         name_to_id,
-        khwc_weight_ids,
-        dw_khwc_weight_ids,
-        group_khwc_weight_ids,
         use_counts,
         use_counts_by_id,
         node_kinds,
         node_branches,
         node_input_ids,
         node_output_ids,
-    } = assign_slots(
-        inputs,
-        outputs,
-        initializers,
-        nodes,
-        khwc_weights,
-        dw_khwc_weights,
-        group_khwc_weights,
-    );
+    } = assign_slots(inputs, outputs, initializers, nodes);
 
-    let conv_params = resolve_conv_params(
-        nodes,
-        &node_kinds,
-        initializers,
-        khwc_weights,
-        dw_khwc_weights,
-        group_khwc_weights,
-    );
+    let prepacked_conv = prepack_conv_weights(nodes, &node_kinds, initializers, &name_to_id);
+    // The layout a Conv weight is in, and the tensor a kernel will be handed.
+    // `initializers` stays ONNX-native, so anything reading a weight the way the
+    // kernel will has to come through here rather than going straight to it.
+    let conv_weight = |name: &str| prepacked_conv.weight_for(name, &name_to_id, initializers);
+    let conv_layout = |name: &str| prepacked_conv.layout_of(name, &name_to_id);
+
+    let conv_params = resolve_conv_params(nodes, &node_kinds, initializers);
 
     /// Returns `true` when the Transpose node's `perm` attribute swaps
     /// only the last two axes of a rank-3 tensor (i.e. `[0, 2, 1]`).
@@ -1071,13 +1057,15 @@ pub(crate) fn build_runtime_index(
         let Some(w_name) = node.inputs.get(1) else {
             continue;
         };
-        if !initializers.contains_key(w_name) || !khwc_weights.contains(w_name) {
+        if conv_layout(w_name) != ConvWeightLayout::Khwc {
             continue;
         }
         if prepacked_weights.contains_key(w_name) {
             continue;
         }
-        let Some(weight) = initializers.get(w_name) else {
+        // The permuted copy, not the initializer: this packs the bytes the
+        // GEMM will read, and the initializer is still ONNX-native OIHW.
+        let Some(weight) = conv_weight(w_name) else {
             continue;
         };
         // KHWC pointwise weight shape: [KH=1, KW=1, IC, OC]. k = IC, n = OC.
@@ -1313,10 +1301,10 @@ pub(crate) fn build_runtime_index(
         if prepacked_weights.contains_key(w_name) {
             continue;
         }
-        if !khwc_weights.contains(w_name) {
+        if conv_layout(w_name) != ConvWeightLayout::Khwc {
             continue;
         }
-        let Some(weight) = initializers.get(w_name) else {
+        let Some(weight) = conv_weight(w_name) else {
             continue;
         };
         let shape = weight.shape();
@@ -1416,7 +1404,7 @@ pub(crate) fn build_runtime_index(
                 let dw_shape = nodes[*dw_idx]
                     .inputs
                     .get(1)
-                    .and_then(|n| initializers.get(n))
+                    .and_then(|n| conv_weight(n))
                     .map(|t| t.shape().to_vec());
                 // c_exp lives in s[2] for KHWC depthwise [kH, kW, c_exp, 1].
                 // 5×5 gated at c_exp ≤ 256: wider c_exp uses the existing
@@ -1530,7 +1518,7 @@ pub(crate) fn build_runtime_index(
                     new_plan.push(action.clone());
                     continue;
                 };
-                let Some(weight) = initializers.get(w_name) else {
+                let Some(weight) = conv_weight(w_name) else {
                     new_plan.push(action.clone());
                     continue;
                 };
@@ -1545,7 +1533,7 @@ pub(crate) fn build_runtime_index(
                 // DW's c_exp must match PW reduce c_in.
                 let dw_weight_name = nodes[*dw_idx].inputs.get(1);
                 let dw_c_exp = dw_weight_name
-                    .and_then(|n| initializers.get(n))
+                    .and_then(|n| conv_weight(n))
                     .map(|t| {
                         let s = t.shape();
                         // KHWC depthwise weight: [kH, kW, c_exp, 1].
@@ -1679,22 +1667,22 @@ pub(crate) fn build_runtime_index(
 
     // Last, because it reads the plan after the `FusedPwDwPwReduce` merge has
     // rewritten and dropped actions.
-    let nchwc_handoff = resolve_nchwc_handoff(&execution_plan, nodes, initializers);
-    let conv_kernels = resolve_conv_kernels(
-        nodes,
-        &conv_params,
-        initializers,
-        khwc_weights,
-        dw_khwc_weights,
-        group_khwc_weights,
-        &prepacked_weights,
-    );
+    let nchwc_handoff = resolve_nchwc_handoff(&execution_plan, nodes, |name| {
+        conv_weight(name).map(|t| t.shape().to_vec())
+    });
+    let conv_kernels = resolve_conv_kernels(nodes, &conv_params, initializers, &prepacked_weights);
+
+    debug_assert_layouts_match_kernels(nodes, &conv_kernels, conv_layout);
+
+    let PrepackedConvWeights {
+        tensors: prepacked_conv_weights,
+        layouts: conv_weight_layouts,
+    } = prepacked_conv;
 
     RuntimeModelIndex {
         name_to_id,
-        khwc_weight_ids,
-        dw_khwc_weight_ids,
-        group_khwc_weight_ids,
+        prepacked_conv_weights,
+        conv_weight_layouts,
         use_counts,
         use_counts_by_id,
         node_kinds,

@@ -47,12 +47,6 @@ pub struct OnnxModel {
     pub outputs: Vec<String>,
     pub initializers: FxHashMap<String, Tensor>,
     pub nodes: Vec<OnnxNode>,
-    /// Conv weight names that were pre-permuted OIHW → KHWC at load time.
-    pub(crate) khwc_weights: FxHashSet<String>,
-    /// Depthwise conv weight names pre-permuted [O,1,KH,KW] → [KH,KW,C,dm] at load time.
-    pub(crate) dw_khwc_weights: FxHashSet<String>,
-    /// Grouped conv weight names pre-permuted [O,I/G,KH,KW] → [O,KH,KW,I/G] at load time.
-    pub(crate) group_khwc_weights: FxHashSet<String>,
     /// MatMul/Gemm weights packed to INT4 with per-group fp32 scales for
     /// the LLM decode hot path. Keyed by the original initializer name;
     /// the original `initializers` entry is removed when a weight is
@@ -75,15 +69,8 @@ impl OnnxModel {
 
     /// Rebuilds runtime slot/id metadata after graph mutations.
     pub(crate) fn rebuild_runtime_index(&mut self) {
-        self.runtime_index = build_runtime_index(
-            &self.inputs,
-            &self.outputs,
-            &self.initializers,
-            &self.nodes,
-            &self.khwc_weights,
-            &self.dw_khwc_weights,
-            &self.group_khwc_weights,
-        );
+        self.runtime_index =
+            build_runtime_index(&self.inputs, &self.outputs, &self.initializers, &self.nodes);
         // Execution now has no non-plan fallback: the runner walks the plan and
         // nothing else. A plan shorter than the node list would silently skip
         // the trailing nodes, so hold the one-action-per-node invariant here,
@@ -179,174 +166,7 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
     }
     let nodes = folded_nodes;
 
-    // Pre-permute group=1 Conv weights OIHW → KHWC at load time
-    // so we don't pay the ~11ms permutation cost on every inference call.
-    let mut khwc_weights = FxHashSet::default();
-    for node in &nodes {
-        if node.op_type != "Conv" || node.inputs.len() < 2 {
-            continue;
-        }
-        let weight_name = &node.inputs[1];
-        if khwc_weights.contains(weight_name) {
-            continue;
-        }
-        // Only pre-permute group=1 conv weights
-        let group = node
-            .attributes
-            .get(&Attr::Group)
-            .and_then(|a| match a {
-                OnnxAttribute::Int(v) => Some(*v),
-                _ => None,
-            })
-            .unwrap_or(1);
-        if group != 1 {
-            continue;
-        }
-        if let Some(w) = initializers.get(weight_name)
-            && w.rank() == 4
-            && let Ok(permuted) = w.permute(&[2, 3, 1, 0])
-        {
-            initializers.insert(weight_name.clone(), permuted);
-            khwc_weights.insert(weight_name.clone());
-        }
-    }
-
-    // Pre-pack depthwise dm=1 weights to [KH, KW, C, 1] on CPU-only builds.
-    // This removes per-inference OIHW→depthwise repack work in the hot path.
-    //
-    // Skipped on Metal and wgpu GPU builds: those backends' CPU fallback +
-    // accelerator dispatch paths read weights in the original ONNX OIHW
-    // layout. Keeping the export layout there means the same loader can
-    // feed both CPU and accelerator runners; the accelerator handles its
-    // own pre-permute internally if any.
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    let mut dw_khwc_weights = FxHashSet::default();
-    #[cfg(any(feature = "metal-backend", feature = "gpu"))]
-    let dw_khwc_weights = FxHashSet::default();
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    for node in &nodes {
-        if node.op_type != "Conv" || node.inputs.len() < 2 {
-            continue;
-        }
-        let weight_name = &node.inputs[1];
-        if dw_khwc_weights.contains(weight_name) {
-            continue;
-        }
-        let group = node
-            .attributes
-            .get(&Attr::Group)
-            .and_then(|a| match a {
-                OnnxAttribute::Int(v) => Some(*v as usize),
-                _ => None,
-            })
-            .unwrap_or(1);
-        if group <= 1 {
-            continue;
-        }
-
-        if let Some(w) = initializers.get(weight_name)
-            && w.rank() == 4
-        {
-            let ws = w.shape();
-            let (o_ch, i_per_g, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
-            // CPU depthwise fast path currently handles dm=1 only.
-            if i_per_g != 1 || o_ch != group {
-                continue;
-            }
-
-            let w_data = w.data();
-            let mut packed = vec![0.0f32; kh * kw * group];
-            for oc in 0..o_ch {
-                for ki in 0..kh {
-                    for kj in 0..kw {
-                        let src = ((oc * i_per_g) * kh + ki) * kw + kj;
-                        let dst = (ki * kw + kj) * group + oc;
-                        packed[dst] = w_data[src];
-                    }
-                }
-            }
-
-            let packed_t = Tensor::from_vec(vec![kh, kw, group, 1], packed).map_err(|e| {
-                OnnxError::DecodeFailed {
-                    message: e.to_string(),
-                }
-            })?;
-            initializers.insert(weight_name.clone(), packed_t);
-            dw_khwc_weights.insert(weight_name.clone());
-        }
-    }
-
-    // Pre-pack grouped conv weights [O, I/G, KH, KW] -> [O, KH, KW, I/G] on
-    // CPU-only builds. This removes per-inference OIHW reordering in grouped
-    // fallback path.
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    let mut group_khwc_weights = FxHashSet::default();
-    #[cfg(any(feature = "metal-backend", feature = "gpu"))]
-    let group_khwc_weights = FxHashSet::default();
-    #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
-    for node in &nodes {
-        if node.op_type != "Conv" || node.inputs.len() < 2 {
-            continue;
-        }
-        let weight_name = &node.inputs[1];
-        if group_khwc_weights.contains(weight_name) || dw_khwc_weights.contains(weight_name) {
-            continue;
-        }
-        let group = node
-            .attributes
-            .get(&Attr::Group)
-            .and_then(|a| match a {
-                OnnxAttribute::Int(v) => Some(*v as usize),
-                _ => None,
-            })
-            .unwrap_or(1);
-        if group <= 1 {
-            continue;
-        }
-
-        if let Some(w) = initializers.get(weight_name)
-            && w.rank() == 4
-        {
-            let ws = w.shape();
-            let (o_ch, i_per_g, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
-            // Depthwise dm=1 is handled by the dedicated prepack path above.
-            if i_per_g == 1 && o_ch == group {
-                continue;
-            }
-
-            let w_data = w.data();
-            let mut packed = vec![0.0f32; o_ch * kh * kw * i_per_g];
-            for oc in 0..o_ch {
-                for ki in 0..kh {
-                    for kj in 0..kw {
-                        for ci in 0..i_per_g {
-                            let src = ((oc * i_per_g + ci) * kh + ki) * kw + kj;
-                            let dst = ((oc * kh + ki) * kw + kj) * i_per_g + ci;
-                            packed[dst] = w_data[src];
-                        }
-                    }
-                }
-            }
-
-            let packed_t = Tensor::from_vec(vec![o_ch, kh, kw, i_per_g], packed).map_err(|e| {
-                OnnxError::DecodeFailed {
-                    message: e.to_string(),
-                }
-            })?;
-            initializers.insert(weight_name.clone(), packed_t);
-            group_khwc_weights.insert(weight_name.clone());
-        }
-    }
-
-    let runtime_index = build_runtime_index(
-        &inputs,
-        &outputs,
-        &initializers,
-        &nodes,
-        &khwc_weights,
-        &dw_khwc_weights,
-        &group_khwc_weights,
-    );
+    let runtime_index = build_runtime_index(&inputs, &outputs, &initializers, &nodes);
 
     Ok(OnnxModel {
         ir_version: model_proto.ir_version.unwrap_or(0),
@@ -357,9 +177,6 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         outputs,
         initializers,
         nodes,
-        khwc_weights,
-        dw_khwc_weights,
-        group_khwc_weights,
         packed_int4_weights: FxHashMap::default(),
         runtime_index,
     })

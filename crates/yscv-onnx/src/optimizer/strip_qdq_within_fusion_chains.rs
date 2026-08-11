@@ -112,7 +112,6 @@ pub(super) fn run(model: &mut OnnxModel) -> usize {
 
 #[cfg(test)]
 mod strip_qdq_tests {
-    use rustc_hash::FxHashSet;
 
     use super::*;
 
@@ -136,9 +135,6 @@ mod strip_qdq_tests {
             outputs: vec!["y".into()],
             initializers: FxHashMap::default(),
             nodes,
-            khwc_weights: FxHashSet::default(),
-            dw_khwc_weights: FxHashSet::default(),
-            group_khwc_weights: FxHashSet::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         }
