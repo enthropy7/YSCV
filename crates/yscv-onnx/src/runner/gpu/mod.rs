@@ -431,9 +431,7 @@ pub fn run_onnx_model_gpu_cached(
     // Start with cached weights + fresh gc for activations
     let mut gc: GpuCache = std::mem::take(&mut weight_cache.0);
 
-    for (name, tensor) in &model.initializers {
-        env.insert(name.clone(), tensor.clone());
-    }
+    env.insert_model_weights(model);
     for (name, tensor) in inputs {
         env.insert(name, tensor);
     }
@@ -703,9 +701,7 @@ pub fn compile_gpu_plan(
     let mut env = TensorEnv::from_model(model);
     let mut gc: GpuCache = std::mem::take(&mut weight_cache.0);
 
-    for (name, tensor) in &model.initializers {
-        env.insert(name.clone(), tensor.clone());
-    }
+    env.insert_model_weights(model);
     env.insert(input_name.to_string(), input_tensor.clone());
 
     let nodes = &model.nodes;
@@ -1269,9 +1265,7 @@ pub fn profile_onnx_model_gpu(
     let mut gc: GpuCache = std::mem::take(&mut wc.0);
     let mut stats: FxHashMap<String, (f64, usize)> = FxHashMap::default();
 
-    for (name, tensor) in &model.initializers {
-        env.insert(name.clone(), tensor.clone());
-    }
+    env.insert_model_weights(model);
     for (name, tensor) in inputs {
         env.insert(name, tensor);
     }
