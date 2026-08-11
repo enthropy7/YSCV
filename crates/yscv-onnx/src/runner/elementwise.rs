@@ -122,6 +122,13 @@ pub(super) fn exec_tanh(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
     Ok(())
 }
 
+pub(super) fn exec_hardswish(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
+    let input = get_tensor(env, &node.name, &node.inputs[0])?;
+    let out = yscv_kernels::hardswish(input);
+    env.insert(node.outputs[0].clone(), out);
+    Ok(())
+}
+
 pub(super) fn exec_floor(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let a = get_tensor(env, &node.name, &node.inputs[0])?;
     let out = a.floor();

@@ -291,7 +291,7 @@ fn execute_node_inner_slow(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), O
         "LRN" => exec_lrn(node, env),
         "Softplus" => exec_unary(node, env, |v| (1.0 + v.exp()).ln()),
         "Softsign" => exec_unary(node, env, |v| v / (1.0 + v.abs())),
-        "HardSwish" => exec_unary(node, env, |v| v * ((v + 3.0).clamp(0.0, 6.0) / 6.0)),
+        "HardSwish" => exec_hardswish(node, env),
         "Mish" => exec_unary(node, env, |v| v * (1.0 + v.exp()).ln().tanh()),
         "NonMaxSuppression" => exec_nms(node, env),
         "GroupQueryAttention" => exec_grouped_query_attention(node, env),
