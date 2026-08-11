@@ -158,12 +158,8 @@ pub fn sigmoid_with_config_and_pool(
     Tensor::from_raw_parts(input.shape(), input.strides(), output)
 }
 
-/// Elementwise HardSwish activation: `x * clamp(x + 3, 0, 6) / 6` (ONNX HardSwish).
-pub fn hardswish(input: &Tensor) -> Tensor {
-    hardswish_with_config(input, ParallelElementwiseConfig::disabled())
-}
-
-/// Elementwise HardSwish with explicit parallelization heuristics.
+/// Elementwise HardSwish activation: `x * clamp(x + 3, 0, 6) / 6` (ONNX HardSwish),
+/// with explicit parallelization heuristics.
 ///
 /// # Safety
 /// `AlignedVec::uninitialized` allocates without zeroing. `hardswish_slice_dispatch`
