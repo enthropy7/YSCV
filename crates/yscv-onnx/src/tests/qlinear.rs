@@ -436,6 +436,200 @@ fn check_qlinear_depthwise_with_bias(
     }
 }
 
+/// Independent-reference check for QLinearConv with per-channel weight scales
+/// and/or asymmetric activations (x_zp != 0). The fast-vs-slow tests share the
+/// per-op code, so they cannot catch a per-channel composite or zero-point bug;
+/// this recomputes the convolution from the integer codes with the per-channel
+/// composite `x_scale * w_scale[o] / y_scale` and exact zero-point semantics
+/// `(x_code - x_zp) * w_code`, then compares against yscv and asserts which
+/// runtime path handled it.
+#[allow(clippy::too_many_arguments)]
+fn check_qlinear_conv_ref(
+    c_in: usize,
+    c_out: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    pad: usize,
+    dilation: usize,
+    group: usize,
+    x_zp_code: i32,
+    per_channel: bool,
+    expect_fallback: bool,
+) {
+    let c_per_g = c_in / group;
+    let out_per_g = c_out / group;
+    let out_h = (h + 2 * pad - (dilation * (kh - 1) + 1)) / stride + 1;
+    let out_w = (w + 2 * pad - (dilation * (kw - 1) + 1)) / stride + 1;
+
+    let x_int: Vec<i32> = (0..(c_in * h * w))
+        .map(|v| ((v as i32 * 7) % 31) - 15)
+        .collect();
+    let w_int: Vec<i32> = (0..(c_out * c_per_g * kh * kw))
+        .map(|v| ((v as i32 * 11) % 23) - 11)
+        .collect();
+    let bias_int: Vec<i32> = (0..c_out).map(|v| ((v as i32 * 5) % 13) - 6).collect();
+
+    let x_data: Vec<f32> = x_int.iter().map(|&v| v as f32).collect();
+    let w_data: Vec<f32> = w_int.iter().map(|&v| v as f32).collect();
+    let b_data: Vec<f32> = bias_int.iter().map(|&v| v as f32).collect();
+
+    let x_scale = 0.05_f32;
+    let y_scale = 0.35_f32;
+    // Distinct per-channel weight scales so a scalar `w_scale[0]` bug
+    // misprojects every channel past the first.
+    let w_scales: Vec<f32> = (0..c_out).map(|o| 0.02 + 0.013 * (o as f32)).collect();
+    let w_scale_scalar = 0.06_f32;
+    let composite_at = |o: usize| -> f32 {
+        x_scale
+            * if per_channel {
+                w_scales[o]
+            } else {
+                w_scale_scalar
+            }
+            / y_scale
+    };
+    let w_scale_init = if per_channel {
+        vec_init("w_s", vec![c_out as i64], w_scales.clone())
+    } else {
+        scalar_init("w_s", w_scale_scalar)
+    };
+
+    let mut attrs = vec![
+        make_ints_attr("kernel_shape", vec![kh as i64, kw as i64]),
+        make_ints_attr("strides", vec![stride as i64, stride as i64]),
+        make_ints_attr("pads", vec![pad as i64, pad as i64, pad as i64, pad as i64]),
+        make_int_attr("group", group as i64),
+    ];
+    if dilation != 1 {
+        attrs.push(make_ints_attr(
+            "dilations",
+            vec![dilation as i64, dilation as i64],
+        ));
+    }
+    let node = onnx::NodeProto {
+        op_type: Some("QLinearConv".into()),
+        name: Some("qc".into()),
+        input: vec![
+            "x".into(),
+            "x_s".into(),
+            "x_zp".into(),
+            "w".into(),
+            "w_s".into(),
+            "w_zp".into(),
+            "y_s".into(),
+            "y_zp".into(),
+            "b".into(),
+        ],
+        output: vec!["y".into()],
+        attribute: attrs,
+        ..Default::default()
+    };
+    let bytes = build_minimal_onnx_model(
+        vec![node],
+        vec![
+            vec_init("x", vec![1, c_in as i64, h as i64, w as i64], x_data),
+            scalar_init("x_s", x_scale),
+            scalar_init("x_zp", x_zp_code as f32),
+            vec_init(
+                "w",
+                vec![c_out as i64, c_per_g as i64, kh as i64, kw as i64],
+                w_data,
+            ),
+            w_scale_init,
+            scalar_init("w_zp", 0.0),
+            scalar_init("y_s", y_scale),
+            scalar_init("y_zp", 0.0),
+            vec_init("b", vec![c_out as i64], b_data),
+        ],
+        vec!["x", "x_s", "x_zp", "w", "w_s", "w_zp", "y_s", "y_zp", "b"],
+        vec!["y"],
+    );
+    let model = load_onnx_model(&bytes).unwrap();
+    crate::runner::reset_quant_runtime_stats();
+    let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
+    let stats = crate::runner::quant_runtime_stats();
+    if expect_fallback {
+        assert_eq!(
+            stats.qlinear_conv_fallback, 1,
+            "expected dequantize fallback path"
+        );
+        assert_eq!(stats.qlinear_conv_fast, 0);
+    } else {
+        assert_eq!(
+            stats.qlinear_conv_fast, 1,
+            "expected integer fast path (fallback={})",
+            stats.qlinear_conv_fallback
+        );
+        assert_eq!(stats.qlinear_conv_fallback, 0);
+    }
+    let out = result["y"].data();
+
+    let mut expected = vec![0.0_f32; c_out * out_h * out_w];
+    for o in 0..c_out {
+        let g = o / out_per_g;
+        let c_base = g * c_per_g;
+        for oh in 0..out_h {
+            for ow in 0..out_w {
+                let mut acc = bias_int[o];
+                for ci in 0..c_per_g {
+                    let src_c = c_base + ci;
+                    for ky in 0..kh {
+                        for kx in 0..kw {
+                            let ih = (oh * stride) as i64 + (ky * dilation) as i64 - pad as i64;
+                            let iw = (ow * stride) as i64 + (kx * dilation) as i64 - pad as i64;
+                            if ih < 0 || ih >= h as i64 || iw < 0 || iw >= w as i64 {
+                                continue;
+                            }
+                            let xv = x_int[(src_c * h + ih as usize) * w + iw as usize];
+                            let wv = w_int[((o * c_per_g + ci) * kh + ky) * kw + kx];
+                            acc += (xv - x_zp_code) * wv;
+                        }
+                    }
+                }
+                expected[(o * out_h + oh) * out_w + ow] = ((acc as f32) * composite_at(o))
+                    .round()
+                    .clamp(-128.0, 127.0);
+            }
+        }
+    }
+    assert_eq!(result["y"].shape(), &[1, c_out, out_h, out_w]);
+    for (i, (g, e)) in out.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (g - e).abs() <= 1e-4,
+            "idx={i} got {g} expected {e} \
+             (c_in={c_in} c_out={c_out} kh={kh} stride={stride} group={group} \
+             x_zp={x_zp_code} per_channel={per_channel})"
+        );
+    }
+}
+
+/// Per-channel weight scales and asymmetric activations across every INT8
+/// QLinearConv runtime path. Weights are symmetric (w_zp = 0), which is what
+/// ORT emits; activation zero-points range over the asymmetric default.
+#[test]
+fn qlinear_conv_per_channel_and_asymmetric_paths() {
+    let _guard = lock_shared_state();
+    // Path 1, 1×1 pointwise, group 1, no padding — the bulk of a MobileNet.
+    check_qlinear_conv_ref(4, 6, 5, 5, 1, 1, 1, 0, 1, 1, 0, true, false); // symmetric per-channel
+    check_qlinear_conv_ref(4, 6, 5, 5, 1, 1, 1, 0, 1, 1, 7, true, false); // asymmetric per-channel
+    check_qlinear_conv_ref(4, 6, 5, 5, 1, 1, 1, 0, 1, 1, -9, false, false); // asymmetric per-tensor
+    // Path 1, prepacked GEMM branch (c_out multiple of 16), asymmetric.
+    check_qlinear_conv_ref(8, 16, 4, 4, 1, 1, 1, 0, 1, 1, 5, true, false);
+    // Path 1, 3×3 group 1 with padding — exercises the im2col x_zp fill and
+    // the Σw correction under padding.
+    check_qlinear_conv_ref(3, 8, 6, 6, 3, 3, 1, 1, 1, 1, 5, true, false);
+    check_qlinear_conv_ref(3, 8, 7, 7, 3, 3, 2, 1, 1, 1, -6, true, false); // stride 2
+    // Path 3, symmetric depthwise, per-channel (SIMD kernel + per-channel
+    // requantize).
+    check_qlinear_conv_ref(6, 6, 6, 6, 3, 3, 1, 1, 1, 6, 0, true, false);
+    // Path 4, asymmetric depthwise falls to the per-element integer path.
+    check_qlinear_conv_ref(6, 6, 6, 6, 3, 3, 1, 1, 1, 6, 4, true, false);
+    check_qlinear_conv_ref(6, 6, 9, 9, 5, 5, 2, 2, 1, 6, 3, true, false); // 5×5 stride 2
+}
+
 /// MatMulInteger symmetric fast path: rank-2, both zero-points 0,
 /// output is raw int32 dot. Validates the kernel + i32→f32 cast.
 #[test]
@@ -874,6 +1068,33 @@ fn quantized_pw_dw_chain_bitwise_matches_unfused() {
     run_quantized_pw_dw_case(
         4, 16, 12, 12, 5, 1, true, false, 0.03, 0.05, 0.09, 0.06, 0.18,
     );
+}
+
+/// Regression for the `QuantizedPwDw` prepack-gate desync: the loader fuses
+/// the chain whenever the PW is 1×1/group-1 and the DW geometry is supported,
+/// but the PW RHS was only force-prepacked for the *other* hard-requiring
+/// chains (`QuantizedDwPw`, the PW `QuantizedForkPair`, `QuantizedConvDq`) —
+/// never for `QuantizedPwDw` itself. So any expansion width that misses the
+/// default `c_out % 16 == 0` prepack gate (24/72/88/120 are the common
+/// MobileNetV3 expansions) fused but then panicked at dispatch with "PW weight
+/// not prepacked (loader gate broken)". These `c_exp` values all miss the gate;
+/// the fused path must now run and stay bit-for-bit identical to the unfused
+/// per-op path.
+#[test]
+fn quantized_pw_dw_chain_non_multiple_of_16_c_exp() {
+    let _env_guard = lock_shared_state();
+    // c_exp = 24: classic MobileNetV3 bottleneck width, misses `% 16`.
+    run_quantized_pw_dw_case(4, 24, 8, 8, 3, 1, true, false, 0.04, 0.06, 0.10, 0.05, 0.20);
+    // c_exp = 24, stride 2, no Relu.
+    run_quantized_pw_dw_case(
+        4, 24, 8, 8, 3, 2, false, false, 0.05, 0.07, 0.12, 0.04, 0.22,
+    );
+    // c_exp = 12: a narrow width below 16, 5×5 kernel.
+    run_quantized_pw_dw_case(
+        4, 12, 12, 12, 5, 1, true, false, 0.03, 0.05, 0.09, 0.06, 0.18,
+    );
+    // Same missed-gate width, fused across interleaved unrelated nodes.
+    run_quantized_pw_dw_case(4, 24, 8, 8, 3, 1, true, true, 0.04, 0.06, 0.10, 0.05, 0.20);
 }
 
 /// The quantized chains walked their links positionally — DQ at `i + 1`, then

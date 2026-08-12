@@ -9,28 +9,21 @@
 //! let mut a = acc[i];
 //! if let Some(b) = bias { a += b[ch]; }
 //! let v = (a as f32) * composite + y_zp;
-//! let mut q = v.round().clamp(-128.0, 127.0) as i8;
+//! let mut q = v.round_ties_even().clamp(-128.0, 127.0) as i8;
 //! if relu && q < 0 { q = 0; }
 //! ```
 //!
 //! The SIMD variants in this module match the scalar form bit-for-bit:
 //!
-//! * `f32::round()` is round-half-away-from-zero (LLVM `llvm.round.f32`).
-//!   We replicate it by extracting the sign, taking the absolute value,
-//!   adding `0.5 - ULP(0.5)/2` (= `0.49999997`, the closest f32 below
-//!   0.5), flooring, then OR-ing the sign back in.
-//!
-//!   The textbook `floor(abs(v) + 0.5)` trick has a precision pitfall: at
-//!   `v = 0.49999997` (one ULP below 0.5), the f32 sum `v + 0.5` rounds
-//!   up to exactly 1.0 due to round-to-nearest-even on the sub-ULP gap,
-//!   giving `floor = 1` even though `v.round()` is 0. Biasing by
-//!   `0.5 - ULP(0.5)` shifts the f32 rounding boundary just enough that
-//!   sub-half values stay below 1.0 after the add (so they floor to 0)
-//!   while exact ties at `±0.5, ±1.5, ±2.5, …` still round through to
-//!   the next integer in f32 (so they floor to ±N+1). This matches
-//!   `f32::round()` byte-for-byte across the whole `[-128, 127]` range
-//!   we care about (verified by the `matches_scalar_realistic_chain_inputs_stress`
-//!   parity test).
+//! * Rounding is round-half-to-even (IEEE default), matching the ONNX
+//!   QuantizeLinear spec and ONNX Runtime. Each arch has a native
+//!   nearest-even instruction — `_mm512_roundscale_ps` /
+//!   `_mm256_round_ps` with `_MM_FROUND_TO_NEAREST_INT`, and NEON's
+//!   `vrndnq_f32` — so the value goes straight through without the
+//!   sign/abs/bias emulation the old round-half-away path needed. The
+//!   scalar reference uses `f32::round_ties_even()`; SIMD and scalar
+//!   agree byte-for-byte across `[-128, 127]` (verified by the
+//!   `matches_scalar_realistic_chain_inputs_stress` parity test).
 //! * Relu is folded as `max(v, 0)` BEFORE the round-clamp-cvt sequence.
 //!   The scalar reference clamps the final i8 to `>= 0`, but for any input
 //!   `v` the two formulations produce the same final i8: when scalar
@@ -144,11 +137,6 @@ pub fn requant_i32_row_to_i8_dispatch(
     requant_scalar(acc, bias, composite, y_zp, relu, out, c);
 }
 
-/// `0.5 - ULP/2` at the magnitude of 0.5. Equal to `f32::from_bits(0x3EFFFFFF)`.
-/// Used as the bias for the `floor(abs + bias)` round-half-away-from-zero
-/// emulation; see the module-level docstring for the full derivation.
-const ROUND_BIAS_HALF: f32 = 0.499_999_97_f32;
-
 /// Scalar reference. Bitwise oracle for the SIMD paths; also the actual
 /// path on hosts without AVX2/AVX-512/NEON.
 #[inline]
@@ -171,7 +159,7 @@ pub(crate) fn requant_scalar(
                 a = a.wrapping_add(b[ch]);
             }
             let v = (a as f32) * composite + y_zp;
-            let mut q = v.round().clamp(-128.0, 127.0) as i8;
+            let mut q = v.round_ties_even().clamp(-128.0, 127.0) as i8;
             if relu && q < 0 {
                 q = 0;
             }
@@ -202,11 +190,8 @@ unsafe fn requant_avx512(
         let comp = _mm512_set1_ps(composite);
         let zp = _mm512_set1_ps(y_zp);
         let zero = _mm512_setzero_ps();
-        let half = _mm512_set1_ps(ROUND_BIAS_HALF);
         let lo = _mm512_set1_ps(-128.0);
         let hi = _mm512_set1_ps(127.0);
-        let sign_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MIN));
-        let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MAX));
 
         let pixels = acc.len() / c;
         let lane = 16;
@@ -223,12 +208,9 @@ unsafe fn requant_avx512(
                 }
                 let af = _mm512_cvtepi32_ps(ai);
                 let v = _mm512_add_ps(_mm512_mul_ps(af, comp), zp);
-                let sign = _mm512_and_ps(v, sign_mask);
-                let abs = _mm512_and_ps(v, abs_mask);
-                let rounded_abs = _mm512_roundscale_ps::<
-                    { _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC },
-                >(_mm512_add_ps(abs, half));
-                let rounded = _mm512_or_ps(rounded_abs, sign);
+                // Round half to even (IEEE default) to match ONNX / ORT.
+                let rounded =
+                    _mm512_roundscale_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(v);
                 let mut clamped = _mm512_min_ps(_mm512_max_ps(rounded, lo), hi);
                 if relu {
                     clamped = _mm512_max_ps(clamped, zero);
@@ -245,7 +227,7 @@ unsafe fn requant_avx512(
                     a = a.wrapping_add(b[ch]);
                 }
                 let v = (a as f32) * composite + y_zp;
-                let mut q = v.round().clamp(-128.0, 127.0) as i8;
+                let mut q = v.round_ties_even().clamp(-128.0, 127.0) as i8;
                 if relu && q < 0 {
                     q = 0;
                 }
@@ -278,11 +260,8 @@ unsafe fn requant_avx2(
         let comp = _mm256_set1_ps(composite);
         let zp = _mm256_set1_ps(y_zp);
         let zero = _mm256_setzero_ps();
-        let half = _mm256_set1_ps(ROUND_BIAS_HALF);
         let lo = _mm256_set1_ps(-128.0);
         let hi = _mm256_set1_ps(127.0);
-        let sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MIN));
-        let abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MAX));
 
         let pixels = acc.len() / c;
         let lane = 8;
@@ -299,10 +278,9 @@ unsafe fn requant_avx2(
                 }
                 let af = _mm256_cvtepi32_ps(ai);
                 let v = _mm256_add_ps(_mm256_mul_ps(af, comp), zp);
-                let sign = _mm256_and_ps(v, sign_mask);
-                let abs = _mm256_and_ps(v, abs_mask);
-                let rounded_abs = _mm256_floor_ps(_mm256_add_ps(abs, half));
-                let rounded = _mm256_or_ps(rounded_abs, sign);
+                // Round half to even (IEEE default) to match ONNX / ORT.
+                let rounded =
+                    _mm256_round_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(v);
                 let mut clamped = _mm256_min_ps(_mm256_max_ps(rounded, lo), hi);
                 if relu {
                     clamped = _mm256_max_ps(clamped, zero);
@@ -321,7 +299,7 @@ unsafe fn requant_avx2(
                     a = a.wrapping_add(b[ch]);
                 }
                 let v = (a as f32) * composite + y_zp;
-                let mut q = v.round().clamp(-128.0, 127.0) as i8;
+                let mut q = v.round_ties_even().clamp(-128.0, 127.0) as i8;
                 if relu && q < 0 {
                     q = 0;
                 }
@@ -354,11 +332,8 @@ unsafe fn requant_neon(
         let comp = vdupq_n_f32(composite);
         let zp = vdupq_n_f32(y_zp);
         let zero = vdupq_n_f32(0.0);
-        let half = vdupq_n_f32(ROUND_BIAS_HALF);
         let lo = vdupq_n_f32(-128.0);
         let hi = vdupq_n_f32(127.0);
-        let sign_mask = vreinterpretq_f32_u32(vdupq_n_u32(0x8000_0000));
-        let abs_mask = vreinterpretq_f32_u32(vdupq_n_u32(0x7FFF_FFFF));
 
         let pixels = acc.len() / c;
         let lane = 4;
@@ -375,24 +350,9 @@ unsafe fn requant_neon(
                 }
                 let af = vcvtq_f32_s32(ai);
                 let v = vaddq_f32(vmulq_f32(af, comp), zp);
-                let sign = vreinterpretq_f32_u32(vandq_u32(
-                    vreinterpretq_u32_f32(v),
-                    vreinterpretq_u32_f32(sign_mask),
-                ));
-                let abs = vreinterpretq_f32_u32(vandq_u32(
-                    vreinterpretq_u32_f32(v),
-                    vreinterpretq_u32_f32(abs_mask),
-                ));
-                // floor(abs + 0.5) — use vrndmq_f32 (round toward -inf,
-                // i.e. floor). NEON v8.2-A gives us this directly; the
-                // base v8 NEON `target_feature = "neon"` already covers
-                // it on aarch64 since the rounding instructions are part
-                // of the mandatory ARMv8 FP set.
-                let rounded_abs = vrndmq_f32(vaddq_f32(abs, half));
-                let rounded = vreinterpretq_f32_u32(vorrq_u32(
-                    vreinterpretq_u32_f32(rounded_abs),
-                    vreinterpretq_u32_f32(sign),
-                ));
+                // Round half to even (IEEE default, `vrndnq_f32`) to match the
+                // ONNX QuantizeLinear spec and ORT.
+                let rounded = vrndnq_f32(v);
                 let mut clamped = vminq_f32(vmaxq_f32(rounded, lo), hi);
                 if relu {
                     clamped = vmaxq_f32(clamped, zero);
@@ -413,7 +373,7 @@ unsafe fn requant_neon(
                     a = a.wrapping_add(b[ch]);
                 }
                 let v = (a as f32) * composite + y_zp;
-                let mut q = v.round().clamp(-128.0, 127.0) as i8;
+                let mut q = v.round_ties_even().clamp(-128.0, 127.0) as i8;
                 if relu && q < 0 {
                     q = 0;
                 }
@@ -518,17 +478,15 @@ mod tests {
     }
 
     #[test]
-    fn matches_scalar_round_half_away_from_zero() {
+    fn matches_scalar_round_half_to_even() {
         // Composite + y_zp tuned so each acc value lands on a half-integer.
-        // composite = 0.5, y_zp = 0  →  v = a * 0.5
-        // acc = 1 → v = 0.5  → round = 1 (away from zero)
-        // acc = -1 → v = -0.5 → round = -1 (away from zero)
-        // acc = 3 → v = 1.5  → round = 2
-        // acc = -3 → v = -1.5 → round = -2
+        // composite = 0.5, y_zp = 0  →  v = a * 0.5, so every value is an
+        // exact tie and rounds to the nearest even integer (ONNX / ORT):
+        // 0.5→0, -0.5→0, 1.5→2, -1.5→-2, 2.5→2, -2.5→-2, 3.5→4, -3.5→-4.
         let c = 8;
         let acc: Vec<i32> = vec![1, -1, 3, -3, 5, -5, 7, -7];
         let got = run_oracle(&acc, None, 0.5, 0.0, false, c);
-        assert_eq!(got, vec![1_i8, -1, 2, -2, 3, -3, 4, -4]);
+        assert_eq!(got, vec![0_i8, 0, 2, -2, 2, -2, 4, -4]);
     }
 
     #[test]

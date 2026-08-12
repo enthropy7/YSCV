@@ -84,9 +84,9 @@ pub fn quantize_f32_to_int4(data: &[f32], scale: f32, zero_point: i8, output: &m
     data.chunks(2)
         .zip(output.iter_mut())
         .for_each(|(pair, out)| {
-            let q0 = ((pair[0] * inv_scale).round() as i32 + zp).clamp(-8, 7);
+            let q0 = ((pair[0] * inv_scale).round_ties_even() as i32 + zp).clamp(-8, 7);
             let q1 = if pair.len() > 1 {
-                ((pair[1] * inv_scale).round() as i32 + zp).clamp(-8, 7)
+                ((pair[1] * inv_scale).round_ties_even() as i32 + zp).clamp(-8, 7)
             } else {
                 0
             };
@@ -231,7 +231,9 @@ pub fn quantize_linear_f32_to_f32_i8_scalar(
 ) {
     debug_assert_eq!(data.len(), output.len());
     for (out, &v) in output.iter_mut().zip(data) {
-        *out = (v / scale + zero_point).round().clamp(-128.0, 127.0);
+        *out = (v / scale + zero_point)
+            .round_ties_even()
+            .clamp(-128.0, 127.0);
     }
 }
 
@@ -245,7 +247,9 @@ pub fn quantize_linear_f32_to_i8_scalar(
 ) {
     debug_assert_eq!(data.len(), output.len());
     for (out, &v) in output.iter_mut().zip(data) {
-        *out = (v / scale + zero_point).round().clamp(-128.0, 127.0) as i8;
+        *out = (v / scale + zero_point)
+            .round_ties_even()
+            .clamp(-128.0, 127.0) as i8;
     }
 }
 
@@ -263,11 +267,8 @@ unsafe fn quantize_linear_f32_to_f32_i8_avx512(
     unsafe {
         let scale_v = _mm512_set1_ps(scale);
         let zp = _mm512_set1_ps(zero_point);
-        let half = _mm512_set1_ps(0.5);
         let lo = _mm512_set1_ps(-128.0);
         let hi = _mm512_set1_ps(127.0);
-        let sign_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MIN));
-        let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MAX));
 
         let chunks = data.len() / 16;
         for i in 0..chunks {
@@ -276,12 +277,10 @@ unsafe fn quantize_linear_f32_to_f32_i8_avx512(
                 _mm512_div_ps(_mm512_loadu_ps(data.as_ptr().add(off)), scale_v),
                 zp,
             );
-            let sign = _mm512_and_ps(x, sign_mask);
-            let abs = _mm512_and_ps(x, abs_mask);
-            let rounded_abs = _mm512_roundscale_ps::<{ _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC }>(
-                _mm512_add_ps(abs, half),
-            );
-            let rounded = _mm512_or_ps(rounded_abs, sign);
+            // Round half to even (IEEE default) to match the ONNX
+            // QuantizeLinear spec and ORT.
+            let rounded =
+                _mm512_roundscale_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(x);
             let clamped = _mm512_min_ps(_mm512_max_ps(rounded, lo), hi);
             _mm512_storeu_ps(output.as_mut_ptr().add(off), clamped);
         }
@@ -309,11 +308,8 @@ unsafe fn quantize_linear_f32_to_i8_avx512(
     unsafe {
         let scale_v = _mm512_set1_ps(scale);
         let zp = _mm512_set1_ps(zero_point);
-        let half = _mm512_set1_ps(0.5);
         let lo = _mm512_set1_ps(-128.0);
         let hi = _mm512_set1_ps(127.0);
-        let sign_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MIN));
-        let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(i32::MAX));
         let chunks = data.len() / 16;
         for i in 0..chunks {
             let off = i * 16;
@@ -321,12 +317,10 @@ unsafe fn quantize_linear_f32_to_i8_avx512(
                 _mm512_div_ps(_mm512_loadu_ps(data.as_ptr().add(off)), scale_v),
                 zp,
             );
-            let sign = _mm512_and_ps(x, sign_mask);
-            let abs = _mm512_and_ps(x, abs_mask);
-            let rounded_abs = _mm512_roundscale_ps::<{ _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC }>(
-                _mm512_add_ps(abs, half),
-            );
-            let rounded = _mm512_or_ps(rounded_abs, sign);
+            // Round half to even (IEEE default) to match the ONNX
+            // QuantizeLinear spec and ORT.
+            let rounded =
+                _mm512_roundscale_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(x);
             let clamped = _mm512_min_ps(_mm512_max_ps(rounded, lo), hi);
             let i32s = _mm512_cvtps_epi32(clamped);
             let i8s = _mm512_cvtsepi32_epi8(i32s);
@@ -356,11 +350,8 @@ unsafe fn quantize_linear_f32_to_f32_i8_avx2(
     unsafe {
         let scale_v = _mm256_set1_ps(scale);
         let zp = _mm256_set1_ps(zero_point);
-        let half = _mm256_set1_ps(0.5);
         let lo = _mm256_set1_ps(-128.0);
         let hi = _mm256_set1_ps(127.0);
-        let sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MIN));
-        let abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MAX));
 
         let chunks = data.len() / 8;
         for i in 0..chunks {
@@ -369,10 +360,8 @@ unsafe fn quantize_linear_f32_to_f32_i8_avx2(
                 _mm256_div_ps(_mm256_loadu_ps(data.as_ptr().add(off)), scale_v),
                 zp,
             );
-            let sign = _mm256_and_ps(x, sign_mask);
-            let abs = _mm256_and_ps(x, abs_mask);
-            let rounded_abs = _mm256_floor_ps(_mm256_add_ps(abs, half));
-            let rounded = _mm256_or_ps(rounded_abs, sign);
+            // Round half to even (IEEE default) to match ONNX / ORT.
+            let rounded = _mm256_round_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(x);
             let clamped = _mm256_min_ps(_mm256_max_ps(rounded, lo), hi);
             _mm256_storeu_ps(output.as_mut_ptr().add(off), clamped);
         }
@@ -400,11 +389,8 @@ unsafe fn quantize_linear_f32_to_i8_avx2(
     unsafe {
         let scale_v = _mm256_set1_ps(scale);
         let zp = _mm256_set1_ps(zero_point);
-        let half = _mm256_set1_ps(0.5);
         let lo = _mm256_set1_ps(-128.0);
         let hi = _mm256_set1_ps(127.0);
-        let sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MIN));
-        let abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MAX));
         let chunks = data.len() / 8;
         for i in 0..chunks {
             let off = i * 8;
@@ -412,10 +398,8 @@ unsafe fn quantize_linear_f32_to_i8_avx2(
                 _mm256_div_ps(_mm256_loadu_ps(data.as_ptr().add(off)), scale_v),
                 zp,
             );
-            let sign = _mm256_and_ps(x, sign_mask);
-            let abs = _mm256_and_ps(x, abs_mask);
-            let rounded_abs = _mm256_floor_ps(_mm256_add_ps(abs, half));
-            let rounded = _mm256_or_ps(rounded_abs, sign);
+            // Round half to even (IEEE default) to match ONNX / ORT.
+            let rounded = _mm256_round_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(x);
             let clamped = _mm256_min_ps(_mm256_max_ps(rounded, lo), hi);
             let i32s = _mm256_cvtps_epi32(clamped);
             let lo128 = _mm256_castsi256_si128(i32s);
@@ -448,8 +432,6 @@ unsafe fn quantize_linear_f32_to_f32_i8_neon(
     unsafe {
         let scale_v = vdupq_n_f32(scale);
         let zp = vdupq_n_f32(zero_point);
-        let half = vdupq_n_f32(0.5);
-        let zero = vdupq_n_f32(0.0);
         let lo = vdupq_n_f32(-128.0);
         let hi = vdupq_n_f32(127.0);
 
@@ -457,8 +439,8 @@ unsafe fn quantize_linear_f32_to_f32_i8_neon(
         for i in 0..chunks {
             let off = i * 4;
             let x = vaddq_f32(vdivq_f32(vld1q_f32(data.as_ptr().add(off)), scale_v), zp);
-            let rounded_abs = vrndmq_f32(vaddq_f32(vabsq_f32(x), half));
-            let rounded = vbslq_f32(vcltq_f32(x, zero), vnegq_f32(rounded_abs), rounded_abs);
+            // Round half to even (IEEE default) to match ONNX / ORT.
+            let rounded = vrndnq_f32(x);
             let clamped = vminq_f32(vmaxq_f32(rounded, lo), hi);
             vst1q_f32(output.as_mut_ptr().add(off), clamped);
         }
@@ -486,8 +468,6 @@ unsafe fn quantize_linear_f32_to_i8_neon(
     unsafe {
         let scale_v = vdupq_n_f32(scale);
         let zp = vdupq_n_f32(zero_point);
-        let half = vdupq_n_f32(0.5);
-        let zero = vdupq_n_f32(0.0);
         let lo = vdupq_n_f32(-128.0);
         let hi = vdupq_n_f32(127.0);
         let mut tmp = [0.0_f32; 4];
@@ -496,8 +476,8 @@ unsafe fn quantize_linear_f32_to_i8_neon(
         for i in 0..chunks {
             let off = i * 4;
             let x = vaddq_f32(vdivq_f32(vld1q_f32(data.as_ptr().add(off)), scale_v), zp);
-            let rounded_abs = vrndmq_f32(vaddq_f32(vabsq_f32(x), half));
-            let rounded = vbslq_f32(vcltq_f32(x, zero), vnegq_f32(rounded_abs), rounded_abs);
+            // Round half to even (IEEE default) to match ONNX / ORT.
+            let rounded = vrndnq_f32(x);
             let clamped = vminq_f32(vmaxq_f32(rounded, lo), hi);
             vst1q_f32(tmp.as_mut_ptr(), clamped);
             for j in 0..4 {
@@ -829,18 +809,20 @@ mod tests {
     }
 
     #[test]
-    fn quantize_linear_f32_to_f32_i8_rounds_away_and_clamps() {
+    fn quantize_linear_f32_to_f32_i8_rounds_half_to_even_and_clamps() {
+        // Round half to even (ONNX QuantizeLinear / ORT): -1.5→-2, -0.5→0,
+        // 0.5→0, 1.5→2; the 0.49 stays 0 and the extremes saturate.
         let data = [-1000.0, -1.5, -0.5, 0.49, 0.5, 1.5, 1000.0];
         let mut out = [0.0; 7];
         quantize_linear_f32_to_f32_i8_dispatch(&data, 1.0, 0.0, &mut out);
-        assert_eq!(out, [-128.0, -2.0, -1.0, 0.0, 1.0, 2.0, 127.0]);
+        assert_eq!(out, [-128.0, -2.0, 0.0, 0.0, 0.0, 2.0, 127.0]);
     }
 
     #[test]
-    fn quantize_linear_f32_to_i8_rounds_away_and_clamps() {
+    fn quantize_linear_f32_to_i8_rounds_half_to_even_and_clamps() {
         let data = [-1000.0, -1.5, -0.5, 0.49, 0.5, 1.5, 1000.0];
         let mut out = [0_i8; 7];
         quantize_linear_f32_to_i8_dispatch(&data, 1.0, 0.0, &mut out);
-        assert_eq!(out, [-128, -2, -1, 0, 1, 2, 127]);
+        assert_eq!(out, [-128, -2, 0, 0, 0, 2, 127]);
     }
 }

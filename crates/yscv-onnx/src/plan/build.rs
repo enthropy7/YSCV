@@ -117,6 +117,19 @@ pub(crate) fn build_runtime_index(
         if shape.len() != 4 {
             return None;
         }
+        // The fused INT8 kernels requantize with a single scalar composite scale
+        // per convolution, so they are only correct for per-tensor weight
+        // quantization. Per-channel weights (w_scale length > 1) must take the
+        // per-op path, which applies the composite per output channel. Decline
+        // the fusion here — the one choke point every INT8 chain gates on.
+        let per_tensor_weight = node
+            .inputs
+            .get(4)
+            .and_then(|s| initializers.get(s))
+            .is_some_and(|t| t.data().len() == 1);
+        if !per_tensor_weight {
+            return None;
+        }
         let group = match node.attributes.get(&Attr::Group) {
             Some(OnnxAttribute::Int(v)) => *v,
             _ => 1,
@@ -295,10 +308,11 @@ pub(crate) fn build_runtime_index(
         //   * dw geometry supported by the kernel (pad = (kh-1)/2,
         //     stride ∈ {1, 2});
         //   * single-use intermediates, no model output along the chain;
-        //   * load-time prepacking for both PW (VNNI 4×16) and DW (KHWC i8)
-        //     is fired by the existing prepack pass under the same shape
-        //     gates we check here, so by the time the chain dispatches the
-        //     `prepacked_i8_b` / `prepacked_i8_depthwise` lookups can't miss.
+        //   * DW (KHWC i8) prepack fires unconditionally for any depthwise
+        //     shape; PW (VNNI 4×16 / transposed-B) is force-prepacked for this
+        //     action via `chain_pw_weights` regardless of the `c_out % 16`
+        //     gate, so the chain's `prepacked_i8_b` / `prepacked_i8_depthwise`
+        //     lookups can't miss at dispatch.
         if nodes[i].op_type == "QLinearConv"
             && qlc_kind(&nodes[i], initializers) == Some("pw")
             && qlc_zps_match_chain(&nodes[i], initializers, true)
@@ -1156,6 +1170,13 @@ pub(crate) fn build_runtime_index(
     let chain_pw_weights: rustc_hash::FxHashSet<String> = execution_plan
         .iter()
         .filter_map(|action| match action {
+            // Opening-pair PW->DW: `exec_quantized_pw_dw` reads the packed PW
+            // RHS directly with no per-call packing fallback, so its PW weight
+            // must be force-prepacked even when `c_out` is not a multiple of 16
+            // (expansion widths like 72/88/120 are common in MobileNetV3). This
+            // arm was previously missing, so those chains panicked at dispatch
+            // with "PW weight not prepacked (loader gate broken)".
+            NodeAction::QuantizedPwDw { pw_idx, .. } => nodes[*pw_idx].inputs.get(3).cloned(),
             NodeAction::QuantizedDwPw { pw_idx, .. } => nodes[*pw_idx].inputs.get(3).cloned(),
             NodeAction::QuantizedForkPair {
                 first_idx,

@@ -8,10 +8,58 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     let x_scale = get_tensor(env, &node.name, &node.inputs[1])?.data()[0];
     let x_zp = get_tensor(env, &node.name, &node.inputs[2])?.data()[0];
     let w = get_tensor(env, &node.name, &node.inputs[3])?.clone();
-    let w_scale = get_tensor(env, &node.name, &node.inputs[4])?.data()[0];
-    let w_zp = get_tensor(env, &node.name, &node.inputs[5])?.data()[0];
+    // Weight scale / zero-point are per-tensor (len 1) or per-output-channel
+    // (len c_out). ORT emits symmetric per-channel weights, so `w_zp` is a
+    // vector of zeros in practice; the integer fast paths require every
+    // `w_zp == 0` and otherwise take the dequantize fallback. Activation (`x`)
+    // and output (`y`) quantization are always per-tensor. `x_zp` may be
+    // non-zero (asymmetric activations, ORT's default) — the fast paths absorb
+    // it with the per-channel correction `acc -= x_zp * sum_k w[k, o]`, which
+    // reduces to the symmetric case when `x_zp == 0`.
+    let w_scale = get_tensor(env, &node.name, &node.inputs[4])?
+        .data()
+        .to_vec();
+    let w_zp = get_tensor(env, &node.name, &node.inputs[5])?
+        .data()
+        .to_vec();
     let y_scale = get_tensor(env, &node.name, &node.inputs[6])?.data()[0];
     let y_zp = get_tensor(env, &node.name, &node.inputs[7])?.data()[0];
+    let w_zp_all_zero = w_zp.iter().all(|&z| z == 0.0);
+    let x_zp_i32 = x_zp.round() as i32;
+    let x_zp_i8 = x_zp.round().clamp(-128.0, 127.0) as i8;
+    let w_per_channel = w_scale.len() > 1;
+    // Composite requant multiplier for output channel `o`.
+    let composite_at =
+        |o: usize| -> f32 { x_scale * w_scale[if w_per_channel { o } else { 0 }] / y_scale };
+    // Per-output-channel weight sum for the asymmetric zero-point correction:
+    // with symmetric weights (w_zp == 0), acc_true[o] = sum_k x_q[k] w[k,o] -
+    // x_zp * sum_k w[k,o]. The weight is OIHW here (the loader's KHWC permute
+    // fires only on `Conv`), so sum_k over channel `o` is the sum of its
+    // contiguous [c_per_g * kh * kw] block. Only needed when x_zp != 0.
+    let col_sum_w: Vec<i32> = if x_zp_i32 != 0 && w.shape().len() == 4 {
+        let c_out_w = w.shape()[0];
+        let per_o = w.data().len().checked_div(c_out_w).unwrap_or(0);
+        (0..c_out_w)
+            .map(|o| {
+                w.data()[o * per_o..(o + 1) * per_o]
+                    .iter()
+                    .map(|&v| v as i32)
+                    .sum()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Integer correction folded into the epilogue for output channel `o`
+    // (optional per-channel i32 bias, minus the zero-point term).
+    let corr_at = |o: usize, bias: Option<&[f32]>| -> i32 {
+        let b = bias.map(|b| b[o] as i32).unwrap_or(0);
+        if x_zp_i32 != 0 {
+            b - x_zp_i32 * col_sum_w[o]
+        } else {
+            b
+        }
+    };
     let bias = if node.inputs.len() > 8 && !node.inputs[8].is_empty() {
         Some(get_tensor(env, &node.name, &node.inputs[8])?.clone())
     } else {
@@ -42,15 +90,16 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     let x_q_data = x_quant.as_ref().map(|q| q.data.as_slice());
     let x_t_data = x_tensor.as_ref().map(|t| t.data());
 
-    // Symmetric int8 fast path: NCHW input, OIHW weight, group=1, no
-    // dilation, both zero-points 0. im2col + integer GEMM + composite
-    // requantize. Loader's KHWC permute fires only on `Conv` op_type,
-    // so QLinearConv weights stay OIHW here.
+    // Int8 fast path: NCHW input, OIHW weight, group=1, no dilation, symmetric
+    // weights (w_zp == 0). im2col + integer GEMM + per-channel composite
+    // requantize with the x_zp correction folded into the epilogue. Loader's
+    // KHWC permute fires only on `Conv` op_type, so QLinearConv weights stay
+    // OIHW here.
     if x_shape.len() == 4 && w.shape().len() == 4 {
         let group = crate::runner::get_attr_int(node, Attr::Group).unwrap_or(1);
         let dilations =
             crate::runner::get_attr_ints(node, Attr::Dilations).unwrap_or_else(|| vec![1, 1]);
-        if x_zp == 0.0 && w_zp == 0.0 && group == 1 && dilations == [1, 1] {
+        if w_zp_all_zero && group == 1 && dilations == [1, 1] {
             let pads =
                 crate::runner::get_attr_ints(node, Attr::Pads).unwrap_or_else(|| vec![0, 0, 0, 0]);
             let strides =
@@ -72,8 +121,14 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 let m = n_n * oh * ow;
                 let k_dim = c_in * kh * kw;
 
-                // im2col NCHW → [M, K] i8.
+                // im2col NCHW → [M, K] i8. Padded taps must hold x_zp (the
+                // quantized value of a real 0), so the correction below stays
+                // uniform per channel; the scratch comes back zeroed, so this
+                // fill is a no-op in the symmetric case.
                 let mut x_im2col = env.take_i8_scratch_a(m * k_dim);
+                if x_zp_i8 != 0 {
+                    x_im2col.fill(x_zp_i8);
+                }
                 for ni in 0..n_n {
                     for oh_i in 0..oh {
                         for ow_i in 0..ow {
@@ -141,27 +196,20 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     );
                 }
 
-                // Add per-channel bias (i32 stored as f32) if present.
-                if let Some(b) = &bias {
-                    let bdata = b.data();
-                    for row in 0..m {
-                        for o in 0..c_out {
-                            acc[row * c_out + o] += bdata[o] as i32;
-                        }
-                    }
-                }
-
-                // Composite-scale requantize + clamp; reshape [M, O] → NCHW.
-                let composite = (x_scale * w_scale) / y_scale;
+                // Per-channel composite requantize with the zero-point
+                // correction (bias − x_zp·Σw) folded in; reshape [M, O] → NCHW.
+                let bias_data = bias.as_ref().map(|b| b.data());
                 let mut out = vec![0_i8; n_n * c_out * oh * ow];
                 for ni in 0..n_n {
                     for o in 0..c_out {
+                        let composite = composite_at(o);
+                        let corr = corr_at(o, bias_data);
                         for oh_i in 0..oh {
                             for ow_i in 0..ow {
                                 let row = (ni * oh + oh_i) * ow + ow_i;
-                                let v = (acc[row * c_out + o] as f32) * composite + y_zp;
+                                let v = ((acc[row * c_out + o] + corr) as f32) * composite + y_zp;
                                 let dst = ((ni * c_out + o) * oh + oh_i) * ow + ow_i;
-                                out[dst] = v.round().clamp(-128.0, 127.0) as i8;
+                                out[dst] = v.round_ties_even().clamp(-128.0, 127.0) as i8;
                             }
                         }
                     }
@@ -214,7 +262,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 let oh = (ih + pt + pb - kh) / sh + 1;
                 let ow = (iw + pl + pr - kw) / sw + 1;
                 if x_zp == 0.0
-                    && w_zp == 0.0
+                    && w_zp_all_zero
                     && c_per_g == 1
                     && c_out == group_usize
                     && c_in == group_usize
@@ -256,16 +304,16 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     );
 
                     let bias_data = bias.as_ref().map(|b| b.data());
-                    let composite = (x_scale * w_scale) / y_scale;
                     let mut out = vec![0_i8; n_n * c_out * oh * ow];
                     for ni in 0..n_n {
                         for c in 0..c_out {
-                            let bias_i32 = bias_data.map(|b| b[c] as i32).unwrap_or(0);
+                            let composite = composite_at(c);
+                            let corr = corr_at(c, bias_data);
                             for oh_i in 0..oh {
                                 for ow_i in 0..ow {
                                     let idx = ((ni * c_out + c) * oh + oh_i) * ow + ow_i;
-                                    out[idx] = (((acc[idx] + bias_i32) as f32) * composite + y_zp)
-                                        .round()
+                                    out[idx] = (((acc[idx] + corr) as f32) * composite + y_zp)
+                                        .round_ties_even()
                                         .clamp(-128.0, 127.0)
                                         as i8;
                                 }
@@ -288,7 +336,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     return Ok(());
                 }
                 if x_zp == 0.0
-                    && w_zp == 0.0
+                    && w_zp_all_zero
                     && c_per_g == 1
                     && c_out == group_usize
                     && c_in == group_usize
@@ -343,18 +391,16 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     );
 
                     let bias_data = bias.as_ref().map(|b| b.data());
-                    let composite = (x_scale * w_scale) / y_scale;
                     let mut out = vec![0_i8; n_n * c_out * oh * ow];
                     for ni in 0..n_n {
                         for oh_i in 0..oh {
                             for ow_i in 0..ow {
                                 let acc_base = ((ni * oh + oh_i) * ow + ow_i) * c_out;
                                 for c in 0..c_out {
-                                    let biased = acc[acc_base + c]
-                                        + bias_data.map(|b| b[c] as i32).unwrap_or(0);
+                                    let biased = acc[acc_base + c] + corr_at(c, bias_data);
                                     let dst = ((ni * c_out + c) * oh + oh_i) * ow + ow_i;
-                                    out[dst] = ((biased as f32) * composite + y_zp)
-                                        .round()
+                                    out[dst] = ((biased as f32) * composite_at(c) + y_zp)
+                                        .round_ties_even()
                                         .clamp(-128.0, 127.0)
                                         as i8;
                                 }
@@ -377,15 +423,24 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     return Ok(());
                 }
 
+                // Generic grouped/depthwise direct conv: per-element zero-point
+                // subtraction with in-bounds padding, so this is the correct
+                // (integer, no dequantize) path for asymmetric activations and
+                // per-channel weights when the SIMD depthwise kernels above
+                // decline (e.g. x_zp != 0).
                 let out_per_g = c_out / group_usize;
                 let w_data = w.data();
                 let bias_data = bias.as_ref().map(|b| b.data());
-                let composite = (x_scale * w_scale) / y_scale;
                 let mut out = vec![0_i8; n_n * c_out * oh * ow];
                 for ni in 0..n_n {
                     for o in 0..c_out {
                         let g = o / out_per_g;
                         let c_base = g * c_per_g;
+                        let composite = composite_at(o);
+                        // w_scale and w_zp lengths are independent: ORT emits
+                        // per-channel scales with a single zero-point, so index
+                        // each by its own length.
+                        let w_zp_o = w_zp[if w_zp.len() > 1 { o } else { 0 }];
                         for oh_i in 0..oh {
                             for ow_i in 0..ow {
                                 let mut acc = bias_data.map(|b| b[o] as i32).unwrap_or(0);
@@ -413,7 +468,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                                                     .map(|d| d[x_idx] as f32)
                                                     .unwrap_or_else(|| x_t_data.unwrap()[x_idx]);
                                                 let xv = (xv - x_zp).round() as i32;
-                                                let wv = (w_data[w_idx] - w_zp).round() as i32;
+                                                let wv = (w_data[w_idx] - w_zp_o).round() as i32;
                                                 acc += xv * wv;
                                             }
                                         }
@@ -421,7 +476,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                                 }
                                 let dst = ((ni * c_out + o) * oh + oh_i) * ow + ow_i;
                                 out[dst] = ((acc as f32) * composite + y_zp)
-                                    .round()
+                                    .round_ties_even()
                                     .clamp(-128.0, 127.0)
                                     as i8;
                             }
@@ -456,7 +511,21 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
             .map(|&v| (v - x_zp) * x_scale)
             .collect()
     };
-    let deq_w: Vec<f32> = w.data().iter().map(|&v| (v - w_zp) * w_scale).collect();
+    // Per-channel weight dequant (OIHW): (w - w_zp[o]) * w_scale[o]. Reduces to
+    // the per-tensor case when either vector has length 1.
+    let w_data = w.data();
+    let c_out_w = w.shape().first().copied().unwrap_or(1);
+    let per_o = w_data.len().checked_div(c_out_w).unwrap_or(w_data.len());
+    let deq_w: Vec<f32> = w_data
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let o = i.checked_div(per_o).unwrap_or(0);
+            let s = w_scale[if w_per_channel { o } else { 0 }];
+            let z = w_zp[if w_zp.len() > 1 { o } else { 0 }];
+            (v - z) * s
+        })
+        .collect();
 
     let deq_x_t =
         Tensor::from_vec(x_shape.to_vec(), deq_x).map_err(|e| OnnxError::DecodeFailed {
@@ -476,8 +545,21 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     };
     env.insert("__qx".into(), deq_x_t);
     env.insert("__qw".into(), deq_w_t);
+    // QLinearConv bias is int32 in units of (x_scale * w_scale[o]); dequantize
+    // it to real units before handing it to the f32 conv.
     if let Some(b) = bias {
-        env.insert("__qb".into(), b);
+        let deq_bias: Vec<f32> = b
+            .data()
+            .iter()
+            .enumerate()
+            .map(|(o, &v)| v * x_scale * w_scale[if w_per_channel { o } else { 0 }])
+            .collect();
+        let deq_bias_t = Tensor::from_vec(b.shape().to_vec(), deq_bias).map_err(|e| {
+            OnnxError::DecodeFailed {
+                message: e.to_string(),
+            }
+        })?;
+        env.insert("__qb".into(), deq_bias_t);
     }
     exec_conv(&float_node, env, yscv_kernels::Activation::None)?;
     let float_out = env
@@ -493,7 +575,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     let quant: Vec<f32> = float_out
         .data()
         .iter()
-        .map(|&v| (v / y_scale + y_zp).round().clamp(-128.0, 127.0))
+        .map(|&v| (v / y_scale + y_zp).round_ties_even().clamp(-128.0, 127.0))
         .collect();
     let out = Tensor::from_vec(float_out.shape().to_vec(), quant).map_err(|e| {
         OnnxError::DecodeFailed {
