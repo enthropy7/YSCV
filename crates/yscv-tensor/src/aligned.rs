@@ -11,6 +11,30 @@ use std::ops::{Deref, DerefMut};
 /// (32B), and NEON (16B) alignment requirements.
 const ALIGN: usize = 64;
 
+/// Types for which every-zero bytes form a valid value.
+///
+/// Implementors must guarantee that `0u8` repeated over `size_of::<Self>()`
+/// bytes is a valid initialized value. This is exactly the precondition needed
+/// by [`AlignedVec::calloc`].
+///
+/// # Safety
+/// Implementing this trait for a type whose all-zero byte pattern is invalid
+/// permits undefined behavior when `calloc` constructs that type.
+pub unsafe trait Zeroable: Copy {}
+
+macro_rules! impl_zeroable {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            // SAFETY: all-zero is a valid representation for primitive numeric types.
+            unsafe impl Zeroable for $ty {}
+        )+
+    };
+}
+
+impl_zeroable!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64
+);
+
 /// Pick the alignment for a given byte size. Returns the cacheline constant
 /// unconditionally (size-tiered page-alignment for large allocations was
 /// tried and regressed). The size parameter stays in the API for forward
@@ -181,10 +205,11 @@ impl<T: Copy> AlignedVec<T> {
     ///
     /// # Safety
     /// The allocation is valid and aligned, but the contents are indeterminate.
-    /// Reading before writing is undefined behaviour.
+    /// The caller must initialize every element before any read or drop of the
+    /// returned vector. Reading an uninitialized element is undefined behaviour.
     #[allow(unsafe_code)]
     #[inline]
-    pub fn uninitialized(len: usize) -> Self {
+    pub unsafe fn uninitialized(len: usize) -> Self {
         if len == 0 {
             return Self::new();
         }
@@ -214,15 +239,13 @@ impl<T: Default + Copy> AlignedVec<T> {
     pub fn zeros(len: usize) -> Self {
         Self::filled(len, T::default())
     }
+}
 
-    /// Creates an `AlignedVec` of `len` zero-initialized elements using `alloc_zeroed`.
+impl<T: Zeroable> AlignedVec<T> {
+    /// Creates an `AlignedVec` of `len` elements using an all-zero allocation.
     ///
-    /// This is faster than `filled(len, T::default())` for large allocations because
-    /// the OS can provide pre-zeroed pages without writing every byte.
-    ///
-    /// # Safety requirement
-    /// Only correct when all-zero bytes is a valid representation for `T` (true for
-    /// all primitive numeric types like f32, u8, i32, etc.).
+    /// The [`Zeroable`] bound makes the representation guarantee explicit at
+    /// the API boundary; arbitrary generic `T` can no longer be passed here.
     #[allow(unsafe_code)]
     pub fn calloc(len: usize) -> Self {
         if len == 0 {

@@ -51,18 +51,41 @@ pub enum RgaFormat {
 pub struct RgaSurface {
     /// Either a virtual address (CPU-mapped buffer) or a DMA-BUF fd
     /// (set `is_fd = true` to indicate fd interpretation of `addr`).
-    pub addr: *mut c_void,
-    pub fd: i32,
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub format: RgaFormat,
+    addr: *mut c_void,
+    fd: i32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    #[allow(dead_code)]
+    format: RgaFormat,
 }
 
-// SAFETY: A *mut c_void with DMA-BUF / mmap'd backing is safe to send
-// across threads as long as ownership is exclusive (caller's contract).
-unsafe impl Send for RgaSurface {}
-unsafe impl Sync for RgaSurface {}
+impl RgaSurface {
+    /// Describe a virtual-address or DMA-BUF-backed surface.
+    ///
+    /// # Safety
+    /// `addr` must remain valid for at least `stride * height` bytes (unless
+    /// `fd >= 0` and the driver owns the address interpretation), and the
+    /// backing storage must remain alive and exclusively synchronized for every
+    /// RGA operation using this surface.
+    pub unsafe fn from_raw_parts(
+        addr: *mut c_void,
+        fd: i32,
+        width: u32,
+        height: u32,
+        stride: u32,
+        format: RgaFormat,
+    ) -> Self {
+        Self {
+            addr,
+            fd,
+            width,
+            height,
+            stride,
+            format,
+        }
+    }
+}
 
 /// Probe whether `librga.so` is available on this host.
 pub fn rga_available() -> bool {
@@ -207,7 +230,12 @@ impl RgaBlender {
     /// Copy `src` onto `dst` with optional format conversion. Used for
     /// NV12→RGB (if the encoder needs RGB input) or just plain copy with
     /// scaling.
-    pub fn blit(&self, src: &RgaSurface, dst: &mut RgaSurface) -> RgaResult<()> {
+    ///
+    /// # Safety
+    /// The backing memory described by both surfaces must remain valid and
+    /// must not be concurrently accessed by the CPU or another device while
+    /// the RGA operation is in flight.
+    pub unsafe fn blit(&self, src: &RgaSurface, dst: &mut RgaSurface) -> RgaResult<()> {
         validate_surface(src, "src")?;
         validate_surface(dst, "dst")?;
         #[cfg(target_os = "linux")]
@@ -234,19 +262,26 @@ impl RgaBlender {
 
     /// Convenience: blit `src` onto `dst` at offset `(x, y)` in dst, no
     /// scaling, alpha-blend disabled (overwrite mode).
-    pub fn copy_at(
+    ///
+    /// # Safety
+    /// The backing memory described by both surfaces must remain valid and
+    /// must not be concurrently accessed while the RGA operation is in flight.
+    pub unsafe fn copy_at(
         &self,
         src: &RgaSurface,
         dst: &mut RgaSurface,
         _x: u32,
         _y: u32,
     ) -> RgaResult<()> {
+        // SAFETY: the caller must uphold the same backing-memory contract as
+        // [`Self::blit`].
         // RGA's destination rect is set in `dst.rect` when calling blit.
         // Building a per-rect API requires mutating the RgaRect — the
         // current public API copies the full surface. A future enhancement
         // can add explicit rect parameters; this stub keeps the API
         // signature in place.
-        self.blit(src, dst)
+        // SAFETY: forwarded from this method's caller contract.
+        unsafe { self.blit(src, dst) }
     }
 }
 
@@ -255,6 +290,17 @@ fn validate_surface(s: &RgaSurface, label: &str) -> RgaResult<()> {
         return Err(RgaError::InvalidParameter(format!(
             "{label}: width/height must be > 0 (got {}×{})",
             s.width, s.height
+        )));
+    }
+    if s.width > i32::MAX as u32
+        || s.height > i32::MAX as u32
+        || s.stride > i32::MAX as u32
+        || s.stride
+            .checked_mul(s.height)
+            .is_none_or(|size| size > i32::MAX as u32)
+    {
+        return Err(RgaError::InvalidParameter(format!(
+            "{label}: dimensions/stride exceed the RGA i32 ABI"
         )));
     }
     if s.stride < s.width {

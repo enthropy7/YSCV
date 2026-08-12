@@ -203,14 +203,37 @@ impl Tensor {
         }
     }
 
-    /// Creates a tensor from pre-validated shape, strides, and data.
-    /// No validation, no heap allocation (shape/strides stored inline for ≤6D).
+    /// Creates a tensor from shape, contiguous strides, and aligned data.
+    ///
+    /// This low-level constructor keeps its infallible API for the many
+    /// internal kernel call sites, so malformed metadata is rejected with a
+    /// panic instead of being allowed to create a tensor whose indexing can
+    /// reach outside its allocation. No heap allocation is needed for
+    /// shape/strides up to six dimensions.
+    ///
+    /// # Panics
+    /// Panics when the stride rank, contiguous stride layout, or shape product
+    /// does not match `data.len()`.
     #[inline]
     pub fn from_raw_parts(shape: &[usize], strides: &[usize], data: AlignedVec<f32>) -> Self {
-        debug_assert_eq!(
-            shape.iter().copied().product::<usize>(),
+        let expected =
+            shape_element_count(shape).expect("from_raw_parts: shape element count overflow");
+        assert_eq!(
+            expected,
             data.len(),
             "from_raw_parts: shape product != data.len()"
+        );
+        let expected_strides =
+            compute_strides(shape).expect("from_raw_parts: stride computation overflow");
+        assert_eq!(
+            strides.len(),
+            shape.len(),
+            "from_raw_parts: shape/stride rank mismatch"
+        );
+        assert_eq!(
+            strides,
+            expected_strides.as_slice(),
+            "from_raw_parts: only contiguous strides are supported"
         );
         Self {
             shape: DimsVec::from(shape),

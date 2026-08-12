@@ -435,6 +435,7 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
         &self.label
     }
 
+    #[allow(unsafe_code)]
     fn dispatch(&self, inputs: &[(&str, &[u8])]) -> Result<Vec<(String, Vec<u8>)>, Error> {
         // Contract: inputs must contain exactly two named "a" and "b"
         // tensors with the SDK-declared byte counts. Output is a
@@ -480,7 +481,9 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
                 .a_mem
                 .lock()
                 .map_err(|_| Error::Other("matmul a_mem lock poisoned".into()))?;
-            a.as_mut_slice().copy_from_slice(a_bytes);
+            // SAFETY: the matmul call is serialized by the mutex and no NPU
+            // operation is in flight while inputs are being populated.
+            unsafe { a.as_mut_slice() }.copy_from_slice(a_bytes);
             a.sync_to_device()
                 .map_err(|e| Error::Kernel(e.to_string()))?;
         }
@@ -489,7 +492,9 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
                 .b_mem
                 .lock()
                 .map_err(|_| Error::Other("matmul b_mem lock poisoned".into()))?;
-            b.as_mut_slice().copy_from_slice(b_bytes);
+            // SAFETY: the matmul call is serialized by the mutex and no NPU
+            // operation is in flight while inputs are being populated.
+            unsafe { b.as_mut_slice() }.copy_from_slice(b_bytes);
             b.sync_to_device()
                 .map_err(|e| Error::Kernel(e.to_string()))?;
         }
@@ -505,7 +510,9 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
                 .map_err(|_| Error::Other("matmul c_mem lock poisoned".into()))?;
             c.sync_from_device()
                 .map_err(|e| Error::Kernel(e.to_string()))?;
-            c.as_slice()[..self.c_size].to_vec()
+            // SAFETY: the synchronous matmul run completed before reading the
+            // output buffer, and the mutex excludes concurrent CPU access.
+            (unsafe { c.as_slice() })[..self.c_size].to_vec()
         };
 
         Ok(vec![("c".to_string(), c_bytes)])

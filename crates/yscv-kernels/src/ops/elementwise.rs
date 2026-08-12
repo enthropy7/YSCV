@@ -112,7 +112,8 @@ pub fn relu_with_config_and_pool(
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(len) };
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
         let chunk_elements = parallel_chunk_elements_for_threads(len, thread_pool);
         super::super::scope_ctx::par_chunks_mut_dispatch(
@@ -141,7 +142,8 @@ pub fn sigmoid_with_config_and_pool(
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(len) };
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
@@ -168,7 +170,8 @@ pub fn sigmoid_with_config_and_pool(
 pub fn hardswish_with_config(input: &Tensor, config: ParallelElementwiseConfig) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(len) };
     if should_parallelize_len(len, config.min_parallel_elements, None) {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
@@ -206,7 +209,8 @@ pub fn exp_with_config_and_pool(
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(len) };
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
@@ -244,7 +248,8 @@ pub fn tanh_act_with_config_and_pool(
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(len) };
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
@@ -273,7 +278,8 @@ const ACTIVATION_CHUNK_SIZE: usize = 8192;
 pub fn gelu(input: &Tensor) -> Tensor {
     let src = input.data();
     let len = src.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(len) };
     if len >= ACTIVATION_PARALLEL_THRESHOLD {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
@@ -305,7 +311,8 @@ pub fn silu_with_config_and_pool(
 ) -> Tensor {
     let input_data = input.data();
     let len = input_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(len) };
     if should_parallelize_len(len, config.min_parallel_elements, thread_pool) {
         super::super::scope_ctx::par_chunks_mut_dispatch(
             output.as_mut_slice(),
@@ -323,8 +330,8 @@ pub fn silu_with_config_and_pool(
 }
 
 /// In-place SiLU: applies SiLU to a mutable tensor, avoiding allocation.
-/// The SIMD kernels load all inputs before storing outputs within each block,
-/// so aliasing input == output is safe.
+/// Uses the dedicated in-place SIMD entry point so no overlapping shared and
+/// exclusive slices are ever constructed for the same allocation.
 /// Uses rayon parallelism for large tensors (>100K elements).
 pub fn silu_inplace(tensor: &mut Tensor) {
     let data = tensor.data_mut();
@@ -333,24 +340,11 @@ pub fn silu_inplace(tensor: &mut Tensor) {
     if len >= PARALLEL_THRESHOLD {
         // Parallel: split into chunks processed by different cores.
         super::super::scope_ctx::par_chunks_mut_dispatch(data, 32_768, |_ci, chunk| {
-            let ptr = chunk.as_mut_ptr();
-            let clen = chunk.len();
-            #[allow(unsafe_code)]
-            unsafe {
-                let input_slice = std::slice::from_raw_parts(ptr, clen);
-                let output_slice = std::slice::from_raw_parts_mut(ptr, clen);
-                silu_slice_dispatch(input_slice, output_slice);
-            }
+            super::simd::silu_inplace(chunk);
         });
     } else {
         // Small tensor: single-threaded SIMD.
-        let ptr = data.as_mut_ptr();
-        #[allow(unsafe_code)]
-        unsafe {
-            let input_slice = std::slice::from_raw_parts(ptr, len);
-            let output_slice = std::slice::from_raw_parts_mut(ptr, len);
-            silu_slice_dispatch(input_slice, output_slice);
-        }
+        super::simd::silu_inplace(data);
     }
 }
 
@@ -502,6 +496,7 @@ fn is_default_contiguous(shape: &[usize], strides: &[usize]) -> bool {
 /// SIMD scalar-mul per block instead of the strided per-element fallback.
 /// Mul only (the hot case); other kinds fall through. Returns `None` when the
 /// pattern doesn't match, so semantics are unchanged.
+#[allow(unsafe_code)]
 fn binary_broadcast_axis(lhs: &Tensor, rhs: &Tensor, kind: BinaryKind) -> Option<Tensor> {
     if !matches!(kind, BinaryKind::Mul) {
         return None;
@@ -531,7 +526,8 @@ fn binary_broadcast_axis(lhs: &Tensor, rhs: &Tensor, kind: BinaryKind) -> Option
     let inner: usize = ls[ax + 1..].iter().product();
     let outer: usize = ls[..ax].iter().product();
     let lhs_d = lhs.data();
-    let mut output = AlignedVec::<f32>::uninitialized(lhs_d.len());
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(lhs_d.len()) };
     let out = output.as_mut_slice();
     for oi in 0..outer {
         for (gi, &s) in scale.iter().enumerate() {
@@ -544,6 +540,7 @@ fn binary_broadcast_axis(lhs: &Tensor, rhs: &Tensor, kind: BinaryKind) -> Option
     Some(Tensor::from_raw_parts(lhs.shape(), lhs.strides(), output))
 }
 
+#[allow(unsafe_code)]
 fn binary_with_config_and_pool(
     lhs: &Tensor,
     rhs: &Tensor,
@@ -565,7 +562,8 @@ fn binary_with_config_and_pool(
 
     let left = lhs.data();
     let right = rhs.data();
-    let mut output = AlignedVec::<f32>::uninitialized(left.len());
+    // SAFETY: the elementwise kernel writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(left.len()) };
 
     if should_parallelize_len(left.len(), config.min_parallel_elements, thread_pool) {
         let chunk_elements = binary_parallel_chunk_elements(left.len(), thread_pool);
@@ -634,6 +632,7 @@ fn binary_parallel_chunk_elements(len: usize, thread_pool: Option<&ThreadPool>) 
     parallel_chunk_elements_for_threads(len, thread_pool)
 }
 
+#[allow(unsafe_code)]
 fn binary_broadcast_lastdim_with_config_and_pool(
     lhs: &Tensor,
     rhs: &Tensor,
@@ -658,7 +657,8 @@ fn binary_broadcast_lastdim_with_config_and_pool(
         }
         let big = lhs.data();
         let row = &rhs.data()[..lhs_last];
-        let mut output = AlignedVec::<f32>::uninitialized(big.len());
+        // SAFETY: the elementwise kernel writes every output element before use.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(big.len()) };
         binary_broadcast_lastdim_rows(
             big,
             row,
@@ -682,7 +682,8 @@ fn binary_broadcast_lastdim_with_config_and_pool(
         }
         let row = &lhs.data()[..rhs_last];
         let big = rhs.data();
-        let mut output = AlignedVec::<f32>::uninitialized(big.len());
+        // SAFETY: the elementwise kernel writes every output element before use.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(big.len()) };
         binary_broadcast_lastdim_rows(
             big,
             row,

@@ -1295,7 +1295,8 @@ fn matmul_2d_sequential_with_plan(
 ) -> Result<Tensor, KernelError> {
     // SAFETY: Every element is written by BLAS / blocked GEMM / row GEMM
     // before the tensor is returned, so uninit memory is never exposed.
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: the matmul kernel writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
     let left = lhs.data();
     let right = rhs.data();
 
@@ -1333,7 +1334,8 @@ fn matmul_2d_parallel_with_plan(
     plan: MatMulPlan,
     thread_pool: Option<&ThreadPool>,
 ) -> Result<Tensor, KernelError> {
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: the matmul kernel writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
     let left = lhs.data();
     let right = rhs.data();
 

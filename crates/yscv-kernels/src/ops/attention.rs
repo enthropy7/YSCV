@@ -378,6 +378,7 @@ unsafe fn fma_slice_sse(out: &mut [f32], v: &[f32], w: f32) {
 /// * `mask`:   optional `[seq_q, seq_k]` additive mask (e.g. `-inf` for positions to ignore)
 ///
 /// Returns `[seq_q, d_v]`.
+#[allow(unsafe_code)]
 pub fn scaled_dot_product_attention(
     query: &Tensor,
     key: &Tensor,
@@ -440,7 +441,8 @@ pub fn scaled_dot_product_attention(
     let scale = (d_k as f32).sqrt().recip();
     let scores_data = scores.data();
     let total = seq_q * seq_k;
-    let mut scaled = AlignedVec::<f32>::uninitialized(total);
+    // SAFETY: the attention kernel writes every temporary element before use.
+    let mut scaled = unsafe { AlignedVec::<f32>::uninitialized(total) };
 
     match mask {
         Some(m) => {
@@ -477,6 +479,7 @@ pub fn scaled_dot_product_attention(
 ///
 /// Same API and result as `scaled_dot_product_attention`, but much lower
 /// memory usage for long sequences.
+#[allow(unsafe_code)]
 pub fn flash_attention(
     query: &Tensor,
     key: &Tensor,
@@ -616,11 +619,13 @@ pub fn flash_attention(
 }
 
 /// Simple 2-D transpose: `[rows, cols]` → `[cols, rows]`.
+#[allow(unsafe_code)]
 fn transpose_2d(tensor: &Tensor) -> Tensor {
     let rows = tensor.shape()[0];
     let cols = tensor.shape()[1];
     let src = tensor.data();
-    let mut dst = AlignedVec::<f32>::uninitialized(rows * cols);
+    // SAFETY: the attention kernel writes every output element before use.
+    let mut dst = unsafe { AlignedVec::<f32>::uninitialized(rows * cols) };
     for r in 0..rows {
         for c in 0..cols {
             dst[c * rows + r] = src[r * cols + c];

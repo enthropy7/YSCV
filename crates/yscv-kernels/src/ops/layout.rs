@@ -72,6 +72,7 @@ fn channel_blocks(channels: usize, block: usize) -> usize {
 /// NHWC → NCHWc. Reorders `[N, H, W, C]` into `[N, C/block, H, W, block]`,
 /// padding C with zeros if `C % block != 0`. Output tensor carries the
 /// `Layout::NCHWc { block }` tag.
+#[allow(unsafe_code)]
 pub fn nhwc_to_nchwc(input: &Tensor, block: usize) -> Result<Tensor, KernelError> {
     if block == 0 || !block.is_power_of_two() || block > u8::MAX as usize {
         return Err(KernelError::LayoutConversion(format!(
@@ -87,7 +88,8 @@ pub fn nhwc_to_nchwc(input: &Tensor, block: usize) -> Result<Tensor, KernelError
     // the calloc zero-fill (it was ~half the cost of this transpose at c=256).
     // Only the padded-tail case (c % block != 0) needs zeroed trailing lanes.
     let mut out = if c.is_multiple_of(block) {
-        AlignedVec::<f32>::uninitialized(out_len)
+        // SAFETY: the layout conversion writes every output element before use.
+        unsafe { AlignedVec::<f32>::uninitialized(out_len) }
     } else {
         AlignedVec::<f32>::calloc(out_len)
     };
@@ -134,6 +136,7 @@ pub fn nhwc_to_nchwc(input: &Tensor, block: usize) -> Result<Tensor, KernelError
 /// NCHWc → NHWC. Reorders `[N, C/block, H, W, block]` into `[N, H, W, C]`
 /// where `C = input's effective channel count` (passed explicitly since
 /// the padded tail is stripped). Output tensor carries `Layout::NHWC`.
+#[allow(unsafe_code)]
 pub fn nchwc_to_nhwc(input: &Tensor, channels: usize) -> Result<Tensor, KernelError> {
     let (n, co, h, w, block) = nchwc_dims(input.shape())?;
     if channels > co * block {
@@ -149,7 +152,8 @@ pub fn nchwc_to_nhwc(input: &Tensor, channels: usize) -> Result<Tensor, KernelEr
     let src = input.try_data().map_err(KernelError::from)?;
 
     let out_len = n * h * w * channels;
-    let mut out = AlignedVec::<f32>::uninitialized(out_len);
+    // SAFETY: the layout conversion writes every output element before use.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(out_len) };
     let dst = out.as_mut_slice();
 
     let nchwc_row_stride = block;
@@ -248,6 +252,7 @@ pub fn nchw_to_nchwc(input: &Tensor, block: usize) -> Result<Tensor, KernelError
 /// NCHWc → NCHW. Reorders `[N, C/block, H, W, block]` into `[N, C, H, W]`
 /// using the `channels` the caller wants (trailing zero-padded lanes
 /// in the source are stripped). Output carries `Layout::NCHW`.
+#[allow(unsafe_code)]
 pub fn nchwc_to_nchw(input: &Tensor, channels: usize) -> Result<Tensor, KernelError> {
     let (n, co, h, w, block) = nchwc_dims(input.shape())?;
     if channels > co * block {
@@ -263,7 +268,8 @@ pub fn nchwc_to_nchw(input: &Tensor, channels: usize) -> Result<Tensor, KernelEr
     let src = input.try_data().map_err(KernelError::from)?;
 
     let out_len = n * channels * h * w;
-    let mut out = AlignedVec::<f32>::uninitialized(out_len);
+    // SAFETY: the layout conversion writes every output element before use.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(out_len) };
     let dst = out.as_mut_slice();
 
     let nchw_c_stride = h * w;
@@ -315,6 +321,7 @@ pub fn nchwc_to_nchw(input: &Tensor, channels: usize) -> Result<Tensor, KernelEr
 /// `Tensor::permute`. First-layer Conv [1, 3, ...] hits this tail.
 ///
 /// The AVX path is gated through `crate::host_cpu().features`.
+#[allow(unsafe_code)]
 pub fn nchw_to_nhwc_fast(input: &Tensor) -> Result<Tensor, KernelError> {
     let shape = input.shape();
     let (n, c, h, w) = nchw_dims(shape)?;
@@ -347,7 +354,8 @@ pub fn nchw_to_nhwc_fast(input: &Tensor) -> Result<Tensor, KernelError> {
     }
 
     #[allow(unused_mut)]
-    let mut out = AlignedVec::<f32>::uninitialized(out_count);
+    // SAFETY: the layout conversion writes every output element before use.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[allow(unsafe_code)]
@@ -478,6 +486,7 @@ fn layout_par_enabled() -> bool {
 /// Mirror of `nchw_to_nhwc_fast` for the opposite direction — needed because
 /// `Tensor::permute([0,3,1,2])` otherwise falls back to a slow scalar tiled
 /// loop.
+#[allow(unsafe_code)]
 pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
     let shape = input.shape();
     let (n, h, w, c) = nhwc_dims(shape)?;
@@ -506,7 +515,8 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
     }
 
     #[allow(unused_mut)]
-    let mut out = AlignedVec::<f32>::uninitialized(out_count);
+    // SAFETY: the layout conversion writes every output element before use.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
     let src = input.try_data().map_err(KernelError::from)?;
     let dst = out.as_mut_slice();
 

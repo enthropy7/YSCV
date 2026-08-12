@@ -133,8 +133,9 @@ pub(super) fn exec_fused_transpose_matmul(
     // matmul kernel writes every output element so `uninitialized` is
     // correct (no read-before-write).
     #[allow(unsafe_code)]
+    // SAFETY: the matmul kernel writes every output element before use.
     let mut out_aligned =
-        yscv_tensor::AlignedVec::<f32>::uninitialized(batch_size * out_mat_stride);
+        unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(batch_size * out_mat_stride) };
     {
         let out_slice = out_aligned.as_mut_slice();
         for batch_idx in 0..batch_size {

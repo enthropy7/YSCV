@@ -33,7 +33,8 @@ pub fn batch_norm2d_nhwc_with_config_and_pool(
     }
     // SAFETY: batch_norm loop writes every element before read.
     #[allow(unsafe_code)]
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: normalization writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
 
     let gamma_data = params.gamma.data();
     let beta_data = params.beta.data();
@@ -93,7 +94,8 @@ pub fn softmax_last_dim_with_config_and_pool(
     }
 
     // SAFETY: `softmax_last_dim_row` writes every element before we read.
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: normalization writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
 
     let input_data = input.data();
     if should_parallelize_softmax(plan, config, thread_pool) {
@@ -167,7 +169,8 @@ pub fn log_softmax_last_dim_with_config_and_pool(
     }
 
     // SAFETY: `log_softmax_last_dim_row` writes every element before we read.
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: normalization writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
 
     let input_data = input.data();
     if should_parallelize_softmax(plan, config, thread_pool) {
@@ -279,7 +282,8 @@ pub fn layer_norm_last_dim_with_config_and_pool(
     }
 
     // SAFETY: `layer_norm_last_dim_row` writes every element before we read.
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: normalization writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
 
     let input_data = input.data();
     let gamma_data = params.gamma.data();

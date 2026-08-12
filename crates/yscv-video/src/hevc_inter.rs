@@ -31,6 +31,56 @@ use super::hevc_syntax::HevcSliceCabacState;
 #[allow(dead_code)]
 pub(crate) struct SendMutPtr<T>(pub(crate) *mut T);
 
+/// Read-only motion-field view backed by a raw pointer.
+///
+/// Parallel HEVC workers use this instead of manufacturing overlapping
+/// `&[HevcMvField]` slices while other workers update their own entries.
+#[derive(Clone, Copy)]
+pub(crate) struct MvFieldView {
+    ptr: *const HevcMvField,
+    len: usize,
+}
+
+// SAFETY: the view only performs copy reads; the caller synchronizes writes
+// and keeps the backing allocation alive for the view's lifetime.
+#[allow(unsafe_code)]
+unsafe impl Send for MvFieldView {}
+#[allow(unsafe_code)]
+unsafe impl Sync for MvFieldView {}
+
+impl MvFieldView {
+    #[inline]
+    pub(crate) fn from_slice(slice: &[HevcMvField]) -> Self {
+        Self {
+            ptr: slice.as_ptr(),
+            len: slice.len(),
+        }
+    }
+
+    /// # Safety
+    /// `ptr` must be valid for `len` `HevcMvField` values for all reads.
+    #[allow(unsafe_code)]
+    pub(crate) unsafe fn from_raw_parts(ptr: *const HevcMvField, len: usize) -> Self {
+        Self { ptr, len }
+    }
+
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    #[allow(unsafe_code)]
+    pub(crate) fn get(self, index: usize) -> Option<HevcMvField> {
+        if index >= self.len {
+            return None;
+        }
+        // SAFETY: the bounds check above and constructor contract guarantee
+        // that this element is initialized and readable.
+        Some(unsafe { *self.ptr.add(index) })
+    }
+}
+
 // SAFETY: We enforce non-overlapping writes at the call site by partitioning
 // the output buffer into disjoint CTU rows before dispatching to threads.
 #[allow(unsafe_code)]
@@ -1040,6 +1090,24 @@ pub fn build_merge_candidates(
     block_w: usize,
     block_h: usize,
 ) -> Vec<HevcMvField> {
+    build_merge_candidates_view(
+        MvFieldView::from_slice(mv_field),
+        pic_width_in_min_pu,
+        x,
+        y,
+        block_w,
+        block_h,
+    )
+}
+
+pub(crate) fn build_merge_candidates_view(
+    mv_field: MvFieldView,
+    pic_width_in_min_pu: usize,
+    x: usize,
+    y: usize,
+    block_w: usize,
+    block_h: usize,
+) -> Vec<HevcMvField> {
     let mut candidates: Vec<HevcMvField> = Vec::with_capacity(5);
     let max_candidates = 5usize;
 
@@ -1053,7 +1121,7 @@ pub fn build_merge_candidates(
         if px < pic_width_in_min_pu {
             let idx = py * pic_width_in_min_pu + px;
             if idx < mv_field.len() {
-                let f = mv_field[idx];
+                let f = mv_field.get(idx)?;
                 if f.is_available() {
                     return Some(f);
                 }
@@ -1157,6 +1225,24 @@ pub fn build_amvp_candidates(
     ref_idx: i8,
     list: usize,
 ) -> [HevcMv; 2] {
+    build_amvp_candidates_view(
+        MvFieldView::from_slice(mv_field),
+        pic_width_in_min_pu,
+        x,
+        y,
+        ref_idx,
+        list,
+    )
+}
+
+pub(crate) fn build_amvp_candidates_view(
+    mv_field: MvFieldView,
+    pic_width_in_min_pu: usize,
+    x: usize,
+    y: usize,
+    ref_idx: i8,
+    list: usize,
+) -> [HevcMv; 2] {
     let mut cands = [HevcMv::default(); 2];
     let mut count = 0usize;
 
@@ -1167,7 +1253,7 @@ pub fn build_amvp_candidates(
         if px < pic_width_in_min_pu {
             let idx = py * pic_width_in_min_pu + px;
             if idx < mv_field.len() {
-                let f = &mv_field[idx];
+                let f = mv_field.get(idx)?;
                 if f.pred_flag[list] && f.ref_idx[list] == ref_idx {
                     return Some(f.mv[list]);
                 }
@@ -1298,6 +1384,29 @@ pub fn parse_inter_prediction(
     y: usize,
     cu_size: usize,
 ) -> HevcMvField {
+    parse_inter_prediction_view(
+        state,
+        sps,
+        slice_type,
+        MvFieldView::from_slice(mv_field),
+        pic_width_in_min_pu,
+        x,
+        y,
+        cu_size,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn parse_inter_prediction_view(
+    state: &mut HevcSliceCabacState<'_>,
+    sps: &HevcSps,
+    slice_type: HevcSliceType,
+    mv_field: MvFieldView,
+    pic_width_in_min_pu: usize,
+    x: usize,
+    y: usize,
+    cu_size: usize,
+) -> HevcMvField {
     // merge_flag — decoded as bypass (simplified; spec uses context 0).
     let merge_flag = state.cabac.decode_bypass();
 
@@ -1306,7 +1415,7 @@ pub fn parse_inter_prediction(
         let max_merge = 5u32;
         let merge_idx = parse_merge_idx(&mut state.cabac, max_merge);
         let candidates =
-            build_merge_candidates(mv_field, pic_width_in_min_pu, x, y, cu_size, cu_size);
+            build_merge_candidates_view(mv_field, pic_width_in_min_pu, x, y, cu_size, cu_size);
         let idx = (merge_idx as usize).min(candidates.len().saturating_sub(1));
         return candidates[idx];
     }
@@ -1332,7 +1441,8 @@ pub fn parse_inter_prediction(
             let mvd = parse_mvd(&mut state.cabac);
 
             // AMVP predictor.
-            let amvp = build_amvp_candidates(mv_field, pic_width_in_min_pu, x, y, ref_idx_l0, 0);
+            let amvp =
+                build_amvp_candidates_view(mv_field, pic_width_in_min_pu, x, y, ref_idx_l0, 0);
             let mvp_flag = state.cabac.decode_bypass();
             let predictor = if mvp_flag { amvp[1] } else { amvp[0] };
 
@@ -1350,8 +1460,10 @@ pub fn parse_inter_prediction(
             let mvd_l0 = parse_mvd(&mut state.cabac);
             let mvd_l1 = parse_mvd(&mut state.cabac);
 
-            let amvp_l0 = build_amvp_candidates(mv_field, pic_width_in_min_pu, x, y, ref_idx_l0, 0);
-            let amvp_l1 = build_amvp_candidates(mv_field, pic_width_in_min_pu, x, y, ref_idx_l1, 1);
+            let amvp_l0 =
+                build_amvp_candidates_view(mv_field, pic_width_in_min_pu, x, y, ref_idx_l0, 0);
+            let amvp_l1 =
+                build_amvp_candidates_view(mv_field, pic_width_in_min_pu, x, y, ref_idx_l1, 1);
 
             let mvp0_flag = state.cabac.decode_bypass();
             let mvp1_flag = state.cabac.decode_bypass();

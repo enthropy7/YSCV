@@ -39,6 +39,7 @@ const SLOT_WRITING: u8 = 1;
 const SLOT_CAPTURED: u8 = 2;
 const SLOT_PROCESSING: u8 = 3;
 const SLOT_READY: u8 = 4;
+const SLOT_OUTPUTTING: u8 = 5;
 
 /// Mutable payload of a frame slot, accessed through `UnsafeCell` interior
 /// mutability. Only one thread writes at a time, enforced by the state machine.
@@ -69,6 +70,7 @@ unsafe impl Sync for FrameSlot {}
 /// Shared accessor for reading fields of an acquired slot.
 pub struct SlotRef<'a> {
     payload: &'a SlotPayload,
+    slot: &'a FrameSlot,
 }
 
 impl SlotRef<'_> {
@@ -106,6 +108,7 @@ impl SlotRef<'_> {
 /// Mutable accessor for writing into an acquired slot.
 pub struct SlotMut<'a> {
     payload: &'a mut SlotPayload,
+    slot: &'a FrameSlot,
 }
 
 impl SlotMut<'_> {
@@ -250,29 +253,41 @@ impl FramePipeline {
             // SAFETY: We just transitioned state from FREE -> WRITING, so no
             // other thread can access this slot's payload until we commit.
             let payload = unsafe { &mut *slot.payload.get() };
-            Some(SlotMut { payload })
+            Some(SlotMut { payload, slot })
         } else {
             None
         }
     }
 
-    /// Mark the current write slot as `CAPTURED` and advance `write_pos`.
+    /// Mark the acquired write slot as `CAPTURED` and advance `write_pos`.
     ///
     /// Must be called after a successful `try_acquire_write` + filling the slot.
-    pub fn commit_write(&self) {
-        let idx = self.write_pos.load(Ordering::Relaxed) % self.capacity;
-        self.slots[idx]
+    pub fn commit_write(&self, slot: SlotMut<'_>) {
+        if slot
+            .slot
             .state
-            .store(SLOT_CAPTURED, Ordering::Release);
-        self.write_pos.fetch_add(1, Ordering::Relaxed);
+            .compare_exchange(
+                SLOT_WRITING,
+                SLOT_CAPTURED,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            self.write_pos.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Roll back a write: return the current write slot to `FREE` without
     /// advancing `write_pos`. Used when the capture callback signals end of
     /// stream.
-    pub fn rollback_write(&self) {
-        let idx = self.write_pos.load(Ordering::Relaxed) % self.capacity;
-        self.slots[idx].state.store(SLOT_FREE, Ordering::Release);
+    pub fn rollback_write(&self, slot: SlotMut<'_>) {
+        let _ = slot.slot.state.compare_exchange(
+            SLOT_WRITING,
+            SLOT_FREE,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
     }
 
     /// Try to acquire the next captured slot for processing (non-blocking).
@@ -297,17 +312,27 @@ impl FramePipeline {
             // SAFETY: We just transitioned state from CAPTURED -> PROCESSING;
             // the write stage has already released the slot.
             let payload = unsafe { &mut *slot.payload.get() };
-            Some(SlotMut { payload })
+            Some(SlotMut { payload, slot })
         } else {
             None
         }
     }
 
-    /// Mark the current read slot as `READY` and advance `read_pos`.
-    pub fn commit_read(&self) {
-        let idx = self.read_pos.load(Ordering::Relaxed) % self.capacity;
-        self.slots[idx].state.store(SLOT_READY, Ordering::Release);
-        self.read_pos.fetch_add(1, Ordering::Relaxed);
+    /// Mark the acquired read slot as `READY` and advance `read_pos`.
+    pub fn commit_read(&self, slot: SlotMut<'_>) {
+        if slot
+            .slot
+            .state
+            .compare_exchange(
+                SLOT_PROCESSING,
+                SLOT_READY,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            self.read_pos.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Try to acquire the next ready slot for output (non-blocking).
@@ -317,25 +342,44 @@ impl FramePipeline {
         let idx = self.output_pos.load(Ordering::Relaxed) % self.capacity;
         let slot = &self.slots[idx];
 
-        if slot.state.load(Ordering::Acquire) == SLOT_READY {
+        if slot
+            .state
+            .compare_exchange(
+                SLOT_READY,
+                SLOT_OUTPUTTING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
             // SAFETY: The slot is in READY state -- the process stage has
             // finished writing. The output stage only reads. We do not
             // transition to a separate "outputting" state because the output
             // stage is single-consumer; it will call `commit_output` before
             // advancing.
             let payload = unsafe { &*slot.payload.get() };
-            Some(SlotRef { payload })
+            Some(SlotRef { payload, slot })
         } else {
             None
         }
     }
 
-    /// Mark the current output slot as `FREE` (recycle) and advance
+    /// Mark the acquired output slot as `FREE` (recycle) and advance
     /// `output_pos`.
-    pub fn commit_output(&self) {
-        let idx = self.output_pos.load(Ordering::Relaxed) % self.capacity;
-        self.slots[idx].state.store(SLOT_FREE, Ordering::Release);
-        self.output_pos.fetch_add(1, Ordering::Relaxed);
+    pub fn commit_output(&self, slot: SlotRef<'_>) {
+        if slot
+            .slot
+            .state
+            .compare_exchange(
+                SLOT_OUTPUTTING,
+                SLOT_FREE,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            self.output_pos.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Number of slots in the ring.
@@ -397,19 +441,19 @@ where
                     }));
                     match keep_going {
                         Ok(true) => {
-                            pipeline.commit_write();
+                            pipeline.commit_write(slot);
                             produced += 1;
                             captured_count.store(produced, Ordering::Release);
                         }
                         Ok(false) => {
-                            pipeline.rollback_write();
+                            pipeline.rollback_write(slot);
                             break;
                         }
                         Err(payload) => {
                             let msg = panic_message(&payload);
                             eprintln!("[yscv-video] capture stage panicked: {msg} — stopping");
                             panic_capture.fetch_add(1, Ordering::Relaxed);
-                            pipeline.rollback_write();
+                            pipeline.rollback_write(slot);
                             break; // capture panic is terminal for this source
                         }
                     }
@@ -440,7 +484,7 @@ where
                     }
                     // Always commit so the slot flows downstream — dropping
                     // would deadlock the ring.
-                    pipeline.commit_read();
+                    pipeline.commit_read(slot);
                     done += 1;
                     processed_count.store(done, Ordering::Release);
                 } else if capture_done.load(Ordering::Acquire)
@@ -471,7 +515,7 @@ where
                         panic_output.fetch_add(1, Ordering::Relaxed);
                     }
                     // Always commit so the slot is recycled back to FREE.
-                    pipeline.commit_output();
+                    pipeline.commit_output(slot_ref);
                     done += 1;
                     outputted_count.store(done, Ordering::Release);
                 } else if capture_done.load(Ordering::Acquire)

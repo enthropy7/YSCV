@@ -45,6 +45,7 @@ use crate::core::error::KernelError;
 /// Returns the output `NCHWc [N, Cb, H, W, block]` tagged with the same
 /// block size as the input.
 #[allow(clippy::too_many_arguments)]
+#[allow(unsafe_code)]
 /// K.3: pass `prepacked_dw = Some(&packed)` to use blocked `[C_blocks, KH, KW, block]`
 /// weight layout (tighter strides → L1-resident kernel weights during inner loop).
 /// Pass `None` to fall back to KHWC tensor layout (all existing callers use `None`).
@@ -151,7 +152,8 @@ pub fn conv2d_nchwc_dw3x3_s1_same_pad(
             && crate::host_cpu().features.avx512f
             && !nchwc_dw3x3_nopad_disabled()
         {
-            let mut out = AlignedVec::<f32>::uninitialized(out_total);
+            // SAFETY: the AVX-512 kernel writes every used output cell before use.
+            let mut out = unsafe { AlignedVec::<f32>::uninitialized(out_total) };
             let out_slice = out.as_mut_slice();
             if cb_used < cb {
                 // Zero only the tail channel-blocks; the inner kernel writes

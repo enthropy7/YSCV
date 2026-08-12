@@ -759,7 +759,8 @@ pub(crate) fn exec_fused_pw_dw(
         let out_w = (in_w + 2 * dw_pad - dw_k) / dw_sw_early + 1;
         let out_len = batch * out_h * out_w * c_exp;
         #[allow(unsafe_code)]
-        let mut out = yscv_tensor::AlignedVec::<f32>::uninitialized(out_len);
+        // SAFETY: the fused convolution writes every output element before use.
+        let mut out = unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(out_len) };
         if dw_k == 5 {
             yscv_kernels::fused_pw_expand_dw_5x5(yscv_kernels::FusedPwDw5x5 {
                 input: pw_input_nhwc.data(),
@@ -1400,7 +1401,8 @@ pub(crate) fn exec_fused_pw_dw_pw_reduce(
         (t, leave_nchwc_output)
     } else {
         #[allow(unsafe_code)]
-        let mut out = yscv_tensor::AlignedVec::<f32>::uninitialized(out_len);
+        // SAFETY: the fused convolution writes every output element before use.
+        let mut out = unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(out_len) };
         let kernel_args = yscv_kernels::FusedPwDwPwReduce {
             input: pw_input_nhwc.data(),
             pw_expand_weight: pw_expand_weight.data(),
