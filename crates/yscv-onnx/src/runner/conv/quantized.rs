@@ -384,7 +384,11 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     && c_in == group_usize
                     && kh == kw
                     && (kh == 3 || kh == 5)
-                    && ((sh == 1 && sw == 1) || (sh == 2 && sw == 2 && ih <= 64))
+                    // The NCHW depthwise kernel (path above) handles large
+                    // stride-2 planes, but only for NCHW input; an NHWC-resident
+                    // activation must take this NHWC kernel regardless of size
+                    // (otherwise it degrades to the scalar generic path).
+                    && ((sh == 1 && sw == 1) || (sh == 2 && sw == 2 && (ih <= 64 || x_is_nhwc)))
                     && let Some(dw_weight) = env.prepacked_i8_depthwise(&node.inputs[3])
                 {
                     let p = yscv_kernels::DepthwiseI8Params {
