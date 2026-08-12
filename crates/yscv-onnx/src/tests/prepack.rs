@@ -232,6 +232,124 @@ fn a_conv_weight_shared_by_two_branches_computes_the_same() {
     );
 }
 
+/// Two towers sharing every weight compute the same run in parallel as in
+/// sequence.
+///
+/// The Siamese tracker shape, built rather than downloaded: a real one is
+/// exported as separate backbone and head files, so the two-input graph that
+/// makes both hazards reachable exists only in the host code that calls the
+/// backbone twice, and no single file contains it.
+///
+/// Two things meet here that nothing else in the suite reaches. Every Conv
+/// weight is read by both towers, at a dozen convs rather than one. And
+/// `node_branches` is non-empty, so the runner forks the environment and runs
+/// the towers concurrently — which means each fork carries the packed-weight
+/// tables by reference, and a fork that lost them would read ONNX-native bytes
+/// as channel-last.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
+#[test]
+fn siamese_towers_sharing_weights_compute_the_same_forked() {
+    let _env = super::equivalence::lock_env();
+    let bytes = siamese_model();
+
+    let model = load_onnx_model(&bytes).expect("load");
+    assert!(
+        !model.runtime_index.node_branches.is_empty(),
+        "fixture must split into two towers, or the fork never happens"
+    );
+
+    let mut rng = Lcg::new(0x51A_3E5E);
+    let mut feed = FxHashMap::default();
+    feed.insert("x0".to_string(), rng.tensor(vec![1, 8, 8, 8]));
+    feed.insert("x1".to_string(), rng.tensor(vec![1, 8, 8, 8]));
+
+    // SAFETY: `set_var`/`remove_var` are not thread-safe and `cargo test` runs
+    // tests concurrently. The `EnvGuard` held for this whole test proves this
+    // thread has exclusive use of the environment, and both variables are
+    // cleared before it returns.
+    let run = |var: &str| {
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var(var, "1");
+        }
+        let out = run_onnx_model(&model, feed.clone());
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::remove_var(var);
+        }
+        out.unwrap_or_else(|e| panic!("{var}: run: {e}"))
+    };
+
+    // Forking must not change arithmetic: the towers touch disjoint
+    // activations, and share only weights, which nobody writes.
+    assert_outputs_match(
+        "siamese towers, forked vs sequential",
+        &run("YSCV_NO_TOWER_PARALLEL"),
+        &run("YSCV_FORCE_TOWER_PARALLEL"),
+        Tolerance::Exact,
+    );
+}
+
+/// Two identical 12-node towers over separate inputs, sharing all six weights,
+/// merged by an `Add`. Sized past the runner's 10-node-per-branch floor for
+/// splitting, and covering all three packed layouts in each tower.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
+fn siamese_model() -> Vec<u8> {
+    let mut nodes = Vec::new();
+    for t in 0..2 {
+        // Same weight names in both towers — that is the point.
+        let layers: [(&str, i64, i64); 6] = [
+            ("w_stem", 1, 3),
+            ("w_dw", 8, 3),
+            ("w_pw", 1, 1),
+            ("w_grp", 2, 3),
+            ("w_pw2", 1, 1),
+            ("w_head", 1, 3),
+        ];
+        let mut cur = format!("x{t}");
+        for (i, (w, group, k)) in layers.iter().enumerate() {
+            let c_out = format!("t{t}_c{i}");
+            let r_out = format!("t{t}_r{i}");
+            nodes.push(conv(
+                &format!("t{t}_conv{i}"),
+                vec![&cur, w],
+                &c_out,
+                *group,
+                *k,
+            ));
+            nodes.push(onnx::NodeProto {
+                op_type: Some("Relu".into()),
+                name: Some(format!("t{t}_relu{i}")),
+                input: vec![c_out],
+                output: vec![r_out.clone()],
+                ..Default::default()
+            });
+            cur = r_out;
+        }
+    }
+    nodes.push(onnx::NodeProto {
+        op_type: Some("Add".into()),
+        name: Some("merge".into()),
+        input: vec!["t0_r5".into(), "t1_r5".into()],
+        output: vec!["y".into()],
+        ..Default::default()
+    });
+
+    build_minimal_onnx_model(
+        nodes,
+        vec![
+            weight("w_stem", vec![8, 8, 3, 3], 0x11),
+            weight("w_dw", vec![8, 1, 3, 3], 0x22),
+            weight("w_pw", vec![8, 8, 1, 1], 0x33),
+            weight("w_grp", vec![8, 4, 3, 3], 0x44),
+            weight("w_pw2", vec![8, 8, 1, 1], 0x55),
+            weight("w_head", vec![8, 8, 3, 3], 0x66),
+        ],
+        vec!["x0", "x1"],
+        vec!["y"],
+    )
+}
+
 /// A Conv that an optimizer pass has renamed still gets its weight packed.
 ///
 /// `fuse_conv_relu` rewrites `Conv` to `Conv_Relu`, and the plan is built after
