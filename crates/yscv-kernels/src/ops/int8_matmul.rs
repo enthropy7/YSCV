@@ -487,11 +487,16 @@ unsafe fn widen_dot_1col(ap: *const i8, bp: *const i8, k: usize) -> i32 {
 /// is the transposed RHS `[N, K]` (contiguous K per column). No
 /// `dotprod`/`i8mm` needed — this is the A53-class path.
 ///
-/// The N loop is blocked by 4 so four **independent** `vpadalq` accumulator
-/// chains are live at once; the shared `a` half-vectors (`avl`/`avh`) are
-/// loaded once and reused across the four columns. On an in-order A53 the
-/// independent chains hide the ~4-cycle `vmull`/`vpadalq` latency that a
-/// single-chain dot stalls on. Bit-identical to the scalar reference.
+/// A 4×4 register tile is the hot core (XNNPACK-style MR×NR blocking adapted
+/// to plain NEON): 4 rows of `a` × 4 columns of `bt`, each of the 16 `[r,c]`
+/// products accumulated into its own `vpadalq` chain. The four `a` and four
+/// `bt` half-vectors are loaded once per k-step and reused across the tile, so
+/// each `bt` panel load is shared by 4 rows (a 4× cut in RHS traffic) and each
+/// `a` load by 4 columns. On the in-order A53 the 16 independent chains fully
+/// hide the ~4-cycle `vmull`/`vpadalq` latency that the single-chain dot
+/// stalls on. Row/column remainders fall to the original 1×4 blocking.
+/// Bit-identical to the scalar reference — integer accumulation only, and the
+/// k-order per `[r,c]` is unchanged.
 ///
 /// SAFETY: `a.len() >= m*k`, `bt.len() >= n*k`, `out.len() >= m*n`.
 #[cfg(target_arch = "aarch64")]
@@ -499,7 +504,102 @@ unsafe fn widen_dot_1col(ap: *const i8, bp: *const i8, k: usize) -> i32 {
 unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
     use std::arch::aarch64::*;
     unsafe {
-        for i in 0..m {
+        let ab = a.as_ptr();
+        let bb = bt.as_ptr();
+        let mut i = 0;
+        // 4-row register-tiled core.
+        while i + 4 <= m {
+            let ap = [
+                ab.add(i * k),
+                ab.add((i + 1) * k),
+                ab.add((i + 2) * k),
+                ab.add((i + 3) * k),
+            ];
+            let mut j = 0;
+            while j + 4 <= n {
+                let bp = [
+                    bb.add(j * k),
+                    bb.add((j + 1) * k),
+                    bb.add((j + 2) * k),
+                    bb.add((j + 3) * k),
+                ];
+                let mut acc = [[vdupq_n_s32(0); 4]; 4];
+                let mut kk = 0;
+                while kk + 16 <= k {
+                    let al = [
+                        vget_low_s8(vld1q_s8(ap[0].add(kk))),
+                        vget_low_s8(vld1q_s8(ap[1].add(kk))),
+                        vget_low_s8(vld1q_s8(ap[2].add(kk))),
+                        vget_low_s8(vld1q_s8(ap[3].add(kk))),
+                    ];
+                    let ah = [
+                        vget_high_s8(vld1q_s8(ap[0].add(kk))),
+                        vget_high_s8(vld1q_s8(ap[1].add(kk))),
+                        vget_high_s8(vld1q_s8(ap[2].add(kk))),
+                        vget_high_s8(vld1q_s8(ap[3].add(kk))),
+                    ];
+                    for (c, &bpc) in bp.iter().enumerate() {
+                        let bv = vld1q_s8(bpc.add(kk));
+                        let bl = vget_low_s8(bv);
+                        let bh = vget_high_s8(bv);
+                        for r in 0..4 {
+                            acc[r][c] = vpadalq_s16(acc[r][c], vmull_s8(al[r], bl));
+                            acc[r][c] = vpadalq_s16(acc[r][c], vmull_s8(ah[r], bh));
+                        }
+                    }
+                    kk += 16;
+                }
+                if kk + 8 <= k {
+                    let av = [
+                        vld1_s8(ap[0].add(kk)),
+                        vld1_s8(ap[1].add(kk)),
+                        vld1_s8(ap[2].add(kk)),
+                        vld1_s8(ap[3].add(kk)),
+                    ];
+                    for (c, &bpc) in bp.iter().enumerate() {
+                        let bv = vld1_s8(bpc.add(kk));
+                        for r in 0..4 {
+                            acc[r][c] = vpadalq_s16(acc[r][c], vmull_s8(av[r], bv));
+                        }
+                    }
+                    kk += 8;
+                }
+                let mut s = [[0_i32; 4]; 4];
+                for r in 0..4 {
+                    for c in 0..4 {
+                        s[r][c] = vaddvq_s32(acc[r][c]);
+                    }
+                }
+                while kk < k {
+                    for (r, &apr) in ap.iter().enumerate() {
+                        let av = *apr.add(kk) as i32;
+                        for (c, &bpc) in bp.iter().enumerate() {
+                            s[r][c] += av * (*bpc.add(kk) as i32);
+                        }
+                    }
+                    kk += 1;
+                }
+                for (r, sr) in s.iter().enumerate() {
+                    let o = (i + r) * n + j;
+                    out[o] = sr[0];
+                    out[o + 1] = sr[1];
+                    out[o + 2] = sr[2];
+                    out[o + 3] = sr[3];
+                }
+                j += 4;
+            }
+            // Column remainder for these 4 rows.
+            while j < n {
+                let bpj = bb.add(j * k);
+                for (r, &apr) in ap.iter().enumerate() {
+                    out[(i + r) * n + j] = widen_dot_1col(apr, bpj, k);
+                }
+                j += 1;
+            }
+            i += 4;
+        }
+        // Row remainder: original 1×4 blocking.
+        while i < m {
             let ap = a.as_ptr().add(i * k);
             let mut j = 0;
             while j + 4 <= n {
@@ -561,6 +661,7 @@ unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out
                 out[i * n + j] = widen_dot_1col(ap, bt.as_ptr().add(j * k), k);
                 j += 1;
             }
+            i += 1;
         }
     }
 }
