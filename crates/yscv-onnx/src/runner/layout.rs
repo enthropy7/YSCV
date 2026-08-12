@@ -358,13 +358,52 @@ fn execute_node_with_layout_kind_inner(
             .iter()
             .any(|n| !n.is_empty() && !env.is_nhwc(n) && env.get(n).is_some_and(|t| t.rank() == 4));
         if has_nhwc && has_nchw_4d {
-            // Mixed 4D layouts: convert all to NCHW
-            for name in &node.inputs {
-                if !name.is_empty() {
-                    ensure_nchw(env, name)?;
+            // Mixed 4D layouts. When every NCHW-4D operand is 1×1-spatial
+            // (`[N,C,1,1]` — the Squeeze-Excite gate broadcast against an
+            // `[N,H,W,C]` main), promote those small operands to NHWC instead
+            // of transposing the large NHWC main to NCHW. `[N,C,1,1]` and
+            // `[N,1,1,C]` share byte order (C-contiguous, HW=1), so the reshape
+            // is O(1) and the whole op stays NHWC — no big transpose, and the
+            // int8 stream survives the SE block. If any NCHW-4D operand has
+            // real spatial extent, fall back to coercing everything to NCHW.
+            let nchw_4d_all_1x1 = node.inputs.iter().all(|name| {
+                name.is_empty()
+                    || env.is_nhwc(name)
+                    || match env.get(name) {
+                        Some(t) if t.rank() == 4 => t.shape()[2] == 1 && t.shape()[3] == 1,
+                        _ => true,
+                    }
+            });
+            if nchw_4d_all_1x1 {
+                let to_promote: Vec<(String, Vec<usize>)> = node
+                    .inputs
+                    .iter()
+                    .filter(|name| !name.is_empty() && !env.is_nhwc(name))
+                    .filter_map(|name| {
+                        let s = env.get(name)?.shape();
+                        (s.len() == 4).then(|| (name.clone(), vec![s[0], 1, 1, s[1]]))
+                    })
+                    .collect();
+                for (name, new_shape) in to_promote {
+                    if let Some(t) = env.get(&name) {
+                        let reshaped =
+                            t.reshape(new_shape).map_err(|e| OnnxError::DecodeFailed {
+                                message: e.to_string(),
+                            })?;
+                        env.insert(name.clone(), reshaped);
+                        env.mark_nhwc(&name);
+                    }
                 }
+                true
+            } else {
+                // Mixed 4D layouts: convert all to NCHW
+                for name in &node.inputs {
+                    if !name.is_empty() {
+                        ensure_nchw(env, name)?;
+                    }
+                }
+                false
             }
-            false
         } else {
             has_nhwc
         }
