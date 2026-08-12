@@ -480,7 +480,8 @@ pub fn conv2d_nhwc_pointwise_with_residual_relu(
         });
     }
     #[allow(unsafe_code)]
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
     let m = plan.batch * plan.out_h * plan.out_w;
     let k = plan.in_channels;
     let n = plan.out_channels;
@@ -583,7 +584,8 @@ pub fn conv2d_nhwc_with_activation_prepacked(
         && std::env::var("YSCV_NO_FIRST_LAYER_KERNEL").is_err()
     {
         #[allow(unsafe_code)]
-        let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+        // SAFETY: convolution writes every output element before returning.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
         super::first_layer_3x3::conv2d_nhwc_3ch_3x3_s2_padded(
             input.data(),
             kernel.data(),
@@ -613,7 +615,8 @@ pub fn conv2d_nhwc_with_activation_prepacked(
     // This path is zero-copy on inputs and avoids per-pixel kernel loops.
     if plan.kernel_h == 1 && plan.kernel_w == 1 && plan.stride_h == 1 && plan.stride_w == 1 {
         #[allow(unsafe_code)]
-        let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+        // SAFETY: convolution writes every output element before returning.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
         let m = plan.batch * plan.out_h * plan.out_w;
         let k = plan.in_channels;
         let n = plan.out_channels;
@@ -722,7 +725,8 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             < direct_conv_work_threshold()
     {
         #[allow(unsafe_code)]
-        let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+        // SAFETY: convolution writes every output element before returning.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
         #[allow(unsafe_code)]
         unsafe {
             conv2d_3x3_direct_neon(
@@ -772,7 +776,8 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             < direct_conv_work_threshold()
     {
         #[allow(unsafe_code)]
-        let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+        // SAFETY: convolution writes every output element before returning.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
         #[allow(unsafe_code)]
         unsafe {
             conv2d_3x3_direct_avx(
@@ -821,7 +826,8 @@ pub fn conv2d_nhwc_with_activation_prepacked(
             < direct_conv_work_threshold()
     {
         #[allow(unsafe_code)]
-        let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+        // SAFETY: convolution writes every output element before returning.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
         #[allow(unsafe_code)]
         unsafe {
             conv2d_3x3_direct_sse(
@@ -889,7 +895,8 @@ pub fn conv2d_nhwc_with_activation_prepacked(
 
     // SAFETY: `conv2d_nhwc_row` writes every element in each output row.
     #[allow(unsafe_code)]
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
 
     let total_rows = plan.batch * plan.out_h;
     let nthreads = super::config::available_threads(thread_pool);
@@ -961,6 +968,7 @@ pub fn depthwise_conv2d_nhwc_with_config_and_pool(
 }
 
 /// NHWC depthwise convolution with a fused activation, explicit config, and thread pool.
+#[allow(unsafe_code)]
 pub fn depthwise_conv2d_nhwc_with_activation_with_config_and_pool(
     input: &Tensor,
     kernel: &Tensor,
@@ -984,7 +992,8 @@ pub fn depthwise_conv2d_nhwc_with_activation_with_config_and_pool(
         .map_err(Into::into);
     }
 
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
 
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
         super::super::scope_ctx::par_chunks_mut_dispatch(
@@ -1054,6 +1063,7 @@ pub fn depthwise_conv2d_nhwc_padded_with_config_and_pool(
 }
 
 /// Padded NHWC depthwise convolution with fused activation, explicit config, and thread pool.
+#[allow(unsafe_code)]
 pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
     input: &Tensor,
     kernel: &Tensor,
@@ -1174,7 +1184,8 @@ pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
         && !cfg!(miri)
         && crate::host_cpu().features.avx512f
     {
-        let mut output = AlignedVec::<f32>::uninitialized(output_len);
+        // SAFETY: convolution writes every output element before returning.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
         depthwise3x3_nhwc_c16_avx512(
             in_data,
             kernel_data,
@@ -1199,7 +1210,8 @@ pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
             .map_err(Into::into);
     }
 
-    let mut output = AlignedVec::<f32>::uninitialized(output_len);
+    // SAFETY: convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
 
     // Interior region where the full kernel footprint is guaranteed to be in
     // bounds; this lets us skip per-tap boundary checks on most pixels.
@@ -1912,7 +1924,7 @@ pub fn fused_dw_pw_nhwc_streaming(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unsafe_code)]
 fn fused_dw_pw_nhwc_true_fused_dm1(
     input: &[f32],
     dw_kernel: &[f32],
@@ -1931,7 +1943,8 @@ fn fused_dw_pw_nhwc_true_fused_dm1(
     let total_rows = batch * out_h;
     let pw_row_len = out_w * pw_out_ch;
     let output_len = batch * out_h * pw_row_len;
-    let mut output = AlignedVec::<f32>::uninitialized(output_len);
+    // SAFETY: convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
 
     for row_idx in 0..total_rows {
         let batch_idx = row_idx / out_h;
@@ -2014,7 +2027,8 @@ fn fused_dw_pw_nhwc(
     let row_batch = fused_dw_pw_row_batch(out_h, out_w, dw_channels);
     let dw_band_len = row_batch * dw_row_len;
 
-    let mut output = AlignedVec::<f32>::uninitialized(output_len);
+    // SAFETY: convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
 
     let pw_bias_ptr = pw_bias.map(|b| b.as_ptr() as usize).unwrap_or(0);
     let pw_has_bias = pw_bias.is_some();
@@ -2141,7 +2155,8 @@ fn fused_dw_pw_nhwc_padded_dm1(
     let output_len = batch * out_h * pw_row_len;
     let row_batch = fused_dw_pw_row_batch(out_h, out_w, dw_channels);
     let dw_band_len = row_batch * dw_row_len;
-    let mut output = AlignedVec::<f32>::uninitialized(output_len);
+    // SAFETY: convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
 
     let pw_bias_ptr = pw_bias.map(|b| b.as_ptr() as usize).unwrap_or(0);
     let pw_has_bias = pw_bias.is_some();

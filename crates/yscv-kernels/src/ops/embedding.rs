@@ -8,6 +8,7 @@ use super::super::error::KernelError;
 /// `indices`: `[*]` — flat tensor of integer indices (stored as f32)
 ///
 /// Returns: `[*indices_shape, embed_dim]`
+#[allow(unsafe_code)]
 pub fn embedding_lookup(weight: &Tensor, indices: &Tensor) -> Result<Tensor, KernelError> {
     let w_shape = weight.shape();
     if w_shape.len() != 2 {
@@ -21,7 +22,8 @@ pub fn embedding_lookup(weight: &Tensor, indices: &Tensor) -> Result<Tensor, Ker
     let idx_data = indices.data();
 
     let num_indices = idx_data.len();
-    let mut output = AlignedVec::<f32>::uninitialized(num_indices * embed_dim);
+    // SAFETY: embedding lookup writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(num_indices * embed_dim) };
 
     for (i, &idx_f) in idx_data.iter().enumerate() {
         let idx = idx_f as usize;
@@ -47,6 +49,7 @@ pub fn embedding_lookup(weight: &Tensor, indices: &Tensor) -> Result<Tensor, Ker
 /// During inference (`training=false`), returns input unchanged.
 /// Uses xorshift64 PRNG with given seed for deterministic masking.
 /// Surviving elements are scaled by `1 / (1 - p)` (inverted dropout).
+#[allow(unsafe_code)]
 pub fn dropout(input: &Tensor, p: f32, seed: u64, training: bool) -> Result<Tensor, KernelError> {
     if !training {
         return Ok(input.clone());
@@ -61,7 +64,8 @@ pub fn dropout(input: &Tensor, p: f32, seed: u64, training: bool) -> Result<Tens
 
     let scale = 1.0 / (1.0 - p);
     let in_data = input.data();
-    let mut output = AlignedVec::<f32>::uninitialized(in_data.len());
+    // SAFETY: embedding lookup writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(in_data.len()) };
 
     // Threshold in u64 space: values below this are dropped.
     let threshold = (p as f64 * u64::MAX as f64) as u64;

@@ -24,7 +24,8 @@ impl Tensor {
         let rows = self.shape()[0];
         let cols = self.shape()[1];
         // SAFETY: every element is written by the tiled loop below before we read.
-        let mut out_data = AlignedVec::<f32>::uninitialized(rows * cols);
+        // SAFETY: the reshape operation writes every output element before use.
+        let mut out_data = unsafe { AlignedVec::<f32>::uninitialized(rows * cols) };
         let src = self.data();
 
         // Tiled transpose with 8x8 blocks for cache efficiency.
@@ -94,7 +95,8 @@ impl Tensor {
             let (n, h, w, c) = (src_shape[0], src_shape[1], src_shape[2], src_shape[3]);
             let hw = h * w;
             let src = self.data();
-            let mut dst = AlignedVec::<f32>::uninitialized(out_count);
+            // SAFETY: every output element is written by the operation.
+            let mut dst = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
             const TILE: usize = 32;
             #[allow(unsafe_code)]
             unsafe {
@@ -124,7 +126,8 @@ impl Tensor {
             let (n, c, h, w) = (src_shape[0], src_shape[1], src_shape[2], src_shape[3]);
             let hw = h * w;
             let src = self.data();
-            let mut dst = AlignedVec::<f32>::uninitialized(out_count);
+            // SAFETY: every output element is written by the operation.
+            let mut dst = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
             const TILE: usize = 32;
             #[allow(unsafe_code)]
             unsafe {
@@ -153,7 +156,8 @@ impl Tensor {
         if rank == 3 && axes == [0, 2, 1] {
             let (a, b, c) = (src_shape[0], src_shape[1], src_shape[2]);
             let src = self.data();
-            let mut dst = AlignedVec::<f32>::uninitialized(out_count);
+            // SAFETY: every output element is written by the operation.
+            let mut dst = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
             const TILE: usize = 32;
             #[allow(unsafe_code)]
             unsafe {
@@ -184,7 +188,8 @@ impl Tensor {
         if rank == 4 && axes == [0, 1, 3, 2] {
             let (nn, a, b, c) = (src_shape[0], src_shape[1], src_shape[2], src_shape[3]);
             let src = self.data();
-            let mut dst = AlignedVec::<f32>::uninitialized(out_count);
+            // SAFETY: every output element is written by the operation.
+            let mut dst = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
             const TILE: usize = 32;
             #[allow(unsafe_code)]
             unsafe {
@@ -217,7 +222,8 @@ impl Tensor {
         if rank == 4 && axes == [0, 2, 1, 3] {
             let (nn, a, b, c) = (src_shape[0], src_shape[1], src_shape[2], src_shape[3]);
             let src = self.data();
-            let mut dst = AlignedVec::<f32>::uninitialized(out_count);
+            // SAFETY: every output element is written by the operation.
+            let mut dst = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
             #[allow(unsafe_code)]
             unsafe {
                 let src_ptr = src.as_ptr();
@@ -243,7 +249,8 @@ impl Tensor {
         if rank == 4 && axes == [0, 3, 2, 1] {
             let (nn, a, b, d) = (src_shape[0], src_shape[1], src_shape[2], src_shape[3]);
             let src = self.data();
-            let mut dst = AlignedVec::<f32>::uninitialized(out_count);
+            // SAFETY: every output element is written by the operation.
+            let mut dst = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
             let src_a_stride = b * d;
             let dst_d_stride = b * a;
             const TILE: usize = 32;
@@ -276,7 +283,8 @@ impl Tensor {
         if rank == 2 && axes == [1, 0] {
             let (rows, cols) = (src_shape[0], src_shape[1]);
             let src = self.data();
-            let mut dst = AlignedVec::<f32>::uninitialized(out_count);
+            // SAFETY: every output element is written by the operation.
+            let mut dst = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
             const TILE: usize = 32;
             #[allow(unsafe_code)]
             unsafe {
@@ -391,7 +399,8 @@ impl Tensor {
 
         // Write directly into AlignedVec to avoid the double-copy through
         // Vec -> AlignedVec::from_vec.
-        let mut out_data = AlignedVec::<f32>::uninitialized(out_count);
+        // SAFETY: every output element is written by the operation.
+        let mut out_data = unsafe { AlignedVec::<f32>::uninitialized(out_count) };
 
         if inner == 1 && tensors.len() <= 8 {
             // Last-axis concat: write entire output in outer-major order.

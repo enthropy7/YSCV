@@ -810,7 +810,12 @@ impl RknnBackend {
     /// # Safety
     /// `fd` must be a valid DMA-BUF file descriptor. `virt` must point
     /// to the mmap'd userspace view of the same buffer.
-    pub fn wrap_fd(&self, fd: i32, virt: &mut [u8], offset: i32) -> Result<RknnMem, KernelError> {
+    pub unsafe fn wrap_fd(
+        &self,
+        fd: i32,
+        virt: &mut [u8],
+        offset: i32,
+    ) -> Result<RknnMem, KernelError> {
         let fn_ptr = self
             .funcs
             .create_mem_from_fd
@@ -842,7 +847,13 @@ impl RknnBackend {
     }
 
     /// Wrap a physical memory region (e.g. from DRM/IOMMU allocator).
-    pub fn wrap_phys(&self, phys: u64, virt: &mut [u8]) -> Result<RknnMem, KernelError> {
+    ///
+    /// # Safety
+    /// `phys` must identify the same allocation mapped by `virt`, and that
+    /// allocation must remain alive and not be concurrently accessed by the
+    /// NPU and CPU through incompatible references for the returned handle's
+    /// lifetime.
+    pub unsafe fn wrap_phys(&self, phys: u64, virt: &mut [u8]) -> Result<RknnMem, KernelError> {
         let fn_ptr = self
             .funcs
             .create_mem_from_phys
@@ -1371,7 +1382,7 @@ impl RknnMem {
     /// Caller must ensure no NPU inference is concurrently reading or
     /// writing this buffer. Use `mem_sync(ToDevice)` after writing and
     /// before `run_bound()`.
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
         let len = self.size() as usize;
         let ptr = self.virt_addr().cast::<u8>();
         // SAFETY: ptr is valid (checked at creation); len is correct;
@@ -1380,7 +1391,12 @@ impl RknnMem {
     }
 
     /// Immutable byte slice view.
-    pub fn as_slice(&self) -> &[u8] {
+    ///
+    /// # Safety
+    /// Caller must ensure the RKNN runtime is not concurrently mutating this
+    /// buffer (for example, wait for the inference that owns it and perform
+    /// `sync_from_device` first).
+    pub unsafe fn as_slice(&self) -> &[u8] {
         let len = self.size() as usize;
         let ptr = self.virt_addr().cast::<u8>();
         // SAFETY: ptr valid; len correct; shared reference.

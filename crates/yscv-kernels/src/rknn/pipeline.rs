@@ -467,7 +467,10 @@ impl RknnPipelinedPool {
                         ),
                     });
                 }
-                mem_buf.as_mut_slice().copy_from_slice(data);
+                // SAFETY: the previous in-flight frame for this slot was
+                // waited above, and the write lock prevents concurrent CPU
+                // access while the input buffer is populated.
+                unsafe { mem_buf.as_mut_slice() }.copy_from_slice(data);
                 mem_buf.sync_to_device()?;
             }
         }

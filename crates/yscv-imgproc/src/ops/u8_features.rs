@@ -985,9 +985,10 @@ fn bilateral_u8_parallel_scalar(
     let color_ptr = super::SendConstPtr(color_lut.as_ptr());
 
     let process_row = |y: usize| {
-        // SAFETY: pointer and length from validated image data; parallel rows are non-overlapping.
+        // SAFETY: source is shared for all workers; each worker gets only its
+        // own disjoint output row.
         let src = unsafe { std::slice::from_raw_parts(sp.ptr(), width * height) };
-        let dst = unsafe { std::slice::from_raw_parts_mut(dp.ptr(), width * height) };
+        let dst = unsafe { std::slice::from_raw_parts_mut(dp.ptr().add(y * width), width) };
         // SAFETY: pointer and length from validated LUT allocations.
         let spatial_lut = unsafe { std::slice::from_raw_parts(spatial_ptr.ptr(), d * d) };
         let color_lut = unsafe { std::slice::from_raw_parts(color_ptr.ptr(), 256) };

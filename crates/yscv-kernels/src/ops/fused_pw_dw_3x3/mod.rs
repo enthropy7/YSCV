@@ -229,7 +229,9 @@ pub fn fused_pw_expand_dw_3x3(
             // slots), so the initial contents are irrelevant.
             let pw_row_len = in_w * c_exp;
             #[allow(unsafe_code)]
-            let mut pw_ring_av = yscv_tensor::AlignedVec::<f32>::uninitialized(3 * pw_row_len);
+            // SAFETY: the fused kernel fills the ring before reading it.
+            let mut pw_ring_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(3 * pw_row_len) };
             let pw_ring: &mut [f32] = pw_ring_av.as_mut_slice();
 
             // Strip-mining: process `W_TILE` output columns at a time so
@@ -637,11 +639,17 @@ pub fn fused_pw_expand_dw_pw_reduce_3x3(args: FusedPwDwPwReduce<'_>) {
             // reduce writes the row. Slot bookkeeping (`slot_row_v2`) keeps
             // us from reading an unwritten slot.
             #[allow(unsafe_code)]
-            let mut pw_ring_av = yscv_tensor::AlignedVec::<f32>::uninitialized(pw_ring_size);
+            // SAFETY: the fused kernel fills the ring before reading it.
+            let mut pw_ring_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(pw_ring_size) };
             #[allow(unsafe_code)]
-            let mut dw_row_av = yscv_tensor::AlignedVec::<f32>::uninitialized(dw_row_size);
+            // SAFETY: the fused kernel fills the row before reading it.
+            let mut dw_row_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(dw_row_size) };
             #[allow(unsafe_code)]
-            let mut out_row_av = yscv_tensor::AlignedVec::<f32>::uninitialized(out_row_size);
+            // SAFETY: the fused kernel fills the row before reading it.
+            let mut out_row_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(out_row_size) };
             let pw_ring: &mut [f32] = pw_ring_av.as_mut_slice();
             let dw_row_scratch: &mut [f32] = dw_row_av.as_mut_slice();
             let out_row_scratch: &mut [f32] = out_row_av.as_mut_slice();
@@ -883,11 +891,16 @@ pub fn fused_pw_expand_dw_pw_reduce_3x3_nchwc_streaming(
     // NCHWc-blocked ring buffer (3 rows). Plus DW output row and PW-reduce
     // scratch row (padded c_out → trim on copy-out).
     #[allow(unsafe_code)]
-    let mut pw_ring = yscv_tensor::AlignedVec::<f32>::uninitialized(3 * pw_blocked_row_len);
+    // SAFETY: the fused kernel fills the ring before reading it.
+    let mut pw_ring =
+        unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(3 * pw_blocked_row_len) };
     #[allow(unsafe_code)]
-    let mut dw_row = yscv_tensor::AlignedVec::<f32>::uninitialized(dw_blocked_row_len);
+    // SAFETY: the fused kernel fills the row before reading it.
+    let mut dw_row = unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(dw_blocked_row_len) };
     #[allow(unsafe_code)]
-    let mut pw_red_row = yscv_tensor::AlignedVec::<f32>::uninitialized(pw_reduce_row_len);
+    // SAFETY: the fused kernel fills the row before reading it.
+    let mut pw_red_row =
+        unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(pw_reduce_row_len) };
     let pw_ring_slice = pw_ring.as_mut_slice();
     let dw_row_slice = dw_row.as_mut_slice();
     let pw_red_row_slice = pw_red_row.as_mut_slice();
@@ -1134,11 +1147,17 @@ pub fn fused_pw_expand_dw_pw_reduce_5x5(args: FusedPwDwPwReduce<'_>) {
             let out_row_size = if pad_needed { out_w * c_out_padded } else { 0 };
 
             #[allow(unsafe_code)]
-            let mut pw_ring_av = yscv_tensor::AlignedVec::<f32>::uninitialized(pw_ring_size);
+            // SAFETY: the fused kernel fills the ring before reading it.
+            let mut pw_ring_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(pw_ring_size) };
             #[allow(unsafe_code)]
-            let mut dw_row_av = yscv_tensor::AlignedVec::<f32>::uninitialized(dw_row_size);
+            // SAFETY: the fused kernel fills the row before reading it.
+            let mut dw_row_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(dw_row_size) };
             #[allow(unsafe_code)]
-            let mut out_row_av = yscv_tensor::AlignedVec::<f32>::uninitialized(out_row_size);
+            // SAFETY: the fused kernel fills the row before reading it.
+            let mut out_row_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(out_row_size) };
             let pw_ring: &mut [f32] = pw_ring_av.as_mut_slice();
             let dw_row_scratch: &mut [f32] = dw_row_av.as_mut_slice();
             let out_row_scratch: &mut [f32] = out_row_av.as_mut_slice();
@@ -1409,7 +1428,9 @@ pub fn fused_pw_expand_dw_5x5(args: FusedPwDw5x5<'_>) {
         let run_rows = |out_chunk: &mut [f32], oh_start: usize, oh_end: usize| {
             let pw_row_len = in_w * c_exp;
             #[allow(unsafe_code)]
-            let mut pw_ring_av = yscv_tensor::AlignedVec::<f32>::uninitialized(5 * pw_row_len);
+            // SAFETY: the fused kernel fills the ring before reading it.
+            let mut pw_ring_av =
+                unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(5 * pw_row_len) };
             let pw_ring: &mut [f32] = pw_ring_av.as_mut_slice();
 
             let pick_w_tile = || -> usize {
@@ -1602,7 +1623,9 @@ fn fused_pw_expand_dw_5x5_oc_tiled(args: FusedPwDw5x5<'_>) {
                 let c_tile = (c_exp - oc_start).min(oc_tile);
                 let pw_row_len = in_w * c_tile;
                 #[allow(unsafe_code)]
-                let mut pw_ring_av = yscv_tensor::AlignedVec::<f32>::uninitialized(5 * pw_row_len);
+                // SAFETY: the fused kernel fills the ring before reading it.
+                let mut pw_ring_av =
+                    unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(5 * pw_row_len) };
                 let pw_ring: &mut [f32] = pw_ring_av.as_mut_slice();
                 let mut slot_row: [Option<usize>; 5] = [None, None, None, None, None];
 

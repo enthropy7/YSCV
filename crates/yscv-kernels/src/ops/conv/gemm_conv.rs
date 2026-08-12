@@ -45,7 +45,8 @@ pub fn conv2d_nhwc_indirect_padded(
     let output_len = batch * out_h * out_w * c_out;
     let out_row_len = out_w * c_out;
 
-    let mut output = AlignedVec::<f32>::uninitialized(output_len);
+    // SAFETY: GEMM convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
     let in_data = input.data();
     let ker_data = kernel.data();
     let bias_data = bias.map(Tensor::data);
@@ -220,7 +221,8 @@ pub(super) fn conv2d_im2col_gemm_fused(
     // For 1×1 conv with stride 1, input IS the im2col matrix — zero-copy.
     if plan.kernel_h == 1 && plan.kernel_w == 1 && plan.stride_h == 1 && plan.stride_w == 1 {
         #[allow(unsafe_code)]
-        let mut output = AlignedVec::<f32>::uninitialized(m * n);
+        // SAFETY: GEMM writes every output element before use.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(m * n) };
         super::super::matmul::blas_sgemm_fused(
             &input[..m * k],
             kernel,
@@ -241,7 +243,8 @@ pub(super) fn conv2d_im2col_gemm_fused(
         .unwrap_or(m);
 
     #[allow(unsafe_code)]
-    let mut output = AlignedVec::<f32>::uninitialized(m * n);
+    // SAFETY: GEMM writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(m * n) };
 
     if m > tile_m * 2 {
         super::super::super::scope_ctx::par_chunks_mut_dispatch(
@@ -526,7 +529,8 @@ fn winograd_conv2d_nhwc(
 
     // SAFETY: every element written by the GEMM + output transform.
     #[allow(unsafe_code)]
-    let mut output = AlignedVec::<f32>::uninitialized(batch * out_h * out_w * c_out);
+    // SAFETY: GEMM convolution writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(batch * out_h * out_w * c_out) };
 
     for b in 0..batch {
         use crate::GemmEpilogue;
@@ -539,7 +543,8 @@ fn winograd_conv2d_nhwc(
         //    spread across the rayon pool.
         // SAFETY: every element is written by the input transform below.
         #[allow(unsafe_code)]
-        let mut v = AlignedVec::<f32>::uninitialized(16 * n_tiles * c_in);
+        // SAFETY: the packing kernel writes every temporary element before use.
+        let mut v = unsafe { AlignedVec::<f32>::uninitialized(16 * n_tiles * c_in) };
         let zero_row = vec![0.0f32; c_in];
         let v_base = v.as_mut_ptr() as usize;
         let process_in_tile = |tile_idx: usize, t_scratch: &mut [f32]| {
@@ -609,7 +614,8 @@ fn winograd_conv2d_nhwc(
         //    U[α] [c_in, c_out], M[α] [n_tiles, c_out].
         // SAFETY: every element is written by the 16 GEMMs (beta=0) below.
         #[allow(unsafe_code)]
-        let mut m_buf = AlignedVec::<f32>::uninitialized(16 * n_tiles * c_out);
+        // SAFETY: the packing kernel writes every temporary element before use.
+        let mut m_buf = unsafe { AlignedVec::<f32>::uninitialized(16 * n_tiles * c_out) };
         let epilogue = GemmEpilogue::IDENTITY;
         let config = ParallelMatmulConfig::default();
         for a in 0..16 {
@@ -765,7 +771,8 @@ pub fn conv2d_nhwc_padded(
     {
         let output_len = batch * out_h * out_w * c_out;
         #[allow(unsafe_code)]
-        let mut output = AlignedVec::<f32>::uninitialized(output_len);
+        // SAFETY: GEMM convolution writes every output element before returning.
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
         super::super::first_layer_3x3::conv2d_nhwc_3ch_3x3_s2_padded(
             in_data,
             kernel_data,
@@ -838,7 +845,8 @@ pub fn conv2d_nhwc_padded(
 
     // SAFETY: every element is written by blas_sgemm (beta=0) + bias add.
     #[allow(unsafe_code)]
-    let mut output = AlignedVec::<f32>::uninitialized(batch * m * n);
+    // SAFETY: GEMM writes every output element before use.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(batch * m * n) };
 
     for b in 0..batch {
         let in_slice = &in_data[b * in_h * in_w * c_in..(b + 1) * in_h * in_w * c_in];

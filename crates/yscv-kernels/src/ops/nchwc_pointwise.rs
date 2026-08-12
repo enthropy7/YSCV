@@ -23,6 +23,7 @@ use super::matmul::{GemmEpilogue, PackedB, blocked_gemm_nchwc_a_parallel};
 ///
 /// The caller supplies pre-allocated `output` (zeroed or uninitialized; the
 /// GEMM always writes every output element before the epilogue reads it).
+#[allow(unsafe_code)]
 pub fn nchwc_pw_compute(
     input_nchwc: &[f32],
     weight: &[f32],
@@ -78,7 +79,8 @@ pub fn nchwc_pw_compute(
                 activation,
             );
         } else {
-            let mut flat = AlignedVec::<f32>::uninitialized(spatial * out_channels);
+            // SAFETY: the pointwise kernel writes every flattened element before use.
+            let mut flat = unsafe { AlignedVec::<f32>::uninitialized(spatial * out_channels) };
             blocked_gemm_nchwc_a_parallel(
                 in_slice,
                 spatial,

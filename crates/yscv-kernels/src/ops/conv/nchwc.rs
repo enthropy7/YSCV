@@ -837,7 +837,7 @@ unsafe fn nchwc_pointwise_block8_neon(
 ///
 /// Output is tagged `Layout::NCHWc { block }` with shape
 /// `[N, C_out/block, H, W, block]`, padded C_out-side where needed.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unsafe_code)]
 fn conv2d_nchwc_pointwise_with_activation_impl(
     input: &Tensor,
     kernel: &Tensor,
@@ -917,7 +917,8 @@ fn conv2d_nchwc_pointwise_with_activation_impl(
     // tracker, all PW out_channels are multiples of 16; the assert
     // below guards against accidental tail breakage on other models.
     let mut output = if out_channels.is_multiple_of(block) {
-        AlignedVec::<f32>::uninitialized(out_len)
+        // SAFETY: the convolution kernel writes every output element before use.
+        unsafe { AlignedVec::<f32>::uninitialized(out_len) }
     } else {
         AlignedVec::<f32>::calloc(out_len)
     };
@@ -1015,7 +1016,9 @@ fn conv2d_nchwc_pointwise_with_activation_impl(
         // kernel is [1, 1, Ci, Co] flattened = [Ci * Co]. Treat as [K=Ci, N=Co].
         let out_slice = output.as_mut_slice();
         // flat_buf: [n_batch, spatial, out_channels] scratch for GEMM output.
-        let mut flat_buf = AlignedVec::<f32>::uninitialized(n_batch * spatial * out_channels);
+        // SAFETY: the packing kernel writes every temporary element before use.
+        let mut flat_buf =
+            unsafe { AlignedVec::<f32>::uninitialized(n_batch * spatial * out_channels) };
         for n_idx in 0..n_batch {
             let in_slice = &input_data[n_idx * in_n_stride..(n_idx + 1) * in_n_stride];
             let flat_out = &mut flat_buf.as_mut_slice()

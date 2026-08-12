@@ -6,7 +6,79 @@
 
 use super::hevc_cabac::{CabacDecoder, ContextModel};
 use super::hevc_decoder::{HevcPps, HevcPredMode, HevcSliceType, HevcSps};
-use super::hevc_inter::{HevcMvField, parse_inter_prediction};
+use super::hevc_inter::{HevcMvField, MvFieldView, parse_inter_prediction_view};
+use std::ops::{Index, IndexMut};
+
+/// Non-owning mutable raw-slice view used by the parallel decoder.
+///
+/// Unlike `&mut [T]`, copying this handle does not create a Rust reference to
+/// the entire allocation. Workers therefore only materialize element-sized
+/// references for the individual reads/writes performed by the decoder.
+#[derive(Clone, Copy)]
+pub(crate) struct RawSliceMut<T> {
+    ptr: *mut T,
+    len: usize,
+}
+
+// SAFETY: callers partition writes according to the codec's tile/row geometry;
+// the raw pointer itself carries no ownership and is only used in scoped work.
+#[allow(unsafe_code)]
+unsafe impl<T: Send> Send for RawSliceMut<T> {}
+#[allow(unsafe_code)]
+unsafe impl<T: Send> Sync for RawSliceMut<T> {}
+
+impl<T> RawSliceMut<T> {
+    #[inline]
+    pub(crate) fn from_slice(slice: &mut [T]) -> Self {
+        Self {
+            ptr: slice.as_mut_ptr(),
+            len: slice.len(),
+        }
+    }
+
+    /// Construct a view from a pointer whose allocation remains valid for the
+    /// duration of all accesses through the returned handle.
+    ///
+    /// # Safety
+    /// `ptr` must be valid for `len` elements and properly aligned. The caller
+    /// must enforce the aliasing and synchronization rules for each access.
+    #[allow(unsafe_code)]
+    pub(crate) unsafe fn from_raw_parts(ptr: *mut T, len: usize) -> Self {
+        Self { ptr, len }
+    }
+
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub(crate) fn ptr(self) -> *mut T {
+        self.ptr
+    }
+}
+
+#[allow(unsafe_code)]
+impl<T> Index<usize> for RawSliceMut<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        assert!(index < self.len, "raw slice index out of bounds");
+        // SAFETY: bounds and pointer validity are guaranteed by the view's
+        // constructor and the checked index above.
+        unsafe { &*self.ptr.add(index) }
+    }
+}
+
+#[allow(unsafe_code)]
+impl<T> IndexMut<usize> for RawSliceMut<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        assert!(index < self.len, "raw slice index out of bounds");
+        // SAFETY: bounds and pointer validity are guaranteed by the view's
+        // constructor and the checked index above.
+        unsafe { &mut *self.ptr.add(index) }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Context index offsets (ITU-T H.265, Table 9-4)
@@ -537,9 +609,20 @@ pub fn parse_transform_unit(
     sign_data_hiding_enabled: bool,
     out_buf: &mut [i16],
 ) {
+    // HEVC transform units are 4x4 through 32x32. This function is public and
+    // may be called with malformed input, so these checks must remain active in
+    // release builds before any raw-pointer write is performed.
+    if !(2..=5).contains(&log2_tu_size) {
+        return;
+    }
     let tu_size = 1u32 << log2_tu_size;
-    let num_coeffs = (tu_size * tu_size) as usize;
-    debug_assert!(out_buf.len() >= num_coeffs);
+    let num_coeffs = match (tu_size as usize).checked_mul(tu_size as usize) {
+        Some(n) => n,
+        None => return,
+    };
+    if out_buf.len() < num_coeffs {
+        return;
+    }
     // Zero only via pointer (avoids bounds check in fill)
     unsafe {
         std::ptr::write_bytes(out_buf.as_mut_ptr(), 0, num_coeffs);
@@ -1066,6 +1149,65 @@ pub fn decode_coding_tree_cabac(
     mv_field: &mut [HevcMvField],
     weight_table: Option<&super::hevc_params::HevcWeightTable>,
 ) {
+    let recon_luma = RawSliceMut::from_slice(recon_luma);
+    let recon_cb = RawSliceMut::from_slice(recon_cb);
+    let recon_cr = RawSliceMut::from_slice(recon_cr);
+    let mv_field = RawSliceMut::from_slice(mv_field);
+    // SAFETY: all views were constructed from live mutable slices above and
+    // the sequential wrapper invokes the decoder on one thread.
+    unsafe {
+        decode_coding_tree_cabac_raw(
+            state,
+            x,
+            y,
+            log2_cu_size,
+            depth,
+            max_depth,
+            sps,
+            pps,
+            slice_type,
+            pic_width,
+            pic_height,
+            recon_luma,
+            recon_cb,
+            recon_cr,
+            results,
+            dpb,
+            mv_field,
+            weight_table,
+        );
+    }
+}
+
+/// Raw-view implementation shared by the sequential and parallel decoders.
+///
+/// # Safety
+/// Every raw view must remain valid for the duration of this call. Callers
+/// must ensure that concurrent workers never write the same element and that
+/// the codec's reference-read synchronization is respected.
+#[allow(unsafe_code)]
+#[allow(clippy::too_many_arguments)]
+#[allow(unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn decode_coding_tree_cabac_raw(
+    state: &mut HevcSliceCabacState<'_>,
+    x: usize,
+    y: usize,
+    log2_cu_size: u8,
+    depth: u8,
+    max_depth: u8,
+    sps: &HevcSps,
+    pps: &HevcPps,
+    slice_type: HevcSliceType,
+    pic_width: usize,
+    pic_height: usize,
+    recon_luma: RawSliceMut<i16>,
+    mut recon_cb: RawSliceMut<i16>,
+    mut recon_cr: RawSliceMut<i16>,
+    results: &mut Vec<super::hevc_decoder::DecodedCu>,
+    dpb: &super::hevc_inter::HevcDpb,
+    mut mv_field: RawSliceMut<HevcMvField>,
+    weight_table: Option<&super::hevc_params::HevcWeightTable>,
+) {
     let cu_size = 1usize << log2_cu_size;
 
     // Out of picture bounds — skip
@@ -1091,7 +1233,7 @@ pub fn decode_coding_tree_cabac(
         let half = log2_cu_size - 1;
         let half_size = 1usize << half;
         let nd = depth + 1;
-        decode_coding_tree_cabac(
+        decode_coding_tree_cabac_raw(
             state,
             x,
             y,
@@ -1111,7 +1253,7 @@ pub fn decode_coding_tree_cabac(
             mv_field,
             weight_table,
         );
-        decode_coding_tree_cabac(
+        decode_coding_tree_cabac_raw(
             state,
             x + half_size,
             y,
@@ -1131,7 +1273,7 @@ pub fn decode_coding_tree_cabac(
             mv_field,
             weight_table,
         );
-        decode_coding_tree_cabac(
+        decode_coding_tree_cabac_raw(
             state,
             x,
             y + half_size,
@@ -1151,7 +1293,7 @@ pub fn decode_coding_tree_cabac(
             mv_field,
             weight_table,
         );
-        decode_coding_tree_cabac(
+        decode_coding_tree_cabac_raw(
             state,
             x + half_size,
             y + half_size,
@@ -1239,8 +1381,15 @@ pub fn decode_coding_tree_cabac(
             // from DPB reference frames.
             let min_pu = 4usize;
             let pic_w_pu = pic_width.div_ceil(min_pu);
-            let inter_mv =
-                parse_inter_prediction(state, sps, slice_type, mv_field, pic_w_pu, x, y, cu_size);
+            let inter_mv = {
+                // SAFETY: the view points at the live picture-wide motion
+                // field and is used only for bounded copy reads.
+                let mv_view =
+                    unsafe { MvFieldView::from_raw_parts(mv_field.ptr(), mv_field.len()) };
+                parse_inter_prediction_view(
+                    state, sps, slice_type, mv_view, pic_w_pu, x, y, cu_size,
+                )
+            };
 
             // Store MV in the picture-wide MV field for future merge candidates
             let pu_x = x / min_pu;
@@ -1394,7 +1543,7 @@ pub fn decode_coding_tree_cabac(
         // Fused reconstruct + writeback: write directly to picture buffer
         #[allow(unsafe_code)]
         unsafe {
-            let recon_ptr = recon_luma.as_mut_ptr();
+            let recon_ptr = recon_luma.ptr();
             for row in 0..actual_h {
                 let py = y + row;
                 if py >= pic_height {
@@ -1435,7 +1584,7 @@ pub fn decode_coding_tree_cabac(
 /// Build the top reference row for intra prediction.
 #[inline]
 fn build_top_ref(
-    recon: &[i16],
+    recon: RawSliceMut<i16>,
     x: usize,
     y: usize,
     block_size: usize,
@@ -1445,7 +1594,9 @@ fn build_top_ref(
     out[..block_size].fill(128);
     if y > 0 && x + block_size <= pic_width {
         let src = (y - 1) * pic_width + x;
-        out[..block_size].copy_from_slice(&recon[src..src + block_size]);
+        for i in 0..block_size {
+            out[i] = recon[src + i];
+        }
     } else if y > 0 {
         for i in 0..block_size {
             let px = x + i;
@@ -1459,7 +1610,7 @@ fn build_top_ref(
 /// Build the left reference column for intra prediction.
 #[inline]
 fn build_left_ref(
-    recon: &[i16],
+    recon: RawSliceMut<i16>,
     x: usize,
     y: usize,
     block_size: usize,
@@ -1689,6 +1840,19 @@ mod tests {
         let mut coeffs = [0i16; 16];
         parse_transform_unit(&mut state, 2, false, false, &mut coeffs);
         assert_eq!(coeffs.len(), 16);
+    }
+
+    #[test]
+    fn parse_tu_rejects_invalid_size_and_short_output() {
+        let data = [0xAAu8; 64];
+        let mut state = make_state(&data);
+        let mut invalid = [7i16; 16];
+        parse_transform_unit(&mut state, 1, true, false, &mut invalid);
+        assert_eq!(invalid, [7i16; 16]);
+
+        let mut short = [9i16; 15];
+        parse_transform_unit(&mut state, 2, true, false, &mut short);
+        assert_eq!(short, [9i16; 15]);
     }
 
     // -- Full CU parsing tests -----------------------------------------------

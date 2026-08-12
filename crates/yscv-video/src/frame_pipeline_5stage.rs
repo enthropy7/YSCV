@@ -7,9 +7,9 @@
 //!
 //! Design notes:
 //!
-//! - Each ring is a fixed-size array of `Slot<T>` with a head/tail
-//!   `AtomicUsize` pair. Single-producer, single-consumer per ring →
-//!   no CAS, no compare-and-swap loops.
+//! - Each ring is a fixed-size array of slots with per-slot sequence
+//!   numbers. The protocol remains allocation-free and also prevents an
+//!   accidental extra producer or consumer from racing on an `UnsafeCell`.
 //! - Per-stage `panic::catch_unwind` so a bad frame never deadlocks the
 //!   pipeline (counter incremented, frame dropped).
 //! - Per-stage deadline tracked: if a stage overruns 2× budget for N
@@ -24,18 +24,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 /// + 1 spare, matching the typical FPV depth.
 pub const RING_DEPTH: usize = 4;
 
-/// One slot in an SPSC ring. Holds a payload of type `T` plus a
-/// `ready` flag the producer flips after writing.
+/// One slot in a bounded sequence-number ring.
 struct RingSlot<T> {
     cell: std::cell::UnsafeCell<Option<T>>,
-    ready: AtomicBool,
+    sequence: AtomicUsize,
 }
 
-// SAFETY: the ring's `head/tail` discipline ensures only one thread
-// (producer or consumer) accesses the inner cell at a time.
+// SAFETY: the sequence protocol grants exclusive ownership of the cell to
+// one producer or consumer at a time and publishes contents with Release /
+// Acquire operations.
 unsafe impl<T: Send> Sync for RingSlot<T> {}
 
-/// Lock-free single-producer single-consumer ring buffer.
+/// Lock-free bounded ring buffer.
+///
+/// The historical `SpscRing` name is retained for API compatibility, but the
+/// sequence protocol is safe for multiple producers and consumers too.
 pub struct SpscRing<T> {
     slots: Box<[RingSlot<T>]>,
     head: AtomicUsize, // producer position
@@ -44,11 +47,15 @@ pub struct SpscRing<T> {
 
 impl<T: Send> SpscRing<T> {
     pub fn new(depth: usize) -> Self {
+        assert!(
+            depth > 0 && depth <= isize::MAX as usize,
+            "ring depth must be in 1..=isize::MAX"
+        );
         let mut v = Vec::with_capacity(depth);
-        for _ in 0..depth {
+        for sequence in 0..depth {
             v.push(RingSlot {
                 cell: std::cell::UnsafeCell::new(None),
-                ready: AtomicBool::new(false),
+                sequence: AtomicUsize::new(sequence),
             });
         }
         Self {
@@ -60,42 +67,66 @@ impl<T: Send> SpscRing<T> {
 
     /// Try to push `item` into the ring. Returns `Err(item)` if full.
     pub fn try_push(&self, item: T) -> Result<(), T> {
-        let h = self.head.load(Ordering::Relaxed);
-        let t = self.tail.load(Ordering::Acquire);
-        if h.wrapping_sub(t) >= self.slots.len() {
-            return Err(item); // full
+        let mut position = self.head.load(Ordering::Relaxed);
+        loop {
+            let slot = &self.slots[position % self.slots.len()];
+            let sequence = slot.sequence.load(Ordering::Acquire);
+            let difference = sequence.wrapping_sub(position) as isize;
+            if difference == 0 {
+                match self.head.compare_exchange_weak(
+                    position,
+                    position.wrapping_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        // SAFETY: the successful CAS transfers this slot's
+                        // ownership exclusively to this producer.
+                        unsafe { *slot.cell.get() = Some(item) };
+                        slot.sequence
+                            .store(position.wrapping_add(1), Ordering::Release);
+                        return Ok(());
+                    }
+                    Err(next) => position = next,
+                }
+            } else if difference < 0 {
+                return Err(item);
+            } else {
+                position = self.head.load(Ordering::Relaxed);
+            }
         }
-        let idx = h % self.slots.len();
-        let slot = &self.slots[idx];
-        // SAFETY: only the producer touches `cell` between try_push and
-        // the consumer's matching `try_pop`; ready=false here means slot
-        // is exclusively ours.
-        unsafe {
-            *slot.cell.get() = Some(item);
-        }
-        slot.ready.store(true, Ordering::Release);
-        self.head.store(h.wrapping_add(1), Ordering::Release);
-        Ok(())
     }
 
     /// Try to pop one item from the ring. Returns `None` if empty.
     pub fn try_pop(&self) -> Option<T> {
-        let t = self.tail.load(Ordering::Relaxed);
-        let h = self.head.load(Ordering::Acquire);
-        if t == h {
-            return None; // empty
+        let mut position = self.tail.load(Ordering::Relaxed);
+        loop {
+            let slot = &self.slots[position % self.slots.len()];
+            let sequence = slot.sequence.load(Ordering::Acquire);
+            let difference = sequence.wrapping_sub(position.wrapping_add(1)) as isize;
+            if difference == 0 {
+                match self.tail.compare_exchange_weak(
+                    position,
+                    position.wrapping_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        // SAFETY: the successful CAS transfers this slot's
+                        // ownership exclusively to this consumer.
+                        let item = unsafe { (*slot.cell.get()).take() };
+                        slot.sequence
+                            .store(position.wrapping_add(self.slots.len()), Ordering::Release);
+                        return item;
+                    }
+                    Err(next) => position = next,
+                }
+            } else if difference < 0 {
+                return None;
+            } else {
+                position = self.tail.load(Ordering::Relaxed);
+            }
         }
-        let idx = t % self.slots.len();
-        let slot = &self.slots[idx];
-        if !slot.ready.load(Ordering::Acquire) {
-            return None;
-        }
-        // SAFETY: ready=true means producer finished writing; we're the
-        // sole consumer.
-        let item = unsafe { (*slot.cell.get()).take() };
-        slot.ready.store(false, Ordering::Release);
-        self.tail.store(t.wrapping_add(1), Ordering::Release);
-        item
     }
 
     pub fn capacity(&self) -> usize {
@@ -134,7 +165,7 @@ impl StageWatchdog {
     /// Record a stage call's duration. Updates streak / alarm state.
     pub fn record(&self, elapsed_us: u64) {
         let budget = self.budget_us.load(Ordering::Relaxed);
-        if elapsed_us > 2 * budget {
+        if elapsed_us > budget.saturating_mul(2) {
             let new_streak = self.overrun_streak.fetch_add(1, Ordering::Relaxed) + 1;
             self.total_overruns.fetch_add(1, Ordering::Relaxed);
             if new_streak >= WATCHDOG_THRESHOLD {
@@ -552,6 +583,55 @@ mod tests {
             assert_eq!(*v, i as u32);
         }
         assert_eq!(count.load(Ordering::Relaxed), 1000);
+    }
+
+    #[test]
+    fn ring_concurrent_mpmc_preserves_all_items() {
+        let ring: Arc<SpscRing<u32>> = Arc::new(SpscRing::new(32));
+        let producers: Vec<_> = (0..4)
+            .map(|producer_id| {
+                let ring = Arc::clone(&ring);
+                thread::spawn(move || {
+                    for n in 0..250u32 {
+                        let value = producer_id * 250 + n;
+                        while ring.try_push(value).is_err() {
+                            std::hint::spin_loop();
+                        }
+                    }
+                })
+            })
+            .collect();
+        let consumers: Vec<_> = (0..4)
+            .map(|_| {
+                let ring = Arc::clone(&ring);
+                thread::spawn(move || {
+                    let mut values = Vec::new();
+                    while values.len() < 250 {
+                        if let Some(value) = ring.try_pop() {
+                            values.push(value);
+                        } else {
+                            std::hint::spin_loop();
+                        }
+                    }
+                    values
+                })
+            })
+            .collect();
+        for producer in producers {
+            producer.join().unwrap();
+        }
+        let mut values = consumers
+            .into_iter()
+            .flat_map(|consumer| consumer.join().unwrap())
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        assert_eq!(values, (0..1000).collect::<Vec<_>>());
+    }
+
+    #[test]
+    #[should_panic(expected = "ring depth")]
+    fn ring_rejects_zero_depth() {
+        let _: SpscRing<u8> = SpscRing::new(0);
     }
 
     #[test]

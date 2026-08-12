@@ -13,6 +13,7 @@ use super::super::error::KernelError;
 ///   sampled_y = oh * stride + kh - padding + offsets[n, oh, ow, offset_idx]
 ///   sampled_x = ow * stride + kw - padding + offsets[n, oh, ow, offset_idx + 1]
 ///   Use bilinear interpolation at (sampled_y, sampled_x) in input
+#[allow(unsafe_code)]
 pub fn deformable_conv2d_nhwc(
     input: &Tensor,
     weight: &Tensor,
@@ -98,7 +99,8 @@ pub fn deformable_conv2d_nhwc(
             })
         })?;
 
-    let mut output = AlignedVec::<f32>::uninitialized(output_len);
+    // SAFETY: deformable convolution writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
     let input_data = input.data();
     let weight_data = weight.data();
     let offset_data = offsets.data();

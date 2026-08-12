@@ -96,13 +96,16 @@ impl Tensor {
     fn pow_simd(&self, rhs: &Self) -> Result<Self, TensorError> {
         let len = self.len();
         // Compute ln(base)
-        let mut ln_buf = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all temporary buffers are fully written before use.
+        let mut ln_buf = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::ln_dispatch(self.data(), &mut ln_buf);
         // Multiply by exponent: exp_val * ln(base)
-        let mut prod_buf = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all temporary buffers are fully written before use.
+        let mut prod_buf = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::binary_dispatch(&ln_buf, rhs.data(), &mut prod_buf, simd::BinaryKind::Mul);
         // Compute exp(exp_val * ln(base))
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::exp_dispatch(&prod_buf, &mut out);
         Ok(Tensor::from_raw_parts(self.shape(), self.strides(), out))
     }
@@ -127,7 +130,8 @@ impl Tensor {
         let y_data = self.data();
         let x_data = rhs.data();
         let len = self.len();
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
 
         // Process in chunks of 4 for ILP (instruction-level parallelism).
         // Each call to the scalar fast path avoids the overhead of the
@@ -182,7 +186,8 @@ impl Tensor {
         let len = self.len();
         // SAFETY: `uninitialized` allocates without zeroing.  `exp_dispatch`
         // writes every element before anything reads from `out`.
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::exp_dispatch(self.data(), &mut out);
         Tensor::from_raw_parts(self.shape(), self.strides(), out)
     }
@@ -193,7 +198,8 @@ impl Tensor {
         let len = self.len();
         // SAFETY: `uninitialized` allocates without zeroing.  `ln_dispatch`
         // writes every element before we ever read from `out`.
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::ln_dispatch(self.data(), &mut out);
         Tensor::from_raw_parts(self.shape(), self.strides(), out)
     }
@@ -232,7 +238,8 @@ impl Tensor {
     #[allow(unsafe_code)]
     pub fn sin(&self) -> Self {
         let len = self.len();
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::sin_dispatch(self.data(), &mut out);
         Tensor::from_raw_parts(self.shape(), self.strides(), out)
     }
@@ -241,7 +248,8 @@ impl Tensor {
     #[allow(unsafe_code)]
     pub fn cos(&self) -> Self {
         let len = self.len();
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::cos_dispatch(self.data(), &mut out);
         Tensor::from_raw_parts(self.shape(), self.strides(), out)
     }
@@ -250,7 +258,8 @@ impl Tensor {
     #[allow(unsafe_code)]
     pub fn tan(&self) -> Self {
         let len = self.len();
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::tan_dispatch(self.data(), &mut out);
         Tensor::from_raw_parts(self.shape(), self.strides(), out)
     }
@@ -304,7 +313,8 @@ impl Tensor {
     #[allow(unsafe_code)]
     pub fn clamp(&self, min: f32, max: f32) -> Self {
         let len = self.len();
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: all output elements are written before the tensor is returned.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::clamp_dispatch(self.data(), &mut out, min, max);
         Tensor::from_raw_parts(self.shape(), self.strides(), out)
     }

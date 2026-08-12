@@ -8,7 +8,7 @@
 use super::hevc_decoder::{DecodedCu, HevcPps, HevcSliceType, HevcSps, pps_tile_rects};
 use super::hevc_filter::SaoParams;
 use super::hevc_inter::{HevcMvField, SendMutPtr};
-use super::hevc_syntax::{self, HevcSliceCabacState, TileBounds};
+use super::hevc_syntax::{self, HevcSliceCabacState, RawSliceMut, TileBounds};
 
 /// Decode CTUs in parallel across tiles using rayon.
 ///
@@ -92,10 +92,13 @@ pub(crate) fn decode_tiles_parallel(
                 let mp_raw = mp.as_ptr();
                 // SAFETY: each tile writes to a disjoint CTU rectangle.
                 // SendMutPtr guarantees Send+Sync; slice lifetimes bounded by scope.
-                let tile_recon_luma = unsafe { std::slice::from_raw_parts_mut(lp_raw, luma_len) };
-                let tile_recon_cb = unsafe { std::slice::from_raw_parts_mut(cp_raw, cb_len) };
-                let tile_recon_cr = unsafe { std::slice::from_raw_parts_mut(crp_raw, cr_len) };
-                let tile_mv_field = unsafe { std::slice::from_raw_parts_mut(mp_raw, mv_len) };
+                // SAFETY: the mmap-like backing allocations remain owned by
+                // the caller for the scoped decode; workers only materialize
+                // element-sized references through RawSliceMut.
+                let tile_recon_luma = unsafe { RawSliceMut::from_raw_parts(lp_raw, luma_len) };
+                let tile_recon_cb = unsafe { RawSliceMut::from_raw_parts(cp_raw, cb_len) };
+                let tile_recon_cr = unsafe { RawSliceMut::from_raw_parts(crp_raw, cr_len) };
+                let tile_mv_field = unsafe { RawSliceMut::from_raw_parts(mp_raw, mv_len) };
                 let mut tile_cabac =
                     HevcSliceCabacState::new_at_offset(payload, slice_qp, byte_offset);
 
@@ -134,26 +137,28 @@ pub(crate) fn decode_tiles_parallel(
                             tile_saos.push((idx, sao));
                         }
 
-                        hevc_syntax::decode_coding_tree_cabac(
-                            &mut tile_cabac,
-                            ctu_x,
-                            ctu_y,
-                            ctu_size_log2,
-                            0,
-                            max_depth,
-                            sps,
-                            pps,
-                            slice_type,
-                            w,
-                            h,
-                            tile_recon_luma,
-                            tile_recon_cb,
-                            tile_recon_cr,
-                            &mut tile_cus,
-                            dpb,
-                            tile_mv_field,
-                            None,
-                        );
+                        unsafe {
+                            hevc_syntax::decode_coding_tree_cabac_raw(
+                                &mut tile_cabac,
+                                ctu_x,
+                                ctu_y,
+                                ctu_size_log2,
+                                0,
+                                max_depth,
+                                sps,
+                                pps,
+                                slice_type,
+                                w,
+                                h,
+                                tile_recon_luma,
+                                tile_recon_cb,
+                                tile_recon_cr,
+                                &mut tile_cus,
+                                dpb,
+                                tile_mv_field,
+                                None,
+                            );
+                        }
                         ctu_x += ctu_size;
                     }
                     ctu_y += ctu_size;
@@ -288,10 +293,12 @@ pub(crate) fn decode_wpp_parallel(
                 let cp_raw = cp.as_ptr();
                 let crp_raw = crp.as_ptr();
                 let mp_raw = mp.as_ptr();
-                let row_recon_luma = unsafe { std::slice::from_raw_parts_mut(lp_raw, luma_len) };
-                let row_recon_cb = unsafe { std::slice::from_raw_parts_mut(cp_raw, cb_len) };
-                let row_recon_cr = unsafe { std::slice::from_raw_parts_mut(crp_raw, cr_len) };
-                let row_mv_field = unsafe { std::slice::from_raw_parts_mut(mp_raw, mv_len) };
+                // SAFETY: the backing allocations remain valid for the scope;
+                // each WPP worker writes only its own CTU row.
+                let row_recon_luma = unsafe { RawSliceMut::from_raw_parts(lp_raw, luma_len) };
+                let row_recon_cb = unsafe { RawSliceMut::from_raw_parts(cp_raw, cb_len) };
+                let row_recon_cr = unsafe { RawSliceMut::from_raw_parts(crp_raw, cr_len) };
+                let row_mv_field = unsafe { RawSliceMut::from_raw_parts(mp_raw, mv_len) };
 
                 let _tile_bounds = TileBounds::full(w, h);
                 let mut row_cus = Vec::new();
@@ -316,26 +323,28 @@ pub(crate) fn decode_wpp_parallel(
                         row_saos.push((idx, sao));
                     }
 
-                    hevc_syntax::decode_coding_tree_cabac(
-                        &mut row_cabac,
-                        ctu_x,
-                        ctu_y,
-                        ctu_size_log2,
-                        0,
-                        max_depth,
-                        sps,
-                        pps,
-                        slice_type,
-                        w,
-                        h,
-                        row_recon_luma,
-                        row_recon_cb,
-                        row_recon_cr,
-                        &mut row_cus,
-                        dpb,
-                        row_mv_field,
-                        None,
-                    );
+                    unsafe {
+                        hevc_syntax::decode_coding_tree_cabac_raw(
+                            &mut row_cabac,
+                            ctu_x,
+                            ctu_y,
+                            ctu_size_log2,
+                            0,
+                            max_depth,
+                            sps,
+                            pps,
+                            slice_type,
+                            w,
+                            h,
+                            row_recon_luma,
+                            row_recon_cb,
+                            row_recon_cr,
+                            &mut row_cus,
+                            dpb,
+                            row_mv_field,
+                            None,
+                        );
+                    }
 
                     // After CTU(1), publish snapshot for next row
                     if ctu_idx == 1 {

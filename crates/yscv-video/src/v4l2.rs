@@ -5,6 +5,7 @@
 //! This module is only compiled on Linux (`#[cfg(target_os = "linux")]`).
 
 use crate::VideoError;
+use std::ops::Deref;
 use std::os::unix::io::AsRawFd;
 
 // ---------------------------------------------------------------------------
@@ -210,6 +211,44 @@ pub struct V4l2Camera {
 // &mut self on capture_frame).
 unsafe impl Send for V4l2Camera {}
 
+/// A dequeued V4L2 frame.
+///
+/// The camera buffer remains owned by this guard until it is dropped. `Drop`
+/// then returns the buffer to the driver with `QBUF`, so the kernel cannot
+/// DMA into memory while the caller still holds the slice returned by `Deref`.
+pub struct V4l2Frame<'a> {
+    camera: &'a mut V4l2Camera,
+    index: u32,
+    ptr: *const u8,
+    len: usize,
+}
+
+impl Deref for V4l2Frame<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the buffer was returned by DQBUF and remains dequeued for
+        // the guard's lifetime. The camera cannot be mutably borrowed again
+        // until this reference is dropped.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl AsRef<[u8]> for V4l2Frame<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl Drop for V4l2Frame<'_> {
+    fn drop(&mut self) {
+        // Drop cannot report an ioctl failure. Keeping the buffer dequeued is
+        // safer than exposing a live slice after QBUF, so the best effort is
+        // made here and the driver error is intentionally ignored.
+        let _ = self.camera.requeue_buffer(self.index);
+    }
+}
+
 impl V4l2Camera {
     /// Open a V4L2 camera device (e.g. `"/dev/video0"`), set format, and
     /// prepare mmap'd buffers for streaming.
@@ -382,12 +421,11 @@ impl V4l2Camera {
         Ok(())
     }
 
-    /// Dequeue the next captured frame (zero-copy reference to mmap'd buffer),
-    /// then immediately re-queue the buffer.
+    /// Dequeue the next captured frame without copying.
     ///
-    /// The returned slice is valid until the next call to `capture_frame` or
-    /// `stop_streaming`.
-    pub fn capture_frame(&mut self) -> Result<&[u8], VideoError> {
+    /// The returned guard keeps the V4L2 buffer dequeued. It must be dropped
+    /// before the next capture call; dropping it re-queues the buffer.
+    pub fn capture_frame(&mut self) -> Result<V4l2Frame<'_>, VideoError> {
         if !self.streaming {
             return Err(VideoError::Source("V4L2: not streaming".into()));
         }
@@ -423,35 +461,24 @@ impl V4l2Camera {
         // and we only hold a reference until the next DQBUF (or drop).
         let frame_data = unsafe { std::slice::from_raw_parts(ptr, actual_len) };
 
-        // Re-queue the buffer immediately
-        let mut qbuf: V4l2Buffer = unsafe { std::mem::zeroed() };
-        qbuf.index = buf.index;
-        qbuf.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        qbuf.memory = V4L2_MEMORY_MMAP;
-        let ret = unsafe {
-            ioctl(
-                self.fd,
-                VIDIOC_QBUF,
-                &mut qbuf as *mut V4l2Buffer as *mut u8,
-            )
-        };
-        if ret < 0 {
-            return Err(VideoError::Source("V4L2: QBUF (re-queue) failed".into()));
-        }
-
-        Ok(frame_data)
+        Ok(V4l2Frame {
+            camera: self,
+            index: buf.index,
+            ptr: frame_data.as_ptr(),
+            len: frame_data.len(),
+        })
     }
 
     /// Dequeue the next captured frame and return the buffer index along
-    /// with a zero-copy reference to its pixel data.
+    /// with a zero-copy guard for its pixel data.
     ///
     /// The index identifies which mmap'd buffer holds the frame; pair it
     /// with [`Self::export_dmabuf`] to obtain a DMA-BUF fd suitable for
     /// sharing with an NPU via `rknn_create_mem_from_fd`.
     ///
-    /// The returned slice is valid until the next call to a frame-capture
-    /// method or `stop_streaming`.
-    pub fn capture_frame_indexed(&mut self) -> Result<(u32, &[u8]), VideoError> {
+    /// The guard must be dropped before another frame-capture method or
+    /// `stop_streaming` can borrow the camera.
+    pub fn capture_frame_indexed(&mut self) -> Result<(u32, V4l2Frame<'_>), VideoError> {
         if !self.streaming {
             return Err(VideoError::Source("V4L2: not streaming".into()));
         }
@@ -487,12 +514,21 @@ impl V4l2Camera {
         // the returned reference lives until the next DQBUF call (& mut self).
         let frame_data = unsafe { std::slice::from_raw_parts(ptr, actual_len) };
 
-        // Re-queue the buffer immediately so the kernel can fill it again.
+        let frame = V4l2Frame {
+            camera: self,
+            index: buf.index,
+            ptr: frame_data.as_ptr(),
+            len: frame_data.len(),
+        };
+        Ok((buf.index, frame))
+    }
+
+    fn requeue_buffer(&mut self, index: u32) -> Result<(), VideoError> {
         let mut qbuf: V4l2Buffer = unsafe { std::mem::zeroed() };
-        qbuf.index = buf.index;
+        qbuf.index = index;
         qbuf.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         qbuf.memory = V4L2_MEMORY_MMAP;
-        // SAFETY: ioctl(fd, QBUF, &qbuf).
+        // SAFETY: qbuf is initialized with a valid dequeued buffer index.
         let ret = unsafe {
             ioctl(
                 self.fd,
@@ -503,8 +539,7 @@ impl V4l2Camera {
         if ret < 0 {
             return Err(VideoError::Source("V4L2: QBUF (re-queue) failed".into()));
         }
-
-        Ok((buf.index, frame_data))
+        Ok(())
     }
 
     /// Export a V4L2 buffer as a DMA-BUF file descriptor for zero-copy

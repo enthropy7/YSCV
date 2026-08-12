@@ -405,7 +405,7 @@ fn main() {
                             let needed = cam_w * cam_h * 3;
                             if rgb_buf.len() >= needed {
                                 let _ = yscv_video::yuyv_to_rgb8(
-                                    yuyv_data,
+                                    yuyv_data.as_ref(),
                                     cam_w,
                                     cam_h,
                                     &mut rgb_buf[..needed],

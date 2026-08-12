@@ -306,6 +306,7 @@ fn equal_split(dim: usize, num_outputs: usize) -> Vec<usize> {
         .collect()
 }
 
+#[allow(unsafe_code)]
 pub(super) fn exec_split(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let input_is_nhwc = env.is_nhwc(&node.inputs[0]);
     // Take ownership to avoid cloning the entire tensor.
@@ -360,7 +361,8 @@ pub(super) fn exec_split(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onn
         let total = outer_size * block_size;
         let src_offset = offset_along_axis * inner_size;
 
-        let mut out_data = yscv_tensor::AlignedVec::<f32>::uninitialized(total);
+        // SAFETY: each split output element is copied before the tensor is returned.
+        let mut out_data = unsafe { yscv_tensor::AlignedVec::<f32>::uninitialized(total) };
         #[allow(unsafe_code)]
         unsafe {
             let dst_ptr = out_data.as_mut_ptr();

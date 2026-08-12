@@ -26,6 +26,7 @@ pub fn avg_pool2d_nhwc_with_config_and_pool(
     pool2d_nhwc_with_config_and_pool(input, spec, config, thread_pool, Pool2dKind::Avg)
 }
 
+#[allow(unsafe_code)]
 fn pool2d_nhwc_with_config_and_pool(
     input: &Tensor,
     spec: Pool2dSpec,
@@ -44,7 +45,8 @@ fn pool2d_nhwc_with_config_and_pool(
         .map_err(Into::into);
     }
 
-    let mut output = AlignedVec::<f32>::uninitialized(plan.output_len);
+    // SAFETY: pooling writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(plan.output_len) };
 
     if should_parallelize_len(plan.output_len, config.min_parallel_elements, thread_pool) {
         // Route through `scope_ctx::par_chunks_mut_dispatch` — if the
@@ -606,6 +608,7 @@ pub fn avg_pool2d_nchw(
     )
 }
 
+#[allow(unsafe_code)]
 fn pool2d_nchw(
     input: &Tensor,
     kernel_h: usize,
@@ -635,7 +638,8 @@ fn pool2d_nchw(
     let no_pad = pad_top == 0 && pad_left == 0 && pad_bottom == 0 && pad_right == 0;
     let inv_area = 1.0 / (kernel_h * kernel_w) as f32;
 
-    let mut output = AlignedVec::<f32>::uninitialized(total_out);
+    // SAFETY: pooling writes every output element before returning.
+    let mut output = unsafe { AlignedVec::<f32>::uninitialized(total_out) };
 
     let work = |out_chunk: &mut [f32], plane_idx: usize| {
         let in_base = plane_idx * ih * iw;

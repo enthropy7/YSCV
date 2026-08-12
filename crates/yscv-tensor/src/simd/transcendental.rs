@@ -51,54 +51,11 @@ pub(crate) fn exp_dispatch(data: &[f32], out: &mut [f32]) {
     exp_scalar(data, out);
 }
 
-/// Kept for backward compatibility -- calls `exp_dispatch` with in-place semantics.
-#[allow(unsafe_code, dead_code)]
+/// Kept for backward compatibility -- computes exp in place without creating
+/// overlapping shared and exclusive slices.
+#[allow(dead_code)]
 #[inline]
 pub(crate) fn exp_inplace_dispatch(data: &mut [f32]) {
-    if cfg!(miri) {
-        for v in data.iter_mut() {
-            *v = v.exp();
-        }
-        return;
-    }
-
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        if yscv_cpu::host_cpu().features.avx {
-            // SAFETY: input and output alias, but each element is read
-            // once then written, so there's no ordering hazard.
-            unsafe {
-                let ptr = data.as_ptr();
-                let len = data.len();
-                let slice = std::slice::from_raw_parts(ptr, len);
-                exp_avx(slice, data);
-            };
-            return;
-        }
-        if yscv_cpu::host_cpu().features.sse {
-            unsafe {
-                let ptr = data.as_ptr();
-                let len = data.len();
-                let slice = std::slice::from_raw_parts(ptr, len);
-                exp_sse(slice, data);
-            };
-            return;
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if yscv_cpu::host_cpu().features.neon {
-            unsafe {
-                let ptr = data.as_ptr();
-                let len = data.len();
-                let slice = std::slice::from_raw_parts(ptr, len);
-                exp_neon(slice, data);
-            };
-            return;
-        }
-    }
-
     for v in data.iter_mut() {
         *v = v.exp();
     }
@@ -253,7 +210,7 @@ unsafe fn exp_avx(data: &[f32], out: &mut [f32]) {
 // -- NEON fast-exp (4-wide) --
 
 #[cfg(target_arch = "aarch64")]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[allow(dead_code, unsafe_code, unsafe_op_in_unsafe_fn)]
 #[inline(always)]
 unsafe fn fast_exp_neon(x: std::arch::aarch64::float32x4_t) -> std::arch::aarch64::float32x4_t {
     use std::arch::aarch64::{
@@ -296,7 +253,7 @@ unsafe fn fast_exp_neon(x: std::arch::aarch64::float32x4_t) -> std::arch::aarch6
 }
 
 #[cfg(target_arch = "aarch64")]
-#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[allow(dead_code, unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn exp_neon(data: &[f32], out: &mut [f32]) {
     use std::arch::aarch64::{
@@ -1085,8 +1042,10 @@ pub(crate) fn tan_dispatch(data: &[f32], out: &mut [f32]) {
             out[i] = sin_buf[i] / cos_buf[i];
         }
     } else {
-        let mut sin_buf = super::super::aligned::AlignedVec::<f32>::uninitialized(len);
-        let mut cos_buf = super::super::aligned::AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: the trigonometric kernels write every output element before use.
+        let mut sin_buf = unsafe { super::super::aligned::AlignedVec::<f32>::uninitialized(len) };
+        // SAFETY: the trigonometric kernels write every output element before use.
+        let mut cos_buf = unsafe { super::super::aligned::AlignedVec::<f32>::uninitialized(len) };
         sin_dispatch(data, &mut sin_buf);
         cos_dispatch(data, &mut cos_buf);
         for i in 0..len {

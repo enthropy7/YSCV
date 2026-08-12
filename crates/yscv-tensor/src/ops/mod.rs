@@ -88,7 +88,8 @@ impl Tensor {
         let len = src.len();
         // SAFETY: `uninitialized` allocates without zeroing.  The loop below
         // writes every element before we ever read from `out_data`.
-        let mut out_data = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: every element is written by the operation before the tensor is read.
+        let mut out_data = unsafe { AlignedVec::<f32>::uninitialized(len) };
         let inp = src.as_ptr();
         let outp = out_data.as_mut_ptr();
         unsafe {
@@ -104,7 +105,8 @@ impl Tensor {
         let len = self.len();
         // SAFETY: `uninitialized` allocates without zeroing.  `unary_dispatch`
         // writes every element before we ever read from `out`.
-        let mut out = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: every element is written by the operation before the tensor is read.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
         simd::unary_dispatch(self.data(), &mut out, kind);
         Tensor::from_raw_parts(self.shape(), self.strides(), out)
     }
@@ -202,7 +204,8 @@ impl Tensor {
             let rhs_data = rhs.data();
             let row_len = lhs_last;
             let num_rows = lhs_data.len() / row_len;
-            let mut out_data = AlignedVec::<f32>::uninitialized(lhs_data.len());
+            // SAFETY: every element is written by the operation before the tensor is read.
+            let mut out_data = unsafe { AlignedVec::<f32>::uninitialized(lhs_data.len()) };
 
             for i in 0..num_rows {
                 let start = i * row_len;
@@ -229,7 +232,8 @@ impl Tensor {
             let rhs_data = rhs.data();
             let row_len = rhs_last;
             let num_rows = rhs_data.len() / row_len;
-            let mut out_data = AlignedVec::<f32>::uninitialized(rhs_data.len());
+            // SAFETY: every element is written by the operation before the tensor is read.
+            let mut out_data = unsafe { AlignedVec::<f32>::uninitialized(rhs_data.len()) };
 
             for i in 0..num_rows {
                 let start = i * row_len;
@@ -342,7 +346,8 @@ impl Tensor {
         kind: simd::BinaryKind,
     ) -> Result<Self, TensorError> {
         let len = self.len();
-        let mut out_data = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: every element is written by the operation before the tensor is read.
+        let mut out_data = unsafe { AlignedVec::<f32>::uninitialized(len) };
 
         // Multi-threaded for large tensors. Cross-platform:
         // macOS → GCD dispatch_apply, others → rayon thread pool.
@@ -454,7 +459,8 @@ impl Tensor {
         let len = self.len();
         // SAFETY: `uninitialized` allocates without zeroing.  The loop below
         // writes every element before we ever read from `out_data`.
-        let mut out_data = AlignedVec::<f32>::uninitialized(len);
+        // SAFETY: every element is written by the operation before the tensor is read.
+        let mut out_data = unsafe { AlignedVec::<f32>::uninitialized(len) };
 
         let lhs_ptr = self.data().as_ptr();
         let rhs_ptr = rhs.data().as_ptr();

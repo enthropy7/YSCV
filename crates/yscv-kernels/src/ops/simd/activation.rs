@@ -338,6 +338,30 @@ pub fn gelu_sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
 #[allow(unsafe_code)]
 #[inline]
 pub fn silu_inplace(data: &mut [f32]) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        let path = dispatch_path(false, false);
+        #[cfg(target_arch = "x86_64")]
+        if path == SimdDispatchPath::Avx512 {
+            // SAFETY: runtime dispatch enables AVX-512 and the raw routine
+            // loads each vector before storing it back to the same elements.
+            unsafe { silu_inplace_avx512(data.as_mut_ptr(), data.len()) };
+            return;
+        }
+        if path == SimdDispatchPath::Avx {
+            // SAFETY: runtime dispatch enables AVX and the raw routine loads
+            // each vector before storing it back to the same elements.
+            unsafe { silu_inplace_avx(data.as_mut_ptr(), data.len()) };
+            return;
+        }
+        if path == SimdDispatchPath::Sse {
+            // SAFETY: runtime dispatch enables SSE and the raw routine loads
+            // each vector before storing it back to the same elements.
+            unsafe { silu_inplace_sse(data.as_mut_ptr(), data.len()) };
+            return;
+        }
+    }
+
     #[cfg(target_arch = "aarch64")]
     {
         let path = dispatch_path(false, false);
@@ -355,6 +379,81 @@ pub fn silu_inplace(data: &mut [f32]) {
     for v in data.iter_mut() {
         let x = *v;
         *v = x / (1.0 + (-x).exp());
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "sse")]
+unsafe fn silu_inplace_sse(ptr: *mut f32, len: usize) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::_mm_div_ps;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::_mm_div_ps;
+    let one = _mm_set1_ps(1.0);
+    let zero = _mm_setzero_ps();
+    let mut index = 0;
+    while index + 4 <= len {
+        let x = _mm_loadu_ps(ptr.add(index));
+        let e = fast_exp_sse(_mm_sub_ps(zero, x));
+        _mm_storeu_ps(
+            ptr.add(index),
+            _mm_mul_ps(x, _mm_div_ps(one, _mm_add_ps(one, e))),
+        );
+        index += 4;
+    }
+    while index < len {
+        let x = *ptr.add(index);
+        *ptr.add(index) = x / (1.0 + (-x).exp());
+        index += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx")]
+unsafe fn silu_inplace_avx(ptr: *mut f32, len: usize) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::_mm256_div_ps;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::_mm256_div_ps;
+    let one = _mm256_set1_ps(1.0);
+    let zero = _mm256_setzero_ps();
+    let mut index = 0;
+    while index + 8 <= len {
+        let x = _mm256_loadu_ps(ptr.add(index));
+        let e = fast_exp_avx(_mm256_sub_ps(zero, x));
+        _mm256_storeu_ps(
+            ptr.add(index),
+            _mm256_mul_ps(x, _mm256_div_ps(one, _mm256_add_ps(one, e))),
+        );
+        index += 8;
+    }
+    while index < len {
+        let x = *ptr.add(index);
+        *ptr.add(index) = x / (1.0 + (-x).exp());
+        index += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "avx512f")]
+unsafe fn silu_inplace_avx512(ptr: *mut f32, len: usize) {
+    let one = _mm512_set1_ps(1.0);
+    let zero = _mm512_setzero_ps();
+    let mut index = 0;
+    while index + 16 <= len {
+        let x = _mm512_loadu_ps(ptr.add(index));
+        let e = fast_exp_avx512(_mm512_sub_ps(zero, x));
+        _mm512_storeu_ps(
+            ptr.add(index),
+            _mm512_mul_ps(x, _mm512_div_ps(one, _mm512_add_ps(one, e))),
+        );
+        index += 16;
+    }
+    if index < len {
+        silu_inplace_avx(ptr.add(index), len - index);
     }
 }
 

@@ -18,7 +18,7 @@ mod simd;
 #[path = "tensor.rs"]
 mod tensor;
 
-pub use aligned::AlignedVec;
+pub use aligned::{AlignedVec, Zeroable};
 pub use error::{DType, TensorError};
 pub use tensor::{Device, Layout, Tensor};
 

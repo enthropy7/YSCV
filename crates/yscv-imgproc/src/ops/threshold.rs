@@ -19,7 +19,8 @@ pub fn threshold_binary(
     let data = input.data();
     let len = data.len();
     // SAFETY: every element is written by threshold_binary_simd_slice + scalar tail below.
-    let mut out = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: thresholding writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
 
     let row_len = w * channels;
 
@@ -62,7 +63,8 @@ pub fn threshold_binary_inv(
     let data = input.data();
     let len = data.len();
     // SAFETY: every element is written by threshold_binary_inv_simd_slice + scalar tail below.
-    let mut out = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: thresholding writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
 
     let row_len = w * channels;
 
@@ -101,7 +103,8 @@ pub fn threshold_truncate(input: &Tensor, threshold: f32) -> Result<Tensor, ImgP
     let data = input.data();
     let len = data.len();
     // SAFETY: every element is written by threshold_truncate_simd_slice + scalar tail below.
-    let mut out = AlignedVec::<f32>::uninitialized(len);
+    // SAFETY: thresholding writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(len) };
 
     let row_len = w * channels;
 

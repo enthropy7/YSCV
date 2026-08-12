@@ -26,7 +26,8 @@ pub fn rgb_to_grayscale(input: &Tensor) -> Result<Tensor, ImgProcError> {
     let data = input.data();
 
     // Use uninit aligned buffer — SIMD + scalar tail will write every element.
-    let mut out = AlignedVec::<f32>::uninitialized(total);
+    // SAFETY: the conversion writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(total) };
 
     // For large images, parallelize across row chunks to saturate memory bandwidth.
     if total >= 4096 && !cfg!(miri) {
@@ -265,7 +266,8 @@ pub fn rgb_to_hsv(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
     let data = input.data();
     let pixels = h * w;
-    let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
+    // SAFETY: the conversion writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(pixels * 3) };
     let row_stride = w * 3;
 
     #[inline(always)]
@@ -749,7 +751,8 @@ pub fn rgb_to_lab(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
     // For large images, use parallel row processing. Each row is independent.
     if pixels > 4096 {
-        let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
+        // SAFETY: the conversion writes every output element before returning.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(pixels * 3) };
         // Force LUT initialization before parallel section.
         let _ = srgb_lut();
         let _ = lab_f_lut();
@@ -853,7 +856,8 @@ pub fn rgb_to_lab(input: &Tensor) -> Result<Tensor, ImgProcError> {
     }
 
     // Small image path: single-threaded SIMD + scalar tail.
-    let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
+    // SAFETY: the conversion writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(pixels * 3) };
 
     // D65 white point
     const XN: f32 = 0.95047;
@@ -1327,7 +1331,8 @@ pub fn rgb_to_yuv(input: &Tensor) -> Result<Tensor, ImgProcError> {
     // For large images, parallelise across rows
     #[cfg(target_os = "macos")]
     if pixels > 4096 && !cfg!(miri) {
-        let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
+        // SAFETY: the conversion writes every output element before returning.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(pixels * 3) };
         let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
@@ -1373,7 +1378,8 @@ pub fn rgb_to_yuv(input: &Tensor) -> Result<Tensor, ImgProcError> {
         return Tensor::from_vec(vec![h, w, 3], out).map_err(Into::into);
     }
 
-    let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
+    // SAFETY: the conversion writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(pixels * 3) };
     let done = if !cfg!(miri) {
         yuv_simd_row(data, &mut out)
     } else {
@@ -1734,7 +1740,8 @@ pub fn rgb_to_bgr(input: &Tensor) -> Result<Tensor, ImgProcError> {
     // For large images, parallelise across rows
     #[cfg(target_os = "macos")]
     if pixels > 4096 && !cfg!(miri) {
-        let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
+        // SAFETY: the conversion writes every output element before returning.
+        let mut out = unsafe { AlignedVec::<f32>::uninitialized(pixels * 3) };
         let out_ptr = super::SendPtr(out.as_mut_ptr());
         use super::u8ops::gcd;
         gcd::parallel_for(h, |y| {
@@ -1774,7 +1781,8 @@ pub fn rgb_to_bgr(input: &Tensor) -> Result<Tensor, ImgProcError> {
         return Tensor::from_vec(vec![h, w, 3], out).map_err(Into::into);
     }
 
-    let mut out = AlignedVec::<f32>::uninitialized(pixels * 3);
+    // SAFETY: the conversion writes every output element before returning.
+    let mut out = unsafe { AlignedVec::<f32>::uninitialized(pixels * 3) };
     let done = if !cfg!(miri) {
         bgr_simd_row(data, &mut out)
     } else {
