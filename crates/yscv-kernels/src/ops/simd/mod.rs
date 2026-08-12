@@ -3,7 +3,7 @@
 // ===========================================================================
 //
 // Sub-modules grouped by operation type:
-//   - exp:        fast-exp helpers (SSE/AVX/NEON), exp_slice, sub_exp, tanh
+//   - exp:        fast-exp helpers (SSE/AVX/AVX2/AVX-512/NEON), exp_slice, sub_exp, tanh
 //   - activation: ReLU, Sigmoid, SiLU (dispatch + inplace + all SIMD impls)
 //   - reduce:     max_reduce, add_reduce dispatchers + impls
 //   - binary:     binary_same_shape_dispatch + impls, mul_scalar_inplace + impls
@@ -27,6 +27,9 @@ mod tests;
 pub enum SimdDispatchPath {
     Accelerate,
     Avx512,
+    /// AVX2-capable x86 host. The f32 kernels use the AVX register/instruction
+    /// subset; integer/byte kernels have separate AVX2 implementations.
+    Avx2,
     Avx,
     Sse2,
     Sse,
@@ -39,6 +42,7 @@ impl fmt::Display for SimdDispatchPath {
         let name = match self {
             SimdDispatchPath::Accelerate => "accelerate",
             SimdDispatchPath::Avx512 => "avx512",
+            SimdDispatchPath::Avx2 => "avx2",
             SimdDispatchPath::Avx => "avx",
             SimdDispatchPath::Sse2 => "sse2",
             SimdDispatchPath::Sse => "sse",
@@ -46,6 +50,17 @@ impl fmt::Display for SimdDispatchPath {
             SimdDispatchPath::Scalar => "scalar",
         };
         f.write_str(name)
+    }
+}
+
+impl SimdDispatchPath {
+    /// Returns whether this path has the 256-bit AVX register width used by
+    /// the f32 kernels. AVX2 is intentionally included: AVX2 is a superset
+    /// of AVX for these floating-point operations.
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) const fn is_avx(self) -> bool {
+        matches!(self, Self::Avx2 | Self::Avx)
     }
 }
 
@@ -128,6 +143,9 @@ fn dispatch_path_uncached(_prefer_avx512: bool, _prefer_sse2: bool) -> SimdDispa
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        if features.avx2 {
+            return SimdDispatchPath::Avx2;
+        }
         if features.avx {
             return SimdDispatchPath::Avx;
         }

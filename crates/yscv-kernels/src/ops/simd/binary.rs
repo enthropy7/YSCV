@@ -110,7 +110,7 @@ pub fn binary_same_shape_dispatch(lhs: &[f32], rhs: &[f32], out: &mut [f32], kin
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 binary_same_shape_avx(lhs, rhs, out, kind);
@@ -198,7 +198,7 @@ pub(crate) fn binary_broadcast_lastdim_dispatch(
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             binary_broadcast_lastdim_rows_with(
                 big,
                 row,
@@ -319,7 +319,7 @@ pub fn mul_scalar_inplace_dispatch(data: &mut [f32], scalar: f32) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { mul_scalar_inplace_avx(data, scalar) };
             return;
@@ -630,7 +630,7 @@ pub fn add_relu_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { add_relu_inplace_avx(data, rhs) };
             return;
@@ -734,7 +734,7 @@ pub fn add_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { add_inplace_avx(data, rhs) };
             return;
