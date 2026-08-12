@@ -384,16 +384,65 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         self.quant_slots.get(id).and_then(Option::as_ref)
     }
 
-    #[inline]
-    pub(crate) fn take_quant_i8(&mut self, name: &str) -> Option<QuantTensor> {
-        let id = self.resolve_id(name)?;
+    /// Transpose an NHWC-resident i8 `QuantTensor` at `name` back to NCHW,
+    /// updating its physical shape `[N,H,W,C]` → `[N,C,H,W]` and clearing the
+    /// NHWC flag. No-op if the slot is not a rank-4 NHWC quant tensor. Used by
+    /// `ensure_nchw` as the quant-safe counterpart of the f32 permute — a rare
+    /// defensive path (an NHWC quant tensor reaching a strictly-NCHW op), so a
+    /// scalar permute is fine.
+    pub(crate) fn transpose_quant_i8_to_nchw(&mut self, name: &str) {
+        let Some(id) = self.resolve_id(name) else {
+            return;
+        };
+        let Some(q) = self.quant_slots.get_mut(id).and_then(Option::as_mut) else {
+            return;
+        };
+        if !q.nhwc || q.shape.len() != 4 {
+            q.nhwc = false;
+            if id < self.nhwc_flags.len() {
+                self.nhwc_flags[id] = false;
+            }
+            return;
+        }
+        let (n_n, h, w, c) = (q.shape[0], q.shape[1], q.shape[2], q.shape[3]);
+        let mut out = vec![0_i8; q.data.len()];
+        for n in 0..n_n {
+            for y in 0..h {
+                for x in 0..w {
+                    let src_base = ((n * h + y) * w + x) * c;
+                    for ch in 0..c {
+                        let dst = ((n * c + ch) * h + y) * w + x;
+                        out[dst] = q.data[src_base + ch];
+                    }
+                }
+            }
+        }
+        q.data = out;
+        q.shape = vec![n_n, c, h, w];
+        q.nhwc = false;
         if id < self.nhwc_flags.len() {
             self.nhwc_flags[id] = false;
         }
-        if id < self.nchwc_block_flags.len() {
-            self.nchwc_block_flags[id] = 0;
+    }
+
+    #[inline]
+    pub(crate) fn take_quant_i8(&mut self, name: &str) -> Option<QuantTensor> {
+        let id = self.resolve_id(name)?;
+        // Only clear layout flags when a quant tensor is actually taken. When
+        // the slot holds an f32 tensor instead (a `QuantizeLinear` that stored
+        // f32-encoded i8), the take returns None and the caller falls back to
+        // the f32 view — its NHWC flag must survive so the conv reads the right
+        // physical layout.
+        let taken = self.quant_slots.get_mut(id)?.take();
+        if taken.is_some() {
+            if id < self.nhwc_flags.len() {
+                self.nhwc_flags[id] = false;
+            }
+            if id < self.nchwc_block_flags.len() {
+                self.nchwc_block_flags[id] = 0;
+            }
         }
-        self.quant_slots.get_mut(id)?.take()
+        taken
     }
 
     #[inline]

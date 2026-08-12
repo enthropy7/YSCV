@@ -12,6 +12,14 @@ pub(crate) fn should_use_prepacked_i8_b(m: usize, k: usize, n: usize) -> bool {
 
 /// Convert NHWC tensor to NCHW in-place in the environment.
 pub(crate) fn ensure_nchw(env: &mut TensorEnv, name: &str) -> Result<(), OnnxError> {
+    // A quantized activation (i8 QuantTensor) can also be NHWC-resident. Handle
+    // it before the f32 branch: `env.remove` below would drop the quant slot,
+    // silently destroying the tensor. Transpose the i8 payload back to NCHW and
+    // clear the flag so downstream sees a well-formed NCHW quant tensor.
+    if env.is_nhwc(name) && env.get_quant_i8(name).is_some() {
+        env.transpose_quant_i8_to_nchw(name);
+        return Ok(());
+    }
     if env.is_nhwc(name)
         && let Some(t) = env.remove(name)
     {
@@ -329,6 +337,15 @@ fn execute_node_with_layout_kind_inner(
         || op == "Split"
         || op == "Transpose"
         || op == "Shape"
+        // Quantized ops carry the NHWC flag through the i8 QuantTensor
+        // themselves (see `exec_qlinear_conv` / `exec_quantize_linear` /
+        // `exec_dequantize_linear`). They must NOT be coerced by the generic
+        // `ensure_nchw` path: their activation lives in the quant slot, which
+        // `ensure_nchw`'s f32 `env.remove` would drop.
+        || op == "QuantizeLinear"
+        || op == "DequantizeLinear"
+        || op == "DynamicQuantizeLinear"
+        || op == "QLinearConv"
     {
         return execute_node_kind(node, env, kind);
     }

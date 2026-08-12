@@ -89,6 +89,15 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
         })?;
     let x_q_data = x_quant.as_ref().map(|q| q.data.as_slice());
     let x_t_data = x_tensor.as_ref().map(|t| t.data());
+    // Physical layout of the activation. An NHWC-resident input has physical
+    // shape `[N,H,W,C]`; the fast paths index accordingly and emit NHWC output
+    // so the whole int8 sub-graph stays NHWC (no per-conv transposes). The
+    // quant flag was cleared by `take_quant_i8`, so read it from the payload;
+    // the f32 fallback input keeps its env flag.
+    let x_is_nhwc = x_quant
+        .as_ref()
+        .map(|q| q.nhwc)
+        .unwrap_or_else(|| env.is_nhwc(&node.inputs[0]));
 
     // Int8 fast path: NCHW input, OIHW weight, group=1, no dilation, symmetric
     // weights (w_zp == 0). im2col + integer GEMM + per-channel composite
@@ -106,7 +115,12 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 crate::runner::get_attr_ints(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
             let xs = x_shape;
             let ws = w.shape();
-            let (n_n, c_in, ih, iw) = (xs[0], xs[1], xs[2], xs[3]);
+            // Physical input dims per layout: `[N,H,W,C]` (NHWC) or `[N,C,H,W]`.
+            let (n_n, c_in, ih, iw) = if x_is_nhwc {
+                (xs[0], xs[3], xs[1], xs[2])
+            } else {
+                (xs[0], xs[1], xs[2], xs[3])
+            };
             let (c_out, _, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
             if ws[1] == c_in && pads.len() == 4 && strides.len() == 2 {
                 let (pt, pl, pb, pr) = (
@@ -121,43 +135,71 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 let m = n_n * oh * ow;
                 let k_dim = c_in * kh * kw;
 
-                // im2col NCHW → [M, K] i8. Padded taps must hold x_zp (the
-                // quantized value of a real 0), so the correction below stays
-                // uniform per channel; the scratch comes back zeroed, so this
-                // fill is a no-op in the symmetric case.
-                let mut x_im2col = env.take_i8_scratch_a(m * k_dim);
-                if x_zp_i8 != 0 {
-                    x_im2col.fill(x_zp_i8);
-                }
-                for ni in 0..n_n {
-                    for oh_i in 0..oh {
-                        for ow_i in 0..ow {
-                            let row = (ni * oh + oh_i) * ow + ow_i;
-                            for ci in 0..c_in {
-                                for ky in 0..kh {
-                                    for kx in 0..kw {
-                                        let ih_i = oh_i * sh + ky;
-                                        let iw_i = ow_i * sw + kx;
-                                        let col = (ci * kh + ky) * kw + kx;
-                                        let idx = row * k_dim + col;
-                                        if ih_i >= pt
-                                            && ih_i < pt + ih
-                                            && iw_i >= pl
-                                            && iw_i < pl + iw
-                                        {
-                                            let h = ih_i - pt;
-                                            let v = iw_i - pl;
-                                            let src = ((ni * c_in + ci) * ih + h) * iw + v;
-                                            x_im2col[idx] = x_q_data
-                                                .map(|d| d[src])
-                                                .unwrap_or_else(|| x_t_data.unwrap()[src] as i8);
+                // A 1×1 stride-1 no-pad conv with NHWC input is already the GEMM
+                // A matrix `[M, c_in]` — skip im2col entirely (zero copy). The
+                // whole int8 stream stays NHWC, so this is the common case.
+                let is_pointwise = kh == 1
+                    && kw == 1
+                    && sh == 1
+                    && sw == 1
+                    && pt == 0
+                    && pl == 0
+                    && pb == 0
+                    && pr == 0;
+                let zero_copy = is_pointwise && x_is_nhwc && x_q_data.is_some();
+
+                // im2col → [M, K] i8. Padded taps must hold x_zp (the quantized
+                // value of a real 0), so the correction below stays uniform per
+                // channel; the scratch comes back zeroed, so this fill is a no-op
+                // in the symmetric case. Source indexing follows the input layout.
+                let mut scratch = if zero_copy {
+                    Vec::new()
+                } else {
+                    let mut buf = env.take_i8_scratch_a(m * k_dim);
+                    if x_zp_i8 != 0 {
+                        buf.fill(x_zp_i8);
+                    }
+                    for ni in 0..n_n {
+                        for oh_i in 0..oh {
+                            for ow_i in 0..ow {
+                                let row = (ni * oh + oh_i) * ow + ow_i;
+                                for ci in 0..c_in {
+                                    for ky in 0..kh {
+                                        for kx in 0..kw {
+                                            let ih_i = oh_i * sh + ky;
+                                            let iw_i = ow_i * sw + kx;
+                                            let col = (ci * kh + ky) * kw + kx;
+                                            let idx = row * k_dim + col;
+                                            if ih_i >= pt
+                                                && ih_i < pt + ih
+                                                && iw_i >= pl
+                                                && iw_i < pl + iw
+                                            {
+                                                let h = ih_i - pt;
+                                                let v = iw_i - pl;
+                                                let src = if x_is_nhwc {
+                                                    ((ni * ih + h) * iw + v) * c_in + ci
+                                                } else {
+                                                    ((ni * c_in + ci) * ih + h) * iw + v
+                                                };
+                                                buf[idx] =
+                                                    x_q_data.map(|d| d[src]).unwrap_or_else(|| {
+                                                        x_t_data.unwrap()[src] as i8
+                                                    });
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                }
+                    buf
+                };
+                let x_im2col: &[i8] = if zero_copy {
+                    x_q_data.unwrap()
+                } else {
+                    &scratch
+                };
 
                 // Integer GEMM.
                 let mut acc = env.take_i32_scratch(m * c_out);
@@ -165,9 +207,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     && let Some(packed) = env.prepacked_i8_b(&node.inputs[3])
                 {
                     if packed.k() == k_dim && packed.n() == c_out {
-                        yscv_kernels::int8_matmul_prepacked_dispatch(
-                            &x_im2col, packed, m, &mut acc,
-                        );
+                        yscv_kernels::int8_matmul_prepacked_dispatch(x_im2col, packed, m, &mut acc);
                     } else {
                         return Err(OnnxError::DecodeFailed {
                             message: format!(
@@ -192,38 +232,38 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                         }
                     }
                     yscv_kernels::int8_matmul_dispatch(
-                        &x_im2col, &w_packed, m, k_dim, c_out, &mut acc,
+                        x_im2col, &w_packed, m, k_dim, c_out, &mut acc,
                     );
                 }
 
                 // Per-channel composite requantize with the zero-point
-                // correction (bias − x_zp·Σw) folded in; reshape [M, O] → NCHW.
+                // correction (bias − x_zp·Σw) folded in. `acc` is `[M, c_out]`
+                // row-major = NHWC, so the requantize writes NHWC directly (no
+                // output transpose); the per-channel factors are hoisted out of
+                // the row loop.
                 let bias_data = bias.as_ref().map(|b| b.data());
-                let mut out = vec![0_i8; n_n * c_out * oh * ow];
-                for ni in 0..n_n {
+                let composites: Vec<f32> = (0..c_out).map(&composite_at).collect();
+                let corrs: Vec<i32> = (0..c_out).map(|o| corr_at(o, bias_data)).collect();
+                let mut out = vec![0_i8; m * c_out];
+                for (row_out, row_acc) in out.chunks_exact_mut(c_out).zip(acc.chunks_exact(c_out)) {
                     for o in 0..c_out {
-                        let composite = composite_at(o);
-                        let corr = corr_at(o, bias_data);
-                        for oh_i in 0..oh {
-                            for ow_i in 0..ow {
-                                let row = (ni * oh + oh_i) * ow + ow_i;
-                                let v = ((acc[row * c_out + o] + corr) as f32) * composite + y_zp;
-                                let dst = ((ni * c_out + o) * oh + oh_i) * ow + ow_i;
-                                out[dst] = v.round_ties_even().clamp(-128.0, 127.0) as i8;
-                            }
-                        }
+                        let v = ((row_acc[o] + corrs[o]) as f32) * composites[o] + y_zp;
+                        row_out[o] = v.round_ties_even().clamp(-128.0, 127.0) as i8;
                     }
                 }
                 env.put_i32_scratch(acc);
-                env.put_i8_scratch_a(x_im2col);
+                if !zero_copy {
+                    scratch.clear();
+                    env.put_i8_scratch_a(std::mem::take(&mut scratch));
+                }
                 env.insert_quant_i8(
                     node.outputs[0].clone(),
                     QuantTensor {
                         data: out,
-                        shape: vec![n_n, c_out, oh, ow],
+                        shape: vec![n_n, oh, ow, c_out],
                         scale: y_scale,
                         zero_point: y_zp,
-                        nhwc: false,
+                        nhwc: true,
                     },
                 );
                 crate::runner::note_qlinear_conv_fast();
@@ -240,8 +280,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
             let (c_out, c_per_g, kh, kw) = (ws[0], ws[1], ws[2], ws[3]);
             let group_usize = group as usize;
             let expected_c = c_per_g * group_usize;
-            let input_is_nhwc = xs[3] == expected_c && xs[1] != expected_c;
-            let (n_n, c_in, ih, iw) = if input_is_nhwc {
+            let (n_n, c_in, ih, iw) = if x_is_nhwc {
                 (xs[0], xs[3], xs[1], xs[2])
             } else {
                 (xs[0], xs[1], xs[2], xs[3])
@@ -268,7 +307,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     && c_in == group_usize
                     && kh == kw
                     && (kh == 3 || kh == 5)
-                    && !input_is_nhwc
+                    && !x_is_nhwc
                     && sh == 2
                     && sw == 2
                     && ih > 64
@@ -303,8 +342,10 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                         &mut acc,
                     );
 
+                    // `acc` is NCHW here (NCHW kernel); requantize into NHWC so
+                    // the output starts the NHWC stream.
                     let bias_data = bias.as_ref().map(|b| b.data());
-                    let mut out = vec![0_i8; n_n * c_out * oh * ow];
+                    let mut out = vec![0_i8; n_n * oh * ow * c_out];
                     for ni in 0..n_n {
                         for c in 0..c_out {
                             let composite = composite_at(c);
@@ -312,7 +353,8 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                             for oh_i in 0..oh {
                                 for ow_i in 0..ow {
                                     let idx = ((ni * c_out + c) * oh + oh_i) * ow + ow_i;
-                                    out[idx] = (((acc[idx] + corr) as f32) * composite + y_zp)
+                                    let dst = ((ni * oh + oh_i) * ow + ow_i) * c_out + c;
+                                    out[dst] = (((acc[idx] + corr) as f32) * composite + y_zp)
                                         .round_ties_even()
                                         .clamp(-128.0, 127.0)
                                         as i8;
@@ -326,10 +368,10 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                         node.outputs[0].clone(),
                         QuantTensor {
                             data: out,
-                            shape: vec![n_n, c_out, oh, ow],
+                            shape: vec![n_n, oh, ow, c_out],
                             scale: y_scale,
                             zero_point: y_zp,
-                            nhwc: false,
+                            nhwc: true,
                         },
                     );
                     crate::runner::note_qlinear_conv_fast();
@@ -358,65 +400,77 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                         out_h: oh,
                         out_w: ow,
                     };
-                    let mut x_nhwc = env.take_i8_scratch_a(n_n * ih * iw * c_in);
-                    if input_is_nhwc {
-                        if let Some(data) = x_q_data {
-                            x_nhwc.copy_from_slice(data);
-                        } else {
-                            for (dst, &v) in x_nhwc.iter_mut().zip(x_t_data.unwrap()) {
+                    // NHWC quant input is already the kernel's input layout —
+                    // pass it through with zero copy. Otherwise pack to NHWC
+                    // (transpose from NCHW, or cast an f32 activation).
+                    let zero_copy = x_is_nhwc && x_q_data.is_some();
+                    let mut x_scratch = if zero_copy {
+                        Vec::new()
+                    } else {
+                        let mut buf = env.take_i8_scratch_a(n_n * ih * iw * c_in);
+                        if x_is_nhwc {
+                            for (dst, &v) in buf.iter_mut().zip(x_t_data.unwrap()) {
                                 *dst = v as i8;
                             }
-                        }
-                    } else {
-                        for ni in 0..n_n {
-                            for h in 0..ih {
-                                for v in 0..iw {
-                                    let dst_base = ((ni * ih + h) * iw + v) * c_in;
-                                    for c in 0..c_in {
-                                        let src = ((ni * c_in + c) * ih + h) * iw + v;
-                                        x_nhwc[dst_base + c] = x_q_data
-                                            .map(|d| d[src])
-                                            .unwrap_or_else(|| x_t_data.unwrap()[src] as i8);
+                        } else {
+                            for ni in 0..n_n {
+                                for h in 0..ih {
+                                    for v in 0..iw {
+                                        let dst_base = ((ni * ih + h) * iw + v) * c_in;
+                                        for c in 0..c_in {
+                                            let src = ((ni * c_in + c) * ih + h) * iw + v;
+                                            buf[dst_base + c] = x_q_data
+                                                .map(|d| d[src])
+                                                .unwrap_or_else(|| x_t_data.unwrap()[src] as i8);
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
+                        buf
+                    };
+                    let x_nhwc: &[i8] = if zero_copy {
+                        x_q_data.unwrap()
+                    } else {
+                        &x_scratch
+                    };
                     let mut acc = env.take_i32_scratch(n_n * oh * ow * c_out);
                     yscv_kernels::depthwise_i8_i32_nhwc_dispatch(
-                        &x_nhwc,
+                        x_nhwc,
                         dw_weight.as_slice(),
                         p,
                         &mut acc,
                     );
 
+                    // `acc` is NHWC `[N,H,W,C]`; requantize in place to NHWC.
                     let bias_data = bias.as_ref().map(|b| b.data());
-                    let mut out = vec![0_i8; n_n * c_out * oh * ow];
-                    for ni in 0..n_n {
-                        for oh_i in 0..oh {
-                            for ow_i in 0..ow {
-                                let acc_base = ((ni * oh + oh_i) * ow + ow_i) * c_out;
-                                for c in 0..c_out {
-                                    let biased = acc[acc_base + c] + corr_at(c, bias_data);
-                                    let dst = ((ni * c_out + c) * oh + oh_i) * ow + ow_i;
-                                    out[dst] = ((biased as f32) * composite_at(c) + y_zp)
-                                        .round_ties_even()
-                                        .clamp(-128.0, 127.0)
-                                        as i8;
-                                }
-                            }
+                    let composites: Vec<f32> = (0..c_out).map(&composite_at).collect();
+                    let corrs: Vec<i32> = (0..c_out).map(|c| corr_at(c, bias_data)).collect();
+                    let mut out = vec![0_i8; n_n * oh * ow * c_out];
+                    for (row_out, row_acc) in
+                        out.chunks_exact_mut(c_out).zip(acc.chunks_exact(c_out))
+                    {
+                        for c in 0..c_out {
+                            let biased = row_acc[c] + corrs[c];
+                            row_out[c] = ((biased as f32) * composites[c] + y_zp)
+                                .round_ties_even()
+                                .clamp(-128.0, 127.0)
+                                as i8;
                         }
                     }
                     env.put_i32_scratch(acc);
-                    env.put_i8_scratch_a(x_nhwc);
+                    if !zero_copy {
+                        x_scratch.clear();
+                        env.put_i8_scratch_a(std::mem::take(&mut x_scratch));
+                    }
                     env.insert_quant_i8(
                         node.outputs[0].clone(),
                         QuantTensor {
                             data: out,
-                            shape: vec![n_n, c_out, oh, ow],
+                            shape: vec![n_n, oh, ow, c_out],
                             scale: y_scale,
                             zero_point: y_zp,
-                            nhwc: false,
+                            nhwc: true,
                         },
                     );
                     crate::runner::note_qlinear_conv_fast();
@@ -431,7 +485,8 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 let out_per_g = c_out / group_usize;
                 let w_data = w.data();
                 let bias_data = bias.as_ref().map(|b| b.data());
-                let mut out = vec![0_i8; n_n * c_out * oh * ow];
+                // Output NHWC `[N,H,W,C]` to stay in the int8 stream layout.
+                let mut out = vec![0_i8; n_n * oh * ow * c_out];
                 for ni in 0..n_n {
                     for o in 0..c_out {
                         let g = o / out_per_g;
@@ -457,7 +512,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                                             {
                                                 let h = ih_i - pt;
                                                 let v = iw_i - pl;
-                                                let x_idx = if input_is_nhwc {
+                                                let x_idx = if x_is_nhwc {
                                                     ((ni * ih + h) * iw + v) * c_in + src_c
                                                 } else {
                                                     ((ni * c_in + src_c) * ih + h) * iw + v
@@ -474,7 +529,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                                         }
                                     }
                                 }
-                                let dst = ((ni * c_out + o) * oh + oh_i) * ow + ow_i;
+                                let dst = ((ni * oh + oh_i) * ow + ow_i) * c_out + o;
                                 out[dst] = ((acc as f32) * composite + y_zp)
                                     .round_ties_even()
                                     .clamp(-128.0, 127.0)
@@ -487,10 +542,10 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     node.outputs[0].clone(),
                     QuantTensor {
                         data: out,
-                        shape: vec![n_n, c_out, oh, ow],
+                        shape: vec![n_n, oh, ow, c_out],
                         scale: y_scale,
                         zero_point: y_zp,
-                        nhwc: false,
+                        nhwc: true,
                     },
                 );
                 crate::runner::note_qlinear_conv_fast();
@@ -500,7 +555,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     }
 
     crate::runner::note_qlinear_conv_fallback();
-    let deq_x: Vec<f32> = if let Some(data) = x_q_data {
+    let deq_x_raw: Vec<f32> = if let Some(data) = x_q_data {
         data.iter()
             .map(|&v| ((v as f32) - x_zp) * x_scale)
             .collect()
@@ -510,6 +565,27 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
             .iter()
             .map(|&v| (v - x_zp) * x_scale)
             .collect()
+    };
+    // The f32 `exec_conv` fallback expects NCHW. If the activation arrived
+    // NHWC, transpose it (and use NCHW dims/shape). This resets the stream to
+    // NCHW — acceptable since the fallback only fires for the rare shapes the
+    // integer fast paths decline (e.g. dilated convs).
+    let (deq_x, x_shape_nchw): (Vec<f32>, Vec<usize>) = if x_is_nhwc && x_shape.len() == 4 {
+        let (n_n, h, w, c) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
+        let mut nchw = vec![0f32; deq_x_raw.len()];
+        for n in 0..n_n {
+            for y in 0..h {
+                for xx in 0..w {
+                    let src_base = ((n * h + y) * w + xx) * c;
+                    for ch in 0..c {
+                        nchw[((n * c + ch) * h + y) * w + xx] = deq_x_raw[src_base + ch];
+                    }
+                }
+            }
+        }
+        (nchw, vec![n_n, c, h, w])
+    } else {
+        (deq_x_raw, x_shape.to_vec())
     };
     // Per-channel weight dequant (OIHW): (w - w_zp[o]) * w_scale[o]. Reduces to
     // the per-tensor case when either vector has length 1.
@@ -527,10 +603,9 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
         })
         .collect();
 
-    let deq_x_t =
-        Tensor::from_vec(x_shape.to_vec(), deq_x).map_err(|e| OnnxError::DecodeFailed {
-            message: e.to_string(),
-        })?;
+    let deq_x_t = Tensor::from_vec(x_shape_nchw, deq_x).map_err(|e| OnnxError::DecodeFailed {
+        message: e.to_string(),
+    })?;
     let deq_w_t =
         Tensor::from_vec(w.shape().to_vec(), deq_w).map_err(|e| OnnxError::DecodeFailed {
             message: e.to_string(),
@@ -584,6 +659,54 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
     })?;
     env.insert(node.outputs[0].clone(), out);
     Ok(())
+}
+
+/// Resolve a fused chain's activation input into NHWC `[N,H,W,C]` i8, returning
+/// `(nhwc_data, n, c, h, w)`. The fused kernels consume NHWC, so when the
+/// producer already emitted an NHWC quant tensor (the common case now that the
+/// per-op conv paths output NHWC) the data moves through untouched — no
+/// transpose. NCHW input (or an f32-encoded i8 activation) is transposed/cast.
+/// Consumes the slot when the input has a single use, matching the per-op
+/// contract.
+fn resolve_fused_input_nhwc(
+    env: &mut TensorEnv,
+    node_name: &str,
+    input_name: &str,
+) -> Result<(Vec<i8>, usize, usize, usize, usize), OnnxError> {
+    let take = env.static_use_count(input_name) <= 1;
+    let q = if take {
+        env.take_quant_i8(input_name)
+    } else {
+        env.get_quant_i8(input_name).cloned()
+    };
+    let (data, shape, nhwc): (Vec<i8>, Vec<usize>, bool) = match q {
+        Some(qt) => (qt.data, qt.shape, qt.nhwc),
+        None => {
+            let nhwc = env.is_nhwc(input_name);
+            let t = get_tensor(env, node_name, input_name)?;
+            let shape = t.shape().to_vec();
+            let data: Vec<i8> = t.data().iter().map(|&v| v as i8).collect();
+            (data, shape, nhwc)
+        }
+    };
+    if shape.len() != 4 {
+        return Err(OnnxError::DecodeFailed {
+            message: format!("{node_name}: fused-chain input rank must be 4, got {shape:?}"),
+        });
+    }
+    let (n_n, c_in, ih, iw) = if nhwc {
+        (shape[0], shape[3], shape[1], shape[2])
+    } else {
+        (shape[0], shape[1], shape[2], shape[3])
+    };
+    let nhwc_data = if nhwc {
+        data
+    } else {
+        let mut buf = vec![0_i8; n_n * ih * iw * c_in];
+        nchw_i8_to_nhwc(&data, &mut buf, n_n, c_in, ih, iw);
+        buf
+    };
+    Ok((nhwc_data, n_n, c_in, ih, iw))
 }
 
 /// Dispatch the fused INT8 PW->DW chain for the action emitted by the
@@ -673,29 +796,7 @@ pub(crate) fn exec_quantized_pw_dw(
     //   * a `QuantizeLinear` that stored f32 values representing i8
     //     (the special-name path bypasses this; the general path stores
     //     f32) — fall back to `get_tensor` and round/cast.
-    let x_quant = if env.static_use_count(&pw.inputs[0]) <= 1 {
-        env.take_quant_i8(&pw.inputs[0])
-    } else {
-        env.get_quant_i8(&pw.inputs[0]).cloned()
-    };
-    let (x_data, x_shape): (Vec<i8>, Vec<usize>) = match x_quant {
-        Some(qt) => (qt.data, qt.shape),
-        None => {
-            let t = get_tensor(env, &pw.name, &pw.inputs[0])?;
-            let shape = t.shape().to_vec();
-            let data: Vec<i8> = t.data().iter().map(|&v| v as i8).collect();
-            (data, shape)
-        }
-    };
-    if x_shape.len() != 4 {
-        return Err(OnnxError::DecodeFailed {
-            message: format!(
-                "QuantizedPwDw {}: input rank must be 4, got {:?}",
-                pw.name, x_shape
-            ),
-        });
-    }
-    let (n_n, c_in, ih, iw) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
+    let (input_nhwc, n_n, c_in, ih, iw) = resolve_fused_input_nhwc(env, &pw.name, &pw.inputs[0])?;
     if c_in != c_in_pw {
         return Err(OnnxError::DecodeFailed {
             message: format!(
@@ -706,11 +807,6 @@ pub(crate) fn exec_quantized_pw_dw(
     }
     let out_h = (ih + 2 * pad - kh) / stride + 1;
     let out_w = (iw + 2 * pad - kw) / stride + 1;
-
-    // NCHW -> NHWC i8 transpose at chain entry. The kernel reads the
-    // pre-packed PW RHS so it expects contiguous c_in per pixel.
-    let mut input_nhwc = vec![0_i8; n_n * ih * iw * c_in];
-    nchw_i8_to_nhwc(&x_data, &mut input_nhwc, n_n, c_in, ih, iw);
 
     let pw_packed = env
         .prepacked_i8_b(&pw.inputs[3])
@@ -846,29 +942,7 @@ pub(crate) fn exec_quantized_pw_dw_fork(
         None
     };
 
-    let x_quant = if env.static_use_count(&pw.inputs[0]) <= 1 {
-        env.take_quant_i8(&pw.inputs[0])
-    } else {
-        env.get_quant_i8(&pw.inputs[0]).cloned()
-    };
-    let (x_data, x_shape): (Vec<i8>, Vec<usize>) = match x_quant {
-        Some(qt) => (qt.data, qt.shape),
-        None => {
-            let t = get_tensor(env, &pw.name, &pw.inputs[0])?;
-            let shape = t.shape().to_vec();
-            let data: Vec<i8> = t.data().iter().map(|&v| v as i8).collect();
-            (data, shape)
-        }
-    };
-    if x_shape.len() != 4 {
-        return Err(OnnxError::DecodeFailed {
-            message: format!(
-                "QuantizedPwDwFork {}: input rank must be 4, got {:?}",
-                pw.name, x_shape
-            ),
-        });
-    }
-    let (n_n, c_in, ih, iw) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
+    let (input_nhwc, n_n, c_in, ih, iw) = resolve_fused_input_nhwc(env, &pw.name, &pw.inputs[0])?;
     if c_in != c_in_pw {
         return Err(OnnxError::DecodeFailed {
             message: format!(
@@ -879,9 +953,6 @@ pub(crate) fn exec_quantized_pw_dw_fork(
     }
     let out_h = (ih + 2 * pad - kh) / stride + 1;
     let out_w = (iw + 2 * pad - kw) / stride + 1;
-
-    let mut input_nhwc = vec![0_i8; n_n * ih * iw * c_in];
-    nchw_i8_to_nhwc(&x_data, &mut input_nhwc, n_n, c_in, ih, iw);
 
     let pw_packed = env
         .prepacked_i8_b(&pw.inputs[3])
@@ -1031,29 +1102,7 @@ pub(crate) fn exec_quantized_dw_residual(
         None
     };
 
-    let x_quant = if env.static_use_count(&dw.inputs[0]) <= 1 {
-        env.take_quant_i8(&dw.inputs[0])
-    } else {
-        env.get_quant_i8(&dw.inputs[0]).cloned()
-    };
-    let (x_data, x_shape): (Vec<i8>, Vec<usize>) = match x_quant {
-        Some(qt) => (qt.data, qt.shape),
-        None => {
-            let t = get_tensor(env, &dw.name, &dw.inputs[0])?;
-            let shape = t.shape().to_vec();
-            let data: Vec<i8> = t.data().iter().map(|&v| v as i8).collect();
-            (data, shape)
-        }
-    };
-    if x_shape.len() != 4 {
-        return Err(OnnxError::DecodeFailed {
-            message: format!(
-                "QuantizedDwResidual {}: input rank must be 4, got {:?}",
-                dw.name, x_shape
-            ),
-        });
-    }
-    let (n_n, c_in, ih, iw) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
+    let (input_nhwc, n_n, c_in, ih, iw) = resolve_fused_input_nhwc(env, &dw.name, &dw.inputs[0])?;
     if c_in != c_in_dw {
         return Err(OnnxError::DecodeFailed {
             message: format!(
@@ -1065,9 +1114,6 @@ pub(crate) fn exec_quantized_dw_residual(
     let out_h = (ih + 2 * pad - kh) / stride + 1;
     let out_w = (iw + 2 * pad - kw) / stride + 1;
     let m = n_n * out_h * out_w;
-
-    let mut input_nhwc = vec![0_i8; n_n * ih * iw * c_in];
-    nchw_i8_to_nhwc(&x_data, &mut input_nhwc, n_n, c_in, ih, iw);
 
     let dw_weight =
         env.prepacked_i8_depthwise(&dw.inputs[3])
@@ -1275,6 +1321,13 @@ pub(crate) fn exec_quantized_pw_dq(
     } else {
         env.get_quant_i8(&qconv.inputs[0]).cloned()
     };
+    // Layout from the quant payload, or the env flag for the f32-encoded case
+    // (a `QuantizeLinear` that stored f32 i8; `take_quant_i8` left the flag
+    // intact because it took nothing).
+    let x_is_nhwc = x_quant
+        .as_ref()
+        .map(|q| q.nhwc)
+        .unwrap_or_else(|| env.is_nhwc(&qconv.inputs[0]));
     let (x_data, x_shape): (Vec<i8>, Vec<usize>) = match x_quant {
         Some(qt) => (qt.data, qt.shape),
         None => {
@@ -1292,7 +1345,12 @@ pub(crate) fn exec_quantized_pw_dq(
             ),
         });
     }
-    let (n_n, c_in, h, w_in) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
+    // Physical shape is `[N,H,W,C]` when NHWC-resident, `[N,C,H,W]` otherwise.
+    let (n_n, c_in, h, w_in) = if x_is_nhwc {
+        (x_shape[0], x_shape[3], x_shape[1], x_shape[2])
+    } else {
+        (x_shape[0], x_shape[1], x_shape[2], x_shape[3])
+    };
     if c_in != c_in_w {
         return Err(OnnxError::DecodeFailed {
             message: format!(
@@ -1302,8 +1360,17 @@ pub(crate) fn exec_quantized_pw_dq(
         });
     }
 
-    let mut input_nhwc = vec![0_i8; n_n * h * w_in * c_in];
-    nchw_i8_to_nhwc(&x_data, &mut input_nhwc, n_n, c_in, h, w_in);
+    // NHWC input is already `[M, c_in]` row-major — the GEMM A matrix — so no
+    // im2col/transpose. NCHW input still needs the pack to NHWC.
+    let input_nhwc_owned;
+    let input_nhwc: &[i8] = if x_is_nhwc {
+        &x_data
+    } else {
+        let mut buf = vec![0_i8; n_n * h * w_in * c_in];
+        nchw_i8_to_nhwc(&x_data, &mut buf, n_n, c_in, h, w_in);
+        input_nhwc_owned = buf;
+        &input_nhwc_owned
+    };
 
     let packed = env
         .prepacked_i8_b(&qconv.inputs[3])
@@ -1312,7 +1379,7 @@ pub(crate) fn exec_quantized_pw_dq(
         })?;
     let m = n_n * h * w_in;
     let mut acc = vec![0_i32; m * c_out];
-    yscv_kernels::int8_matmul_prepacked_dispatch(&input_nhwc, packed, m, &mut acc);
+    yscv_kernels::int8_matmul_prepacked_dispatch(input_nhwc, packed, m, &mut acc);
     let mut q_i8 = vec![0_i8; m * c_out];
     let composite = (x_scale * w_scale) / y_scale;
     let nthreads = rayon::current_num_threads().max(1);
@@ -1347,34 +1414,12 @@ pub(crate) fn exec_quantized_pw_dq(
             );
         }
     }
-    let mut out_nchw = vec![0_f32; m * c_out];
-    let plane = h * w_in;
-    if !cfg!(miri) && out_nchw.len() >= 16_384 && nthreads > 1 {
-        out_nchw
-            .par_chunks_mut(plane)
-            .enumerate()
-            .for_each(|(plane_idx, dst_plane)| {
-                let n = plane_idx / c_out;
-                let c = plane_idx % c_out;
-                for y in 0..h {
-                    for x in 0..w_in {
-                        let src = ((n * h + y) * w_in + x) * c_out + c;
-                        dst_plane[y * w_in + x] = (q_i8[src] as f32 - y_zp) * y_scale;
-                    }
-                }
-            });
-    } else {
-        for n in 0..n_n {
-            for c in 0..c_out {
-                for y in 0..h {
-                    for x in 0..w_in {
-                        let src = ((n * h + y) * w_in + x) * c_out + c;
-                        let dst = ((n * c_out + c) * h + y) * w_in + x;
-                        out_nchw[dst] = (q_i8[src] as f32 - y_zp) * y_scale;
-                    }
-                }
-            }
-        }
+    // Output stays NHWC `[N,H,W,C]`: a plain per-element dequantize, no
+    // transpose. The downstream f32 activation carries the NHWC flag; the
+    // model-output boundary transposes back via `ensure_nchw`.
+    let mut out_nhwc = vec![0_f32; m * c_out];
+    for (dst, &src) in out_nhwc.iter_mut().zip(q_i8.iter()) {
+        *dst = (src as f32 - y_zp) * y_scale;
     }
     let out_name = dq
         .outputs
@@ -1383,12 +1428,13 @@ pub(crate) fn exec_quantized_pw_dq(
         .ok_or_else(|| OnnxError::DecodeFailed {
             message: format!("QuantizedPwDq {}: DQ has no output", dq.name),
         })?;
-    let tensor = Tensor::from_vec(vec![n_n, c_out, h, w_in], out_nchw).map_err(|e| {
+    let tensor = Tensor::from_vec(vec![n_n, h, w_in, c_out], out_nhwc).map_err(|e| {
         OnnxError::DecodeFailed {
             message: e.to_string(),
         }
     })?;
-    env.insert(out_name, tensor);
+    env.insert(out_name.clone(), tensor);
+    env.mark_nhwc(&out_name);
     crate::runner::note_quant_chain_executed();
     Ok(())
 }
@@ -1484,29 +1530,7 @@ pub(crate) fn exec_quantized_dw_pw(
     //     `QuantTensor` (cheap path);
     //   * a `QuantizeLinear` (or fp32 producer) that stored f32
     //     representing i8 — fall back to `get_tensor` and round/cast.
-    let x_quant = if env.static_use_count(&dw.inputs[0]) <= 1 {
-        env.take_quant_i8(&dw.inputs[0])
-    } else {
-        env.get_quant_i8(&dw.inputs[0]).cloned()
-    };
-    let (x_data, x_shape): (Vec<i8>, Vec<usize>) = match x_quant {
-        Some(qt) => (qt.data, qt.shape),
-        None => {
-            let t = get_tensor(env, &dw.name, &dw.inputs[0])?;
-            let shape = t.shape().to_vec();
-            let data: Vec<i8> = t.data().iter().map(|&v| v as i8).collect();
-            (data, shape)
-        }
-    };
-    if x_shape.len() != 4 {
-        return Err(OnnxError::DecodeFailed {
-            message: format!(
-                "QuantizedDwPw {}: input rank must be 4, got {:?}",
-                dw.name, x_shape
-            ),
-        });
-    }
-    let (n_n, c_in, ih, iw) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
+    let (input_nhwc, n_n, c_in, ih, iw) = resolve_fused_input_nhwc(env, &dw.name, &dw.inputs[0])?;
     if c_in != c_in_dw {
         return Err(OnnxError::DecodeFailed {
             message: format!(
@@ -1517,21 +1541,6 @@ pub(crate) fn exec_quantized_dw_pw(
     }
     let out_h = (ih + 2 * pad - kh) / stride + 1;
     let out_w = (iw + 2 * pad - kw) / stride + 1;
-
-    // NCHW -> NHWC i8 transpose at chain entry. The kernel addresses
-    // input pixels as contiguous `c_in` runs.
-    let mut input_nhwc = vec![0_i8; n_n * ih * iw * c_in];
-    for n in 0..n_n {
-        for c in 0..c_in {
-            for y in 0..ih {
-                for x in 0..iw {
-                    let src = ((n * c_in + c) * ih + y) * iw + x;
-                    let dst = ((n * ih + y) * iw + x) * c_in + c;
-                    input_nhwc[dst] = x_data[src];
-                }
-            }
-        }
-    }
 
     let dw_weight =
         env.prepacked_i8_depthwise(&dw.inputs[3])

@@ -48,6 +48,9 @@ pub(super) fn exec_quantize_linear(node: &OnnxNode, env: &mut TensorEnv) -> Resu
         None
     };
 
+    // Preserve the physical layout: an NHWC-resident activation quantizes to an
+    // NHWC-resident i8 tensor. `env.insert` clears the flag, so re-apply it.
+    let input_nhwc = env.is_nhwc(&node.inputs[0]);
     let s = scale.data()[0];
     let zp = zero_point.map_or(0.0f32, |t| t.data()[0]);
     if !node
@@ -74,6 +77,9 @@ pub(super) fn exec_quantize_linear(node: &OnnxNode, env: &mut TensorEnv) -> Resu
             }
         })?;
         env.insert(node.outputs[0].clone(), out);
+        if input_nhwc {
+            env.mark_nhwc(&node.outputs[0]);
+        }
         return Ok(());
     }
     let mut data = vec![0_i8; input.data().len()];
