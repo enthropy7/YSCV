@@ -63,7 +63,7 @@ pub fn relu_slice_dispatch(values: &mut [f32]) {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_slice_avx(values);
@@ -125,7 +125,7 @@ pub fn relu_to_slice_dispatch(input: &[f32], output: &mut [f32]) {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 relu_to_slice_avx(input, output);
@@ -204,7 +204,7 @@ pub fn sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 sigmoid_slice_avx(input, output);
@@ -272,7 +272,7 @@ pub fn silu_slice_dispatch(input: &[f32], output: &mut [f32]) {
             unsafe { silu_slice_avx512(input, output) };
             return;
         }
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { silu_slice_avx(input, output) };
             return;
@@ -317,7 +317,7 @@ pub fn gelu_sigmoid_slice_dispatch(input: &[f32], output: &mut [f32]) {
             unsafe { gelu_sigmoid_slice_avx512(input, output) };
             return;
         }
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { gelu_sigmoid_slice_avx(input, output) };
             return;
@@ -348,7 +348,7 @@ pub fn silu_inplace(data: &mut [f32]) {
             unsafe { silu_inplace_avx512(data.as_mut_ptr(), data.len()) };
             return;
         }
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: runtime dispatch enables AVX and the raw routine loads
             // each vector before storing it back to the same elements.
             unsafe { silu_inplace_avx(data.as_mut_ptr(), data.len()) };
@@ -466,7 +466,7 @@ pub fn bias_relu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: us
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_relu_nhwc_avx(output, bias, m, n) };
             return;
@@ -498,7 +498,7 @@ pub fn bias_add_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: usi
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_add_nhwc_avx(output, bias, m, n) };
             return;
@@ -656,7 +656,7 @@ pub fn bias_silu_nhwc_dispatch(output: &mut [f32], bias: &[f32], m: usize, n: us
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { bias_silu_nhwc_avx(output, bias, m, n) };
             return;
@@ -2124,7 +2124,7 @@ pub fn hardswish_slice_dispatch(input: &[f32], output: &mut [f32]) {
             unsafe { hardswish_slice_avx512(input, output) };
             return;
         }
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe { hardswish_slice_avx(input, output) };
             return;

@@ -45,7 +45,7 @@ pub fn fma_slice_dispatch(a: &[f32], b: &[f32], acc: &mut [f32]) {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 fma_slice_avx(a, b, acc);
@@ -220,7 +220,7 @@ pub unsafe fn matmul_row_dispatch(
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             matmul_row_avx(left_row, right, out_row, k, n);
             return;
         }
@@ -561,7 +561,7 @@ pub unsafe fn matmul_row_set_dispatch(
             matmul_row_set_avx512(left_row, right, out_row, k, n);
             return;
         }
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             matmul_row_set_avx(left_row, right, out_row, k, n);
             return;
         }

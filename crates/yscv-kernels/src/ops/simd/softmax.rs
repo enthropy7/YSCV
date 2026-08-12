@@ -83,7 +83,7 @@ pub fn softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_len: u
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {
@@ -153,7 +153,7 @@ pub fn log_softmax_rows_fused_dispatch(input: &[f32], output: &mut [f32], row_le
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 for (in_row, out_row) in input.chunks(row_len).zip(output.chunks_mut(row_len)) {

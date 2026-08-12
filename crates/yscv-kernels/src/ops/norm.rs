@@ -563,7 +563,7 @@ fn batch_norm2d_nhwc_row(
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if channels >= 8 && path == SimdDispatchPath::Avx {
+    if channels >= 8 && path.is_avx() {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { batch_norm_row_avx(input_row, out_row, scale, shift, channels) };
         return;
@@ -871,7 +871,7 @@ fn layer_norm_stats(data: &[f32]) -> (f32, f32) {
         return unsafe { layer_norm_stats_avx512(data) };
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 8 && path == SimdDispatchPath::Avx {
+    if n >= 8 && path.is_avx() {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         return unsafe { layer_norm_stats_avx(data) };
     }
@@ -1013,7 +1013,7 @@ fn layer_norm_apply(
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 8 && path == SimdDispatchPath::Avx {
+    if n >= 8 && path.is_avx() {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_avx(input, out, gamma, beta, mean, inv_std) };
         return;
@@ -1042,7 +1042,7 @@ fn layer_norm_apply_identity(input: &[f32], out: &mut [f32], mean: f32, inv_std:
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if n >= 8 && path == SimdDispatchPath::Avx {
+    if n >= 8 && path.is_avx() {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_identity_avx(input, out, mean, inv_std) };
         return;

@@ -35,6 +35,7 @@ fn assert_path_matches_features(path: SimdDispatchPath, report: CpuDispatchRepor
     let features = report.cpu.features;
     match path {
         SimdDispatchPath::Avx512 => assert!(features.avx512f, "{path:?} without AVX-512F"),
+        SimdDispatchPath::Avx2 => assert!(features.avx2, "{path:?} without AVX2"),
         SimdDispatchPath::Avx => assert!(features.avx, "{path:?} without AVX"),
         SimdDispatchPath::Sse2 => assert!(features.sse2, "{path:?} without SSE2"),
         SimdDispatchPath::Sse => assert!(features.sse, "{path:?} without SSE"),
@@ -45,6 +46,14 @@ fn assert_path_matches_features(path: SimdDispatchPath, report: CpuDispatchRepor
         }
         SimdDispatchPath::Scalar => {}
     }
+}
+
+#[test]
+fn avx2_dispatch_path_is_explicit_and_uses_ymm_kernels() {
+    assert_eq!(SimdDispatchPath::Avx2.to_string(), "avx2");
+    assert!(SimdDispatchPath::Avx2.is_avx());
+    assert!(SimdDispatchPath::Avx.is_avx());
+    assert!(!SimdDispatchPath::Avx512.is_avx());
 }
 
 #[test]

@@ -459,7 +459,7 @@ pub fn exp_slice_dispatch(input: &[f32], output: &mut [f32]) {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 exp_slice_avx(input, output);
@@ -515,7 +515,7 @@ pub fn sub_exp_slice_dispatch(input: &[f32], offset: f32, output: &mut [f32]) {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 sub_exp_slice_avx(input, offset, output);
@@ -570,7 +570,7 @@ pub fn tanh_slice_dispatch(input: &[f32], output: &mut [f32]) {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             unsafe {
                 tanh_slice_avx(input, output);

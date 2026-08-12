@@ -48,7 +48,7 @@ pub fn max_reduce_dispatch(data: &[f32]) -> f32 {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             return unsafe { max_reduce_avx(data) };
         }
@@ -90,7 +90,7 @@ pub fn add_reduce_dispatch(data: &[f32]) -> f32 {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if path == SimdDispatchPath::Avx {
+        if path.is_avx() {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
             return unsafe { add_reduce_avx(data) };
         }
