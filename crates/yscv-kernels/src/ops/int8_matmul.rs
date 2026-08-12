@@ -43,6 +43,12 @@ enum Int8MatmulPath {
     NeonI8mm,
     #[cfg(target_arch = "aarch64")]
     NeonDotprod,
+    /// Plain ARMv8.0-A NEON widening dot (`vmull_s8` + `vpadalq_s16`).
+    /// Covers A53-class cores that have neither the dot-product
+    /// (ARMv8.2 `dotprod`) nor `i8mm` extensions, where the only
+    /// alternative is scalar. ~8× the scalar throughput.
+    #[cfg(target_arch = "aarch64")]
+    NeonWiden,
     Scalar,
 }
 
@@ -60,6 +66,8 @@ impl Int8MatmulPath {
             Int8MatmulPath::NeonI8mm => "neon-i8mm",
             #[cfg(target_arch = "aarch64")]
             Int8MatmulPath::NeonDotprod => "neon-dotprod",
+            #[cfg(target_arch = "aarch64")]
+            Int8MatmulPath::NeonWiden => "neon-widen",
             Int8MatmulPath::Scalar => "scalar",
         }
     }
@@ -440,6 +448,143 @@ unsafe fn int8_matmul_neon_sdot(a: &[i8], b: &[i8], m: usize, k: usize, n: usize
             out[i * n + j] = tail;
         }
     }
+}
+
+/// One column of the widening dot: `a_row · bt_col` over K, via `vmull_s8`
+/// (8×8→16) + `vpadalq_s16` (pairwise-accumulate into i32). `bt_col` is
+/// contiguous over K.
+///
+/// SAFETY: `ap` and `bp` must each be valid for `k` i8 reads.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn widen_dot_1col(ap: *const i8, bp: *const i8, k: usize) -> i32 {
+    use std::arch::aarch64::*;
+    unsafe {
+        let mut acc = vdupq_n_s32(0);
+        let mut kk = 0;
+        while kk + 16 <= k {
+            let av = vld1q_s8(ap.add(kk));
+            let bv = vld1q_s8(bp.add(kk));
+            acc = vpadalq_s16(acc, vmull_s8(vget_low_s8(av), vget_low_s8(bv)));
+            acc = vpadalq_s16(acc, vmull_s8(vget_high_s8(av), vget_high_s8(bv)));
+            kk += 16;
+        }
+        if kk + 8 <= k {
+            acc = vpadalq_s16(acc, vmull_s8(vld1_s8(ap.add(kk)), vld1_s8(bp.add(kk))));
+            kk += 8;
+        }
+        let mut s = vaddvq_s32(acc);
+        while kk < k {
+            s += (*ap.add(kk) as i32) * (*bp.add(kk) as i32);
+            kk += 1;
+        }
+        s
+    }
+}
+
+/// Plain ARMv8.0-A NEON widening int8 GEMM: `a` is `[M, K]` row-major, `bt`
+/// is the transposed RHS `[N, K]` (contiguous K per column). No
+/// `dotprod`/`i8mm` needed — this is the A53-class path.
+///
+/// The N loop is blocked by 4 so four **independent** `vpadalq` accumulator
+/// chains are live at once; the shared `a` half-vectors (`avl`/`avh`) are
+/// loaded once and reused across the four columns. On an in-order A53 the
+/// independent chains hide the ~4-cycle `vmull`/`vpadalq` latency that a
+/// single-chain dot stalls on. Bit-identical to the scalar reference.
+///
+/// SAFETY: `a.len() >= m*k`, `bt.len() >= n*k`, `out.len() >= m*n`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
+    use std::arch::aarch64::*;
+    unsafe {
+        for i in 0..m {
+            let ap = a.as_ptr().add(i * k);
+            let mut j = 0;
+            while j + 4 <= n {
+                let bp0 = bt.as_ptr().add(j * k);
+                let bp1 = bt.as_ptr().add((j + 1) * k);
+                let bp2 = bt.as_ptr().add((j + 2) * k);
+                let bp3 = bt.as_ptr().add((j + 3) * k);
+                let mut a0 = vdupq_n_s32(0);
+                let mut a1 = vdupq_n_s32(0);
+                let mut a2 = vdupq_n_s32(0);
+                let mut a3 = vdupq_n_s32(0);
+                let mut kk = 0;
+                while kk + 16 <= k {
+                    let av = vld1q_s8(ap.add(kk));
+                    let avl = vget_low_s8(av);
+                    let avh = vget_high_s8(av);
+                    let b0 = vld1q_s8(bp0.add(kk));
+                    a0 = vpadalq_s16(a0, vmull_s8(avl, vget_low_s8(b0)));
+                    a0 = vpadalq_s16(a0, vmull_s8(avh, vget_high_s8(b0)));
+                    let b1 = vld1q_s8(bp1.add(kk));
+                    a1 = vpadalq_s16(a1, vmull_s8(avl, vget_low_s8(b1)));
+                    a1 = vpadalq_s16(a1, vmull_s8(avh, vget_high_s8(b1)));
+                    let b2 = vld1q_s8(bp2.add(kk));
+                    a2 = vpadalq_s16(a2, vmull_s8(avl, vget_low_s8(b2)));
+                    a2 = vpadalq_s16(a2, vmull_s8(avh, vget_high_s8(b2)));
+                    let b3 = vld1q_s8(bp3.add(kk));
+                    a3 = vpadalq_s16(a3, vmull_s8(avl, vget_low_s8(b3)));
+                    a3 = vpadalq_s16(a3, vmull_s8(avh, vget_high_s8(b3)));
+                    kk += 16;
+                }
+                if kk + 8 <= k {
+                    let av = vld1_s8(ap.add(kk));
+                    a0 = vpadalq_s16(a0, vmull_s8(av, vld1_s8(bp0.add(kk))));
+                    a1 = vpadalq_s16(a1, vmull_s8(av, vld1_s8(bp1.add(kk))));
+                    a2 = vpadalq_s16(a2, vmull_s8(av, vld1_s8(bp2.add(kk))));
+                    a3 = vpadalq_s16(a3, vmull_s8(av, vld1_s8(bp3.add(kk))));
+                    kk += 8;
+                }
+                let mut s0 = vaddvq_s32(a0);
+                let mut s1 = vaddvq_s32(a1);
+                let mut s2 = vaddvq_s32(a2);
+                let mut s3 = vaddvq_s32(a3);
+                while kk < k {
+                    let av = *ap.add(kk) as i32;
+                    s0 += av * (*bp0.add(kk) as i32);
+                    s1 += av * (*bp1.add(kk) as i32);
+                    s2 += av * (*bp2.add(kk) as i32);
+                    s3 += av * (*bp3.add(kk) as i32);
+                    kk += 1;
+                }
+                let o = i * n + j;
+                out[o] = s0;
+                out[o + 1] = s1;
+                out[o + 2] = s2;
+                out[o + 3] = s3;
+                j += 4;
+            }
+            while j < n {
+                out[i * n + j] = widen_dot_1col(ap, bt.as_ptr().add(j * k), k);
+                j += 1;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn int8_matmul_prepacked_neon_widen(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    // SAFETY: caller guarantees a=[m,k], out=[m,n]; bt is [n,k].
+    unsafe { neon_widen_gemm(a, b.transposed(), m, b.k, b.n, out) };
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn int8_matmul_neon_widen(
+    a: &[i8],
+    b: &[i8],
+    m: usize,
+    k: usize,
+    n: usize,
+    out: &mut [i32],
+) {
+    let bt = transpose_b(b, k, n);
+    // SAFETY: bt is [n,k], a=[m,k], out=[m,n].
+    unsafe { neon_widen_gemm(a, &bt, m, k, n, out) };
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1036,6 +1181,9 @@ fn select_int8_matmul_path() -> Int8MatmulPath {
         if features.aarch64_neon_dotprod() {
             return Int8MatmulPath::NeonDotprod;
         }
+        if features.neon {
+            return Int8MatmulPath::NeonWiden;
+        }
     }
     Int8MatmulPath::Scalar
 }
@@ -1065,6 +1213,9 @@ fn select_int8_prepacked_path() -> Int8MatmulPath {
         if features.aarch64_neon_dotprod() {
             return Int8MatmulPath::NeonDotprod;
         }
+        if features.neon {
+            return Int8MatmulPath::NeonWiden;
+        }
     }
     Int8MatmulPath::Scalar
 }
@@ -1082,6 +1233,8 @@ fn selected_int8_matmul_kernel() -> Int8MatmulKernel {
         Int8MatmulPath::NeonI8mm => int8_matmul_neon_i8mm_kernel,
         #[cfg(target_arch = "aarch64")]
         Int8MatmulPath::NeonDotprod => int8_matmul_neon_sdot_kernel,
+        #[cfg(target_arch = "aarch64")]
+        Int8MatmulPath::NeonWiden => int8_matmul_neon_widen_kernel,
         _ => int8_matmul_scalar,
     })
 }
@@ -1099,6 +1252,8 @@ fn selected_int8_prepacked_kernel() -> Int8PrepackedKernel {
         Int8MatmulPath::NeonI8mm => int8_matmul_prepacked_neon_i8mm_kernel,
         #[cfg(target_arch = "aarch64")]
         Int8MatmulPath::NeonDotprod => int8_matmul_prepacked_neon_sdot_kernel,
+        #[cfg(target_arch = "aarch64")]
+        Int8MatmulPath::NeonWiden => int8_matmul_prepacked_neon_widen_kernel,
         _ => int8_matmul_prepacked_scalar,
     })
 }
@@ -1147,6 +1302,19 @@ fn int8_matmul_neon_sdot_kernel(a: &[i8], b: &[i8], m: usize, k: usize, n: usize
     unsafe { int8_matmul_neon_sdot(a, b, m, k, n, out) };
 }
 
+#[cfg(target_arch = "aarch64")]
+fn int8_matmul_neon_widen_kernel(
+    a: &[i8],
+    b: &[i8],
+    m: usize,
+    k: usize,
+    n: usize,
+    out: &mut [i32],
+) {
+    // SAFETY: NEON is mandatory on aarch64; selected after `features.neon`.
+    unsafe { int8_matmul_neon_widen(a, b, m, k, n, out) };
+}
+
 #[cfg(target_arch = "x86_64")]
 fn int8_matmul_prepacked_avx512_vnni_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
     // SAFETY: selected only after `host_cpu().features.x86_avx512_vnni()`.
@@ -1175,6 +1343,12 @@ fn int8_matmul_prepacked_neon_i8mm_kernel(a: &[i8], b: &PackedI8B, m: usize, out
 fn int8_matmul_prepacked_neon_sdot_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
     // SAFETY: selected only after `host_cpu().features.aarch64_neon_dotprod()`.
     unsafe { int8_matmul_prepacked_neon_sdot(a, b, m, out) };
+}
+
+#[cfg(target_arch = "aarch64")]
+fn int8_matmul_prepacked_neon_widen_kernel(a: &[i8], b: &PackedI8B, m: usize, out: &mut [i32]) {
+    // SAFETY: NEON is mandatory on aarch64; selected after `features.neon`.
+    unsafe { int8_matmul_prepacked_neon_widen(a, b, m, out) };
 }
 
 /// Runtime-dispatched int8 GEMM. Picks the best variant available on the
@@ -1295,6 +1469,34 @@ mod tests {
         let mut got = vec![0_i32; 32 * 16];
         unsafe { int8_matmul_neon_sdot(&a, &b, 32, 32, 16, &mut got) };
         assert_eq!(got, expected);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_widen_matches_scalar() {
+        // NEON is mandatory on aarch64, so the widening path is always live.
+        // Shapes cover K exactly 16, 16+8, 16+tail, 16+8+tail, and small K to
+        // exercise the 16-wide body, the 8-wide step, and the scalar tail.
+        for &(m, k, n) in &[
+            (1, 1, 1),
+            (2, 3, 4),
+            (4, 16, 8),
+            (5, 17, 6),
+            (3, 24, 7),
+            (8, 31, 5),
+            (16, 128, 64),
+        ] {
+            let a = pseudo_random(0x9E37 ^ (m * k) as u64, m * k);
+            let b = pseudo_random(0x7F4A ^ (k * n) as u64, k * n);
+            let expected = ref_matmul(&a, &b, m, k, n);
+            let mut got = vec![i32::MIN; m * n];
+            unsafe { int8_matmul_neon_widen(&a, &b, m, k, n, &mut got) };
+            assert_eq!(got, expected, "unpacked m={m} k={k} n={n}");
+            let packed = pack_i8_b_for_matmul(&b, k, n);
+            let mut got2 = vec![i32::MIN; m * n];
+            unsafe { int8_matmul_prepacked_neon_widen(&a, &packed, m, &mut got2) };
+            assert_eq!(got2, expected, "prepacked m={m} k={k} n={n}");
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
