@@ -760,7 +760,7 @@ mod tests {
                             acc += b[c];
                         }
                         let v = (acc as f32) * p.dw_composite + 0.0;
-                        let mut q = v.round().clamp(-128.0, 127.0) as i8;
+                        let mut q = v.round_ties_even().clamp(-128.0, 127.0) as i8;
                         if p.dw_relu && q < 0 {
                             q = 0;
                         }
@@ -785,7 +785,7 @@ mod tests {
                             acc += b[o];
                         }
                         let v = (acc as f32) * p.pw_composite + p.pw_y_zp;
-                        let q = v.round().clamp(-128.0, 127.0) as i8;
+                        let q = v.round_ties_even().clamp(-128.0, 127.0) as i8;
                         out[((n * p.c_out + o) * p.out_h + oh_i) * p.out_w + ow_i] = q;
                     }
                 }

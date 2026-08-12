@@ -634,8 +634,8 @@ pub fn pack_int4_symmetric_per_group(
             scales[row * groups + g] = scale;
             let inv = 1.0 / scale;
             for i in 0..group_size / 2 {
-                let v0 = (slice[2 * i] * inv).round().clamp(-8.0, 7.0) as i8;
-                let v1 = (slice[2 * i + 1] * inv).round().clamp(-8.0, 7.0) as i8;
+                let v0 = (slice[2 * i] * inv).round_ties_even().clamp(-8.0, 7.0) as i8;
+                let v1 = (slice[2 * i + 1] * inv).round_ties_even().clamp(-8.0, 7.0) as i8;
                 let byte = ((v0 as u8) & 0x0F) | (((v1 as u8) & 0x0F) << 4);
                 packed[row * k / 2 + g * group_size / 2 + i] = byte;
             }
