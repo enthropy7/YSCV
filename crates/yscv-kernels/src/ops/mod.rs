@@ -107,6 +107,7 @@ pub use int8_fused_pw_dw_3x3::{
 };
 pub use int8_requant::requant_i8_dq_hardswish_q_dispatch;
 pub use int8_requant::requant_i8_dq_relu_q_dispatch;
+pub use int8_requant::requant_i8_per_channel_dispatch;
 pub use int8_requant::requant_i32_row_to_i8_dispatch;
 pub use layout::{
     nchw_to_nchwc, nchw_to_nhwc_fast, nchwc_to_nchw, nchwc_to_nhwc, nhwc_to_nchw_fast,

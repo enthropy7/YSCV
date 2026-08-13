@@ -385,6 +385,146 @@ unsafe fn requant_neon(
 }
 
 // ===========================================================================
+// Per-channel composite requantize for QLinearConv path1/im2col epilogues.
+// `acc` is `[pixels, c]` row-major (NHWC). Unlike `requant_i32_row_to_i8`
+// above (one composite scale, used by the fused DQ->Q boundaries), here each
+// output channel carries its own `corr[ch]` (i32, the folded bias − x_zp·Σw)
+// and `composite[ch]` (f32, x_scale·w_scale[ch]/y_scale). Bit-identical to the
+// scalar epilogue it replaces:
+//   ((acc + corr) as f32 * composite + y_zp).round_ties_even().clamp(-128,127)
+// The vectorised path folds round-ties-even and clamp into FCVTNS + double
+// saturating-narrow (SQXTN), which is exactly what the scalar oracle computes.
+// ===========================================================================
+
+/// Dispatch the per-channel-composite requantize to the widest host SIMD path.
+#[inline]
+pub fn requant_i8_per_channel_dispatch(
+    acc: &[i32],
+    corr: &[i32],
+    composite: &[f32],
+    y_zp: f32,
+    out: &mut [i8],
+    c: usize,
+) {
+    debug_assert_eq!(acc.len(), out.len());
+    debug_assert!(c > 0);
+    debug_assert_eq!(acc.len() % c, 0);
+    debug_assert_eq!(corr.len(), c);
+    debug_assert_eq!(composite.len(), c);
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::host_cpu().features.neon {
+            // SAFETY: NEON feature-detected at runtime; the inner function is
+            // annotated `target_feature(enable = "neon")`.
+            #[allow(unsafe_code)]
+            unsafe {
+                requant_i8_per_channel_neon(acc, corr, composite, y_zp, out, c);
+            }
+            return;
+        }
+    }
+
+    requant_i8_per_channel_scalar(acc, corr, composite, y_zp, out, c);
+}
+
+/// Scalar reference / bitwise oracle for the per-channel-composite requantize.
+#[inline]
+pub(crate) fn requant_i8_per_channel_scalar(
+    acc: &[i32],
+    corr: &[i32],
+    composite: &[f32],
+    y_zp: f32,
+    out: &mut [i8],
+    c: usize,
+) {
+    let pixels = acc.len() / c;
+    for p in 0..pixels {
+        let row_acc = &acc[p * c..(p + 1) * c];
+        let row_out = &mut out[p * c..(p + 1) * c];
+        for ch in 0..c {
+            let a = row_acc[ch].wrapping_add(corr[ch]);
+            let v = (a as f32) * composite[ch] + y_zp;
+            row_out[ch] = v.round_ties_even().clamp(-128.0, 127.0) as i8;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code)]
+unsafe fn requant_i8_per_channel_neon(
+    acc: &[i32],
+    corr: &[i32],
+    composite: &[f32],
+    y_zp: f32,
+    out: &mut [i8],
+    c: usize,
+) {
+    use std::arch::aarch64::*;
+
+    // One channel-lane of the pipeline: load acc+corr, `(acc+corr)·comp + zp`,
+    // FCVTNS (round ties to even, i32-saturating) — matches `round_ties_even`.
+    #[inline(always)]
+    unsafe fn lane4(
+        row_acc: *const i32,
+        corr: *const i32,
+        composite: *const f32,
+        zp: float32x4_t,
+        ch: usize,
+    ) -> int32x4_t {
+        unsafe {
+            let ai = vld1q_s32(row_acc.add(ch));
+            let ci = vld1q_s32(corr.add(ch));
+            let comp = vld1q_f32(composite.add(ch));
+            let af = vcvtq_f32_s32(vaddq_s32(ai, ci));
+            vcvtnq_s32_f32(vaddq_f32(vmulq_f32(af, comp), zp))
+        }
+    }
+
+    unsafe {
+        let zp = vdupq_n_f32(y_zp);
+        let pixels = acc.len() / c;
+        for p in 0..pixels {
+            let row_acc = acc.as_ptr().add(p * c);
+            let row_out = out.as_mut_ptr().add(p * c);
+            let cp = corr.as_ptr();
+            let fp = composite.as_ptr();
+            let mut ch = 0;
+            // 16 channels/iter: 4 lanes → double saturating-narrow → one
+            // 16-byte store (`vst1q_s8`), amortising the i32→i8 pack and
+            // killing the per-4-byte `copy_from_slice` memcpy call.
+            while ch + 16 <= c {
+                let r0 = lane4(row_acc, cp, fp, zp, ch);
+                let r1 = lane4(row_acc, cp, fp, zp, ch + 4);
+                let r2 = lane4(row_acc, cp, fp, zp, ch + 8);
+                let r3 = lane4(row_acc, cp, fp, zp, ch + 12);
+                let s01 = vcombine_s16(vqmovn_s32(r0), vqmovn_s32(r1));
+                let s23 = vcombine_s16(vqmovn_s32(r2), vqmovn_s32(r3));
+                let b = vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23));
+                vst1q_s8(row_out.add(ch), b);
+                ch += 16;
+            }
+            // 8 channels/iter: 2 lanes → one 8-byte store.
+            while ch + 8 <= c {
+                let r0 = lane4(row_acc, cp, fp, zp, ch);
+                let r1 = lane4(row_acc, cp, fp, zp, ch + 4);
+                let b = vqmovn_s16(vcombine_s16(vqmovn_s32(r0), vqmovn_s32(r1)));
+                vst1_s8(row_out.add(ch), b);
+                ch += 8;
+            }
+            // Scalar tail (< 8 channels).
+            while ch < c {
+                let a = (*row_acc.add(ch)).wrapping_add(*cp.add(ch));
+                let v = (a as f32) * *fp.add(ch) + y_zp;
+                *row_out.add(ch) = v.round_ties_even().clamp(-128.0, 127.0) as i8;
+                ch += 1;
+            }
+        }
+    }
+}
+
+// ===========================================================================
 // Fused DequantizeLinear -> [Relu] -> QuantizeLinear across an int8 rescale
 // boundary. Between two int8 convs the graph does i8 -> DQ -> f32 -> Relu ->
 // f32 -> Q -> i8; folding it into one pass keeps the activation in i8 (no
@@ -651,6 +791,39 @@ mod tests {
             }
         }
         out_disp
+    }
+
+    #[test]
+    fn per_channel_matches_scalar() {
+        // Per-channel composite + corr epilogue: dispatch (SIMD/scalar) must
+        // match the scalar oracle across channel counts that exercise the
+        // 4-lane main path and the scalar tail (16 exact, 24=16+8, 40, and
+        // the awkward 5/17 tails), with per-channel scales/corrections and a
+        // y_zp, including inputs that force saturation at both ends.
+        for &c in &[4usize, 5, 16, 17, 24, 40, 72] {
+            let pixels = 37;
+            let n = pixels * c;
+            let mut acc = vec![0i32; n];
+            let mut s: u32 = 0x9e3779b9 ^ (c as u32);
+            for v in acc.iter_mut() {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                // Wide range so requant lands both inside and outside i8.
+                *v = (s as i32) % 4000 - 2000;
+            }
+            let corr: Vec<i32> = (0..c).map(|ch| (ch as i32 * 13) % 97 - 48).collect();
+            let composite: Vec<f32> = (0..c).map(|ch| 0.003 + (ch as f32) * 0.0011).collect();
+            let y_zp = -6.0_f32;
+            let mut out_disp = vec![0i8; n];
+            let mut out_scalar = vec![0i8; n];
+            requant_i8_per_channel_dispatch(&acc, &corr, &composite, y_zp, &mut out_disp, c);
+            requant_i8_per_channel_scalar(&acc, &corr, &composite, y_zp, &mut out_scalar, c);
+            assert_eq!(
+                out_disp, out_scalar,
+                "per-channel requant mismatch at c={c}"
+            );
+        }
     }
 
     #[test]
