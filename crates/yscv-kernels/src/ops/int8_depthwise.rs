@@ -447,6 +447,30 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
                 }
                 let op = out.as_mut_ptr();
                 let mut c = 0;
+                // 16 channels/iter: one int8x16 load each for x and w amortises
+                // the tap-loop bookkeeping over twice the work (halves the
+                // c-block trip count on the 288/240-channel 5x5 convs).
+                while c + 16 <= chan {
+                    let mut a0 = vdupq_n_s32(0);
+                    let mut a1 = vdupq_n_s32(0);
+                    let mut a2 = vdupq_n_s32(0);
+                    let mut a3 = vdupq_n_s32(0);
+                    for &(in_base, w_base) in &taps[..ntaps] {
+                        let xv = vld1q_s8(inp.add(in_base + c));
+                        let wv = vld1q_s8(wp.add(w_base + c));
+                        let plo = vmull_s8(vget_low_s8(xv), vget_low_s8(wv));
+                        let phi = vmull_s8(vget_high_s8(xv), vget_high_s8(wv));
+                        a0 = vaddw_s16(a0, vget_low_s16(plo));
+                        a1 = vaddw_s16(a1, vget_high_s16(plo));
+                        a2 = vaddw_s16(a2, vget_low_s16(phi));
+                        a3 = vaddw_s16(a3, vget_high_s16(phi));
+                    }
+                    vst1q_s32(op.add(out_base + c), a0);
+                    vst1q_s32(op.add(out_base + c + 4), a1);
+                    vst1q_s32(op.add(out_base + c + 8), a2);
+                    vst1q_s32(op.add(out_base + c + 12), a3);
+                    c += 16;
+                }
                 while c + 8 <= chan {
                     let mut acc_lo = vdupq_n_s32(0);
                     let mut acc_hi = vdupq_n_s32(0);
