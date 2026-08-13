@@ -786,6 +786,61 @@ pub(crate) fn build_runtime_index(
                 }
             }
         }
+        // f32 HardSwish -> Q fold: `x(f32) -> HardSigmoid -> Mul(x, hs) -> Q`,
+        // where `x` is NOT a DequantizeLinear output (an SE Mul feeds it), so
+        // the DQ->HardSwish->Q fold above never sees it. If the DQ fold already
+        // claimed this HardSigmoid (plan_skip set), we skip. Fold the three ops
+        // into one f32->i8 pass.
+        if nodes[i].op_type == "HardSigmoid"
+            && !plan_skip[i]
+            && nodes[i].inputs.len() == 1
+            && nodes[i].outputs.len() == 1
+        {
+            let x = nodes[i].inputs[0].as_str();
+            let hs_out = nodes[i].outputs[0].as_str();
+            // Only when `x` is NOT a DequantizeLinear output: that case is the
+            // more efficient DQ->HardSwish->Q fold (stays in i8, skips the DQ),
+            // handled above. Node order isn't guaranteed topological, so gate on
+            // the producer explicitly rather than on plan_skip.
+            let x_from_dq = producers
+                .get(x)
+                .is_some_and(|&p| nodes[p].op_type == "DequantizeLinear");
+            if !x_from_dq
+                && !outputs.iter().any(|o| o == x)
+                && !outputs.iter().any(|o| o == hs_out)
+                && let Some(cons_x) = consumers.get(x)
+                && cons_x.len() == 2
+                && cons_x.contains(&i)
+                && let Some(mul_idx) = cons_x.iter().copied().find(|&c| nodes[c].op_type == "Mul")
+                && !plan_skip[mul_idx]
+            {
+                let mul = &nodes[mul_idx];
+                let mul_ok = mul.inputs.len() == 2
+                    && ((mul.inputs[0] == x && mul.inputs[1] == hs_out)
+                        || (mul.inputs[0] == hs_out && mul.inputs[1] == x));
+                if mul_ok
+                    && sole_consumer(hs_out) == Some(mul_idx)
+                    && mul.outputs.len() == 1
+                    && !outputs.iter().any(|o| o == &mul.outputs[0])
+                    && let Some(q_idx) = sole_consumer(&mul.outputs[0])
+                    && !plan_skip[q_idx]
+                    && nodes[q_idx].op_type == "QuantizeLinear"
+                    && nodes[q_idx].inputs.len() >= 3
+                    && nodes[q_idx].outputs.len() == 1
+                    && init_scalar(initializers, &nodes[q_idx].inputs[1]).is_some()
+                    && init_scalar(initializers, &nodes[q_idx].inputs[2]).is_some()
+                {
+                    execution_plan.push(NodeAction::FusedHardSwishQuant {
+                        hs_idx: i,
+                        mul_idx,
+                        quant_idx: q_idx,
+                    });
+                    plan_skip[mul_idx] = true;
+                    plan_skip[q_idx] = true;
+                    continue;
+                }
+            }
+        }
         match kind {
             NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu => {
                 let activation = match kind {

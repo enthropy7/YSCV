@@ -238,6 +238,19 @@ pub(crate) enum NodeAction {
         hardswish: Option<(usize, usize)>,
         quant_idx: usize,
     },
+    /// Fused f32 HardSwish → QuantizeLinear:
+    /// `x(f32) -> HardSigmoid -> Mul(x, hs) -> QuantizeLinear -> i8`, where the
+    /// HardSwish input is a plain f32 tensor (an SE Mul output), NOT a
+    /// DequantizeLinear — so `QuantizedQdq`'s DQ→HardSwish→Q fold can't apply.
+    /// One f32→i8 pass instead of two intermediate f32 buffers + three ops.
+    FusedHardSwishQuant {
+        /// HardSigmoid node; its input[0] is the shared f32 source `x`.
+        hs_idx: usize,
+        /// `Mul(x, hs)` node.
+        mul_idx: usize,
+        /// Terminal `QuantizeLinear`.
+        quant_idx: usize,
+    },
     /// Fused INT8 quant-domain PW → DW chain:
     /// `QLinearConv(pw 1×1) → DequantizeLinear → [Relu] → QuantizeLinear →
     /// QLinearConv(dw kxk)` executed as a single kernel call. No fp32

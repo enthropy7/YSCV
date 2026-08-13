@@ -50,6 +50,7 @@ pub(crate) fn execute_plan_branch(
             NodeAction::FusedPwDwPwReduce { pw_expand_idx, .. } => *pw_expand_idx,
             NodeAction::FusedTransposeMatMul { matmul_idx, .. } => *matmul_idx,
             NodeAction::QuantizedQdq { dequant_idx, .. } => *dequant_idx,
+            NodeAction::FusedHardSwishQuant { hs_idx, .. } => *hs_idx,
             NodeAction::QuantizedPwDw { pw_idx, .. } => *pw_idx,
             NodeAction::QuantizedDwPw { dw_idx, .. } => *dw_idx,
             NodeAction::QuantizedForkPair { first_idx, .. } => *first_idx,
@@ -848,6 +849,69 @@ pub(crate) fn execute_plan_branch(
                 env.insert(quant_node.outputs[0].clone(), tensor);
             }
 
+            NodeAction::FusedHardSwishQuant {
+                hs_idx,
+                mul_idx,
+                quant_idx,
+            } => {
+                let hs_node = &nodes[*hs_idx];
+                let mul_node = &nodes[*mul_idx];
+                let quant_node = &nodes[*quant_idx];
+                if !quant_int8_fast_enabled() {
+                    execute_node_with_layout_kind(hs_node, env, NodeKind::Other)?;
+                    execute_node_with_layout_kind(mul_node, env, NodeKind::Mul)?;
+                    execute_node_with_layout_kind(quant_node, env, NodeKind::Other)?;
+                    continue;
+                }
+                note_quant_qdq_boundary();
+                let alpha = get_attr_float(hs_node, Attr::Alpha).unwrap_or(0.2);
+                let beta = get_attr_float(hs_node, Attr::Beta).unwrap_or(0.5);
+                let scalar = |node: &OnnxNode, idx: usize| -> Option<f32> {
+                    node.inputs
+                        .get(idx)
+                        .and_then(|name| env.get(name))
+                        .and_then(|t| t.data().first().copied())
+                };
+                let y_scale = scalar(quant_node, 1);
+                let y_zp = scalar(quant_node, 2).unwrap_or(0.0);
+                let x_name = hs_node
+                    .inputs
+                    .first()
+                    .ok_or_else(|| OnnxError::DecodeFailed {
+                        message: format!("{}: HardSigmoid missing input", hs_node.name),
+                    })?;
+                if let (Some(ys), Some(x)) = (y_scale, env.get(x_name)) {
+                    // One f32->i8 pass: quantize(x * hardsigmoid(x)).
+                    let shape = x.shape().to_vec();
+                    let mut out = vec![0_i8; x.data().len()];
+                    yscv_kernels::hardswish_quantize_f32_to_i8_dispatch(
+                        x.data(),
+                        alpha,
+                        beta,
+                        ys,
+                        y_zp,
+                        &mut out,
+                    );
+                    let nhwc = env.is_nhwc(x_name);
+                    env.insert_quant_i8(
+                        quant_node.outputs[0].clone(),
+                        QuantTensor {
+                            data: out,
+                            shape,
+                            scale: ys,
+                            zero_point: y_zp,
+                            nhwc,
+                        },
+                    );
+                } else {
+                    // Missing scale (shouldn't happen under the plan gate) — run
+                    // the three ops via the standard per-op path.
+                    execute_node_with_layout_kind(hs_node, env, NodeKind::Other)?;
+                    execute_node_with_layout_kind(mul_node, env, NodeKind::Mul)?;
+                    execute_node_with_layout_kind(quant_node, env, NodeKind::Other)?;
+                }
+            }
+
             NodeAction::QuantizedPwDw {
                 pw_idx,
                 dq_idx,
@@ -1195,6 +1259,24 @@ pub(crate) fn execute_plan_branch(
                     };
                     (d.name.clone(), op.to_string(), sh.clone(), sh)
                 }
+                NodeAction::FusedHardSwishQuant {
+                    hs_idx, quant_idx, ..
+                } => {
+                    let hs = &nodes[*hs_idx];
+                    let q = &nodes[*quant_idx];
+                    let sh = q
+                        .outputs
+                        .first()
+                        .and_then(|nm| env.get(nm))
+                        .map(|t| t.shape().to_vec())
+                        .unwrap_or_default();
+                    (
+                        hs.name.clone(),
+                        "FusedHardSwishQuant".to_string(),
+                        sh.clone(),
+                        sh,
+                    )
+                }
                 NodeAction::QuantizedPwDw {
                     pw_idx,
                     dw_idx,
@@ -1447,6 +1529,11 @@ pub(crate) fn execute_plan_branch(
                 (Some(ri), None) => &[*dequant_idx, *ri, *quant_idx][..],
                 (None, None) => &[*dequant_idx, *quant_idx][..],
             },
+            NodeAction::FusedHardSwishQuant {
+                hs_idx,
+                mul_idx,
+                quant_idx,
+            } => &[*hs_idx, *mul_idx, *quant_idx][..],
             // Fused INT8 chain: the action wraps PW + DQ + (Relu) + Q + DW.
             // `exec_quantized_pw_dw` consumes PW's inputs internally
             // (specifically: `take_quant_i8` on PW.inputs[0] when the
