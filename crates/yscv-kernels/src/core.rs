@@ -227,8 +227,8 @@ pub use ops::{
 };
 pub use ops::{
     Int8FusedDwPwParams, Int8FusedPwDwParams, int8_fused_dw_pw_dispatch, int8_fused_pw_dw_dispatch,
-    int8_fused_pw_dw_with_pw_side_dispatch, requant_i8_dq_relu_q_dispatch,
-    requant_i32_row_to_i8_dispatch,
+    int8_fused_pw_dw_with_pw_side_dispatch, requant_i8_dq_hardswish_q_dispatch,
+    requant_i8_dq_relu_q_dispatch, requant_i32_row_to_i8_dispatch,
 };
 pub use ops::{MatmulKernel, take_matmul_kernel};
 #[cfg(target_arch = "x86_64")]

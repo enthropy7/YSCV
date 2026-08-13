@@ -498,6 +498,125 @@ unsafe fn requant_i8_dq_relu_q_neon(
     }
 }
 
+// ===========================================================================
+// Fused DequantizeLinear -> HardSwish(HardSigmoid+Mul) -> QuantizeLinear.
+// MobileNetV3 emits HardSwish as `x * HardSigmoid(x)` = DQ -> HardSigmoid ->
+// Mul(dq, hs) -> Q. Fold it into one i8->i8 pass. Bit-identical to the
+// sequence: DQ `(v-zp_in)*s_in`, HardSigmoid `(alpha*f+beta).clamp(0,1)`,
+// Mul `f*hs`, Q `(m/s_out+zp_out).round_ties_even().clamp`.
+// ===========================================================================
+
+/// Dispatch the fused i8->i8 `DQ -> HardSwish -> Q` boundary. `alpha`/`beta`
+/// are the HardSigmoid attributes (MobileNetV3 uses 1/6, 1/2).
+#[allow(clippy::too_many_arguments)]
+pub fn requant_i8_dq_hardswish_q_dispatch(
+    input: &[i8],
+    scale_in: f32,
+    zp_in: f32,
+    scale_out: f32,
+    zp_out: f32,
+    alpha: f32,
+    beta: f32,
+    out: &mut [i8],
+) {
+    debug_assert_eq!(input.len(), out.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::host_cpu().features.neon {
+            // SAFETY: NEON feature-detected at runtime.
+            #[allow(unsafe_code)]
+            unsafe {
+                requant_i8_dq_hardswish_q_neon(
+                    input, scale_in, zp_in, scale_out, zp_out, alpha, beta, out,
+                );
+            }
+            return;
+        }
+    }
+    requant_i8_dq_hardswish_q_scalar(input, scale_in, zp_in, scale_out, zp_out, alpha, beta, out);
+}
+
+/// Scalar reference / bitwise oracle.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn requant_i8_dq_hardswish_q_scalar(
+    input: &[i8],
+    scale_in: f32,
+    zp_in: f32,
+    scale_out: f32,
+    zp_out: f32,
+    alpha: f32,
+    beta: f32,
+    out: &mut [i8],
+) {
+    for (o, &q) in out.iter_mut().zip(input) {
+        let f = (q as f32 - zp_in) * scale_in;
+        let hs = (alpha * f + beta).clamp(0.0, 1.0);
+        let m = f * hs;
+        *o = (m / scale_out + zp_out)
+            .round_ties_even()
+            .clamp(-128.0, 127.0) as i8;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, clippy::too_many_arguments)]
+unsafe fn requant_i8_dq_hardswish_q_neon(
+    input: &[i8],
+    scale_in: f32,
+    zp_in: f32,
+    scale_out: f32,
+    zp_out: f32,
+    alpha: f32,
+    beta: f32,
+    out: &mut [i8],
+) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let v_zp_in = vdupq_n_f32(zp_in);
+        let v_sin = vdupq_n_f32(scale_in);
+        let v_sout = vdupq_n_f32(scale_out);
+        let v_zp_out = vdupq_n_f32(zp_out);
+        let v_alpha = vdupq_n_f32(alpha);
+        let v_beta = vdupq_n_f32(beta);
+        let zero = vdupq_n_f32(0.0);
+        let one = vdupq_n_f32(1.0);
+        let lo = vdupq_n_f32(-128.0);
+        let hi = vdupq_n_f32(127.0);
+        let n = input.len();
+        let main = n & !7;
+        let mut i = 0;
+        while i < main {
+            let q16 = vmovl_s8(vld1_s8(input.as_ptr().add(i)));
+            let mut chunk = |f32x4: float32x4_t| -> int16x4_t {
+                let f = vmulq_f32(vsubq_f32(f32x4, v_zp_in), v_sin);
+                let hs = vminq_f32(
+                    vmaxq_f32(vaddq_f32(vmulq_f32(v_alpha, f), v_beta), zero),
+                    one,
+                );
+                let m = vmulq_f32(f, hs);
+                let q = vaddq_f32(vdivq_f32(m, v_sout), v_zp_out);
+                let q = vminq_f32(vmaxq_f32(vrndnq_f32(q), lo), hi);
+                vqmovn_s32(vcvtq_s32_f32(q))
+            };
+            let flo = vcvtq_f32_s32(vmovl_s16(vget_low_s16(q16)));
+            let fhi = vcvtq_f32_s32(vmovl_s16(vget_high_s16(q16)));
+            let i8x8 = vqmovn_s16(vcombine_s16(chunk(flo), chunk(fhi)));
+            vst1_s8(out.as_mut_ptr().add(i), i8x8);
+            i += 8;
+        }
+        while i < n {
+            let f = (*input.get_unchecked(i) as f32 - zp_in) * scale_in;
+            let hs = (alpha * f + beta).clamp(0.0, 1.0);
+            *out.get_unchecked_mut(i) = ((f * hs) / scale_out + zp_out)
+                .round_ties_even()
+                .clamp(-128.0, 127.0) as i8;
+            i += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +683,33 @@ mod tests {
                     .collect();
                 assert_eq!(got, three, "dispatch vs 3-op relu={relu}");
             }
+        }
+    }
+
+    #[test]
+    fn dq_hardswish_q_matches_scalar_and_four_op_sequence() {
+        for &(sin, zin, sout, zout, alpha, beta) in &[
+            (0.03_f32, 0.0_f32, 0.02_f32, 0.0_f32, 1.0 / 6.0, 0.5),
+            (0.05, -7.0, 0.011, 12.0, 0.2, 0.5),
+            (0.008, 4.0, 0.05, -20.0, 1.0 / 6.0, 0.5),
+        ] {
+            let input: Vec<i8> = (-109..=108).map(|v| v as i8).collect();
+            let mut got = vec![0i8; input.len()];
+            let mut sc = vec![0i8; input.len()];
+            requant_i8_dq_hardswish_q_dispatch(&input, sin, zin, sout, zout, alpha, beta, &mut got);
+            requant_i8_dq_hardswish_q_scalar(&input, sin, zin, sout, zout, alpha, beta, &mut sc);
+            assert_eq!(got, sc, "hardswish dispatch vs scalar");
+            let four: Vec<i8> = input
+                .iter()
+                .map(|&q| {
+                    let f = (q as f32 - zin) * sin;
+                    let hs = (alpha * f + beta).clamp(0.0, 1.0);
+                    ((f * hs) / sout + zout)
+                        .round_ties_even()
+                        .clamp(-128.0, 127.0) as i8
+                })
+                .collect();
+            assert_eq!(got, four, "hardswish dispatch vs 4-op");
         }
     }
 

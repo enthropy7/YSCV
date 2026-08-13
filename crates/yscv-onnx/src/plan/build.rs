@@ -724,6 +724,7 @@ pub(crate) fn build_runtime_index(
                     execution_plan.push(NodeAction::QuantizedQdq {
                         dequant_idx: i,
                         relu_idx,
+                        hardswish: None,
                         quant_idx,
                     });
                     if let Some(ri) = relu_idx {
@@ -731,6 +732,57 @@ pub(crate) fn build_runtime_index(
                     }
                     plan_skip[quant_idx] = true;
                     continue;
+                }
+
+                // HardSwish fold: `DQ -> HardSigmoid -> Mul(dq, hs) -> Q`
+                // (MobileNetV3's `x * HardSigmoid(x)`). The DQ output fans out to
+                // exactly the HardSigmoid and the Mul; fold all four into one
+                // i8->i8 pass. Distinct from a Squeeze-Excite Mul, whose second
+                // operand is a Reshape gate, not `HardSigmoid(dq)`.
+                if let Some(cons) = consumers.get(dequant_out)
+                    && cons.len() == 2
+                {
+                    let hs_idx = cons
+                        .iter()
+                        .copied()
+                        .find(|&c| nodes[c].op_type == "HardSigmoid");
+                    let mul_idx = cons.iter().copied().find(|&c| nodes[c].op_type == "Mul");
+                    if let (Some(hs_idx), Some(mul_idx)) = (hs_idx, mul_idx)
+                        && !plan_skip[hs_idx]
+                        && !plan_skip[mul_idx]
+                        && nodes[hs_idx].inputs.len() == 1
+                        && nodes[hs_idx].inputs[0] == dequant_out
+                        && nodes[hs_idx].outputs.len() == 1
+                        && !outputs.iter().any(|o| o == &nodes[hs_idx].outputs[0])
+                    {
+                        let hs_out = nodes[hs_idx].outputs[0].as_str();
+                        let mul = &nodes[mul_idx];
+                        let mul_ok = mul.inputs.len() == 2
+                            && ((mul.inputs[0] == dequant_out && mul.inputs[1] == hs_out)
+                                || (mul.inputs[0] == hs_out && mul.inputs[1] == dequant_out));
+                        if mul_ok
+                            && sole_consumer(hs_out) == Some(mul_idx)
+                            && mul.outputs.len() == 1
+                            && !outputs.iter().any(|o| o == &mul.outputs[0])
+                            && let Some(q_idx) = sole_consumer(&mul.outputs[0])
+                            && !plan_skip[q_idx]
+                            && nodes[q_idx].op_type == "QuantizeLinear"
+                            && nodes[q_idx].inputs.len() >= 3
+                            && nodes[q_idx].outputs.len() == 1
+                            && per_tensor_qdq_boundary(&nodes[i], &nodes[q_idx], initializers)
+                        {
+                            execution_plan.push(NodeAction::QuantizedQdq {
+                                dequant_idx: i,
+                                relu_idx: None,
+                                hardswish: Some((hs_idx, mul_idx)),
+                                quant_idx: q_idx,
+                            });
+                            plan_skip[hs_idx] = true;
+                            plan_skip[mul_idx] = true;
+                            plan_skip[q_idx] = true;
+                            continue;
+                        }
+                    }
                 }
             }
         }

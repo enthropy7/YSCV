@@ -691,6 +691,7 @@ pub(crate) fn execute_plan_branch(
             NodeAction::QuantizedQdq {
                 dequant_idx,
                 relu_idx,
+                hardswish,
                 quant_idx,
             } => {
                 let dequant_node = &nodes[*dequant_idx];
@@ -699,6 +700,10 @@ pub(crate) fn execute_plan_branch(
                     execute_node_with_layout_kind(dequant_node, env, NodeKind::Other)?;
                     if let Some(ri) = relu_idx {
                         execute_node_with_layout_kind(&nodes[*ri], env, NodeKind::Relu)?;
+                    }
+                    if let Some((hs_idx, mul_idx)) = hardswish {
+                        execute_node_with_layout_kind(&nodes[*hs_idx], env, NodeKind::Other)?;
+                        execute_node_with_layout_kind(&nodes[*mul_idx], env, NodeKind::Mul)?;
                     }
                     execute_node_with_layout_kind(quant_node, env, NodeKind::Other)?;
                     continue;
@@ -723,13 +728,40 @@ pub(crate) fn execute_plan_branch(
                 let dq_zp = scalar(dequant_node, 2).unwrap_or(0.0);
                 let q_scale = scalar(quant_node, 1);
                 let q_zp = scalar(quant_node, 2).unwrap_or(0.0);
-                // Fast identity path: same scale + symmetric zero-points, so the
-                // rescale is a no-op relabel (Relu becomes `max(q, 0)`).
-                let identity = matches!((dq_scale, q_scale), (Some(a), Some(b)) if a.to_bits() == b.to_bits())
+                // HardSwish `(alpha, beta)` from the folded HardSigmoid node.
+                let hs_params = hardswish.map(|(hs_idx, _)| {
+                    let hs = &nodes[hs_idx];
+                    (
+                        get_attr_float(hs, Attr::Alpha).unwrap_or(0.2),
+                        get_attr_float(hs, Attr::Beta).unwrap_or(0.5),
+                    )
+                });
+                // Fast identity path (Relu/none only): same scale + symmetric
+                // zero-points, so the rescale is a no-op relabel.
+                let identity = hs_params.is_none()
+                    && matches!((dq_scale, q_scale), (Some(a), Some(b)) if a.to_bits() == b.to_bits())
                     && dq_zp == 0.0
                     && q_zp == 0.0;
                 if let Some(mut qt) = env.take_quant_i8(input_name) {
-                    if identity {
+                    if let (Some((alpha, beta)), Some(sin), Some(sout)) =
+                        (hs_params, dq_scale, q_scale)
+                    {
+                        // Fused DQ -> HardSwish -> Q, one i8->i8 pass.
+                        let mut rescaled = vec![0_i8; qt.data.len()];
+                        yscv_kernels::requant_i8_dq_hardswish_q_dispatch(
+                            &qt.data,
+                            sin,
+                            dq_zp,
+                            sout,
+                            q_zp,
+                            alpha,
+                            beta,
+                            &mut rescaled,
+                        );
+                        qt.data = rescaled;
+                        qt.scale = sout;
+                        qt.zero_point = q_zp;
+                    } else if identity {
                         if relu {
                             for v in &mut qt.data {
                                 *v = (*v).max(0);
@@ -752,13 +784,11 @@ pub(crate) fn execute_plan_branch(
                         qt.data = rescaled;
                         qt.scale = sout;
                         qt.zero_point = q_zp;
-                    } else {
+                    } else if relu {
                         // Missing scalar params (shouldn't happen under the
                         // loader gate) — fall back to relu-only relabel.
-                        if relu {
-                            for v in &mut qt.data {
-                                *v = (*v).max(0);
-                            }
+                        for v in &mut qt.data {
+                            *v = (*v).max(0);
                         }
                     }
                     env.insert_quant_i8(quant_node.outputs[0].clone(), qt);
@@ -773,7 +803,25 @@ pub(crate) fn execute_plan_branch(
                         node: dequant_node.name.clone(),
                         input: input_name.clone(),
                     })?;
-                if identity {
+                if let (Some((alpha, beta)), Some(sin), Some(sout)) = (hs_params, dq_scale, q_scale)
+                {
+                    let out: Vec<f32> = tensor
+                        .data()
+                        .iter()
+                        .map(|&v| {
+                            let f = (v - dq_zp) * sin;
+                            let hs = (alpha * f + beta).clamp(0.0, 1.0);
+                            ((f * hs) / sout + q_zp)
+                                .round_ties_even()
+                                .clamp(-128.0, 127.0)
+                        })
+                        .collect();
+                    tensor = Tensor::from_vec(tensor.shape().to_vec(), out).map_err(|e| {
+                        OnnxError::DecodeFailed {
+                            message: e.to_string(),
+                        }
+                    })?;
+                } else if identity {
                     if relu {
                         relu_inplace(&mut tensor);
                     }
@@ -1127,6 +1175,7 @@ pub(crate) fn execute_plan_branch(
                 NodeAction::QuantizedQdq {
                     dequant_idx,
                     relu_idx,
+                    hardswish,
                     quant_idx,
                 } => {
                     let d = &nodes[*dequant_idx];
@@ -1137,7 +1186,9 @@ pub(crate) fn execute_plan_branch(
                         .and_then(|nm| env.get(nm))
                         .map(|t| t.shape().to_vec())
                         .unwrap_or_default();
-                    let op = if relu_idx.is_some() {
+                    let op = if hardswish.is_some() {
+                        "QuantizedHardSwish"
+                    } else if relu_idx.is_some() {
                         "QuantizedRelu"
                     } else {
                         "QuantizedQdq"
@@ -1386,10 +1437,15 @@ pub(crate) fn execute_plan_branch(
             NodeAction::QuantizedQdq {
                 dequant_idx,
                 relu_idx,
+                hardswish,
                 quant_idx,
-            } => match relu_idx {
-                Some(ri) => &[*dequant_idx, *ri, *quant_idx][..],
-                None => &[*dequant_idx, *quant_idx][..],
+            } => match (relu_idx, hardswish) {
+                (_, Some((hs_idx, mul_idx))) => {
+                    covered_dyn = vec![*dequant_idx, *hs_idx, *mul_idx, *quant_idx];
+                    &covered_dyn[..]
+                }
+                (Some(ri), None) => &[*dequant_idx, *ri, *quant_idx][..],
+                (None, None) => &[*dequant_idx, *quant_idx][..],
             },
             // Fused INT8 chain: the action wraps PW + DQ + (Relu) + Q + DW.
             // `exec_quantized_pw_dw` consumes PW's inputs internally

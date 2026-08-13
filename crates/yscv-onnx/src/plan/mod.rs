@@ -232,6 +232,10 @@ pub(crate) enum NodeAction {
     QuantizedQdq {
         dequant_idx: usize,
         relu_idx: Option<usize>,
+        /// HardSwish fold: `(hardsigmoid_idx, mul_idx)` for the
+        /// `DQ -> HardSigmoid -> Mul(dq, hs) -> Q` shape MobileNetV3 emits.
+        /// Mutually exclusive with `relu_idx`.
+        hardswish: Option<(usize, usize)>,
         quant_idx: usize,
     },
     /// Fused INT8 quant-domain PW → DW chain:
