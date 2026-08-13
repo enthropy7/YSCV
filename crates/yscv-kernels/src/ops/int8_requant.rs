@@ -757,6 +757,124 @@ unsafe fn requant_i8_dq_hardswish_q_neon(
     }
 }
 
+// ===========================================================================
+// Fused f32 HardSwish -> QuantizeLinear. MobileNetV3 has `x*HardSigmoid(x)`
+// whose input is a plain f32 tensor (e.g. an SE Mul output), not a
+// DequantizeLinear — so the DQ->HardSwish->Q fold above doesn't apply. This
+// folds `HardSigmoid -> Mul(x, hs) -> Q` (3 f32 passes + 2 intermediate Vec
+// allocations) into one f32->i8 pass. Bit-identical to the op sequence:
+//   hs  = (alpha*x + beta).clamp(0, 1)   (HardSigmoid)
+//   out = (x*hs / y_scale + y_zp).round_ties_even().clamp(-128, 127)  (Mul, Q)
+// The vectorised path keeps mul+add separate (not FMA) and uses a real divide
+// (not reciprocal-multiply) so it matches the scalar rounding bit-for-bit.
+// ===========================================================================
+
+/// Dispatch the fused f32 HardSwish + QuantizeLinear to the widest host path.
+#[allow(clippy::too_many_arguments)]
+pub fn hardswish_quantize_f32_to_i8_dispatch(
+    x: &[f32],
+    alpha: f32,
+    beta: f32,
+    y_scale: f32,
+    y_zp: f32,
+    out: &mut [i8],
+) {
+    debug_assert_eq!(x.len(), out.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::host_cpu().features.neon {
+            // SAFETY: NEON feature-detected at runtime; inner fn is
+            // annotated `target_feature(enable = "neon")`.
+            #[allow(unsafe_code)]
+            unsafe {
+                hardswish_quantize_f32_to_i8_neon(x, alpha, beta, y_scale, y_zp, out);
+            }
+            return;
+        }
+    }
+
+    hardswish_quantize_f32_to_i8_scalar(x, alpha, beta, y_scale, y_zp, out);
+}
+
+/// Scalar reference / bitwise oracle.
+pub(crate) fn hardswish_quantize_f32_to_i8_scalar(
+    x: &[f32],
+    alpha: f32,
+    beta: f32,
+    y_scale: f32,
+    y_zp: f32,
+    out: &mut [i8],
+) {
+    for (o, &v) in out.iter_mut().zip(x) {
+        let hs = (alpha * v + beta).clamp(0.0, 1.0);
+        *o = ((v * hs) / y_scale + y_zp)
+            .round_ties_even()
+            .clamp(-128.0, 127.0) as i8;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code)]
+unsafe fn hardswish_quantize_f32_to_i8_neon(
+    x: &[f32],
+    alpha: f32,
+    beta: f32,
+    y_scale: f32,
+    y_zp: f32,
+    out: &mut [i8],
+) {
+    use std::arch::aarch64::*;
+
+    unsafe {
+        let va = vdupq_n_f32(alpha);
+        let vb = vdupq_n_f32(beta);
+        let zero = vdupq_n_f32(0.0);
+        let one = vdupq_n_f32(1.0);
+        let vscale = vdupq_n_f32(y_scale);
+        let vzp = vdupq_n_f32(y_zp);
+        let n = x.len();
+        let xp = x.as_ptr();
+        let op = out.as_mut_ptr();
+        let mut i = 0;
+        // 16/iter: 4 lanes -> double saturating-narrow -> one 16-byte store.
+        let lane = |i: usize| -> int32x4_t {
+            let v = vld1q_f32(xp.add(i));
+            // hs = clamp(alpha*v + beta, 0, 1); mul+add kept separate (not FMA).
+            let hs = vminq_f32(vmaxq_f32(vaddq_f32(vmulq_f32(v, va), vb), zero), one);
+            // (v*hs)/y_scale + y_zp, real divide, then round-ties-even (FCVTNS).
+            let q = vaddq_f32(vdivq_f32(vmulq_f32(v, hs), vscale), vzp);
+            vcvtnq_s32_f32(q)
+        };
+        while i + 16 <= n {
+            let r0 = lane(i);
+            let r1 = lane(i + 4);
+            let r2 = lane(i + 8);
+            let r3 = lane(i + 12);
+            let s01 = vcombine_s16(vqmovn_s32(r0), vqmovn_s32(r1));
+            let s23 = vcombine_s16(vqmovn_s32(r2), vqmovn_s32(r3));
+            vst1q_s8(op.add(i), vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
+            i += 16;
+        }
+        while i + 8 <= n {
+            let r0 = lane(i);
+            let r1 = lane(i + 4);
+            let b = vqmovn_s16(vcombine_s16(vqmovn_s32(r0), vqmovn_s32(r1)));
+            vst1_s8(op.add(i), b);
+            i += 8;
+        }
+        while i < n {
+            let v = *xp.add(i);
+            let hs = (alpha * v + beta).clamp(0.0, 1.0);
+            *op.add(i) = ((v * hs) / y_scale + y_zp)
+                .round_ties_even()
+                .clamp(-128.0, 127.0) as i8;
+            i += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,6 +909,27 @@ mod tests {
             }
         }
         out_disp
+    }
+
+    #[test]
+    fn hardswish_quantize_f32_matches_scalar() {
+        // dispatch (SIMD/scalar) must match the scalar oracle across a lane16 +
+        // lane8 + scalar-tail length, with inputs that exercise both HardSigmoid
+        // clamps (x very negative -> hs=0, x large -> hs=1) and i8 saturation.
+        let alpha = 1.0 / 6.0;
+        let beta = 0.5;
+        for &(y_scale, y_zp) in &[(0.023_f32, 0.0_f32), (0.05, -12.0), (0.008, 7.0)] {
+            for &len in &[27usize, 32, 40] {
+                let x: Vec<f32> = (0..len)
+                    .map(|i| ((i as f32) - len as f32 / 2.0) * 0.9)
+                    .collect();
+                let mut a = vec![0i8; len];
+                let mut b = vec![0i8; len];
+                hardswish_quantize_f32_to_i8_dispatch(&x, alpha, beta, y_scale, y_zp, &mut a);
+                hardswish_quantize_f32_to_i8_scalar(&x, alpha, beta, y_scale, y_zp, &mut b);
+                assert_eq!(a, b, "hardswish+quant mismatch len={len} scale={y_scale}");
+            }
+        }
     }
 
     #[test]

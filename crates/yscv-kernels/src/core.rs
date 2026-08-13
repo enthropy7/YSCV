@@ -226,9 +226,10 @@ pub use ops::{
     pack_pw_reduce_bias_for_fusion, pack_pw_reduce_weight_for_fusion,
 };
 pub use ops::{
-    Int8FusedDwPwParams, Int8FusedPwDwParams, int8_fused_dw_pw_dispatch, int8_fused_pw_dw_dispatch,
-    int8_fused_pw_dw_with_pw_side_dispatch, requant_i8_dq_hardswish_q_dispatch,
-    requant_i8_dq_relu_q_dispatch, requant_i8_per_channel_dispatch, requant_i32_row_to_i8_dispatch,
+    Int8FusedDwPwParams, Int8FusedPwDwParams, hardswish_quantize_f32_to_i8_dispatch,
+    int8_fused_dw_pw_dispatch, int8_fused_pw_dw_dispatch, int8_fused_pw_dw_with_pw_side_dispatch,
+    requant_i8_dq_hardswish_q_dispatch, requant_i8_dq_relu_q_dispatch,
+    requant_i8_per_channel_dispatch, requant_i32_row_to_i8_dispatch,
 };
 pub use ops::{MatmulKernel, take_matmul_kernel};
 #[cfg(target_arch = "x86_64")]
