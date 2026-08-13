@@ -501,22 +501,20 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                         &mut acc,
                     );
 
-                    // `acc` is NHWC `[N,H,W,C]`; requantize in place to NHWC.
+                    // `acc` is NHWC `[N,H,W,C]`; requantize in place to NHWC with
+                    // the vectorised per-channel epilogue.
                     let bias_data = bias.as_ref().map(|b| b.data());
                     let composites: Vec<f32> = (0..c_out).map(&composite_at).collect();
                     let corrs: Vec<i32> = (0..c_out).map(|c| corr_at(c, bias_data)).collect();
                     let mut out = vec![0_i8; n_n * oh * ow * c_out];
-                    for (row_out, row_acc) in
-                        out.chunks_exact_mut(c_out).zip(acc.chunks_exact(c_out))
-                    {
-                        for c in 0..c_out {
-                            let biased = row_acc[c] + corrs[c];
-                            row_out[c] = ((biased as f32) * composites[c] + y_zp)
-                                .round_ties_even()
-                                .clamp(-128.0, 127.0)
-                                as i8;
-                        }
-                    }
+                    yscv_kernels::requant_i8_per_channel_dispatch(
+                        &acc,
+                        &corrs,
+                        &composites,
+                        y_zp,
+                        &mut out,
+                        c_out,
+                    );
                     env.put_i32_scratch(acc);
                     if !zero_copy {
                         x_scratch.clear();

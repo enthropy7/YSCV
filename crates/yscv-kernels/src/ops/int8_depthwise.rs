@@ -404,9 +404,18 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
     pixel_start: usize,
 ) {
     use std::arch::aarch64::*;
+    // Kernels larger than 7x7 (49 taps) don't fit the stack tap table below;
+    // depthwise here is 3x3/5x5, but stay correct for anything else.
+    if p.kernel * p.kernel > 49 {
+        depthwise_i8_i32_nhwc_scalar_range(input, weight, p, out, pixel_start);
+        return;
+    }
     let c8 = p.channels & !7;
+    let chan = p.channels;
     let total_pixels = p.batch * p.out_h * p.out_w;
-    let pixel_end = pixel_start + out.len() / p.channels;
+    let pixel_end = pixel_start + out.len() / chan;
+    let inp = input.as_ptr();
+    let wp = weight.as_ptr();
     for n in 0..p.batch {
         for oh in 0..p.out_h {
             for ow in 0..p.out_w {
@@ -414,42 +423,62 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
                 if pixel < pixel_start || pixel >= pixel_end || pixel >= total_pixels {
                     continue;
                 }
-                let out_base = (pixel - pixel_start) * p.channels;
-                for c in (0..c8).step_by(8) {
-                    let mut acc_lo = vdupq_n_s32(0);
-                    let mut acc_hi = vdupq_n_s32(0);
-                    for ky in 0..p.kernel {
-                        let Some(iy) = p.valid_input_y(oh, ky) else {
+                let out_base = (pixel - pixel_start) * chan;
+                // Resolve the in-bounds taps for this pixel once: their input /
+                // weight base offsets at channel 0. The channel loop then only
+                // adds `c`, lifting every index multiply and padding check out
+                // of the hot loop (they used to run once per 8-channel block —
+                // ~36x redundantly at 288 channels).
+                let mut taps: [(usize, usize); 49] = [(0, 0); 49];
+                let mut ntaps = 0usize;
+                for ky in 0..p.kernel {
+                    let Some(iy) = p.valid_input_y(oh, ky) else {
+                        continue;
+                    };
+                    for kx in 0..p.kernel {
+                        let Some(ix) = p.valid_input_x(ow, kx) else {
                             continue;
                         };
-                        for kx in 0..p.kernel {
-                            let Some(ix) = p.valid_input_x(ow, kx) else {
-                                continue;
-                            };
-                            let xv = vld1_s8(input.as_ptr().add(p.input_offset(n, iy, ix, c)));
-                            let wv = vld1_s8(weight.as_ptr().add(p.weight_offset(ky, kx, c)));
-                            let prod = vmull_s8(xv, wv);
-                            acc_lo = vaddq_s32(acc_lo, vmovl_s16(vget_low_s16(prod)));
-                            acc_hi = vaddq_s32(acc_hi, vmovl_s16(vget_high_s16(prod)));
-                        }
+                        let in_base = ((n * p.in_h + iy) * p.in_w + ix) * chan;
+                        let w_base = (ky * p.kernel + kx) * chan;
+                        taps[ntaps] = (in_base, w_base);
+                        ntaps += 1;
                     }
-                    vst1q_s32(out.as_mut_ptr().add(out_base + c), acc_lo);
-                    vst1q_s32(out.as_mut_ptr().add(out_base + c + 4), acc_hi);
                 }
-                scalar_pixel_tail(
-                    input,
-                    weight,
-                    p,
-                    Pixel {
-                        n,
-                        oh,
-                        ow,
-                        out_base,
-                    },
-                    c8,
-                    p.channels,
-                    out,
-                );
+                let op = out.as_mut_ptr();
+                let mut c = 0;
+                while c + 8 <= chan {
+                    let mut acc_lo = vdupq_n_s32(0);
+                    let mut acc_hi = vdupq_n_s32(0);
+                    for &(in_base, w_base) in &taps[..ntaps] {
+                        let xv = vld1_s8(inp.add(in_base + c));
+                        let wv = vld1_s8(wp.add(w_base + c));
+                        let prod = vmull_s8(xv, wv);
+                        // vaddw folds the i16->i32 widen and the add into one
+                        // instruction per half (was vmovl + vaddq).
+                        acc_lo = vaddw_s16(acc_lo, vget_low_s16(prod));
+                        acc_hi = vaddw_s16(acc_hi, vget_high_s16(prod));
+                    }
+                    vst1q_s32(op.add(out_base + c), acc_lo);
+                    vst1q_s32(op.add(out_base + c + 4), acc_hi);
+                    c += 8;
+                }
+                if c8 < chan {
+                    scalar_pixel_tail(
+                        input,
+                        weight,
+                        p,
+                        Pixel {
+                            n,
+                            oh,
+                            ow,
+                            out_base,
+                        },
+                        c8,
+                        chan,
+                        out,
+                    );
+                }
             }
         }
     }
