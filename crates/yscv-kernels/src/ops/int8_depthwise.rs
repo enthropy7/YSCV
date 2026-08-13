@@ -416,34 +416,63 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
     let pixel_end = pixel_start + out.len() / chan;
     let inp = input.as_ptr();
     let wp = weight.as_ptr();
+    // Relative tap offsets for a fully in-bounds (interior) pixel: the input
+    // offset of tap (ky,kx) is `base_in + rel[t].0` where `base_in` is the
+    // window's top-left offset, and `w_base = rel[t].1` is pixel-independent.
+    // Interior pixels resolve their taps with one base + adds instead of the
+    // per-tap padding checks and index multiplies — the win on the low-channel
+    // large-map convs (Conv_2: 16ch/128×128) where the resolve isn't amortised
+    // over many channel blocks.
+    let mut rel: [(usize, usize); 49] = [(0, 0); 49];
+    {
+        let mut t = 0;
+        for ky in 0..p.kernel {
+            for kx in 0..p.kernel {
+                rel[t] = ((ky * p.in_w + kx) * chan, (ky * p.kernel + kx) * chan);
+                t += 1;
+            }
+        }
+    }
+    let ntaps_full = p.kernel * p.kernel;
     for n in 0..p.batch {
         for oh in 0..p.out_h {
+            let iy0 = oh * p.stride_h;
+            let row_interior = iy0 >= p.pad_top && iy0 + p.kernel <= p.pad_top + p.in_h;
             for ow in 0..p.out_w {
                 let pixel = (n * p.out_h + oh) * p.out_w + ow;
                 if pixel < pixel_start || pixel >= pixel_end || pixel >= total_pixels {
                     continue;
                 }
                 let out_base = (pixel - pixel_start) * chan;
-                // Resolve the in-bounds taps for this pixel once: their input /
-                // weight base offsets at channel 0. The channel loop then only
-                // adds `c`, lifting every index multiply and padding check out
-                // of the hot loop (they used to run once per 8-channel block —
-                // ~36x redundantly at 288 channels).
                 let mut taps: [(usize, usize); 49] = [(0, 0); 49];
-                let mut ntaps = 0usize;
-                for ky in 0..p.kernel {
-                    let Some(iy) = p.valid_input_y(oh, ky) else {
-                        continue;
-                    };
-                    for kx in 0..p.kernel {
-                        let Some(ix) = p.valid_input_x(ow, kx) else {
+                let ntaps;
+                let ix0 = ow * p.stride_w;
+                if row_interior && ix0 >= p.pad_left && ix0 + p.kernel <= p.pad_left + p.in_w {
+                    // Interior: taps = base_in + rel[t] (no padding checks).
+                    let base_in =
+                        ((n * p.in_h + (iy0 - p.pad_top)) * p.in_w + (ix0 - p.pad_left)) * chan;
+                    for t in 0..ntaps_full {
+                        taps[t] = (base_in + rel[t].0, rel[t].1);
+                    }
+                    ntaps = ntaps_full;
+                } else {
+                    // Border: resolve the in-bounds taps with per-tap checks.
+                    let mut nt = 0usize;
+                    for ky in 0..p.kernel {
+                        let Some(iy) = p.valid_input_y(oh, ky) else {
                             continue;
                         };
-                        let in_base = ((n * p.in_h + iy) * p.in_w + ix) * chan;
-                        let w_base = (ky * p.kernel + kx) * chan;
-                        taps[ntaps] = (in_base, w_base);
-                        ntaps += 1;
+                        for kx in 0..p.kernel {
+                            let Some(ix) = p.valid_input_x(ow, kx) else {
+                                continue;
+                            };
+                            let in_base = ((n * p.in_h + iy) * p.in_w + ix) * chan;
+                            let w_base = (ky * p.kernel + kx) * chan;
+                            taps[nt] = (in_base, w_base);
+                            nt += 1;
+                        }
                     }
+                    ntaps = nt;
                 }
                 let op = out.as_mut_ptr();
                 let mut c = 0;
