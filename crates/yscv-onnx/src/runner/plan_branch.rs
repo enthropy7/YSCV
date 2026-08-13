@@ -711,27 +711,61 @@ pub(crate) fn execute_plan_branch(
                         .ok_or_else(|| OnnxError::DecodeFailed {
                             message: format!("{}: missing quantized input", dequant_node.name),
                         })?;
+                let relu = relu_idx.is_some();
+                // Rescale params: DQ (input) scale/zp and Q (output) scale/zp.
+                let scalar = |node: &OnnxNode, idx: usize| -> Option<f32> {
+                    node.inputs
+                        .get(idx)
+                        .and_then(|name| env.get(name))
+                        .and_then(|t| t.data().first().copied())
+                };
+                let dq_scale = scalar(dequant_node, 1);
+                let dq_zp = scalar(dequant_node, 2).unwrap_or(0.0);
+                let q_scale = scalar(quant_node, 1);
+                let q_zp = scalar(quant_node, 2).unwrap_or(0.0);
+                // Fast identity path: same scale + symmetric zero-points, so the
+                // rescale is a no-op relabel (Relu becomes `max(q, 0)`).
+                let identity = matches!((dq_scale, q_scale), (Some(a), Some(b)) if a.to_bits() == b.to_bits())
+                    && dq_zp == 0.0
+                    && q_zp == 0.0;
                 if let Some(mut qt) = env.take_quant_i8(input_name) {
-                    if relu_idx.is_some() {
-                        for v in &mut qt.data {
-                            *v = (*v).max(0);
+                    if identity {
+                        if relu {
+                            for v in &mut qt.data {
+                                *v = (*v).max(0);
+                            }
+                        }
+                        qt.scale = q_scale.unwrap_or(qt.scale);
+                        qt.zero_point = q_zp;
+                    } else if let (Some(sin), Some(sout)) = (dq_scale, q_scale) {
+                        // Fused DQ -> [Relu] -> Q, one i8->i8 pass, no f32 buffer.
+                        let mut rescaled = vec![0_i8; qt.data.len()];
+                        yscv_kernels::requant_i8_dq_relu_q_dispatch(
+                            &qt.data,
+                            sin,
+                            dq_zp,
+                            sout,
+                            q_zp,
+                            relu,
+                            &mut rescaled,
+                        );
+                        qt.data = rescaled;
+                        qt.scale = sout;
+                        qt.zero_point = q_zp;
+                    } else {
+                        // Missing scalar params (shouldn't happen under the
+                        // loader gate) — fall back to relu-only relabel.
+                        if relu {
+                            for v in &mut qt.data {
+                                *v = (*v).max(0);
+                            }
                         }
                     }
-                    qt.scale = quant_node
-                        .inputs
-                        .get(1)
-                        .and_then(|name| env.get(name))
-                        .and_then(|t| t.data().first().copied())
-                        .unwrap_or(qt.scale);
-                    qt.zero_point = quant_node
-                        .inputs
-                        .get(2)
-                        .and_then(|name| env.get(name))
-                        .and_then(|t| t.data().first().copied())
-                        .unwrap_or(qt.zero_point);
                     env.insert_quant_i8(quant_node.outputs[0].clone(), qt);
                     continue;
                 }
+                // f32-encoded i8 activation (conv fallback output): same rescale,
+                // producing an f32-encoded i8 tensor to match the per-op Q.
                 let mut tensor = env
                     .remove(input_name)
                     .or_else(|| env.get(input_name).cloned())
@@ -739,7 +773,28 @@ pub(crate) fn execute_plan_branch(
                         node: dequant_node.name.clone(),
                         input: input_name.clone(),
                     })?;
-                if relu_idx.is_some() {
+                if identity {
+                    if relu {
+                        relu_inplace(&mut tensor);
+                    }
+                } else if let (Some(sin), Some(sout)) = (dq_scale, q_scale) {
+                    let out: Vec<f32> = tensor
+                        .data()
+                        .iter()
+                        .map(|&v| {
+                            let mut f = (v - dq_zp) * sin;
+                            if relu {
+                                f = f.max(0.0);
+                            }
+                            (f / sout + q_zp).round_ties_even().clamp(-128.0, 127.0)
+                        })
+                        .collect();
+                    tensor = Tensor::from_vec(tensor.shape().to_vec(), out).map_err(|e| {
+                        OnnxError::DecodeFailed {
+                            message: e.to_string(),
+                        }
+                    })?;
+                } else if relu {
                     relu_inplace(&mut tensor);
                 }
                 env.insert(quant_node.outputs[0].clone(), tensor);

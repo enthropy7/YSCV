@@ -102,6 +102,26 @@ pub(crate) fn build_runtime_index(
             && q_zp.to_bits() == 0.0_f32.to_bits()
     }
 
+    /// A DQ->[Relu]->Q boundary is foldable into one i8->i8 rescale pass when
+    /// both the DequantizeLinear (activation input) and the QuantizeLinear
+    /// (output) are per-tensor — i.e. scalar scale AND zero-point. Per-channel
+    /// weight DQ (scale length > 1) fails `init_scalar` and is correctly
+    /// excluded. Unlike `matching_zero_qparams` the scales/zps may differ; the
+    /// runner does the real rescale.
+    fn per_tensor_qdq_boundary(
+        dequant: &OnnxNode,
+        quant: &OnnxNode,
+        initializers: &FxHashMap<String, Tensor>,
+    ) -> bool {
+        if dequant.inputs.len() < 3 || quant.inputs.len() < 3 {
+            return false;
+        }
+        init_scalar(initializers, &dequant.inputs[1]).is_some()
+            && init_scalar(initializers, &dequant.inputs[2]).is_some()
+            && init_scalar(initializers, &quant.inputs[1]).is_some()
+            && init_scalar(initializers, &quant.inputs[2]).is_some()
+    }
+
     /// Classify a `QLinearConv` by weight initializer shape into the chain
     /// roles we currently fuse. Returns `Some("pw")` for 1×1 group-1 PW,
     /// `Some("dw")` for 3×3/5×5 depthwise (group=c_out=c_in*group), and
@@ -699,7 +719,7 @@ pub(crate) fn build_runtime_index(
                         || relu_idx
                             .map(|ri| quant_node.inputs[0] == nodes[ri].outputs[0])
                             .unwrap_or(false))
-                    && matching_zero_qparams(&nodes[i], quant_node, initializers)
+                    && per_tensor_qdq_boundary(&nodes[i], quant_node, initializers)
                 {
                     execution_plan.push(NodeAction::QuantizedQdq {
                         dequant_idx: i,
