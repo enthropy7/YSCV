@@ -171,30 +171,65 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     if x_zp_i8 != 0 {
                         buf.fill(x_zp_i8);
                     }
+                    // Hoist the activation slice out of the gather (it was an
+                    // `Option::unwrap` + bounds-check per element before). The
+                    // ky row-bounds check is lifted out of the kx loop so whole
+                    // padded rows are skipped, and the NCHW interior gathers a
+                    // contiguous kw-run with a single `copy_from_slice`.
+                    let x = x_i8.unwrap();
                     for ni in 0..n_n {
                         for oh_i in 0..oh {
                             for ow_i in 0..ow {
                                 let row = (ni * oh + oh_i) * ow + ow_i;
+                                let row_dst = row * k_dim;
+                                let iw0 = ow_i * sw; // input col of kx=0 (pre-pad)
                                 for ci in 0..c_in {
                                     for ky in 0..kh {
-                                        for kx in 0..kw {
-                                            let ih_i = oh_i * sh + ky;
-                                            let iw_i = ow_i * sw + kx;
-                                            let col = (ci * kh + ky) * kw + kx;
-                                            let idx = row * k_dim + col;
-                                            if ih_i >= pt
-                                                && ih_i < pt + ih
-                                                && iw_i >= pl
-                                                && iw_i < pl + iw
-                                            {
-                                                let h = ih_i - pt;
-                                                let v = iw_i - pl;
-                                                let src = if x_is_nhwc {
-                                                    ((ni * ih + h) * iw + v) * c_in + ci
-                                                } else {
-                                                    ((ni * c_in + ci) * ih + h) * iw + v
-                                                };
-                                                buf[idx] = x_i8.unwrap()[src];
+                                        let ih_i = oh_i * sh + ky;
+                                        if ih_i < pt || ih_i >= pt + ih {
+                                            continue;
+                                        }
+                                        let h = ih_i - pt;
+                                        let dst = row_dst + (ci * kh + ky) * kw;
+                                        if x_is_nhwc {
+                                            for kx in 0..kw {
+                                                let iw_i = iw0 + kx;
+                                                if iw_i >= pl && iw_i < pl + iw {
+                                                    let v = iw_i - pl;
+                                                    let src = ((ni * ih + h) * iw + v) * c_in + ci;
+                                                    buf[dst + kx] = x[src];
+                                                }
+                                            }
+                                        } else {
+                                            let src_row = ((ni * c_in + ci) * ih + h) * iw;
+                                            // Contiguous interior: the whole
+                                            // [iw0-pl, iw0-pl+kw) run is in range.
+                                            if iw0 >= pl && iw0 + kw <= pl + iw {
+                                                let s = src_row + (iw0 - pl);
+                                                // `s..s+kw ⊆ x` (iw0+kw ≤ pl+iw,
+                                                // h < ih) and `dst..dst+kw ⊆ buf`
+                                                // (col_base+kw ≤ k_dim); a bare
+                                                // pointer copy skips the per-byte
+                                                // bounds check and the memcpy call
+                                                // that `copy_from_slice` emits for
+                                                // a runtime-length 3-byte run.
+                                                // SAFETY: both ranges are proven
+                                                // in-bounds above.
+                                                #[allow(unsafe_code)]
+                                                unsafe {
+                                                    let sp = x.as_ptr().add(s);
+                                                    let dp = buf.as_mut_ptr().add(dst);
+                                                    for kx in 0..kw {
+                                                        *dp.add(kx) = *sp.add(kx);
+                                                    }
+                                                }
+                                            } else {
+                                                for kx in 0..kw {
+                                                    let iw_i = iw0 + kx;
+                                                    if iw_i >= pl && iw_i < pl + iw {
+                                                        buf[dst + kx] = x[src_row + (iw_i - pl)];
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -206,56 +241,89 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 };
                 let x_im2col: &[i8] = if zero_copy { x_i8.unwrap() } else { &scratch };
 
-                // Integer GEMM.
-                let mut acc = env.take_i32_scratch(m * c_out);
-                if crate::runner::should_use_prepacked_i8_b(m, k_dim, c_out)
-                    && let Some(packed) = env.prepacked_i8_b(&node.inputs[3])
-                {
-                    if packed.k() == k_dim && packed.n() == c_out {
-                        yscv_kernels::int8_matmul_prepacked_dispatch(x_im2col, packed, m, &mut acc);
-                    } else {
-                        return Err(OnnxError::DecodeFailed {
-                            message: format!(
-                                "QLinearConv {}: prepacked weight shape mismatch",
-                                node.name
-                            ),
-                        });
-                    }
+                // Per-channel composite requantize factors, independent of the
+                // row block: `composite = x_scale·w_scale[o]/y_scale`, and the
+                // correction `corr = bias − x_zp·Σw` folded in. `acc` rows are
+                // `[c_out]` row-major = NHWC, so the requantize writes NHWC
+                // directly (no output transpose).
+                let bias_data = bias.as_ref().map(|b| b.data());
+                let composites: Vec<f32> = (0..c_out).map(&composite_at).collect();
+                let corrs: Vec<i32> = (0..c_out).map(|o| corr_at(o, bias_data)).collect();
+                let mut out = vec![0_i8; m * c_out];
+
+                // Decide the GEMM backend once: prepacked 4×16 RHS when the
+                // load-time pack exists and is profitable, else pack OIHW → [K,N]
+                // here. Held across the block loop below.
+                let packed_ok = crate::runner::should_use_prepacked_i8_b(m, k_dim, c_out)
+                    && env.prepacked_i8_b(&node.inputs[3]).is_some();
+                let w_packed: Vec<i8> = if packed_ok {
+                    Vec::new()
                 } else {
                     // Reshape weight OIHW → [K=C*KH*KW, N=O].
                     let w_data = w.data();
-                    let mut w_packed: Vec<i8> = vec![0; k_dim * c_out];
+                    let mut wp: Vec<i8> = vec![0; k_dim * c_out];
                     for o in 0..c_out {
                         for ci in 0..c_in {
                             for ky in 0..kh {
                                 for kx in 0..kw {
                                     let src = ((o * c_in + ci) * kh + ky) * kw + kx;
                                     let dst_k = (ci * kh + ky) * kw + kx;
-                                    w_packed[dst_k * c_out + o] = w_data[src] as i8;
+                                    wp[dst_k * c_out + o] = w_data[src] as i8;
                                 }
                             }
                         }
                     }
-                    yscv_kernels::int8_matmul_dispatch(
-                        x_im2col, &w_packed, m, k_dim, c_out, &mut acc,
-                    );
-                }
+                    wp
+                };
 
-                // Per-channel composite requantize with the zero-point
-                // correction (bias − x_zp·Σw) folded in. `acc` is `[M, c_out]`
-                // row-major = NHWC, so the requantize writes NHWC directly (no
-                // output transpose); the per-channel factors are hoisted out of
-                // the row loop.
-                let bias_data = bias.as_ref().map(|b| b.data());
-                let composites: Vec<f32> = (0..c_out).map(&composite_at).collect();
-                let corrs: Vec<i32> = (0..c_out).map(|o| corr_at(o, bias_data)).collect();
-                let mut out = vec![0_i8; m * c_out];
-                for (row_out, row_acc) in out.chunks_exact_mut(c_out).zip(acc.chunks_exact(c_out)) {
-                    for o in 0..c_out {
-                        let v = ((row_acc[o] + corrs[o]) as f32) * composites[o] + y_zp;
-                        row_out[o] = v.round_ties_even().clamp(-128.0, 127.0) as i8;
-                    }
+                // Fuse GEMM + requant over M-row blocks so the i32 accumulator
+                // stays cache-resident between the two passes instead of being
+                // written to and re-read from main memory (the round-trip that
+                // dominated requant on the large-M convs, and the one XNNPACK
+                // avoids by requantizing in the GEMM epilogue). Block sized so
+                // one `block×c_out` i32 tile (~16 KB) fits L1.
+                let block = (4096 / c_out.max(1)).max(4).min(m.max(1));
+                let mut acc = env.take_i32_scratch(block * c_out);
+                let packed = if packed_ok {
+                    env.prepacked_i8_b(&node.inputs[3])
+                } else {
+                    None
+                };
+                if let Some(p) = &packed
+                    && (p.k() != k_dim || p.n() != c_out)
+                {
+                    return Err(OnnxError::DecodeFailed {
+                        message: format!(
+                            "QLinearConv {}: prepacked weight shape mismatch",
+                            node.name
+                        ),
+                    });
                 }
+                let mut r0 = 0;
+                while r0 < m {
+                    let bm = block.min(m - r0);
+                    let a_block = &x_im2col[r0 * k_dim..(r0 + bm) * k_dim];
+                    let acc_b = &mut acc[..bm * c_out];
+                    if let Some(p) = &packed {
+                        yscv_kernels::int8_matmul_prepacked_dispatch(a_block, p, bm, acc_b);
+                    } else {
+                        yscv_kernels::int8_matmul_dispatch(
+                            a_block, &w_packed, bm, k_dim, c_out, acc_b,
+                        );
+                    }
+                    let out_b = &mut out[r0 * c_out..(r0 + bm) * c_out];
+                    yscv_kernels::requant_i8_per_channel_dispatch(
+                        acc_b,
+                        &corrs,
+                        &composites,
+                        y_zp,
+                        out_b,
+                        c_out,
+                    );
+                    r0 += bm;
+                }
+                // `packed` (an immutable borrow of `env`) is dropped here by
+                // NLL, freeing `env` for the scratch return below.
                 env.put_i32_scratch(acc);
                 if !zero_copy {
                     scratch.clear();
