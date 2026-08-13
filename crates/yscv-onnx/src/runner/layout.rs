@@ -7,7 +7,7 @@ pub(crate) fn should_use_prepacked_i8_b(m: usize, k: usize, n: usize) -> bool {
     // For VNNI-friendly tracker pointwise Conv shapes the load-time packed
     // 4x16 RHS avoids per-inference B packing. The large MatMul gate keeps
     // the previous prepacked path for LLM/head-like regimes.
-    (m >= 4 && k >= 4 && n.is_multiple_of(16)) || (m <= 64 && k >= 512 && n >= 1024)
+    (m >= 4 && k >= 4 && n >= 32 && n.is_multiple_of(16)) || (m <= 64 && k >= 512 && n >= 1024)
 }
 
 /// Convert NHWC tensor to NCHW in-place in the environment.
