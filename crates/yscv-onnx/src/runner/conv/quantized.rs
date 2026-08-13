@@ -281,50 +281,92 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 // written to and re-read from main memory (the round-trip that
                 // dominated requant on the large-M convs, and the one XNNPACK
                 // avoids by requantizing in the GEMM epilogue). Block sized so
-                // one `block×c_out` i32 tile (~16 KB) fits L1.
+                // one `block×c_out` i32 tile (~16 KB) fits L1. Under a
+                // multi-thread pool the blocks run in parallel over disjoint
+                // output rows — the pointwise + stem GEMMs are the backbone's
+                // serial bottleneck, so this is what lets it scale past 1 core.
                 let block = (4096 / c_out.max(1)).max(4).min(m.max(1));
-                let mut acc = env.take_i32_scratch(block * c_out);
-                let packed = if packed_ok {
-                    env.prepacked_i8_b(&node.inputs[3])
-                } else {
-                    None
-                };
-                if let Some(p) = &packed
-                    && (p.k() != k_dim || p.n() != c_out)
-                {
-                    return Err(OnnxError::DecodeFailed {
-                        message: format!(
-                            "QLinearConv {}: prepacked weight shape mismatch",
-                            node.name
-                        ),
-                    });
-                }
-                let mut r0 = 0;
-                while r0 < m {
-                    let bm = block.min(m - r0);
-                    let a_block = &x_im2col[r0 * k_dim..(r0 + bm) * k_dim];
-                    let acc_b = &mut acc[..bm * c_out];
-                    if let Some(p) = &packed {
-                        yscv_kernels::int8_matmul_prepacked_dispatch(a_block, p, bm, acc_b);
-                    } else {
-                        yscv_kernels::int8_matmul_dispatch(
-                            a_block, &w_packed, bm, k_dim, c_out, acc_b,
-                        );
+                // Validate the prepacked weight shape once (temporary borrow).
+                if packed_ok {
+                    let p = env.prepacked_i8_b(&node.inputs[3]).unwrap();
+                    if p.k() != k_dim || p.n() != c_out {
+                        return Err(OnnxError::DecodeFailed {
+                            message: format!(
+                                "QLinearConv {}: prepacked weight shape mismatch",
+                                node.name
+                            ),
+                        });
                     }
-                    let out_b = &mut out[r0 * c_out..(r0 + bm) * c_out];
-                    yscv_kernels::requant_i8_per_channel_dispatch(
-                        acc_b,
-                        &corrs,
-                        &composites,
-                        y_zp,
-                        out_b,
-                        c_out,
-                    );
-                    r0 += bm;
                 }
-                // `packed` (an immutable borrow of `env`) is dropped here by
-                // NLL, freeing `env` for the scratch return below.
-                env.put_i32_scratch(acc);
+
+                if rayon::current_num_threads() > 1 && m > block {
+                    // Parallel: each rayon task owns a disjoint slice of `out`
+                    // and a thread-local i32 tile.
+                    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+                    use rayon::slice::ParallelSliceMut;
+                    let packed = if packed_ok {
+                        env.prepacked_i8_b(&node.inputs[3])
+                    } else {
+                        None
+                    };
+                    out.par_chunks_mut(block * c_out)
+                        .enumerate()
+                        .for_each(|(bi, out_b)| {
+                            let r0 = bi * block;
+                            let bm = out_b.len() / c_out;
+                            let a_block = &x_im2col[r0 * k_dim..(r0 + bm) * k_dim];
+                            let mut acc = vec![0_i32; bm * c_out];
+                            if let Some(p) = &packed {
+                                yscv_kernels::int8_matmul_prepacked_dispatch(
+                                    a_block, p, bm, &mut acc,
+                                );
+                            } else {
+                                yscv_kernels::int8_matmul_dispatch(
+                                    a_block, &w_packed, bm, k_dim, c_out, &mut acc,
+                                );
+                            }
+                            yscv_kernels::requant_i8_per_channel_dispatch(
+                                &acc,
+                                &corrs,
+                                &composites,
+                                y_zp,
+                                out_b,
+                                c_out,
+                            );
+                        });
+                } else {
+                    // Serial: reuse one env-owned i32 tile across blocks (the
+                    // GEMM overwrites it each block, so no re-zeroing).
+                    let mut acc = env.take_i32_scratch(block * c_out);
+                    let packed = if packed_ok {
+                        env.prepacked_i8_b(&node.inputs[3])
+                    } else {
+                        None
+                    };
+                    let mut r0 = 0;
+                    while r0 < m {
+                        let bm = block.min(m - r0);
+                        let a_block = &x_im2col[r0 * k_dim..(r0 + bm) * k_dim];
+                        let acc_b = &mut acc[..bm * c_out];
+                        if let Some(p) = &packed {
+                            yscv_kernels::int8_matmul_prepacked_dispatch(a_block, p, bm, acc_b);
+                        } else {
+                            yscv_kernels::int8_matmul_dispatch(
+                                a_block, &w_packed, bm, k_dim, c_out, acc_b,
+                            );
+                        }
+                        yscv_kernels::requant_i8_per_channel_dispatch(
+                            acc_b,
+                            &corrs,
+                            &composites,
+                            y_zp,
+                            &mut out[r0 * c_out..(r0 + bm) * c_out],
+                            c_out,
+                        );
+                        r0 += bm;
+                    }
+                    env.put_i32_scratch(acc);
+                }
                 if !zero_copy {
                     scratch.clear();
                     env.put_i8_scratch_a(std::mem::take(&mut scratch));
