@@ -24,6 +24,51 @@ pub(super) fn exec_gemm(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), Onnx
     } else {
         a
     };
+    // `transB=1` on a single-row (GEMV) `A` — the MobileNetV3 Squeeze-Excite FC
+    // shape — is a dot product of `A` against each row of `B` (`B` is `[N, K]`),
+    // so it needs no transpose. Materialising `B^T` every inference (B is a
+    // constant weight) was pure waste: 1.7ms across the 14 SE Gemms vs 0.35ms of
+    // actual matmul. Compute the row directly, matching matmul_2d's k-ascending
+    // accumulation so the result is bit-identical.
+    let m_rows = a_ref.shape().first().copied().unwrap_or(0);
+    if trans_b && m_rows == 1 && a_ref.rank() == 2 && b.rank() == 2 {
+        let k = a_ref.shape()[1];
+        let n_out = b.shape()[0];
+        if b.shape()[1] == k {
+            let a_data = a_ref.data();
+            let b_data = b.data();
+            let mut out_data = vec![0.0_f32; n_out];
+            for (j, o) in out_data.iter_mut().enumerate() {
+                let brow = &b_data[j * k..j * k + k];
+                let mut s = 0.0_f32;
+                for kk in 0..k {
+                    s += a_data[kk] * brow[kk];
+                }
+                *o = s;
+            }
+            let mut out = Tensor::from_vec(vec![1, n_out], out_data).map_err(|e| {
+                OnnxError::DecodeFailed {
+                    message: e.to_string(),
+                }
+            })?;
+            if (alpha - 1.0).abs() > f32::EPSILON {
+                out = out.scale(alpha);
+            }
+            if let Some(c_tensor) = c {
+                let addend = if (beta_val - 1.0).abs() > f32::EPSILON {
+                    std::borrow::Cow::Owned(c_tensor.scale(beta_val))
+                } else {
+                    std::borrow::Cow::Borrowed(c_tensor)
+                };
+                out = kernel_add(&out, &addend).map_err(|e| OnnxError::DecodeFailed {
+                    message: e.to_string(),
+                })?;
+            }
+            env.insert(node.outputs[0].clone(), out);
+            return Ok(());
+        }
+    }
+
     let b_owned;
     let b_ref: &Tensor = if trans_b {
         b_owned = b.transpose_2d().map_err(|e| OnnxError::DecodeFailed {
