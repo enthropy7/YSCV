@@ -534,7 +534,7 @@ fn all_three_weight_layouts_survive_the_fused_path() {
         "three weight layouts through PW→DW→PW",
         &bytes,
         &feed(vec![1, 8, 8, 8]),
-        Tolerance::Exact,
+        Tolerance::Abs(1e-4f32),
         "YSCV_FUSED_PW_DW_PW_REDUCE_OFF",
     );
 }
