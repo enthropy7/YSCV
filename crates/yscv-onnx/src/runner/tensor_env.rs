@@ -281,7 +281,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     /// would put ONNX-native bytes into a slot that
     /// [`Self::conv_weight_layout`] describes as channel-last, and the reader
     /// believes the layout — so the two have to be seeded together.
-    #[cfg(any(feature = "gpu", feature = "metal-backend"))]
+    #[cfg(feature = "gpu")]
     pub(crate) fn insert_model_weights(&mut self, model: &'m OnnxModel) {
         for (name, tensor) in &model.initializers {
             let packed = self
