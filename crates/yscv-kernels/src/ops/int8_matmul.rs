@@ -619,6 +619,257 @@ unsafe extern "C" {
     );
 }
 
+// Hand-scheduled 4×4 i8 GEMM tile for the widening (no-dotprod) path. `a` rows
+// and `bt` "rows" (= output columns) are both K-contiguous i8. Each 16-K step
+// pairs the low/high 8-lane halves (`smull` + `smlal2` into i16, `sadalp` into
+// i32) — the c2 accumulation that gives INT8 its only edge over f32 FMLA on
+// ARMv8.0. 16 i32 accumulators live in v16..v31 with zero spills (LLVM spills
+// them, which is why this beats the compiled `neon_widen_gemm` core by ~1.3×);
+// operands in v0..v7, products in v8..v11 (d8..d11 saved per the ABI). Requires
+// k % 8 == 0 and k >= 8, and is only overflow-safe when no weight is i8::MIN
+// (then each product is |a·b| ≤ 128·127 = 16256, two per i16 lane = 32512 <
+// 32767). This reimplements the XNNPACK qs8 mlal-c2 technique as our own
+// scheduling, not a copy of their assembly.
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+    .text
+    .align 4
+    .global yscv_gemm4x4_i8
+yscv_gemm4x4_i8:
+    stp  d8, d9, [sp, #-32]!
+    stp  d10, d11, [sp, #16]
+    add  x7,  x0, x1
+    add  x8,  x7, x1
+    add  x9,  x8, x1
+    add  x10, x2, x3
+    add  x11, x10, x3
+    add  x12, x11, x3
+    movi v16.4s, #0
+    movi v17.4s, #0
+    movi v18.4s, #0
+    movi v19.4s, #0
+    movi v20.4s, #0
+    movi v21.4s, #0
+    movi v22.4s, #0
+    movi v23.4s, #0
+    movi v24.4s, #0
+    movi v25.4s, #0
+    movi v26.4s, #0
+    movi v27.4s, #0
+    movi v28.4s, #0
+    movi v29.4s, #0
+    movi v30.4s, #0
+    movi v31.4s, #0
+    lsr  x14, x4, #4
+    cbz  x14, .Lg4i_tail8
+.Lg4i_loop16:
+    ld1  {{v0.16b}}, [x0], #16
+    ld1  {{v1.16b}}, [x7], #16
+    ld1  {{v2.16b}}, [x8], #16
+    ld1  {{v3.16b}}, [x9], #16
+    ld1  {{v4.16b}}, [x2], #16
+    ld1  {{v5.16b}}, [x10], #16
+    ld1  {{v6.16b}}, [x11], #16
+    ld1  {{v7.16b}}, [x12], #16
+    smull  v8.8h,  v0.8b, v4.8b
+    smull  v9.8h,  v0.8b, v5.8b
+    smull  v10.8h, v0.8b, v6.8b
+    smull  v11.8h, v0.8b, v7.8b
+    smlal2 v8.8h,  v0.16b, v4.16b
+    smlal2 v9.8h,  v0.16b, v5.16b
+    smlal2 v10.8h, v0.16b, v6.16b
+    smlal2 v11.8h, v0.16b, v7.16b
+    sadalp v16.4s, v8.8h
+    sadalp v17.4s, v9.8h
+    sadalp v18.4s, v10.8h
+    sadalp v19.4s, v11.8h
+    smull  v8.8h,  v1.8b, v4.8b
+    smull  v9.8h,  v1.8b, v5.8b
+    smull  v10.8h, v1.8b, v6.8b
+    smull  v11.8h, v1.8b, v7.8b
+    smlal2 v8.8h,  v1.16b, v4.16b
+    smlal2 v9.8h,  v1.16b, v5.16b
+    smlal2 v10.8h, v1.16b, v6.16b
+    smlal2 v11.8h, v1.16b, v7.16b
+    sadalp v20.4s, v8.8h
+    sadalp v21.4s, v9.8h
+    sadalp v22.4s, v10.8h
+    sadalp v23.4s, v11.8h
+    smull  v8.8h,  v2.8b, v4.8b
+    smull  v9.8h,  v2.8b, v5.8b
+    smull  v10.8h, v2.8b, v6.8b
+    smull  v11.8h, v2.8b, v7.8b
+    smlal2 v8.8h,  v2.16b, v4.16b
+    smlal2 v9.8h,  v2.16b, v5.16b
+    smlal2 v10.8h, v2.16b, v6.16b
+    smlal2 v11.8h, v2.16b, v7.16b
+    sadalp v24.4s, v8.8h
+    sadalp v25.4s, v9.8h
+    sadalp v26.4s, v10.8h
+    sadalp v27.4s, v11.8h
+    smull  v8.8h,  v3.8b, v4.8b
+    smull  v9.8h,  v3.8b, v5.8b
+    smull  v10.8h, v3.8b, v6.8b
+    smull  v11.8h, v3.8b, v7.8b
+    smlal2 v8.8h,  v3.16b, v4.16b
+    smlal2 v9.8h,  v3.16b, v5.16b
+    smlal2 v10.8h, v3.16b, v6.16b
+    smlal2 v11.8h, v3.16b, v7.16b
+    sadalp v28.4s, v8.8h
+    sadalp v29.4s, v9.8h
+    sadalp v30.4s, v10.8h
+    sadalp v31.4s, v11.8h
+    subs x14, x14, #1
+    b.ne .Lg4i_loop16
+.Lg4i_tail8:
+    tst  x4, #8
+    b.eq .Lg4i_reduce
+    ld1  {{v0.8b}}, [x0]
+    ld1  {{v1.8b}}, [x7]
+    ld1  {{v2.8b}}, [x8]
+    ld1  {{v3.8b}}, [x9]
+    ld1  {{v4.8b}}, [x2]
+    ld1  {{v5.8b}}, [x10]
+    ld1  {{v6.8b}}, [x11]
+    ld1  {{v7.8b}}, [x12]
+    smull v8.8h,  v0.8b, v4.8b
+    smull v9.8h,  v0.8b, v5.8b
+    smull v10.8h, v0.8b, v6.8b
+    smull v11.8h, v0.8b, v7.8b
+    sadalp v16.4s, v8.8h
+    sadalp v17.4s, v9.8h
+    sadalp v18.4s, v10.8h
+    sadalp v19.4s, v11.8h
+    smull v8.8h,  v1.8b, v4.8b
+    smull v9.8h,  v1.8b, v5.8b
+    smull v10.8h, v1.8b, v6.8b
+    smull v11.8h, v1.8b, v7.8b
+    sadalp v20.4s, v8.8h
+    sadalp v21.4s, v9.8h
+    sadalp v22.4s, v10.8h
+    sadalp v23.4s, v11.8h
+    smull v8.8h,  v2.8b, v4.8b
+    smull v9.8h,  v2.8b, v5.8b
+    smull v10.8h, v2.8b, v6.8b
+    smull v11.8h, v2.8b, v7.8b
+    sadalp v24.4s, v8.8h
+    sadalp v25.4s, v9.8h
+    sadalp v26.4s, v10.8h
+    sadalp v27.4s, v11.8h
+    smull v8.8h,  v3.8b, v4.8b
+    smull v9.8h,  v3.8b, v5.8b
+    smull v10.8h, v3.8b, v6.8b
+    smull v11.8h, v3.8b, v7.8b
+    sadalp v28.4s, v8.8h
+    sadalp v29.4s, v9.8h
+    sadalp v30.4s, v10.8h
+    sadalp v31.4s, v11.8h
+.Lg4i_reduce:
+    add  x14, x5, x6, lsl #2
+    add  x15, x14, x6, lsl #2
+    add  x16, x15, x6, lsl #2
+    addv s0, v16.4s
+    addv s1, v17.4s
+    addv s2, v18.4s
+    addv s3, v19.4s
+    str  s0, [x5]
+    str  s1, [x5, #4]
+    str  s2, [x5, #8]
+    str  s3, [x5, #12]
+    addv s0, v20.4s
+    addv s1, v21.4s
+    addv s2, v22.4s
+    addv s3, v23.4s
+    str  s0, [x14]
+    str  s1, [x14, #4]
+    str  s2, [x14, #8]
+    str  s3, [x14, #12]
+    addv s0, v24.4s
+    addv s1, v25.4s
+    addv s2, v26.4s
+    addv s3, v27.4s
+    str  s0, [x15]
+    str  s1, [x15, #4]
+    str  s2, [x15, #8]
+    str  s3, [x15, #12]
+    addv s0, v28.4s
+    addv s1, v29.4s
+    addv s2, v30.4s
+    addv s3, v31.4s
+    str  s0, [x16]
+    str  s1, [x16, #4]
+    str  s2, [x16, #8]
+    str  s3, [x16, #12]
+    ldp  d10, d11, [sp, #16]
+    ldp  d8, d9, [sp], #32
+    ret
+"#
+);
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn yscv_gemm4x4_i8(
+        a0: *const i8,
+        a_stride: usize,
+        b0: *const i8,
+        b_stride: usize,
+        k: usize,
+        out: *mut i32,
+        n: usize,
+    );
+}
+
+/// Driver for [`yscv_gemm4x4_i8`]: `a` is `[M,K]` row-major, `bt` is `[N,K]`
+/// (K-contiguous per output column). Tiles the 4×4 core; N%4 columns fall to
+/// [`widen_dot_1col`] and M%4 rows to a scalar dot — all bit-identical to the
+/// widening kernel. Caller guarantees `k % 8 == 0`, `k >= 8`, and that `bt`
+/// contains no `i8::MIN` (overflow safety of the paired i16 accumulation).
+///
+/// SAFETY: `a.len() >= m*k`, `bt.len() >= n*k`, `out.len() >= m*n`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_gemm4x4_asm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
+    unsafe {
+        let ab = a.as_ptr();
+        let bb = bt.as_ptr();
+        let n4 = n & !3;
+        let mut i = 0;
+        while i + 4 <= m {
+            let mut j = 0;
+            while j < n4 {
+                yscv_gemm4x4_i8(
+                    ab.add(i * k),
+                    k,
+                    bb.add(j * k),
+                    k,
+                    k,
+                    out.as_mut_ptr().add(i * n + j),
+                    n,
+                );
+                j += 4;
+            }
+            // N remainder: one output column at a time, four rows.
+            while j < n {
+                let bpj = bb.add(j * k);
+                for r in 0..4 {
+                    out[(i + r) * n + j] = widen_dot_1col(ab.add((i + r) * k), bpj, k);
+                }
+                j += 1;
+            }
+            i += 4;
+        }
+        // M remainder rows.
+        while i < m {
+            let ap = ab.add(i * k);
+            for j in 0..n {
+                out[i * n + j] = widen_dot_1col(ap, bb.add(j * k), k);
+            }
+            i += 1;
+        }
+    }
+}
+
 /// Small-K int8 GEMM via the hand-scheduled 4×8 `yscv_mlal4x8_kernel`. `a` is
 /// `[M,K]` row-major, `b` is `[K,N]` k-major (the layout the non-prepacked
 /// caller already builds). Pads K to a multiple of 8 with zeros and pre-widens
@@ -708,6 +959,13 @@ unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out
         // GEMM. This is the only thing that gives INT8 a real edge over f32 FMLA
         // on ARMv8.0 without dotprod (both are otherwise 4 MACs/instruction).
         let pairs_safe = !bt.iter().any(|&w| w == i8::MIN);
+        // Hand-scheduled asm 4×4 core beats this compiled loop by ~1.3× when it
+        // applies: pairing is overflow-safe (no i8::MIN weight) and K is a
+        // multiple of 8 (the kernel consumes 16- then 8-wide K blocks).
+        if pairs_safe && k >= 8 && k % 8 == 0 {
+            neon_gemm4x4_asm(a, bt, m, k, n, out);
+            return;
+        }
         let mut i = 0;
         // 4-row register-tiled core.
         while i + 4 <= m {
