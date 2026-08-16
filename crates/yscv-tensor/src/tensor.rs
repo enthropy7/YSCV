@@ -7,7 +7,7 @@ use super::shape::{compute_strides, shape_element_count};
 // ── Inline shape/strides storage (no heap alloc for ≤6D tensors) ─────────
 
 // WHY 6: covers all common tensor ranks (scalar(0)..conv weight(5)) without heap allocation.
-const INLINE_CAP: usize = 6;
+pub(crate) const INLINE_CAP: usize = 6;
 
 /// Stack-allocated small vector for tensor shape/strides.
 /// Stores up to 6 dimensions inline; falls back to heap for higher ranks.
@@ -267,7 +267,7 @@ impl Tensor {
 
         Ok(Self {
             shape: DimsVec::from(shape),
-            strides: DimsVec::from(strides),
+            strides,
             storage: Arc::new(Storage::F32(data)),
             device: Device::Cpu,
             layout: Layout::NCHW,
@@ -292,7 +292,7 @@ impl Tensor {
 
         Ok(Self {
             shape: DimsVec::from(shape),
-            strides: DimsVec::from(strides),
+            strides,
             storage: Arc::new(Storage::F32(AlignedVec::from_vec(data))),
             device: Device::Cpu,
             layout: Layout::NCHW,
@@ -315,7 +315,7 @@ impl Tensor {
         })?;
         Ok(Self {
             shape: DimsVec::from(shape),
-            strides: DimsVec::from(strides),
+            strides,
             storage: Arc::new(Storage::F16(data)),
             device: Device::Cpu,
             layout: Layout::NCHW,
@@ -338,7 +338,7 @@ impl Tensor {
         })?;
         Ok(Self {
             shape: DimsVec::from(shape),
-            strides: DimsVec::from(strides),
+            strides,
             storage: Arc::new(Storage::BF16(data)),
             device: Device::Cpu,
             layout: Layout::NCHW,
@@ -370,7 +370,7 @@ impl Tensor {
 
         Ok(Self {
             shape: DimsVec::from(shape),
-            strides: DimsVec::from(strides),
+            strides,
             storage: Arc::new(Storage::F32(AlignedVec::filled(count, value))),
             device: Device::Cpu,
             layout: Layout::NCHW,
@@ -391,7 +391,7 @@ impl Tensor {
 
         Ok(Self {
             shape: DimsVec::from(shape),
-            strides: DimsVec::from(strides),
+            strides,
             storage: Arc::new(Storage::F32(AlignedVec::calloc(count))),
             device: Device::Cpu,
             layout: Layout::NCHW,
@@ -631,7 +631,7 @@ impl Tensor {
 
         Ok(Self {
             shape: DimsVec::from(new_shape),
-            strides: DimsVec::from(new_strides),
+            strides: new_strides,
             storage: self.storage.clone(),
             device: self.device,
             layout: self.layout,
@@ -657,7 +657,7 @@ impl Tensor {
 
         Ok(Self {
             shape: DimsVec::from(new_shape),
-            strides: DimsVec::from(new_strides),
+            strides: new_strides,
             storage: self.storage,
             device: self.device,
             layout: self.layout,
