@@ -697,6 +697,17 @@ unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out
     unsafe {
         let ab = a.as_ptr();
         let bb = bt.as_ptr();
+        // Two i8×i8 products fit in i16 (|a·b| ≤ 128·127 = 16256, ×2 = 32512 <
+        // 32767) as long as no weight is i8::MIN — then only ONE operand can be
+        // -128, capping each product at 16256. When safe, pair the low/high
+        // 8-lane halves of each 16-K step with `vmull`+`vmlal_s8` and reduce
+        // with a SINGLE `vpadalq` instead of two: 3 Q-ops per 16 MACs (0.1875
+        // Q-ops/MAC) vs the widen-every-step 4 (0.25). Integer add is
+        // associative so the accumulated column sums are bit-identical. `bt` is
+        // the (constant) weights; the scan is O(N·K), amortized over the O(M·N·K)
+        // GEMM. This is the only thing that gives INT8 a real edge over f32 FMLA
+        // on ARMv8.0 without dotprod (both are otherwise 4 MACs/instruction).
+        let pairs_safe = !bt.iter().any(|&w| w == i8::MIN);
         let mut i = 0;
         // 4-row register-tiled core.
         while i + 4 <= m {
@@ -729,13 +740,26 @@ unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out
                         vget_high_s8(vld1q_s8(ap[2].add(kk))),
                         vget_high_s8(vld1q_s8(ap[3].add(kk))),
                     ];
-                    for (c, &bpc) in bp.iter().enumerate() {
-                        let bv = vld1q_s8(bpc.add(kk));
-                        let bl = vget_low_s8(bv);
-                        let bh = vget_high_s8(bv);
-                        for r in 0..4 {
-                            acc[r][c] = vpadalq_s16(acc[r][c], vmull_s8(al[r], bl));
-                            acc[r][c] = vpadalq_s16(acc[r][c], vmull_s8(ah[r], bh));
+                    if pairs_safe {
+                        for (c, &bpc) in bp.iter().enumerate() {
+                            let bv = vld1q_s8(bpc.add(kk));
+                            let bl = vget_low_s8(bv);
+                            let bh = vget_high_s8(bv);
+                            for r in 0..4 {
+                                // al·bl + ah·bh accumulated in i16, reduced once.
+                                let p = vmlal_s8(vmull_s8(al[r], bl), ah[r], bh);
+                                acc[r][c] = vpadalq_s16(acc[r][c], p);
+                            }
+                        }
+                    } else {
+                        for (c, &bpc) in bp.iter().enumerate() {
+                            let bv = vld1q_s8(bpc.add(kk));
+                            let bl = vget_low_s8(bv);
+                            let bh = vget_high_s8(bv);
+                            for r in 0..4 {
+                                acc[r][c] = vpadalq_s16(acc[r][c], vmull_s8(al[r], bl));
+                                acc[r][c] = vpadalq_s16(acc[r][c], vmull_s8(ah[r], bh));
+                            }
                         }
                     }
                     kk += 16;
@@ -808,17 +832,36 @@ unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out
                     let avl = vget_low_s8(av);
                     let avh = vget_high_s8(av);
                     let b0 = vld1q_s8(bp0.add(kk));
-                    a0 = vpadalq_s16(a0, vmull_s8(avl, vget_low_s8(b0)));
-                    a0 = vpadalq_s16(a0, vmull_s8(avh, vget_high_s8(b0)));
                     let b1 = vld1q_s8(bp1.add(kk));
-                    a1 = vpadalq_s16(a1, vmull_s8(avl, vget_low_s8(b1)));
-                    a1 = vpadalq_s16(a1, vmull_s8(avh, vget_high_s8(b1)));
                     let b2 = vld1q_s8(bp2.add(kk));
-                    a2 = vpadalq_s16(a2, vmull_s8(avl, vget_low_s8(b2)));
-                    a2 = vpadalq_s16(a2, vmull_s8(avh, vget_high_s8(b2)));
                     let b3 = vld1q_s8(bp3.add(kk));
-                    a3 = vpadalq_s16(a3, vmull_s8(avl, vget_low_s8(b3)));
-                    a3 = vpadalq_s16(a3, vmull_s8(avh, vget_high_s8(b3)));
+                    if pairs_safe {
+                        a0 = vpadalq_s16(
+                            a0,
+                            vmlal_s8(vmull_s8(avl, vget_low_s8(b0)), avh, vget_high_s8(b0)),
+                        );
+                        a1 = vpadalq_s16(
+                            a1,
+                            vmlal_s8(vmull_s8(avl, vget_low_s8(b1)), avh, vget_high_s8(b1)),
+                        );
+                        a2 = vpadalq_s16(
+                            a2,
+                            vmlal_s8(vmull_s8(avl, vget_low_s8(b2)), avh, vget_high_s8(b2)),
+                        );
+                        a3 = vpadalq_s16(
+                            a3,
+                            vmlal_s8(vmull_s8(avl, vget_low_s8(b3)), avh, vget_high_s8(b3)),
+                        );
+                    } else {
+                        a0 = vpadalq_s16(a0, vmull_s8(avl, vget_low_s8(b0)));
+                        a0 = vpadalq_s16(a0, vmull_s8(avh, vget_high_s8(b0)));
+                        a1 = vpadalq_s16(a1, vmull_s8(avl, vget_low_s8(b1)));
+                        a1 = vpadalq_s16(a1, vmull_s8(avh, vget_high_s8(b1)));
+                        a2 = vpadalq_s16(a2, vmull_s8(avl, vget_low_s8(b2)));
+                        a2 = vpadalq_s16(a2, vmull_s8(avh, vget_high_s8(b2)));
+                        a3 = vpadalq_s16(a3, vmull_s8(avl, vget_low_s8(b3)));
+                        a3 = vpadalq_s16(a3, vmull_s8(avh, vget_high_s8(b3)));
+                    }
                     kk += 16;
                 }
                 if kk + 8 <= k {
