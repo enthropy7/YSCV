@@ -2179,6 +2179,48 @@ unsafe fn hardswish_slice_neon(input: &[f32], output: &mut [f32]) {
     }
 }
 
+/// In-place HardSwish over `data`. Bit-identical to
+/// `hardswish_slice_dispatch(data, data)`: the kernels are elementwise, so
+/// reading and writing the same element is sound. Used by the fused
+/// `Conv + HardSwish` epilogue to apply the activation on the conv output
+/// without a second buffer + pass.
+pub fn hardswish_slice_inplace(data: &mut [f32]) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if !cfg!(miri) && dispatch_path(true, false) == SimdDispatchPath::Neon {
+            // SAFETY: NEON guarded by runtime feature detection.
+            unsafe { hardswish_slice_inplace_neon(data) };
+            return;
+        }
+    }
+    for v in data.iter_mut() {
+        *v = *v * ((*v + 3.0).clamp(0.0, 6.0) / 6.0);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, dead_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn hardswish_slice_inplace_neon(data: &mut [f32]) {
+    let len = data.len();
+    let p = data.as_mut_ptr();
+    let three = vdupq_n_f32(3.0);
+    let six = vdupq_n_f32(6.0);
+    let zero = vdupq_n_f32(0.0);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let x = vld1q_f32(p.add(i));
+        let t = vminq_f32(vmaxq_f32(vaddq_f32(x, three), zero), six);
+        vst1q_f32(p.add(i), vmulq_f32(x, vdivq_f32(t, six)));
+        i += 4;
+    }
+    while i < len {
+        let v = *p.add(i);
+        *p.add(i) = v * ((v + 3.0).clamp(0.0, 6.0) / 6.0);
+        i += 1;
+    }
+}
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "sse")]
