@@ -81,6 +81,7 @@ fn pipeline() -> Vec<Box<dyn Pass>> {
         Box::new(FoldConvConstBinary::add()),
         Box::new(FoldConstants),
         Box::new(FuseActivation::conv_relu()),
+        Box::new(FuseActivation::conv_hardswish()),
         Box::new(FuseActivation::bn_relu()),
         Box::new(EliminateDeadCode),
         Box::new(ReorderForFusion),

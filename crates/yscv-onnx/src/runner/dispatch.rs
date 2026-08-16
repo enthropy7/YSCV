@@ -158,6 +158,21 @@ fn execute_node_inner_kind_fast(
             None,
             None,
         ),
+        NodeKind::ConvHardSwish => {
+            exec_conv_with_params(
+                node,
+                env,
+                yscv_kernels::Activation::None,
+                conv_params,
+                None,
+                None,
+            )?;
+            if let Some(mut t) = env.remove(&node.outputs[0]) {
+                yscv_kernels::hardswish_slice_inplace(t.data_mut());
+                env.insert(node.outputs[0].clone(), t);
+            }
+            Ok(())
+        }
         NodeKind::Relu => exec_relu(node, env),
         NodeKind::BatchNormalization => exec_batch_norm(node, env),
         NodeKind::Gemm => exec_gemm(node, env),

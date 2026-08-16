@@ -842,6 +842,16 @@ pub(crate) fn build_runtime_index(
             }
         }
         match kind {
+            NodeKind::ConvHardSwish => {
+                // Conv + HardSwish: run the conv (no fused-kernel epilogue for
+                // HardSwish), then apply it in place on the still-warm output.
+                // `activation = 3` signals that post-pass to the branch executor.
+                // Not fused into DW/PW chains (their kernels only do None/Relu).
+                execution_plan.push(NodeAction::Conv {
+                    node_idx: i,
+                    activation: 3,
+                });
+            }
             NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu => {
                 let activation = match kind {
                     NodeKind::ConvRelu => 1,

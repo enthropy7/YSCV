@@ -58,6 +58,8 @@ pub(crate) enum Op {
     /// Fused `Conv` + `Sigmoid` + `Mul`. Recognized downstream but currently
     /// produced by no pass.
     ConvSilu,
+    /// Fused `Conv` + `HardSwish`, emitted by `fuse_conv_hardswish`.
+    ConvHardSwish,
 }
 
 /// Pairs each interned variant with its exact ONNX (or mangled-fusion) op-type
@@ -100,6 +102,7 @@ op_table! {
     Conv => "Conv",
     ConvRelu => "Conv_Relu",
     ConvSilu => "Conv_SiLU",
+    ConvHardSwish => "Conv_HardSwish",
     ConvTranspose => "ConvTranspose",
     DeformConv => "DeformConv",
     DepthToSpace => "DepthToSpace",

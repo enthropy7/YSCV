@@ -42,6 +42,16 @@ impl FuseActivation {
             fused: Op::BatchNormRelu,
         }
     }
+
+    pub(crate) fn conv_hardswish() -> Self {
+        Self {
+            name: "fuse_conv_hardswish",
+            base: Op::Conv,
+            // HardSwish has no interned variant — it rides `Op::Other`.
+            activation: Op::Other("HardSwish".into()),
+            fused: Op::ConvHardSwish,
+        }
+    }
 }
 
 impl Pass for FuseActivation {

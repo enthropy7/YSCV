@@ -197,7 +197,11 @@ pub(crate) fn execute_node_cpu_for_metal_compile(
 fn is_nhwc_producer_with_kind(kind: NodeKind, op_type: &str) -> bool {
     matches!(
         kind,
-        NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu | NodeKind::BatchNormalization
+        NodeKind::Conv
+            | NodeKind::ConvRelu
+            | NodeKind::ConvSilu
+            | NodeKind::ConvHardSwish
+            | NodeKind::BatchNormalization
     ) || matches!(
         op_type,
         "MaxPool"

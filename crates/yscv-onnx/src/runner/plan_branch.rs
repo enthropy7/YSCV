@@ -101,6 +101,15 @@ pub(crate) fn execute_plan_branch(
                 // IS profitable in NCHWc.
                 let planned = planned_conv_kernel(model, *node_idx);
                 exec_conv_with_params(node, env, act, cp, prepacked, planned)?;
+                // activation == 3: fused Conv + HardSwish. The conv ran with no
+                // epilogue activation; apply HardSwish in place on the still-warm
+                // output (no separate node, no second buffer).
+                if *activation == 3
+                    && let Some(mut t) = env.remove(&node.outputs[0])
+                {
+                    yscv_kernels::hardswish_slice_inplace(t.data_mut());
+                    env.insert(node.outputs[0].clone(), t);
+                }
                 if let Some(oid) = model
                     .runtime_index
                     .node_output_ids

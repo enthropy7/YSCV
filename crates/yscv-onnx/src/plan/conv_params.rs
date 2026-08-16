@@ -33,7 +33,7 @@ pub(super) fn resolve_conv_params(
         .map(|(node, kind)| {
             if !matches!(
                 kind,
-                NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu
+                NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu | NodeKind::ConvHardSwish
             ) {
                 return None;
             }

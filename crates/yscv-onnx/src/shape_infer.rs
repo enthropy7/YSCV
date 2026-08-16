@@ -179,7 +179,7 @@ fn infer_node(
         "Relu" | "Sigmoid" | "Tanh" | "Clip" | "BatchNormalization" | "BatchNormalization_Relu" => {
             unary_same_shape(shapes, node)
         }
-        "Conv" | "Conv_Relu" | "Conv_SiLU" => infer_conv(model, shapes, node),
+        "Conv" | "Conv_Relu" | "Conv_SiLU" | "Conv_HardSwish" => infer_conv(model, shapes, node),
         "Add" | "Sub" | "Mul" | "Div" | "Pow" => infer_broadcast(shapes, node),
         "Concat" => infer_concat(shapes, node),
         "Transpose" => infer_transpose(shapes, node),
