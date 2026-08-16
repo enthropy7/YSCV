@@ -416,6 +416,13 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
     let pixel_end = pixel_start + out.len() / chan;
     let inp = input.as_ptr();
     let wp = weight.as_ptr();
+    // No weight == i8::MIN (-128) — always true for symmetric per-channel
+    // quantization ([-127,127]) — bounds two taps' products within i16
+    // (max |2·128·127| = 32512 < 32767), so the 16-wide path can sum a tap PAIR
+    // in i16 with vmlal_s8, cutting the 2-cycle widen (vaddw) count per MAC.
+    // Two independent pairs are interleaved so their vmull->vmlal->vaddw chains
+    // overlap (a lone vmlal chain serialises and loses on the in-order A53).
+    let weight_pairs_safe = !weight.iter().any(|&w| w == i8::MIN);
     // Relative tap offsets for a fully in-bounds (interior) pixel: the input
     // offset of tap (ky,kx) is `base_in + rel[t].0` where `base_in` is the
     // window's top-left offset, and `w_base = rel[t].1` is pixel-independent.
@@ -484,7 +491,57 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
                     let mut a1 = vdupq_n_s32(0);
                     let mut a2 = vdupq_n_s32(0);
                     let mut a3 = vdupq_n_s32(0);
-                    for &(in_base, w_base) in &taps[..ntaps] {
+                    let mut t = 0;
+                    if weight_pairs_safe {
+                        // 4 taps / iter as two interleaved i16-accumulated pairs.
+                        while t + 4 <= ntaps {
+                            let (ia0, wa0) = taps[t];
+                            let (ia1, wa1) = taps[t + 1];
+                            let (ib0, wb0) = taps[t + 2];
+                            let (ib1, wb1) = taps[t + 3];
+                            let xa0 = vld1q_s8(inp.add(ia0 + c));
+                            let wva0 = vld1q_s8(wp.add(wa0 + c));
+                            let xa1 = vld1q_s8(inp.add(ia1 + c));
+                            let wva1 = vld1q_s8(wp.add(wa1 + c));
+                            let xb0 = vld1q_s8(inp.add(ib0 + c));
+                            let wvb0 = vld1q_s8(wp.add(wb0 + c));
+                            let xb1 = vld1q_s8(inp.add(ib1 + c));
+                            let wvb1 = vld1q_s8(wp.add(wb1 + c));
+                            let plo_a = vmlal_s8(
+                                vmull_s8(vget_low_s8(xa0), vget_low_s8(wva0)),
+                                vget_low_s8(xa1),
+                                vget_low_s8(wva1),
+                            );
+                            let phi_a = vmlal_s8(
+                                vmull_s8(vget_high_s8(xa0), vget_high_s8(wva0)),
+                                vget_high_s8(xa1),
+                                vget_high_s8(wva1),
+                            );
+                            let plo_b = vmlal_s8(
+                                vmull_s8(vget_low_s8(xb0), vget_low_s8(wvb0)),
+                                vget_low_s8(xb1),
+                                vget_low_s8(wvb1),
+                            );
+                            let phi_b = vmlal_s8(
+                                vmull_s8(vget_high_s8(xb0), vget_high_s8(wvb0)),
+                                vget_high_s8(xb1),
+                                vget_high_s8(wvb1),
+                            );
+                            a0 = vaddw_s16(vaddw_s16(a0, vget_low_s16(plo_a)), vget_low_s16(plo_b));
+                            a1 = vaddw_s16(
+                                vaddw_s16(a1, vget_high_s16(plo_a)),
+                                vget_high_s16(plo_b),
+                            );
+                            a2 = vaddw_s16(vaddw_s16(a2, vget_low_s16(phi_a)), vget_low_s16(phi_b));
+                            a3 = vaddw_s16(
+                                vaddw_s16(a3, vget_high_s16(phi_a)),
+                                vget_high_s16(phi_b),
+                            );
+                            t += 4;
+                        }
+                    }
+                    while t < ntaps {
+                        let (in_base, w_base) = taps[t];
                         let xv = vld1q_s8(inp.add(in_base + c));
                         let wv = vld1q_s8(wp.add(w_base + c));
                         let plo = vmull_s8(vget_low_s8(xv), vget_low_s8(wv));
@@ -493,6 +550,7 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
                         a1 = vaddw_s16(a1, vget_high_s16(plo));
                         a2 = vaddw_s16(a2, vget_low_s16(phi));
                         a3 = vaddw_s16(a3, vget_high_s16(phi));
+                        t += 1;
                     }
                     vst1q_s32(op.add(out_base + c), a0);
                     vst1q_s32(op.add(out_base + c + 4), a1);
