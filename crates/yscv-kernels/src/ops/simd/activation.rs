@@ -2189,7 +2189,10 @@ pub fn hardswish_slice_inplace(data: &mut [f32]) {
     {
         if !cfg!(miri) && dispatch_path(true, false) == SimdDispatchPath::Neon {
             // SAFETY: NEON guarded by runtime feature detection.
-            unsafe { hardswish_slice_inplace_neon(data) };
+            #[allow(unsafe_code)]
+            unsafe {
+                hardswish_slice_inplace_neon(data)
+            };
             return;
         }
     }
