@@ -3,6 +3,9 @@
 //! Usage:
 //!   cargo run --release --example bench_mpsgraph_only --features metal-backend -- model.onnx [iters]
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
 fn main() {
     eprintln!("bench_mpsgraph_only requires macOS with the metal-backend feature");

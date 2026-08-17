@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use yscv_detect::{
     BoundingBox, CLASS_ID_FACE, CLASS_ID_PERSON, Rgb8FaceDetectScratch, Rgb8PeopleDetectScratch,

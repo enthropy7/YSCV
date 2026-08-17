@@ -3,6 +3,9 @@
 //! Set BENCH_COOLDOWN=<secs> to insert a cooldown pause between benchmarks.
 //! The default is 0; callers that need thermal control must opt in.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use rustc_hash::FxHashMap;
 use yscv_onnx::load_onnx_model_from_file;
 use yscv_onnx_model_bench::{asset_dir, download_assets, make_inputs, model_cases};

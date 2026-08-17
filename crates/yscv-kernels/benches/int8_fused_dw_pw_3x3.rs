@@ -6,6 +6,9 @@
 //! so the per-iter savings of the fused kernel are visible on top of the
 //! same SIMD primitives.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use yscv_kernels::{
     DepthwiseI8Params, Int8FusedDwPwParams, depthwise_i8_i32_nhwc_dispatch,

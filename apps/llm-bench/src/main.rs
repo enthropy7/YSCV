@@ -31,6 +31,9 @@
 //! See `apps/llm-bench/README.md` for end-to-end download + quantize +
 //! bench instructions for TinyLlama-1.1B.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;

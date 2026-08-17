@@ -31,6 +31,9 @@
 //! `calib_accuracy --model`. Without `--output` the QDQ save+reload step
 //! is skipped — useful when iterating on the calibration count alone.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

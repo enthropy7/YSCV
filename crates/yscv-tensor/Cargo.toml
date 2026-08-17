@@ -17,6 +17,7 @@ yscv-cpu = { version = "0.1", path = "../yscv-cpu" }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+mimalloc.workspace = true
 proptest = "1"
 
 [[bench]]

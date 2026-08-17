@@ -1,5 +1,8 @@
 //! Minimal yscv tracker benchmark that uses the current workspace crates.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;

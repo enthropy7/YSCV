@@ -1,6 +1,9 @@
 //! Benchmark: Metal-native ONNX inference for YOLO models.
 //! Compares Metal vs CPU (and GPU/wgpu if enabled).
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
 fn main() {
     eprintln!("bench_metal_yolo requires macOS with the metal-backend feature");

@@ -83,7 +83,13 @@ Rayon is the cross-platform parallel backend. It provides work-stealing thread p
 
 ## Memory patterns
 
-- **mimalloc** global allocator in benchmark harness for faster large allocations.
+- **mimalloc** global allocator in every benchmark and latency harness — the
+  criterion benches, `apps/bench`, `apps/llm-bench`, `benchmarks/onnx-models`,
+  the `bench_*` examples, and the tract competitor harness — so numbers are
+  allocator-comparable no matter which entry point produced them. The library
+  crates deliberately declare no allocator: `#[global_allocator]` is a
+  whole-program singleton, so choosing one is the calling binary's decision,
+  not a library's.
 - `AlignedVec` in yscv-tensor (32-byte aligned for AVX) with `uninitialized(len)` to skip zeroing output buffers.
 - **Ring buffers** for streaming row processing (canny magnitude/direction, morph separable passes).
 - **Thread-local scratch** via rayon's per-task closures (not explicit thread-local storage).
@@ -123,7 +129,11 @@ If you need to change something, these are the most important files:
 | MatMul BLAS | Accelerate cblas (always on) | OpenBLAS (opt-in `blas`) | OpenBLAS (opt-in `blas`) |
 | Softmax | Fused NEON | Fused NEON | Fused AVX/SSE |
 | Median u8 | NEON sort network | NEON sort network | SSE2 sort network |
-| Allocator | mimalloc | mimalloc | mimalloc |
+| Bench-harness allocator | mimalloc | mimalloc | mimalloc |
+
+The allocator row covers the benchmark and latency harnesses only; the library
+crates leave the global allocator to the calling binary. See
+[Memory patterns](#memory-patterns).
 
 All SIMD dispatch paths include scalar fallback for architectures without runtime detection support (e.g., RISC-V, WASM) and for Miri testing.
 

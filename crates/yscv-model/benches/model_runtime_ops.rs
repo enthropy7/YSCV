@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use yscv_autograd::Graph;
 use yscv_model::{SequentialModel, SupervisedLoss, train_step_sgd, train_step_sgd_with_loss};

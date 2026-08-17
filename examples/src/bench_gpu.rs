@@ -3,6 +3,9 @@
 //! Usage:
 //!   cargo run --release --example bench_gpu --features gpu -- <model.onnx>
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use rustc_hash::FxHashMap;
 use yscv_kernels::GpuBackend;
 use yscv_onnx::{

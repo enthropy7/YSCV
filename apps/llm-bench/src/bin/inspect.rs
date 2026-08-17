@@ -2,6 +2,9 @@
 //! of an ONNX model. Used to detect cached-decoder protocols
 //! (past_key_values.{i}.{key,value}) before wiring up the bench harness.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use yscv_onnx::load_onnx_model_from_file;
 
 fn main() {

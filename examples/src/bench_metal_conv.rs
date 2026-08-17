@@ -1,6 +1,9 @@
 //! Benchmark: Metal simdgroup_matrix vs Metal basic (=same algo as WGSL) vs CPU.
 //! Isolates: (1) naga overhead, (2) simdgroup_matrix benefit.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
 fn main() {
     eprintln!("bench_metal_conv requires macOS with the metal-backend feature");
