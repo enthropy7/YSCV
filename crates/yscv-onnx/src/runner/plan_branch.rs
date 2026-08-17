@@ -51,6 +51,7 @@ pub(crate) fn execute_plan_branch(
             NodeAction::FusedTransposeMatMul { matmul_idx, .. } => *matmul_idx,
             NodeAction::QuantizedQdq { dequant_idx, .. } => *dequant_idx,
             NodeAction::FusedHardSwishQuant { hs_idx, .. } => *hs_idx,
+            NodeAction::FusedSeMulQuant { mul_idx, .. } => *mul_idx,
             NodeAction::QuantizedPwDw { pw_idx, .. } => *pw_idx,
             NodeAction::QuantizedDwPw { dw_idx, .. } => *dw_idx,
             NodeAction::QuantizedForkPair { first_idx, .. } => *first_idx,
@@ -921,6 +922,73 @@ pub(crate) fn execute_plan_branch(
                 }
             }
 
+            NodeAction::FusedSeMulQuant {
+                mul_idx,
+                quant_idx,
+                feat_operand,
+            } => {
+                let mul_node = &nodes[*mul_idx];
+                let quant_node = &nodes[*quant_idx];
+                let feat_name = mul_node.inputs[*feat_operand as usize].clone();
+                let gate_name = mul_node.inputs[1 - *feat_operand as usize].clone();
+                let scalar = |node: &OnnxNode, idx: usize| -> Option<f32> {
+                    node.inputs
+                        .get(idx)
+                        .and_then(|name| env.get(name))
+                        .and_then(|t| t.data().first().copied())
+                };
+                let y_scale = scalar(quant_node, 1);
+                let y_zp = scalar(quant_node, 2).unwrap_or(0.0);
+                // Fold `Mul(feat, gate[N,C,1,1]) -> Quantize` into one per-channel
+                // scaled f32->i8 pass. Bit-identical: `feat*gate` is the same f32
+                // product the Mul computes, then `(v/scale+zp).round_ties_even()`
+                // is the same quantise formula. Keeps the SE output as true int8.
+                // Fast path only when the feature is NHWC (channel-contiguous):
+                // then the SE gate broadcasts along the contiguous axis and the
+                // fused kernel vectorises over C. NCHW would need a strided gate
+                // broadcast and is rare here, so fall back to the two ops.
+                let nhwc = env.is_nhwc(&feat_name);
+                let fused_ok = quant_int8_fast_enabled()
+                    && nhwc
+                    && y_scale.is_some()
+                    && env.get(&feat_name).is_some()
+                    && env.get(&gate_name).is_some();
+                if fused_ok {
+                    let ys = y_scale.unwrap();
+                    let feat = env.get(&feat_name).unwrap();
+                    let gate = env.get(&gate_name).unwrap();
+                    let fsh = feat.shape().to_vec();
+                    let (n, c) = if fsh.len() == 4 {
+                        (fsh[0], fsh[3])
+                    } else {
+                        (1, *fsh.last().unwrap_or(&1))
+                    };
+                    let mut out = vec![0_i8; feat.data().len()];
+                    yscv_kernels::se_mul_quantize_nhwc_dispatch(
+                        feat.data(),
+                        gate.data(),
+                        n.max(1),
+                        c,
+                        ys,
+                        y_zp,
+                        &mut out,
+                    );
+                    env.insert_quant_i8(
+                        quant_node.outputs[0].clone(),
+                        QuantTensor {
+                            data: out,
+                            shape: fsh,
+                            scale: ys,
+                            zero_point: y_zp,
+                            nhwc,
+                        },
+                    );
+                } else {
+                    execute_node_with_layout_kind(mul_node, env, NodeKind::Mul)?;
+                    execute_node_with_layout_kind(quant_node, env, NodeKind::Other)?;
+                }
+            }
+
             NodeAction::QuantizedPwDw {
                 pw_idx,
                 dq_idx,
@@ -1286,6 +1354,24 @@ pub(crate) fn execute_plan_branch(
                         sh,
                     )
                 }
+                NodeAction::FusedSeMulQuant {
+                    mul_idx, quant_idx, ..
+                } => {
+                    let m = &nodes[*mul_idx];
+                    let q = &nodes[*quant_idx];
+                    let sh = q
+                        .outputs
+                        .first()
+                        .and_then(|nm| env.get(nm))
+                        .map(|t| t.shape().to_vec())
+                        .unwrap_or_default();
+                    (
+                        m.name.clone(),
+                        "FusedSeMulQuant".to_string(),
+                        sh.clone(),
+                        sh,
+                    )
+                }
                 NodeAction::QuantizedPwDw {
                     pw_idx,
                     dw_idx,
@@ -1543,6 +1629,9 @@ pub(crate) fn execute_plan_branch(
                 mul_idx,
                 quant_idx,
             } => &[*hs_idx, *mul_idx, *quant_idx][..],
+            NodeAction::FusedSeMulQuant {
+                mul_idx, quant_idx, ..
+            } => &[*mul_idx, *quant_idx][..],
             // Fused INT8 chain: the action wraps PW + DQ + (Relu) + Q + DW.
             // `exec_quantized_pw_dw` consumes PW's inputs internally
             // (specifically: `take_quant_i8` on PW.inputs[0] when the

@@ -251,6 +251,21 @@ pub(crate) enum NodeAction {
         /// Terminal `QuantizeLinear`.
         quant_idx: usize,
     },
+    /// Fused Squeeze-Excite scale + quantize:
+    /// `Mul(feat[N,C,H,W], gate[N,C,1,1]) -> QuantizeLinear -> i8`, the tail of
+    /// a MobileNetV3 SE block. Instead of materialising the full-tensor f32
+    /// product then quantising it, do one per-channel-scaled f32→i8 pass:
+    /// `y_i8[n,c,h,w] = clamp(round(feat*gate[c]/y_scale)+y_zp)`. Bit-identical
+    /// to the unfused Mul+Quantize (same f32 ops), and keeps the SE *output* in
+    /// int8 without the intermediate f32 buffer.
+    FusedSeMulQuant {
+        /// `Mul` node; `feat_input`/`gate_input` name its two operands.
+        mul_idx: usize,
+        /// Terminal `QuantizeLinear`.
+        quant_idx: usize,
+        /// Index into `mul.inputs` of the full-rank feature (0 or 1).
+        feat_operand: u8,
+    },
     /// Fused INT8 quant-domain PW → DW chain:
     /// `QLinearConv(pw 1×1) → DequantizeLinear → [Relu] → QuantizeLinear →
     /// QLinearConv(dw kxk)` executed as a single kernel call. No fp32

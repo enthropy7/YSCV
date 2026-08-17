@@ -428,6 +428,109 @@ pub fn requant_i8_per_channel_dispatch(
     requant_i8_per_channel_scalar(acc, corr, composite, y_zp, out, c);
 }
 
+/// Fused Squeeze-Excite scale + quantize for an NHWC f32 feature:
+/// `out[p,ch] = clamp(round(feat[p,ch]·gate[batch,ch] / y_scale + y_zp))` as i8.
+/// `feat` is `[N·H·W, C]` row-major (channel-contiguous), `gate` is `[N, C]`.
+/// Bit-identical to `Mul(feat, gate)` followed by ONNX `QuantizeLinear`.
+#[inline]
+pub fn se_mul_quantize_nhwc_dispatch(
+    feat: &[f32],
+    gate: &[f32],
+    n: usize,
+    c: usize,
+    y_scale: f32,
+    y_zp: f32,
+    out: &mut [i8],
+) {
+    debug_assert_eq!(feat.len(), out.len());
+    debug_assert!(c > 0 && n > 0);
+    debug_assert_eq!(feat.len() % c, 0);
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::host_cpu().features.neon {
+            // SAFETY: NEON feature-detected; inner fn is `target_feature=neon`.
+            #[allow(unsafe_code)]
+            unsafe {
+                se_mul_quantize_nhwc_neon(feat, gate, n, c, y_scale, y_zp, out);
+            }
+            return;
+        }
+    }
+    se_mul_quantize_nhwc_scalar(feat, gate, n, c, y_scale, y_zp, out);
+}
+
+#[inline]
+fn se_mul_quantize_nhwc_scalar(
+    feat: &[f32],
+    gate: &[f32],
+    n: usize,
+    c: usize,
+    y_scale: f32,
+    y_zp: f32,
+    out: &mut [i8],
+) {
+    let pixels = feat.len() / c;
+    let ppb = (pixels / n).max(1);
+    for p in 0..pixels {
+        let g = &gate[(p / ppb) * c..];
+        let frow = &feat[p * c..p * c + c];
+        let orow = &mut out[p * c..p * c + c];
+        for ch in 0..c {
+            orow[ch] = (frow[ch] * g[ch] / y_scale + y_zp)
+                .round_ties_even()
+                .clamp(-128.0, 127.0) as i8;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, clippy::too_many_arguments)]
+unsafe fn se_mul_quantize_nhwc_neon(
+    feat: &[f32],
+    gate: &[f32],
+    n: usize,
+    c: usize,
+    y_scale: f32,
+    y_zp: f32,
+    out: &mut [i8],
+) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let ys = vdupq_n_f32(y_scale);
+        let zp = vdupq_n_f32(y_zp);
+        let lo = vdupq_n_f32(-128.0);
+        let hi = vdupq_n_f32(127.0);
+        let pixels = feat.len() / c;
+        let ppb = (pixels / n).max(1);
+        let main = (c / 4) * 4;
+        for p in 0..pixels {
+            let g = &gate[(p / ppb) * c..];
+            let frow = &feat[p * c..p * c + c];
+            let orow = &mut out[p * c..p * c + c];
+            let mut ch = 0;
+            while ch < main {
+                let f = vld1q_f32(frow.as_ptr().add(ch));
+                let gg = vld1q_f32(g.as_ptr().add(ch));
+                let v = vaddq_f32(vdivq_f32(vmulq_f32(f, gg), ys), zp);
+                let r = vrndnq_f32(v);
+                let clamped = vminq_f32(vmaxq_f32(r, lo), hi);
+                let i32s = vcvtq_s32_f32(clamped);
+                let i8s = vqmovn_s16(vcombine_s16(vqmovn_s32(i32s), vdup_n_s16(0)));
+                let bytes = std::slice::from_raw_parts(&i8s as *const _ as *const u8, 4);
+                orow[ch..ch + 4].copy_from_slice(std::mem::transmute::<&[u8], &[i8]>(bytes));
+                ch += 4;
+            }
+            while ch < c {
+                orow[ch] = (frow[ch] * g[ch] / y_scale + y_zp)
+                    .round_ties_even()
+                    .clamp(-128.0, 127.0) as i8;
+                ch += 1;
+            }
+        }
+    }
+}
+
 /// Scalar reference / bitwise oracle for the per-channel-composite requantize.
 #[inline]
 pub(crate) fn requant_i8_per_channel_scalar(

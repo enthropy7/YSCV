@@ -841,6 +841,57 @@ pub(crate) fn build_runtime_index(
                 }
             }
         }
+
+        // SE tail fold: `Mul(feat[N,C,H,W], gate[N,C,1,1]) -> QuantizeLinear`,
+        // where `gate` is the Reshape←HardSigmoid output of a Squeeze-Excite
+        // branch. One per-channel-scaled f32→i8 pass instead of materialising
+        // the full f32 product then quantising it. Bit-identical; keeps the SE
+        // output int8. The feature (Relu output) is left materialised — it also
+        // feeds the SE branch's GlobalAveragePool.
+        if nodes[i].op_type == "Mul"
+            && !plan_skip[i]
+            && nodes[i].inputs.len() == 2
+            && nodes[i].outputs.len() == 1
+            && !outputs.iter().any(|o| o == &nodes[i].outputs[0])
+        {
+            let is_se_gate = |name: &str| -> bool {
+                producers.get(name).is_some_and(|&p| {
+                    nodes[p].op_type == "Reshape"
+                        && nodes[p]
+                            .inputs
+                            .first()
+                            .and_then(|r| producers.get(r.as_str()))
+                            .is_some_and(|&pp| nodes[pp].op_type == "HardSigmoid")
+                })
+            };
+            let a = nodes[i].inputs[0].as_str();
+            let b = nodes[i].inputs[1].as_str();
+            let feat_operand = if is_se_gate(b) && !is_se_gate(a) {
+                Some(0u8)
+            } else if is_se_gate(a) && !is_se_gate(b) {
+                Some(1u8)
+            } else {
+                None
+            };
+            if let Some(feat_operand) = feat_operand
+                && let Some(q_idx) = sole_consumer(&nodes[i].outputs[0])
+                && !plan_skip[q_idx]
+                && nodes[q_idx].op_type == "QuantizeLinear"
+                && nodes[q_idx].inputs.len() >= 3
+                && nodes[q_idx].outputs.len() == 1
+                && !outputs.iter().any(|o| o == &nodes[q_idx].outputs[0])
+                && init_scalar(initializers, &nodes[q_idx].inputs[1]).is_some()
+                && init_scalar(initializers, &nodes[q_idx].inputs[2]).is_some()
+            {
+                execution_plan.push(NodeAction::FusedSeMulQuant {
+                    mul_idx: i,
+                    quant_idx: q_idx,
+                    feat_operand,
+                });
+                plan_skip[q_idx] = true;
+                continue;
+            }
+        }
         match kind {
             NodeKind::ConvHardSwish => {
                 // Conv + HardSwish: run the conv (no fused-kernel epilogue for
