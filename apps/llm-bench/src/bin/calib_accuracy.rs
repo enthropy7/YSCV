@@ -23,6 +23,9 @@
 //! cargo run --release --bin calib_accuracy -p yscv-llm-bench
 //! ```
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use yscv_onnx::quantize::{
     CalibrationCollector,
     derive::{QuantTarget, derive_mse_optimal, derive_percentile, derive_symmetric},

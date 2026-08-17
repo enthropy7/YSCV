@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use yscv_imgproc::{
     closing_3x3, dilate_3x3, erode_3x3, morph_gradient_3x3, opening_3x3, sobel_3x3_gradients,

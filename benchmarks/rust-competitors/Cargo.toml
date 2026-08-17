@@ -6,6 +6,9 @@ publish = false
 
 [dependencies]
 tract-onnx = { version = "0.21", optional = true }
+# Matches the allocator the yscv harnesses use, so competitor numbers are not
+# a yscv-on-mimalloc vs tract-on-system-malloc comparison.
+mimalloc = { version = "0.1", default-features = false }
 
 [features]
 default = ["tract"]

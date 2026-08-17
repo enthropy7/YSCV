@@ -214,9 +214,19 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **Threading** | GCD dispatch_apply (~0.3µs) | std::thread::scope (~1µs) | std::thread::scope (~1µs) |
 | **GPU inference** | MPSGraph | wgpu/Vulkan | wgpu/Vulkan |
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |
-| **Allocator** | mimalloc | mimalloc | mimalloc |
+| **Bench-harness allocator** | mimalloc | mimalloc | mimalloc |
 
 SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. `yscv_kernels::runtime_dispatch_report()` exposes the typed CPU/kernel selection snapshot, while `runtime_config_report()` records active `YSCV_*` A/B overrides for reproducible benchmark logs. 570 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
+
+The allocator row applies to the benchmark and latency harnesses, which all
+install mimalloc so their numbers stay comparable. The library crates set no
+global allocator — that is a whole-program choice, so it belongs to your
+binary. If you want mimalloc in your own build, add the two lines yourself:
+
+```rust
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+```
 
 ### Recommended release profile
 

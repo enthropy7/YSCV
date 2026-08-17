@@ -3,6 +3,9 @@
 //! Usage:
 //!   cargo run --release --example bench_vball_cpu -- /path/to/model.onnx [iterations]
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::time::Instant;
 
 use rustc_hash::FxHashMap;

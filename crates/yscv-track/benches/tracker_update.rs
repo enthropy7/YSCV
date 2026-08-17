@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use yscv_detect::{BoundingBox, CLASS_ID_PERSON, Detection};
 use yscv_track::{Tracker, TrackerConfig};

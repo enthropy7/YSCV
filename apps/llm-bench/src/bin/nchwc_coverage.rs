@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use rustc_hash::FxHashMap;
 /// NCHWc layout coverage probe — Step 0 of NCHWc-everywhere plan.
 ///
