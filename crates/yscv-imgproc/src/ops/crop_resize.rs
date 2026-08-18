@@ -240,6 +240,134 @@ fn crop_resize_scalar(
 // ===========================================================================
 // NEON: per output pixel, bilinear across the ch<=4 channel lanes of one q-reg.
 // ===========================================================================
+/// The four bilinear taps of one output pixel when none of them is clamped or
+/// off-image: the two x-taps are then adjacent pixels, so each row pair is one
+/// unaligned 128-bit load instead of `2*ch` scalar loads and lane inserts, and
+/// the weights arrive as lanes of one vector so the multiplies need no
+/// general-register broadcast (an A53 stalls on those).
+///
+/// Multiply/add order is `w00*p00 + w01*p01 + w10*p10 + w11*p11`, non-fused,
+/// matching the scalar reference bit for bit.
+///
+/// # Safety
+/// `o00`/`o10` must admit a 4-element read at `o + ch`, and `base` a 4-element
+/// write.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn tap4_neon(
+    src: &[f32],
+    out: &mut [f32],
+    o00: usize,
+    o10: usize,
+    ch: usize,
+    base: usize,
+    axv: std::arch::aarch64::float32x4_t,
+    ayv: std::arch::aarch64::float32x4_t,
+) {
+    use std::arch::aarch64::*;
+    let sp = src.as_ptr();
+    let wv = vmulq_f32(axv, ayv);
+    let p00 = vld1q_f32(sp.add(o00));
+    let p01 = vld1q_f32(sp.add(o00 + ch));
+    let p10 = vld1q_f32(sp.add(o10));
+    let p11 = vld1q_f32(sp.add(o10 + ch));
+    let mut acc = vmulq_laneq_f32(p00, wv, 0);
+    acc = vaddq_f32(acc, vmulq_laneq_f32(p01, wv, 1));
+    acc = vaddq_f32(acc, vmulq_laneq_f32(p10, wv, 2));
+    acc = vaddq_f32(acc, vmulq_laneq_f32(p11, wv, 3));
+    // Lanes past `ch` belong to the next output pixel and are rewritten when it
+    // is stored; the tail slack in `out` covers the last one.
+    vst1q_f32(out.as_mut_ptr().add(base), acc);
+}
+
+/// `[1-a, a, 1-a, a]`, the x half of the tap weights.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn frac_x_neon(a: f32) -> std::arch::aarch64::float32x4_t {
+    use std::arch::aarch64::*;
+    let d = vdupq_n_f32(a);
+    vzip1q_f32(vsubq_f32(vdupq_n_f32(1.0), d), d)
+}
+
+/// `[1-a, 1-a, a, a]`, the y half of the tap weights.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn frac_y_neon(a: f32) -> std::arch::aarch64::float32x4_t {
+    use std::arch::aarch64::*;
+    let d = vdupq_n_f32(a);
+    vcombine_f32(
+        vget_low_f32(vsubq_f32(vdupq_n_f32(1.0), d)),
+        vget_low_f32(d),
+    )
+}
+
+/// The four taps of four consecutive output pixels, when the whole group is
+/// clear of the image edges. Returns false if it is not, leaving the pixels to
+/// the caller's edge path.
+///
+/// Four at a time because the per-pixel `int -> float -> floor -> int` address
+/// chain is ~30 cycles of latency on an A53 and a one-pixel loop has nothing to
+/// overlap it with; here the four tap chains are independent.
+///
+/// # Safety
+/// Caller must be on a NEON target, and `out` must have four elements of slack.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
+unsafe fn group4_neon(
+    src: &[f32],
+    out: &mut [f32],
+    i: usize,
+    ox: f32,
+    sx: f32,
+    ch: usize,
+    w: usize,
+    wi: isize,
+    y0: usize,
+    y1: usize,
+    base: usize,
+    ayv: std::arch::aarch64::float32x4_t,
+) -> bool {
+    use std::arch::aarch64::*;
+    let ramp = vld1q_s32([0i32, 1, 2, 3].as_ptr());
+    let fi = vcvtq_f32_s32(vaddq_s32(vdupq_n_s32(i as i32), ramp));
+    let half = vdupq_n_f32(0.5);
+    // Same operation order as the scalar path, so the fractions are the same bits.
+    let fx = vsubq_f32(
+        vaddq_f32(vdupq_n_f32(ox), vmulq_n_f32(vaddq_f32(fi, half), sx)),
+        half,
+    );
+    let fl = vrndmq_f32(fx);
+    let mut ax = [0f32; 4];
+    let mut ix = [0i32; 4];
+    vst1q_f32(ax.as_mut_ptr(), vsubq_f32(fx, fl));
+    vst1q_s32(ix.as_mut_ptr(), vcvtq_s32_f32(fl));
+    // sx > 0, so the group is ordered: the ends bound it.
+    if (ix[0] as isize) < 0 || (ix[3] as isize) + 1 >= wi {
+        return false;
+    }
+    if (y1 * w + ix[3] as usize) * ch + ch + 4 > src.len() {
+        return false;
+    }
+    for k in 0..4 {
+        let x = ix[k] as usize;
+        tap4_neon(
+            src,
+            out,
+            (y0 * w + x) * ch,
+            (y1 * w + x) * ch,
+            ch,
+            base + k * ch,
+            frac_x_neon(ax[k]),
+            ayv,
+        );
+    }
+    true
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -278,19 +406,34 @@ unsafe fn crop_resize_neon(
     let sx = win_w as f32 / tpl_w as f32;
     let sy = win_h as f32 / tpl_h as f32;
     let (wi, hi) = (w as isize, h as isize);
-    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+    let n = tpl_h * tpl_w * ch;
+    // Slack for the 4-lane store of the last pixel; see `tap4_neon`.
+    let mut out = vec![0f32; n + 4];
     for j in 0..tpl_h {
         let fy = oy + (j as f32 + 0.5) * sy - 0.5;
         let y0f = fy.floor();
         let ay = fy - y0f;
-        let y0 = (y0f as isize).clamp(0, hi - 1) as usize;
-        let y1 = (y0f as isize + 1).clamp(0, hi - 1) as usize;
-        for i in 0..tpl_w {
+        let iy0 = y0f as isize;
+        let y0 = iy0.clamp(0, hi - 1) as usize;
+        let y1 = (iy0 + 1).clamp(0, hi - 1) as usize;
+        let rows_free = iy0 >= 0 && iy0 + 1 < hi;
+        let ayv = frac_y_neon(ay);
+        let mut i = 0;
+        while i < tpl_w {
+            let at = (j * tpl_w + i) * ch;
+            if rows_free
+                && i + 4 <= tpl_w
+                && group4_neon(src, &mut out, i, ox, sx, ch, w, wi, y0, y1, at, ayv)
+            {
+                i += 4;
+                continue;
+            }
             let fx = ox + (i as f32 + 0.5) * sx - 0.5;
             let x0f = fx.floor();
             let ax = fx - x0f;
-            let x0 = (x0f as isize).clamp(0, wi - 1) as usize;
-            let x1 = (x0f as isize + 1).clamp(0, wi - 1) as usize;
+            let ix0 = x0f as isize;
+            let x0 = ix0.clamp(0, wi - 1) as usize;
+            let x1 = (ix0 + 1).clamp(0, wi - 1) as usize;
             let (w00, w01) = ((1.0 - ax) * (1.0 - ay), ax * (1.0 - ay));
             let (w10, w11) = ((1.0 - ax) * ay, ax * ay);
             let p00 = loadn(src, (y0 * w + x0) * ch, ch);
@@ -312,8 +455,10 @@ unsafe fn crop_resize_neon(
             if ch > 3 {
                 *out.get_unchecked_mut(base + 3) = vgetq_lane_f32(acc, 3);
             }
+            i += 1;
         }
     }
+    out.truncate(n);
     out
 }
 
@@ -732,7 +877,9 @@ unsafe fn crop_resize_border_neon(
     let sy = win_h as f32 / tpl_h as f32;
     let (wi, hi) = (w as isize, h as isize);
     let bv = loadn(border, 0, ch);
-    let mut out = vec![0f32; tpl_h * tpl_w * ch];
+    let n = tpl_h * tpl_w * ch;
+    // Slack for the 4-lane store of the last pixel; see `tap4_neon`.
+    let mut out = vec![0f32; n + 4];
     for j in 0..tpl_h {
         let fy = oy + (j as f32 + 0.5) * sy - 0.5;
         let y0f = fy.floor();
@@ -741,7 +888,18 @@ unsafe fn crop_resize_border_neon(
         let (y0ib, y1ib) = ((0..hi).contains(&iy0), (0..hi).contains(&(iy0 + 1)));
         let y0 = iy0.clamp(0, hi - 1) as usize;
         let y1 = (iy0 + 1).clamp(0, hi - 1) as usize;
-        for i in 0..tpl_w {
+        let rows_free = y0ib && y1ib;
+        let ayv = frac_y_neon(ay);
+        let mut i = 0;
+        while i < tpl_w {
+            let at = (j * tpl_w + i) * ch;
+            if rows_free
+                && i + 4 <= tpl_w
+                && group4_neon(src, &mut out, i, ox, sx, ch, w, wi, y0, y1, at, ayv)
+            {
+                i += 4;
+                continue;
+            }
             let fx = ox + (i as f32 + 0.5) * sx - 0.5;
             let x0f = fx.floor();
             let ax = fx - x0f;
@@ -771,8 +929,10 @@ unsafe fn crop_resize_border_neon(
             if ch > 3 {
                 *out.get_unchecked_mut(base + 3) = vgetq_lane_f32(acc, 3);
             }
+            i += 1;
         }
     }
+    out.truncate(n);
     out
 }
 
