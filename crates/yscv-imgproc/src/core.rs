@@ -125,8 +125,12 @@ pub use ops::crop_resize_bilinear;
 pub use ops::crop_resize_bilinear_border;
 /// Fused crop + bilinear resize with a constant border on a raw HWC f32 slice.
 pub use ops::crop_resize_bilinear_border_raw;
+/// [`crop_resize_bilinear_border_raw`] over a raw HWC u8 slice (camera buffer).
+pub use ops::crop_resize_bilinear_border_raw_u8;
 /// Fused crop + bilinear resize on a raw HWC f32 slice (zero-copy source).
 pub use ops::crop_resize_bilinear_raw;
+/// [`crop_resize_bilinear_raw`] over a raw HWC u8 slice (camera buffer).
+pub use ops::crop_resize_bilinear_raw_u8;
 /// Dense optical flow (Farneback method). Input: two consecutive `[H, W]` grayscale frames.
 pub use ops::dense_optical_flow;
 /// Detect ORB features (keypoints + descriptors). Input: `[H, W]` grayscale f32.

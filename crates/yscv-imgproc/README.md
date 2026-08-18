@@ -1,6 +1,6 @@
 # yscv-imgproc
 
-175 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images.
+177 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images.
 
 ```rust,ignore
 use yscv_imgproc::*;

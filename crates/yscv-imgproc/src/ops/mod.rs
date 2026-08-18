@@ -78,7 +78,7 @@ pub use contours::{
 };
 pub use crop_resize::{
     crop_resize_bilinear, crop_resize_bilinear_border, crop_resize_bilinear_border_raw,
-    crop_resize_bilinear_raw,
+    crop_resize_bilinear_border_raw_u8, crop_resize_bilinear_raw, crop_resize_bilinear_raw_u8,
 };
 pub use draw::{
     Detection as DrawDetection, draw_circle, draw_detections, draw_line, draw_polylines, draw_rect,

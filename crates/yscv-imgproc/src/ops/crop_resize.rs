@@ -18,6 +18,54 @@ use super::super::ImgProcError;
 use super::super::shape::hwc_shape;
 use yscv_tensor::Tensor;
 
+/// Pixel storage a crop can sample from. `u8` is the format a camera and a JPEG
+/// decoder hand over; widening it is exact, so sampling the same image as `u8`
+/// or as `f32` gives bit-identical output and the tracker does not have to
+/// expand a whole frame it reads a couple of per cent of.
+pub(crate) trait CropPixel: Copy {
+    fn to_f32(self) -> f32;
+
+    /// Four consecutive channel values starting at `p`, widened to f32.
+    ///
+    /// # Safety
+    /// `p` must admit a four-element read.
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn load4(p: *const Self) -> std::arch::aarch64::float32x4_t;
+}
+
+impl CropPixel for f32 {
+    #[inline(always)]
+    fn to_f32(self) -> f32 {
+        self
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn load4(p: *const Self) -> std::arch::aarch64::float32x4_t {
+        std::arch::aarch64::vld1q_f32(p)
+    }
+}
+
+impl CropPixel for u8 {
+    #[inline(always)]
+    fn to_f32(self) -> f32 {
+        self as f32
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn load4(p: *const Self) -> std::arch::aarch64::float32x4_t {
+        use std::arch::aarch64::*;
+        // One unaligned 4-byte read: the four values are adjacent channels, and
+        // a wider NEON load would need bounds the callers do not guarantee.
+        let w = (p as *const u32).read_unaligned();
+        let b = vreinterpret_u8_u32(vdup_n_u32(w));
+        vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(b))))
+    }
+}
+
 /// Fused crop + bilinear resize on a raw HWC f32 buffer (zero-copy: the caller's
 /// frame is borrowed, never wrapped/copied). Returns the `tpl_h*tpl_w*ch`
 /// template, row-major. `cx,cy` and the window are in source pixel coordinates.
@@ -57,6 +105,71 @@ pub fn crop_resize_bilinear_raw(
         }
     }
     crop_resize_scalar(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h)
+}
+
+/// [`crop_resize_bilinear_raw`] sampling an HWC **u8** frame — a camera buffer
+/// or a decoded JPEG — straight into an f32 template, so a tracker that reads a
+/// few per cent of each frame never has to expand the whole thing. Output is
+/// bit-identical to widening the frame first and calling
+/// [`crop_resize_bilinear_raw`].
+///
+/// The gather-based AVX2/AVX512 paths are f32-only; u8 takes SSE4.1 on x86.
+pub fn crop_resize_bilinear_raw_u8(
+    src: &[u8],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+) -> Vec<f32> {
+    #[cfg(target_arch = "aarch64")]
+    if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
+        // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
+        return unsafe { crop_resize_neon(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.sse41 {
+        // SAFETY: guarded by runtime SSE4.1 detection; bit-exact vs scalar.
+        return unsafe { crop_resize_sse(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
+    }
+    crop_resize_scalar(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h)
+}
+
+/// [`crop_resize_bilinear_border_raw`] sampling an HWC **u8** frame. See
+/// [`crop_resize_bilinear_raw_u8`].
+#[allow(clippy::too_many_arguments)]
+pub fn crop_resize_bilinear_border_raw_u8(
+    src: &[u8],
+    h: usize,
+    w: usize,
+    ch: usize,
+    cx: f32,
+    cy: f32,
+    win_w: usize,
+    win_h: usize,
+    tpl_w: usize,
+    tpl_h: usize,
+    border: &[f32],
+) -> Vec<f32> {
+    #[cfg(target_arch = "aarch64")]
+    if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
+        // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
+        return unsafe {
+            crop_resize_border_neon(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
+        };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.sse41 {
+        // SAFETY: guarded by runtime SSE4.1 detection; bit-exact vs scalar.
+        return unsafe {
+            crop_resize_border_sse(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
+        };
+    }
+    crop_resize_border_scalar(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h, border)
 }
 
 /// Tensor wrapper around [`crop_resize_bilinear_raw`]. `input` is HWC f32; the
@@ -190,8 +303,8 @@ fn map_origin(cx: f32, cy: f32, win_w: usize, win_h: usize) -> (f32, f32) {
 // ===========================================================================
 // Scalar reference
 // ===========================================================================
-fn crop_resize_scalar(
-    src: &[f32],
+fn crop_resize_scalar<T: CropPixel>(
+    src: &[T],
     h: usize,
     w: usize,
     ch: usize,
@@ -227,10 +340,10 @@ fn crop_resize_scalar(
             let o11 = (y1 * w + x1) * ch;
             let base = (j * tpl_w + i) * ch;
             for c in 0..ch {
-                out[base + c] = w00 * src[o00 + c]
-                    + w01 * src[o01 + c]
-                    + w10 * src[o10 + c]
-                    + w11 * src[o11 + c];
+                out[base + c] = w00 * src[o00 + c].to_f32()
+                    + w01 * src[o01 + c].to_f32()
+                    + w10 * src[o10 + c].to_f32()
+                    + w11 * src[o11 + c].to_f32();
             }
         }
     }
@@ -255,8 +368,8 @@ fn crop_resize_scalar(
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn tap4_neon(
-    src: &[f32],
+unsafe fn tap4_neon<T: CropPixel>(
+    src: &[T],
     out: &mut [f32],
     o00: usize,
     o10: usize,
@@ -268,10 +381,10 @@ unsafe fn tap4_neon(
     use std::arch::aarch64::*;
     let sp = src.as_ptr();
     let wv = vmulq_f32(axv, ayv);
-    let p00 = vld1q_f32(sp.add(o00));
-    let p01 = vld1q_f32(sp.add(o00 + ch));
-    let p10 = vld1q_f32(sp.add(o10));
-    let p11 = vld1q_f32(sp.add(o10 + ch));
+    let p00 = T::load4(sp.add(o00));
+    let p01 = T::load4(sp.add(o00 + ch));
+    let p10 = T::load4(sp.add(o10));
+    let p11 = T::load4(sp.add(o10 + ch));
     let mut acc = vmulq_laneq_f32(p00, wv, 0);
     acc = vaddq_f32(acc, vmulq_laneq_f32(p01, wv, 1));
     acc = vaddq_f32(acc, vmulq_laneq_f32(p10, wv, 2));
@@ -317,8 +430,8 @@ unsafe fn frac_y_neon(a: f32) -> std::arch::aarch64::float32x4_t {
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
-unsafe fn group4_neon(
-    src: &[f32],
+unsafe fn group4_neon<T: CropPixel>(
+    src: &[T],
     out: &mut [f32],
     i: usize,
     ox: f32,
@@ -371,8 +484,8 @@ unsafe fn group4_neon(
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn crop_resize_neon(
-    src: &[f32],
+unsafe fn crop_resize_neon<T: CropPixel>(
+    src: &[T],
     h: usize,
     w: usize,
     ch: usize,
@@ -387,17 +500,17 @@ unsafe fn crop_resize_neon(
 
     // load ch (<=4) contiguous floats at element offset `o` into lanes [0,ch)
     #[inline(always)]
-    unsafe fn loadn(src: &[f32], o: usize, ch: usize) -> float32x4_t {
+    unsafe fn loadn<S: CropPixel>(src: &[S], o: usize, ch: usize) -> float32x4_t {
         let mut v = vdupq_n_f32(0.0);
-        v = vsetq_lane_f32(*src.get_unchecked(o), v, 0);
+        v = vsetq_lane_f32(src.get_unchecked(o).to_f32(), v, 0);
         if ch > 1 {
-            v = vsetq_lane_f32(*src.get_unchecked(o + 1), v, 1);
+            v = vsetq_lane_f32(src.get_unchecked(o + 1).to_f32(), v, 1);
         }
         if ch > 2 {
-            v = vsetq_lane_f32(*src.get_unchecked(o + 2), v, 2);
+            v = vsetq_lane_f32(src.get_unchecked(o + 2).to_f32(), v, 2);
         }
         if ch > 3 {
-            v = vsetq_lane_f32(*src.get_unchecked(o + 3), v, 3);
+            v = vsetq_lane_f32(src.get_unchecked(o + 3).to_f32(), v, 3);
         }
         v
     }
@@ -594,8 +707,8 @@ unsafe fn crop_resize_avx2(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn crop_resize_sse(
-    src: &[f32],
+unsafe fn crop_resize_sse<T: CropPixel>(
+    src: &[T],
     h: usize,
     w: usize,
     ch: usize,
@@ -608,17 +721,17 @@ unsafe fn crop_resize_sse(
 ) -> Vec<f32> {
     use std::arch::x86_64::*;
     #[inline(always)]
-    unsafe fn loadn(src: &[f32], o: usize, ch: usize) -> __m128 {
+    unsafe fn loadn<S: CropPixel>(src: &[S], o: usize, ch: usize) -> __m128 {
         let mut a = [0f32; 4];
-        a[0] = *src.get_unchecked(o);
+        a[0] = src.get_unchecked(o).to_f32();
         if ch > 1 {
-            a[1] = *src.get_unchecked(o + 1);
+            a[1] = src.get_unchecked(o + 1).to_f32();
         }
         if ch > 2 {
-            a[2] = *src.get_unchecked(o + 2);
+            a[2] = src.get_unchecked(o + 2).to_f32();
         }
         if ch > 3 {
-            a[3] = *src.get_unchecked(o + 3);
+            a[3] = src.get_unchecked(o + 3).to_f32();
         }
         _mm_loadu_ps(a.as_ptr())
     }
@@ -783,8 +896,8 @@ unsafe fn crop_resize_avx512(
 // ===========================================================================
 
 #[allow(clippy::too_many_arguments)]
-fn crop_resize_border_scalar(
-    src: &[f32],
+fn crop_resize_border_scalar<T: CropPixel>(
+    src: &[T],
     h: usize,
     w: usize,
     ch: usize,
@@ -827,10 +940,26 @@ fn crop_resize_border_scalar(
             let (m10, m11) = (x0ib && y1ib, x1ib && y1ib);
             let base = (j * tpl_w + i) * ch;
             for c in 0..ch {
-                let p00 = if m00 { src[o00 + c] } else { border[c] };
-                let p01 = if m01 { src[o01 + c] } else { border[c] };
-                let p10 = if m10 { src[o10 + c] } else { border[c] };
-                let p11 = if m11 { src[o11 + c] } else { border[c] };
+                let p00 = if m00 {
+                    src[o00 + c].to_f32()
+                } else {
+                    border[c]
+                };
+                let p01 = if m01 {
+                    src[o01 + c].to_f32()
+                } else {
+                    border[c]
+                };
+                let p10 = if m10 {
+                    src[o10 + c].to_f32()
+                } else {
+                    border[c]
+                };
+                let p11 = if m11 {
+                    src[o11 + c].to_f32()
+                } else {
+                    border[c]
+                };
                 out[base + c] = w00 * p00 + w01 * p01 + w10 * p10 + w11 * p11;
             }
         }
@@ -841,8 +970,8 @@ fn crop_resize_border_scalar(
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
-unsafe fn crop_resize_border_neon(
-    src: &[f32],
+unsafe fn crop_resize_border_neon<T: CropPixel>(
+    src: &[T],
     h: usize,
     w: usize,
     ch: usize,
@@ -857,17 +986,17 @@ unsafe fn crop_resize_border_neon(
     use std::arch::aarch64::*;
 
     #[inline(always)]
-    unsafe fn loadn(src: &[f32], o: usize, ch: usize) -> float32x4_t {
+    unsafe fn loadn<S: CropPixel>(src: &[S], o: usize, ch: usize) -> float32x4_t {
         let mut v = vdupq_n_f32(0.0);
-        v = vsetq_lane_f32(*src.get_unchecked(o), v, 0);
+        v = vsetq_lane_f32(src.get_unchecked(o).to_f32(), v, 0);
         if ch > 1 {
-            v = vsetq_lane_f32(*src.get_unchecked(o + 1), v, 1);
+            v = vsetq_lane_f32(src.get_unchecked(o + 1).to_f32(), v, 1);
         }
         if ch > 2 {
-            v = vsetq_lane_f32(*src.get_unchecked(o + 2), v, 2);
+            v = vsetq_lane_f32(src.get_unchecked(o + 2).to_f32(), v, 2);
         }
         if ch > 3 {
-            v = vsetq_lane_f32(*src.get_unchecked(o + 3), v, 3);
+            v = vsetq_lane_f32(src.get_unchecked(o + 3).to_f32(), v, 3);
         }
         v
     }
@@ -939,8 +1068,8 @@ unsafe fn crop_resize_border_neon(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 #[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
-unsafe fn crop_resize_border_sse(
-    src: &[f32],
+unsafe fn crop_resize_border_sse<T: CropPixel>(
+    src: &[T],
     h: usize,
     w: usize,
     ch: usize,
@@ -954,17 +1083,17 @@ unsafe fn crop_resize_border_sse(
 ) -> Vec<f32> {
     use std::arch::x86_64::*;
     #[inline(always)]
-    unsafe fn loadn(src: &[f32], o: usize, ch: usize) -> __m128 {
+    unsafe fn loadn<S: CropPixel>(src: &[S], o: usize, ch: usize) -> __m128 {
         let mut a = [0f32; 4];
-        a[0] = *src.get_unchecked(o);
+        a[0] = src.get_unchecked(o).to_f32();
         if ch > 1 {
-            a[1] = *src.get_unchecked(o + 1);
+            a[1] = src.get_unchecked(o + 1).to_f32();
         }
         if ch > 2 {
-            a[2] = *src.get_unchecked(o + 2);
+            a[2] = src.get_unchecked(o + 2).to_f32();
         }
         if ch > 3 {
-            a[3] = *src.get_unchecked(o + 3);
+            a[3] = src.get_unchecked(o + 3).to_f32();
         }
         _mm_loadu_ps(a.as_ptr())
     }
@@ -1431,6 +1560,56 @@ mod tests {
                         &lbl,
                     );
                 }
+            }
+        }
+    }
+
+    /// Sampling a u8 frame must give exactly what widening it first and
+    /// sampling as f32 gives — that equality is the whole point of the u8
+    /// entry points, since it lets a tracker read a camera buffer directly
+    /// without changing a single output bit. Both variants, and both the
+    /// dispatched path and the scalar one.
+    #[test]
+    fn u8_matches_widened_f32() {
+        let (h, w) = (200usize, 240usize);
+        let cases = [
+            (350usize, 350usize, 160usize, 136usize, 120.0f32, 100.0f32),
+            (55, 47, 23, 19, 623.4, 108.6),
+            (300, 300, 128, 128, 18.0, 12.0), // off the top-left corner
+            (150, 150, 48, 48, 236.0, 196.0), // off the bottom-right corner
+        ];
+        for &ch in &[1usize, 3] {
+            let mut st = 11u32;
+            let src8: Vec<u8> = (0..h * w * ch)
+                .map(|_| {
+                    st = st.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (st >> 24) as u8
+                })
+                .collect();
+            let src32: Vec<f32> = src8.iter().map(|&b| b as f32).collect();
+            let border: Vec<f32> = (0..ch).map(|c| 30.0 + 50.0 * c as f32).collect();
+            for &(ww, wh, tw, th, cx, cy) in &cases {
+                let lbl = format!("ch={ch} win={ww}x{wh} tpl={tw}x{th} c=({cx},{cy})");
+                let want = crop_resize_bilinear_raw(&src32, h, w, ch, cx, cy, ww, wh, tw, th);
+                let got = crop_resize_bilinear_raw_u8(&src8, h, w, ch, cx, cy, ww, wh, tw, th);
+                assert_eq!(want, got, "replicate {lbl}");
+                assert_eq!(
+                    want,
+                    crop_resize_scalar(&src8, h, w, ch, cx, cy, ww, wh, tw, th),
+                    "replicate scalar {lbl}"
+                );
+                let want = crop_resize_bilinear_border_raw(
+                    &src32, h, w, ch, cx, cy, ww, wh, tw, th, &border,
+                );
+                let got = crop_resize_bilinear_border_raw_u8(
+                    &src8, h, w, ch, cx, cy, ww, wh, tw, th, &border,
+                );
+                assert_eq!(want, got, "border {lbl}");
+                assert_eq!(
+                    want,
+                    crop_resize_border_scalar(&src8, h, w, ch, cx, cy, ww, wh, tw, th, &border),
+                    "border scalar {lbl}"
+                );
             }
         }
     }

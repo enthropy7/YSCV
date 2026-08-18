@@ -15,7 +15,7 @@
 ![Tests](https://img.shields.io/badge/tests-2249%20passing-brightgreen.svg)
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
 
-A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (175 ops), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
+A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (177 ops), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
 
 > Project focus. YSCV is built for CPU inference on edge devices — Raspberry Pi, Rockchip / Allwinner SBCs, drone boards, factory PCs, anything ARM Cortex-A or low-power x86. The north star is a **drop-in replacement for ONNX Runtime's CPU execution provider**: load an ONNX model, call run, and a single crate auto-detects the best path for the host — no execution-provider wiring, no backend selection, no build-time target pinning. Hot paths are hand-tuned SIMD (NEON / AVX / SSE / scalar) with rayon multi-thread fork-join, selected at runtime by detected ISA, and — increasingly — by detected **microarchitecture** (see [`docs/microarch-dispatch.md`](docs/microarch-dispatch.md) for the vision and the dispatch roadmap). On a public Siamese tracker we are within ~7% of ORT-CPU single-thread on x86 and faster than ORT on ARM SBCs and Apple M1; **the CPU benchmarks (x86 / ARM / Apple M1) and the M1 GPU path (MPSGraph vs CoreML) are freshly measured on current hardware** (the YOLO / video Metal sections are still pending re-measurement) — see [`docs/performance-benchmarks.md`](docs/performance-benchmarks.md). Other backends — wgpu cross-platform GPU, Apple MPSGraph, Rockchip RKNN NPU, optional BLAS — exist as opt-in features and keep getting wider, but they're not the headline target. PRs are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 >
@@ -135,7 +135,7 @@ The framework is split into 19 crates:
 | `yscv-autograd` | Reverse-mode autodiff with 61 backward op variants |
 | `yscv-optim` | SGD, Adam, AdamW, Adagrad, RAdam, RmsProp, Lamb, Lars + Lookahead, 11 LR schedulers |
 | `yscv-model` | 39 layer types, 17 loss functions, Trainer API, model zoo (17 architectures), LoRA |
-| `yscv-imgproc` | 175 image processing ops (blur, edges, morphology, features, color) |
+| `yscv-imgproc` | 177 image processing ops (blur, edges, morphology, features, color) |
 | `yscv-video` | H.264/HEVC/AV1 decoder (parallel tile/WPP, weighted prediction, AV1 inter MC), hardware decode, camera I/O, MP4 / MKV parsing, audio metadata |
 | `yscv-detect` | YOLOv8/v11 pipeline, NMS, heatmap decoding |
 | `yscv-track` | DeepSORT, ByteTrack, Kalman filter, Hungarian assignment, Re-ID |
