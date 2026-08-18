@@ -766,14 +766,26 @@ pub(crate) fn execute_plan_branch(
                 });
                 // Fast identity path (Relu/none only): same scale + symmetric
                 // zero-points, so the rescale is a no-op relabel.
-                // A finite upper bound cannot be applied by relabelling the
-                // int8 values, so it always takes the rescale kernel.
+                // Same scale and zero-point on both sides: the rescale is a
+                // relabel, and the activation becomes a clamp on the stored
+                // values. That is exact, not an approximation — for an
+                // unclamped value the kernel would compute `round(q*s/s) = q`,
+                // and for a clamped one `round(bound/s)`, so clamping the
+                // stored value at that bound gives the same answer.
                 let identity = hs_params.is_none()
-                    && clamp.1.is_infinite()
-                    && (clamp.0 == 0.0 || clamp.0.is_infinite())
                     && matches!((dq_scale, q_scale), (Some(a), Some(b)) if a.to_bits() == b.to_bits())
-                    && dq_zp == 0.0
-                    && q_zp == 0.0;
+                    && dq_zp == q_zp;
+                let bounds_i8 = |scale: f32| {
+                    let at = |v: f32| {
+                        let q = if v.is_infinite() {
+                            v
+                        } else {
+                            (v / scale).round_ties_even() + q_zp
+                        };
+                        q.clamp(-128.0, 127.0)
+                    };
+                    (at(clamp.0), at(clamp.1))
+                };
                 if let Some(mut qt) = env.take_quant_i8(input_name) {
                     if let (Some((alpha, beta)), Some(sin), Some(sout)) =
                         (hs_params, dq_scale, q_scale)
@@ -794,9 +806,11 @@ pub(crate) fn execute_plan_branch(
                         qt.scale = sout;
                         qt.zero_point = q_zp;
                     } else if identity {
-                        if relu {
+                        if clamp.0.is_finite() || clamp.1.is_finite() {
+                            let (lo, hi) = bounds_i8(qt.scale);
+                            let (lo, hi) = (lo as i8, hi as i8);
                             for v in &mut qt.data {
-                                *v = (*v).max(0);
+                                *v = (*v).clamp(lo, hi);
                             }
                         }
                         qt.scale = q_scale.unwrap_or(qt.scale);
@@ -854,8 +868,11 @@ pub(crate) fn execute_plan_branch(
                         }
                     })?;
                 } else if identity {
-                    if relu {
-                        relu_inplace(&mut tensor);
+                    if clamp.0.is_finite() || clamp.1.is_finite() {
+                        let (lo, hi) = bounds_i8(dq_scale.unwrap_or(1.0));
+                        for v in tensor.data_mut() {
+                            *v = v.clamp(lo, hi);
+                        }
                     }
                 } else if let (Some(sin), Some(sout)) = (dq_scale, q_scale) {
                     let out: Vec<f32> = tensor
