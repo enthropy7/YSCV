@@ -390,7 +390,11 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 // multi-thread pool the blocks run in parallel over disjoint
                 // output rows — the pointwise + stem GEMMs are the backbone's
                 // serial bottleneck, so this is what lets it scale past 1 core.
-                let block = (4096 / c_out.max(1)).max(4).min(m.max(1));
+                // …but a wide conv makes `4096/c_out` 14 rows, and a GEMM call
+                // that short cannot amortize its own setup: on the backbone's
+                // widest convs that costs more than the cache-resident tile
+                // buys back, so keep a row floor.
+                let block = (4096 / c_out.max(1)).max(256).min(m.max(1));
                 // Validate the prepacked weight shape once (temporary borrow).
                 if packed_ok {
                     let p = env.prepacked_i8_b(&node.inputs[3]).unwrap();
@@ -404,7 +408,11 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     }
                 }
 
-                if rayon::current_num_threads() > 1 && m > block {
+                // The row floor can leave fewer blocks than workers, so the
+                // parallel path shrinks it back to one chunk per worker.
+                let threads = rayon::current_num_threads();
+                let block = block.min(m.div_ceil(threads.max(1)).max(1)).max(4);
+                if threads > 1 && m > block {
                     // Parallel: each rayon task owns a disjoint slice of `out`
                     // and a thread-local i32 tile.
                     use rayon::iter::{IndexedParallelIterator, ParallelIterator};
