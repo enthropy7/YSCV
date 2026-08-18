@@ -9,6 +9,7 @@ mod graph_cost;
 mod graph_stats;
 mod remove_dropout_nodes;
 mod reorder_nodes_for_fusion;
+mod retarget_qconv_output_scale;
 mod rewrite_convtranspose_dts;
 mod strip_qdq_within_fusion_chains;
 
@@ -113,6 +114,7 @@ fn pipeline() -> Vec<Box<dyn Pass>> {
 /// and weight prepacking once per pass.
 pub fn optimize_onnx_graph(model: &mut OnnxModel) -> Result<(), OnnxError> {
     run_ir_pipeline(model)?;
+    retarget_qconv_output_scale::run(model);
     model.rebuild_runtime_index();
 
     if std::env::var("YSCV_NCHWC").as_deref() == Ok("on") {
