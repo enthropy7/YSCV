@@ -727,7 +727,24 @@ pub(crate) fn execute_plan_branch(
                         .ok_or_else(|| OnnxError::DecodeFailed {
                             message: format!("{}: missing quantized input", dequant_node.name),
                         })?;
-                let relu = relu_idx.is_some();
+                // The folded activation as real-value bounds: Relu is
+                // `(0, inf)`, a Clip its own min/max, nothing `(-inf, inf)`.
+                let clamp = relu_idx.map_or((f32::NEG_INFINITY, f32::INFINITY), |ri| {
+                    let act = &nodes[ri];
+                    if act.op_type != "Clip" {
+                        return (0.0, f32::INFINITY);
+                    }
+                    let bound = |idx: usize, dflt: f32| {
+                        act.inputs
+                            .get(idx)
+                            .filter(|n| !n.is_empty())
+                            .and_then(|n| env.get(n))
+                            .and_then(|t| t.data().first().copied())
+                            .unwrap_or(dflt)
+                    };
+                    (bound(1, f32::NEG_INFINITY), bound(2, f32::INFINITY))
+                });
+                let relu = clamp == (0.0, f32::INFINITY);
                 // Rescale params: DQ (input) scale/zp and Q (output) scale/zp.
                 let scalar = |node: &OnnxNode, idx: usize| -> Option<f32> {
                     node.inputs
@@ -749,7 +766,11 @@ pub(crate) fn execute_plan_branch(
                 });
                 // Fast identity path (Relu/none only): same scale + symmetric
                 // zero-points, so the rescale is a no-op relabel.
+                // A finite upper bound cannot be applied by relabelling the
+                // int8 values, so it always takes the rescale kernel.
                 let identity = hs_params.is_none()
+                    && clamp.1.is_infinite()
+                    && (clamp.0 == 0.0 || clamp.0.is_infinite())
                     && matches!((dq_scale, q_scale), (Some(a), Some(b)) if a.to_bits() == b.to_bits())
                     && dq_zp == 0.0
                     && q_zp == 0.0;
@@ -789,7 +810,7 @@ pub(crate) fn execute_plan_branch(
                             dq_zp,
                             sout,
                             q_zp,
-                            relu,
+                            clamp,
                             &mut rescaled,
                         );
                         qt.data = rescaled;
@@ -841,10 +862,7 @@ pub(crate) fn execute_plan_branch(
                         .data()
                         .iter()
                         .map(|&v| {
-                            let mut f = (v - dq_zp) * sin;
-                            if relu {
-                                f = f.max(0.0);
-                            }
+                            let f = ((v - dq_zp) * sin).clamp(clamp.0, clamp.1);
                             (f / sout + q_zp).round_ties_even().clamp(-128.0, 127.0)
                         })
                         .collect();

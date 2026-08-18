@@ -628,24 +628,27 @@ unsafe fn requant_i8_per_channel_neon(
 }
 
 // ===========================================================================
-// Fused DequantizeLinear -> [Relu] -> QuantizeLinear across an int8 rescale
-// boundary. Between two int8 convs the graph does i8 -> DQ -> f32 -> Relu ->
-// f32 -> Q -> i8; folding it into one pass keeps the activation in i8 (no
-// intermediate f32 buffer, one pass instead of three). Bit-identical to the
-// sequence: DQ `(v - zp_in) * scale_in`, Relu `max(f, 0)` on the real value,
-// Q `(f / scale_out + zp_out).round_ties_even().clamp(-128,127)`. The `/`
-// (not reciprocal-multiply) and `round_ties_even` match the scalar ops exactly.
+// Fused DequantizeLinear -> [Relu | Clip] -> QuantizeLinear across an int8
+// rescale boundary. Between two int8 convs the graph does i8 -> DQ -> f32 ->
+// act -> f32 -> Q -> i8; folding it into one pass keeps the activation in i8
+// (no intermediate f32 buffer, one pass instead of three). Bit-identical to the
+// sequence: DQ `(v - zp_in) * scale_in`, the activation as `f.clamp(lo, hi)` on
+// the real value (Relu is `(0, inf)`, no activation `(-inf, inf)`), Q
+// `(f / scale_out + zp_out).round_ties_even().clamp(-128,127)`. The `/` (not
+// reciprocal-multiply) and `round_ties_even` match the scalar ops exactly.
 // ===========================================================================
 
-/// Dispatch the fused i8->i8 rescale (`DQ -> [Relu] -> Q`) to the widest host
-/// SIMD path. See module-level notes; `relu` folds a Relu into the boundary.
+/// Dispatch the fused i8->i8 rescale (`DQ -> clamp -> Q`) to the widest host
+/// SIMD path. See module-level notes; `clamp` folds the activation into the
+/// boundary — `(0.0, f32::INFINITY)` for Relu, `(-f32::INFINITY,
+/// f32::INFINITY)` for none, the node's bounds for a Clip.
 pub fn requant_i8_dq_relu_q_dispatch(
     input: &[i8],
     scale_in: f32,
     zp_in: f32,
     scale_out: f32,
     zp_out: f32,
-    relu: bool,
+    clamp: (f32, f32),
     out: &mut [i8],
 ) {
     debug_assert_eq!(input.len(), out.len());
@@ -655,12 +658,12 @@ pub fn requant_i8_dq_relu_q_dispatch(
             // SAFETY: NEON feature-detected at runtime.
             #[allow(unsafe_code)]
             unsafe {
-                requant_i8_dq_relu_q_neon(input, scale_in, zp_in, scale_out, zp_out, relu, out);
+                requant_i8_dq_relu_q_neon(input, scale_in, zp_in, scale_out, zp_out, clamp, out);
             }
             return;
         }
     }
-    requant_i8_dq_relu_q_scalar(input, scale_in, zp_in, scale_out, zp_out, relu, out);
+    requant_i8_dq_relu_q_scalar(input, scale_in, zp_in, scale_out, zp_out, clamp, out);
 }
 
 /// Scalar reference / bitwise oracle.
@@ -671,14 +674,11 @@ pub(crate) fn requant_i8_dq_relu_q_scalar(
     zp_in: f32,
     scale_out: f32,
     zp_out: f32,
-    relu: bool,
+    clamp: (f32, f32),
     out: &mut [i8],
 ) {
     for (o, &q) in out.iter_mut().zip(input) {
-        let mut f = (q as f32 - zp_in) * scale_in;
-        if relu {
-            f = f.max(0.0);
-        }
+        let f = ((q as f32 - zp_in) * scale_in).clamp(clamp.0, clamp.1);
         *o = (f / scale_out + zp_out)
             .round_ties_even()
             .clamp(-128.0, 127.0) as i8;
@@ -694,7 +694,7 @@ unsafe fn requant_i8_dq_relu_q_neon(
     zp_in: f32,
     scale_out: f32,
     zp_out: f32,
-    relu: bool,
+    clamp: (f32, f32),
     out: &mut [i8],
 ) {
     use std::arch::aarch64::*;
@@ -703,7 +703,9 @@ unsafe fn requant_i8_dq_relu_q_neon(
         let v_sin = vdupq_n_f32(scale_in);
         let v_sout = vdupq_n_f32(scale_out);
         let v_zp_out = vdupq_n_f32(zp_out);
-        let zero = vdupq_n_f32(0.0);
+        // Infinities make the unclamped case a no-op without a branch.
+        let act_lo = vdupq_n_f32(clamp.0);
+        let act_hi = vdupq_n_f32(clamp.1);
         let lo = vdupq_n_f32(-128.0);
         let hi = vdupq_n_f32(127.0);
         let n = input.len();
@@ -712,9 +714,9 @@ unsafe fn requant_i8_dq_relu_q_neon(
         while i < main {
             let q8 = vld1_s8(input.as_ptr().add(i));
             let q16 = vmovl_s8(q8);
-            let mut chunk = |f32x4: float32x4_t| -> int16x4_t {
+            let chunk = |f32x4: float32x4_t| -> int16x4_t {
                 let f = vmulq_f32(vsubq_f32(f32x4, v_zp_in), v_sin);
-                let f = if relu { vmaxq_f32(f, zero) } else { f };
+                let f = vminq_f32(vmaxq_f32(f, act_lo), act_hi);
                 let q = vaddq_f32(vdivq_f32(f, v_sout), v_zp_out);
                 let q = vrndnq_f32(q);
                 let q = vminq_f32(vmaxq_f32(q, lo), hi);
@@ -729,10 +731,7 @@ unsafe fn requant_i8_dq_relu_q_neon(
             i += 8;
         }
         while i < n {
-            let mut f = (*input.get_unchecked(i) as f32 - zp_in) * scale_in;
-            if relu {
-                f = f.max(0.0);
-            }
+            let f = ((*input.get_unchecked(i) as f32 - zp_in) * scale_in).clamp(clamp.0, clamp.1);
             *out.get_unchecked_mut(i) = (f / scale_out + zp_out)
                 .round_ties_even()
                 .clamp(-128.0, 127.0) as i8;
@@ -1071,9 +1070,17 @@ mod tests {
     #[test]
     fn dq_relu_q_matches_scalar_and_three_op_sequence() {
         // dispatch (SIMD/scalar) must match the scalar reference AND the
-        // literal DQ->[Relu]->Q composition, across relu on/off, various
-        // scale/zp, and a length with an 8-tail.
-        for &relu in &[false, true] {
+        // literal DQ->[act]->Q composition, across no activation, Relu and the
+        // two-sided Clip the tracker head uses, various scale/zp, and a length
+        // with an 8-tail.
+        let acts = [
+            (f32::NEG_INFINITY, f32::INFINITY),
+            (0.0, f32::INFINITY),
+            (0.0, 6.0),
+            (-1.5, 1.5),
+            (f32::NEG_INFINITY, 2.0),
+        ];
+        for &clamp in &acts {
             for &(sin, zin, sout, zout) in &[
                 (0.021_f32, 0.0_f32, 0.037_f32, 0.0_f32),
                 (0.05, -7.0, 0.011, 12.0),
@@ -1082,21 +1089,18 @@ mod tests {
                 let input: Vec<i8> = (-109..=108).map(|v| v as i8).collect(); // len 218 (tail)
                 let mut got = vec![0i8; input.len()];
                 let mut sc = vec![0i8; input.len()];
-                requant_i8_dq_relu_q_dispatch(&input, sin, zin, sout, zout, relu, &mut got);
-                requant_i8_dq_relu_q_scalar(&input, sin, zin, sout, zout, relu, &mut sc);
-                assert_eq!(got, sc, "dispatch vs scalar relu={relu}");
+                requant_i8_dq_relu_q_dispatch(&input, sin, zin, sout, zout, clamp, &mut got);
+                requant_i8_dq_relu_q_scalar(&input, sin, zin, sout, zout, clamp, &mut sc);
+                assert_eq!(got, sc, "dispatch vs scalar clamp={clamp:?}");
                 // Literal three-op reference.
                 let three: Vec<i8> = input
                     .iter()
                     .map(|&q| {
-                        let mut f = (q as f32 - zin) * sin;
-                        if relu {
-                            f = f.max(0.0);
-                        }
+                        let f = ((q as f32 - zin) * sin).clamp(clamp.0, clamp.1);
                         (f / sout + zout).round_ties_even().clamp(-128.0, 127.0) as i8
                     })
                     .collect();
-                assert_eq!(got, three, "dispatch vs 3-op relu={relu}");
+                assert_eq!(got, three, "dispatch vs 3-op clamp={clamp:?}");
             }
         }
     }

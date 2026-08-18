@@ -698,10 +698,15 @@ pub(crate) fn build_runtime_index(
             {
                 let mut relu_idx = None;
                 let mut quant_idx = sole_consumer(dequant_out);
+                // Clip folds on the same terms as Relu — it is the same
+                // element-wise clamp on the dequantized value, and the head's
+                // are all wrapped in exactly this DQ -> Clip -> Q. Its bounds
+                // arrive as inputs 1/2, so only input 0 has to be the DQ.
                 if let Some(ri) = quant_idx
                     && !plan_skip[ri]
-                    && node_kinds[ri] == NodeKind::Relu
-                    && nodes[ri].inputs.len() == 1
+                    && (node_kinds[ri] == NodeKind::Relu || nodes[ri].op_type == "Clip")
+                    && !nodes[ri].inputs.is_empty()
+                    && (nodes[ri].op_type == "Clip" || nodes[ri].inputs.len() == 1)
                     && nodes[ri].inputs[0] == dequant_out
                     && !outputs.iter().any(|o| o == &nodes[ri].outputs[0])
                 {
