@@ -498,6 +498,7 @@ unsafe fn se_mul_quantize_nhwc_neon(
     use std::arch::aarch64::*;
     unsafe {
         let ys = vdupq_n_f32(y_scale);
+        let yr = vdupq_n_f32(1.0 / y_scale);
         let zp = vdupq_n_f32(y_zp);
         let lo = vdupq_n_f32(-128.0);
         let hi = vdupq_n_f32(127.0);
@@ -512,7 +513,7 @@ unsafe fn se_mul_quantize_nhwc_neon(
             while ch < main {
                 let f = vld1q_f32(frow.as_ptr().add(ch));
                 let gg = vld1q_f32(g.as_ptr().add(ch));
-                let v = vaddq_f32(vdivq_f32(vmulq_f32(f, gg), ys), zp);
+                let v = vaddq_f32(super::div_invariant_neon(vmulq_f32(f, gg), ys, yr), zp);
                 let r = vrndnq_f32(v);
                 let clamped = vminq_f32(vmaxq_f32(r, lo), hi);
                 let i32s = vcvtq_s32_f32(clamped);
@@ -702,6 +703,7 @@ unsafe fn requant_i8_dq_relu_q_neon(
         let v_zp_in = vdupq_n_f32(zp_in);
         let v_sin = vdupq_n_f32(scale_in);
         let v_sout = vdupq_n_f32(scale_out);
+        let v_rout = vdupq_n_f32(1.0 / scale_out);
         let v_zp_out = vdupq_n_f32(zp_out);
         // Infinities make the unclamped case a no-op without a branch.
         let act_lo = vdupq_n_f32(clamp.0);
@@ -717,7 +719,7 @@ unsafe fn requant_i8_dq_relu_q_neon(
             let chunk = |f32x4: float32x4_t| -> int16x4_t {
                 let f = vmulq_f32(vsubq_f32(f32x4, v_zp_in), v_sin);
                 let f = vminq_f32(vmaxq_f32(f, act_lo), act_hi);
-                let q = vaddq_f32(vdivq_f32(f, v_sout), v_zp_out);
+                let q = vaddq_f32(super::div_invariant_neon(f, v_sout, v_rout), v_zp_out);
                 let q = vrndnq_f32(q);
                 let q = vminq_f32(vmaxq_f32(q, lo), hi);
                 vqmovn_s32(vcvtq_s32_f32(q))
@@ -820,6 +822,7 @@ unsafe fn requant_i8_dq_hardswish_q_neon(
         let v_sin = vdupq_n_f32(scale_in);
         let v_sout = vdupq_n_f32(scale_out);
         let v_zp_out = vdupq_n_f32(zp_out);
+        let v_rout = vdupq_n_f32(1.0 / scale_out);
         let v_alpha = vdupq_n_f32(alpha);
         let v_beta = vdupq_n_f32(beta);
         let zero = vdupq_n_f32(0.0);
@@ -838,7 +841,7 @@ unsafe fn requant_i8_dq_hardswish_q_neon(
                     one,
                 );
                 let m = vmulq_f32(f, hs);
-                let q = vaddq_f32(vdivq_f32(m, v_sout), v_zp_out);
+                let q = vaddq_f32(super::div_invariant_neon(m, v_sout, v_rout), v_zp_out);
                 let q = vminq_f32(vmaxq_f32(vrndnq_f32(q), lo), hi);
                 vqmovn_s32(vcvtq_s32_f32(q))
             };
@@ -935,6 +938,7 @@ unsafe fn hardswish_quantize_f32_to_i8_neon(
         let zero = vdupq_n_f32(0.0);
         let one = vdupq_n_f32(1.0);
         let vscale = vdupq_n_f32(y_scale);
+        let vrecip = vdupq_n_f32(1.0 / y_scale);
         let vzp = vdupq_n_f32(y_zp);
         let n = x.len();
         let xp = x.as_ptr();
@@ -945,8 +949,11 @@ unsafe fn hardswish_quantize_f32_to_i8_neon(
             let v = vld1q_f32(xp.add(i));
             // hs = clamp(alpha*v + beta, 0, 1); mul+add kept separate (not FMA).
             let hs = vminq_f32(vmaxq_f32(vaddq_f32(vmulq_f32(v, va), vb), zero), one);
-            // (v*hs)/y_scale + y_zp, real divide, then round-ties-even (FCVTNS).
-            let q = vaddq_f32(vdivq_f32(vmulq_f32(v, hs), vscale), vzp);
+            // (v*hs)/y_scale + y_zp, correctly-rounded divide, then FCVTNS.
+            let q = vaddq_f32(
+                super::div_invariant_neon(vmulq_f32(v, hs), vscale, vrecip),
+                vzp,
+            );
             vcvtnq_s32_f32(q)
         };
         while i + 16 <= n {
@@ -1080,12 +1087,29 @@ mod tests {
             (-1.5, 1.5),
             (f32::NEG_INFINITY, 2.0),
         ];
+        // The kernel's whole input domain is the 256 i8 values, so sweeping
+        // scales over all of them is very nearly exhaustive — which is what the
+        // reciprocal-multiply divide needs to be held to.
+        let mut st = 12345u32;
+        let mut rnd = || {
+            st = st.wrapping_mul(1664525).wrapping_add(1013904223);
+            (st >> 8) as f32 / 16_777_216.0
+        };
+        let mut combos = vec![
+            (0.021_f32, 0.0_f32, 0.037_f32, 0.0_f32),
+            (0.05, -7.0, 0.011, 12.0),
+            (0.003, 5.0, 0.05, -20.0),
+        ];
+        for _ in 0..64 {
+            combos.push((
+                0.0001 + rnd() * 0.2,
+                (rnd() * 60.0 - 30.0).round(),
+                0.0001 + rnd() * 0.2,
+                (rnd() * 60.0 - 30.0).round(),
+            ));
+        }
         for &clamp in &acts {
-            for &(sin, zin, sout, zout) in &[
-                (0.021_f32, 0.0_f32, 0.037_f32, 0.0_f32),
-                (0.05, -7.0, 0.011, 12.0),
-                (0.003, 5.0, 0.05, -20.0),
-            ] {
+            for &(sin, zin, sout, zout) in &combos {
                 let input: Vec<i8> = (-109..=108).map(|v| v as i8).collect(); // len 218 (tail)
                 let mut got = vec![0i8; input.len()];
                 let mut sc = vec![0i8; input.len()];

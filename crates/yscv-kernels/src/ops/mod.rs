@@ -1,3 +1,25 @@
+/// `x / d` where `d` is the same for the whole pass, without the divide: an
+/// A53's `FDIV.4S` is ~29 cycles and does not pipeline, so on a per-element
+/// quantize it costs more than the arithmetic it serves. `r` is `fl(1/d)`;
+/// one FMA refinement makes the result the correctly-rounded quotient, i.e.
+/// bit-identical to `vdivq_f32`, which the quantize paths depend on.
+///
+/// # Safety
+/// Caller must be on a NEON target; `d` must be finite and non-zero.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn div_invariant_neon(
+    x: std::arch::aarch64::float32x4_t,
+    d: std::arch::aarch64::float32x4_t,
+    r: std::arch::aarch64::float32x4_t,
+) -> std::arch::aarch64::float32x4_t {
+    use std::arch::aarch64::*;
+    let q = vmulq_f32(x, r);
+    let e = vfmsq_f32(x, d, q);
+    vfmaq_f32(q, e, r)
+}
+
 pub(crate) mod attention;
 #[cfg(all(target_os = "macos", yscv_blas))]
 pub mod bnns_conv;
