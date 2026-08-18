@@ -468,30 +468,25 @@ unsafe fn quantize_linear_f32_to_i8_neon(
     unsafe {
         let scale_v = vdupq_n_f32(scale);
         let zp = vdupq_n_f32(zero_point);
-        let lo = vdupq_n_f32(-128.0);
-        let hi = vdupq_n_f32(127.0);
-        let mut tmp = [0.0_f32; 4];
-
-        let chunks = data.len() / 4;
+        // FCVTNS rounds half to even, matching the scalar reference's
+        // `round_ties_even`; the saturating narrows then do the clamp, so
+        // neither an explicit min/max nor a round back through f32 is needed.
+        let q = |p: *const f32| vcvtnq_s32_f32(vaddq_f32(vdivq_f32(vld1q_f32(p), scale_v), zp));
+        let src = data.as_ptr();
+        let dst = output.as_mut_ptr();
+        let chunks = data.len() / 16;
         for i in 0..chunks {
-            let off = i * 4;
-            let x = vaddq_f32(vdivq_f32(vld1q_f32(data.as_ptr().add(off)), scale_v), zp);
-            // Round half to even (IEEE default) to match ONNX / ORT.
-            let rounded = vrndnq_f32(x);
-            let clamped = vminq_f32(vmaxq_f32(rounded, lo), hi);
-            vst1q_f32(tmp.as_mut_ptr(), clamped);
-            for j in 0..4 {
-                output[off + j] = tmp[j] as i8;
-            }
+            let off = i * 16;
+            let a = vcombine_s16(vqmovn_s32(q(src.add(off))), vqmovn_s32(q(src.add(off + 4))));
+            let b = vcombine_s16(
+                vqmovn_s32(q(src.add(off + 8))),
+                vqmovn_s32(q(src.add(off + 12))),
+            );
+            vst1q_s8(dst.add(off), vcombine_s8(vqmovn_s16(a), vqmovn_s16(b)));
         }
     }
-    let chunks = data.len() / 4;
-    quantize_linear_f32_to_i8_scalar(
-        &data[chunks * 4..],
-        scale,
-        zero_point,
-        &mut output[chunks * 4..],
-    );
+    let chunks = (data.len() / 16) * 16;
+    quantize_linear_f32_to_i8_scalar(&data[chunks..], scale, zero_point, &mut output[chunks..]);
 }
 
 // ---------------------------------------------------------------------------

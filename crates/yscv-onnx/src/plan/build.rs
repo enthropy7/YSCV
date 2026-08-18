@@ -1235,6 +1235,41 @@ pub(crate) fn build_runtime_index(
         reshape_nhwc_passthrough_safe.insert(t_in.clone());
     }
 
+    // A QuantizeLinear read only as QLinearConv activations can store int8
+    // instead of int8 values encoded in f32: the conv takes the QuantTensor as
+    // it is, so both the 4x-wider staging buffer and the conv's own cast back
+    // to i8 disappear. One consumer that expects the f32 encoding disqualifies
+    // the edge — including a conv absorbed into a fused chain, whose kernel
+    // reads the activation as a plain tensor.
+    let mut quantize_direct_i8: FxHashSet<String> = FxHashSet::default();
+    for node in nodes {
+        if node.op_type != "QuantizeLinear" {
+            continue;
+        }
+        let Some(out) = node.outputs.first() else {
+            continue;
+        };
+        if out.is_empty() || model_outputs.contains(out.as_str()) {
+            continue;
+        }
+        let mut consumers = 0usize;
+        let mut all_take_i8 = true;
+        for (ci, c) in nodes.iter().enumerate() {
+            for (idx, inp) in c.inputs.iter().enumerate() {
+                if inp != out {
+                    continue;
+                }
+                consumers += 1;
+                all_take_i8 &= c.op_type == "QLinearConv"
+                    && idx == 0
+                    && matches!(execution_plan.get(ci), Some(NodeAction::Generic { .. }));
+            }
+        }
+        if consumers > 0 && all_take_i8 {
+            quantize_direct_i8.insert(out.clone());
+        }
+    }
+
     // Load-time weight pre-packing. For every pointwise Conv (KH=KW=1,
     // group=1) whose weight is already laid out KHWC, pre-pack the B-matrix
     // in blocked-GEMM format and cache it by weight-tensor name. The execution
@@ -1899,6 +1934,7 @@ pub(crate) fn build_runtime_index(
         prepacked_i8_depthwise,
         prepacked_fused_pw_dw_pw_reduce,
         reshape_nhwc_passthrough_safe,
+        quantize_direct_i8,
         nchwc_handoff,
         conv_kernels,
     }

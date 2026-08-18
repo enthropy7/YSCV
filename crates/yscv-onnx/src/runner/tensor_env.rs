@@ -37,6 +37,9 @@ pub(crate) struct TensorEnv<'m, 'i> {
     prepacked_i8_weights: &'m FxHashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
     /// QLinear depthwise 3x3/5x5 weights packed once as KHWC i8.
     prepacked_i8_depthwise: &'m FxHashMap<String, std::sync::Arc<Vec<i8>>>,
+    /// QuantizeLinear outputs that may be stored as int8 (see the field of the
+    /// same name on the runtime index).
+    quantize_direct_i8: &'m FxHashSet<String>,
     scratch_i8_a: Vec<i8>,
     scratch_i32: Vec<i32>,
     /// Counter for dynamically allocated temporary names that were not in
@@ -121,6 +124,8 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             prepacked_weights: &tables.prepacked_weights,
             prepacked_i8_weights: &tables.prepacked_i8_weights,
             prepacked_i8_depthwise: &tables.prepacked_i8_depthwise,
+            // Const-eval never runs QLinearConv, so the empty set does here too.
+            quantize_direct_i8: &tables.passthrough_safe,
             scratch_i8_a: Vec::new(),
             scratch_i32: Vec::new(),
             initializers: &tables.initializers,
@@ -151,6 +156,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             prepacked_weights: &model.runtime_index.prepacked_weights,
             prepacked_i8_weights: &model.runtime_index.prepacked_i8_weights,
             prepacked_i8_depthwise: &model.runtime_index.prepacked_i8_depthwise,
+            quantize_direct_i8: &model.runtime_index.quantize_direct_i8,
             scratch_i8_a: Vec::new(),
             scratch_i32: Vec::new(),
             initializers: &model.initializers,
@@ -185,6 +191,11 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         self.prepacked_i8_depthwise
             .get(weight_name)
             .map(std::sync::Arc::clone)
+    }
+
+    #[inline]
+    pub(crate) fn quantize_stores_i8(&self, output_name: &str) -> bool {
+        self.quantize_direct_i8.contains(output_name)
     }
 
     #[inline]
@@ -546,6 +557,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             prepacked_weights: self.prepacked_weights,
             prepacked_i8_weights: self.prepacked_i8_weights,
             prepacked_i8_depthwise: self.prepacked_i8_depthwise,
+            quantize_direct_i8: self.quantize_direct_i8,
             scratch_i8_a: Vec::new(),
             scratch_i32: Vec::new(),
             next_dynamic: self.next_dynamic,

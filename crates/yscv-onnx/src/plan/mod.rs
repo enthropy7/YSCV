@@ -88,6 +88,9 @@ pub(crate) struct RuntimeModelIndex {
     /// NHWC-flagged inputs via the non-trans matmul path. Built once at
     /// load time after `FusedTransposeMatMul` detection.
     pub(crate) reshape_nhwc_passthrough_safe: FxHashSet<String>,
+    /// QuantizeLinear output names whose every consumer is a QLinearConv
+    /// activation, so the node can store int8 rather than f32-encoded int8.
+    pub(crate) quantize_direct_i8: FxHashSet<String>,
     /// Per plan position: whether the fused conv action there leaves its output
     /// in blocked NCHWc16 for the next action to consume directly, instead of
     /// converting back to NHWC. See [`layouts::resolve_nchwc_handoff`].

@@ -56,7 +56,7 @@ pub(super) fn exec_quantize_linear(node: &OnnxNode, env: &mut TensorEnv) -> Resu
     if !node
         .outputs
         .first()
-        .map(|name| name.contains("__qlinear_x_q"))
+        .map(|name| name.contains("__qlinear_x_q") || env.quantize_stores_i8(name))
         .unwrap_or(false)
     {
         let mut data = vec![0.0_f32; input.data().len()];
