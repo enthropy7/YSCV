@@ -4,6 +4,60 @@
 use super::super::*;
 use super::*;
 
+/// Copies `count` runs of `KW` bytes, source stepping by `sw`, destination by
+/// `k_dim` — the im2col interior, where every run is fully in bounds.
+///
+/// `KW` is const because with a runtime length LLVM leaves a byte loop (or a
+/// memcpy call) around three bytes, which is what the stem's 3x3 gather spends
+/// most of its time in.
+///
+/// # Safety
+/// For every `i < count`: `s + i*sw .. + KW` must be in `xp`'s allocation and
+/// `dst + i*k_dim .. + KW` in `bp`'s.
+#[allow(unsafe_code)]
+#[inline(always)]
+unsafe fn im2col_runs<const KW: usize>(
+    xp: *const i8,
+    bp: *mut i8,
+    mut s: usize,
+    mut dst: usize,
+    count: usize,
+    sw: usize,
+    k_dim: usize,
+) {
+    for _ in 0..count {
+        for kx in 0..KW {
+            unsafe { *bp.add(dst + kx) = *xp.add(s + kx) };
+        }
+        s += sw;
+        dst += k_dim;
+    }
+}
+
+/// [`im2col_runs`] for kernel widths the const dispatch does not cover.
+///
+/// # Safety
+/// Same as [`im2col_runs`], with `kw` in place of `KW`.
+#[allow(unsafe_code)]
+unsafe fn im2col_runs_dyn(
+    xp: *const i8,
+    bp: *mut i8,
+    mut s: usize,
+    mut dst: usize,
+    count: usize,
+    sw: usize,
+    k_dim: usize,
+    kw: usize,
+) {
+    for _ in 0..count {
+        for kx in 0..kw {
+            unsafe { *bp.add(dst + kx) = *xp.add(s + kx) };
+        }
+        s += sw;
+        dst += k_dim;
+    }
+}
+
 /// KHWC depthwise filter, packing it here when the plan could not.
 ///
 /// A filter produced by the graph rather than an initializer (cross-correlation
@@ -266,16 +320,17 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                                     unsafe {
                                         let xp = x.as_ptr();
                                         let bp = buf.as_mut_ptr();
-                                        let mut s = src_row + ow_start * sw - pl;
-                                        let mut dst = (row_base + ow_start) * k_dim + dst_col;
-                                        for _ in ow_start..ow_end {
-                                            let sp = xp.add(s);
-                                            let dp = bp.add(dst);
-                                            for kx in 0..kw {
-                                                *dp.add(kx) = *sp.add(kx);
-                                            }
-                                            s += sw;
-                                            dst += k_dim;
+                                        let s = src_row + ow_start * sw - pl;
+                                        let dst = (row_base + ow_start) * k_dim + dst_col;
+                                        let count = ow_end - ow_start;
+                                        match kw {
+                                            1 => im2col_runs::<1>(xp, bp, s, dst, count, sw, k_dim),
+                                            3 => im2col_runs::<3>(xp, bp, s, dst, count, sw, k_dim),
+                                            5 => im2col_runs::<5>(xp, bp, s, dst, count, sw, k_dim),
+                                            7 => im2col_runs::<7>(xp, bp, s, dst, count, sw, k_dim),
+                                            _ => im2col_runs_dyn(
+                                                xp, bp, s, dst, count, sw, k_dim, kw,
+                                            ),
                                         }
                                     }
                                 }
