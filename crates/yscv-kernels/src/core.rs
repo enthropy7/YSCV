@@ -175,8 +175,9 @@ pub use ops::int4_matmul::{
     packed_int4_gemv_dispatch, packed_int4_gemv_scalar,
 };
 pub use ops::int8_matmul::{
-    PackedI8B, int8_matmul_dispatch, int8_matmul_prepacked_dispatch, int8_matmul_prepacked_scalar,
-    int8_matmul_scalar, pack_i8_b_for_matmul,
+    PackedI8B, int8_matmul_dispatch, int8_matmul_mlal4x16_i16b_dispatch,
+    int8_matmul_prepacked_dispatch, int8_matmul_prepacked_scalar, int8_matmul_scalar,
+    pack_i8_b_for_matmul, widen_kmajor_b_i16,
 };
 pub use ops::quantize::{
     dequantize_int4_to_f32, quantize_f32_to_int4, quantize_linear_f32_to_f32_i8_dispatch,

@@ -925,6 +925,424 @@ unsafe fn neon_mlal_lane_gemm(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, 
     }
 }
 
+// Hand-asm 4×16 mlal-LANE int8 GEMM tile (XNNPACK method, our scheduling). 16
+// i32 accumulators (4 rows × 4 col-blocks) in v16..v31; A widened to i16 in
+// v0..v3; per k-lane load 16 B cols (v4..v7 as .4h) and issue 16 `SMLAL
+// Vacc.4S, Vb.4H, Va.H[lane]` — accumulate straight into output columns, NO
+// horizontal reduction (the small-K killer in the c2 `sadalp` core). 8 k-lanes
+// per chunk, B prefetched one chunk ahead. Beats the c2 4×4 core by 1.2–1.6× on
+// K≤48 (stem/early pointwise) on the A53: stem 2.11→3.28, K=24 2.61→3.63 GMAC/s.
+// Requires k % 8 == 0 (caller zero-pads); bit-identical to the scalar reference.
+// Args (AAPCS64): x0=a0 (i8, padded kp), x1=lda (=kp bytes), x2=b16 (i16 at col
+// j), x3=n (elems, B k-stride), x4=kp, x5=out (i32 row0), x6=ldo (bytes).
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+    .text
+    .align 4
+    .global yscv_mlal4x16
+yscv_mlal4x16:
+    add  x7,  x0, x1
+    add  x8,  x7, x1
+    add  x9,  x8, x1
+    add  x10, x5, x6
+    add  x11, x10, x6
+    add  x12, x11, x6
+    lsl  x13, x3, #1
+    movi v16.4s, #0
+    movi v17.4s, #0
+    movi v18.4s, #0
+    movi v19.4s, #0
+    movi v20.4s, #0
+    movi v21.4s, #0
+    movi v22.4s, #0
+    movi v23.4s, #0
+    movi v24.4s, #0
+    movi v25.4s, #0
+    movi v26.4s, #0
+    movi v27.4s, #0
+    movi v28.4s, #0
+    movi v29.4s, #0
+    movi v30.4s, #0
+    movi v31.4s, #0
+    mov  x14, x4
+    mov  x15, x2
+.Lm4x16_k8:
+    ldr  d0, [x0], #8
+    ldr  d1, [x7], #8
+    ldr  d2, [x8], #8
+    ldr  d3, [x9], #8
+    sshll v0.8h, v0.8b, #0
+    sshll v1.8h, v1.8b, #0
+    sshll v2.8h, v2.8b, #0
+    sshll v3.8h, v3.8b, #0
+    mov  x16, x15
+    prfm pldl1keep, [x15, x13, lsl #3]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[0]
+    smlal v17.4s, v5.4h, v0.h[0]
+    smlal v18.4s, v6.4h, v0.h[0]
+    smlal v19.4s, v7.4h, v0.h[0]
+    smlal v20.4s, v4.4h, v1.h[0]
+    smlal v21.4s, v5.4h, v1.h[0]
+    smlal v22.4s, v6.4h, v1.h[0]
+    smlal v23.4s, v7.4h, v1.h[0]
+    smlal v24.4s, v4.4h, v2.h[0]
+    smlal v25.4s, v5.4h, v2.h[0]
+    smlal v26.4s, v6.4h, v2.h[0]
+    smlal v27.4s, v7.4h, v2.h[0]
+    smlal v28.4s, v4.4h, v3.h[0]
+    smlal v29.4s, v5.4h, v3.h[0]
+    smlal v30.4s, v6.4h, v3.h[0]
+    smlal v31.4s, v7.4h, v3.h[0]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[1]
+    smlal v17.4s, v5.4h, v0.h[1]
+    smlal v18.4s, v6.4h, v0.h[1]
+    smlal v19.4s, v7.4h, v0.h[1]
+    smlal v20.4s, v4.4h, v1.h[1]
+    smlal v21.4s, v5.4h, v1.h[1]
+    smlal v22.4s, v6.4h, v1.h[1]
+    smlal v23.4s, v7.4h, v1.h[1]
+    smlal v24.4s, v4.4h, v2.h[1]
+    smlal v25.4s, v5.4h, v2.h[1]
+    smlal v26.4s, v6.4h, v2.h[1]
+    smlal v27.4s, v7.4h, v2.h[1]
+    smlal v28.4s, v4.4h, v3.h[1]
+    smlal v29.4s, v5.4h, v3.h[1]
+    smlal v30.4s, v6.4h, v3.h[1]
+    smlal v31.4s, v7.4h, v3.h[1]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[2]
+    smlal v17.4s, v5.4h, v0.h[2]
+    smlal v18.4s, v6.4h, v0.h[2]
+    smlal v19.4s, v7.4h, v0.h[2]
+    smlal v20.4s, v4.4h, v1.h[2]
+    smlal v21.4s, v5.4h, v1.h[2]
+    smlal v22.4s, v6.4h, v1.h[2]
+    smlal v23.4s, v7.4h, v1.h[2]
+    smlal v24.4s, v4.4h, v2.h[2]
+    smlal v25.4s, v5.4h, v2.h[2]
+    smlal v26.4s, v6.4h, v2.h[2]
+    smlal v27.4s, v7.4h, v2.h[2]
+    smlal v28.4s, v4.4h, v3.h[2]
+    smlal v29.4s, v5.4h, v3.h[2]
+    smlal v30.4s, v6.4h, v3.h[2]
+    smlal v31.4s, v7.4h, v3.h[2]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[3]
+    smlal v17.4s, v5.4h, v0.h[3]
+    smlal v18.4s, v6.4h, v0.h[3]
+    smlal v19.4s, v7.4h, v0.h[3]
+    smlal v20.4s, v4.4h, v1.h[3]
+    smlal v21.4s, v5.4h, v1.h[3]
+    smlal v22.4s, v6.4h, v1.h[3]
+    smlal v23.4s, v7.4h, v1.h[3]
+    smlal v24.4s, v4.4h, v2.h[3]
+    smlal v25.4s, v5.4h, v2.h[3]
+    smlal v26.4s, v6.4h, v2.h[3]
+    smlal v27.4s, v7.4h, v2.h[3]
+    smlal v28.4s, v4.4h, v3.h[3]
+    smlal v29.4s, v5.4h, v3.h[3]
+    smlal v30.4s, v6.4h, v3.h[3]
+    smlal v31.4s, v7.4h, v3.h[3]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[4]
+    smlal v17.4s, v5.4h, v0.h[4]
+    smlal v18.4s, v6.4h, v0.h[4]
+    smlal v19.4s, v7.4h, v0.h[4]
+    smlal v20.4s, v4.4h, v1.h[4]
+    smlal v21.4s, v5.4h, v1.h[4]
+    smlal v22.4s, v6.4h, v1.h[4]
+    smlal v23.4s, v7.4h, v1.h[4]
+    smlal v24.4s, v4.4h, v2.h[4]
+    smlal v25.4s, v5.4h, v2.h[4]
+    smlal v26.4s, v6.4h, v2.h[4]
+    smlal v27.4s, v7.4h, v2.h[4]
+    smlal v28.4s, v4.4h, v3.h[4]
+    smlal v29.4s, v5.4h, v3.h[4]
+    smlal v30.4s, v6.4h, v3.h[4]
+    smlal v31.4s, v7.4h, v3.h[4]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[5]
+    smlal v17.4s, v5.4h, v0.h[5]
+    smlal v18.4s, v6.4h, v0.h[5]
+    smlal v19.4s, v7.4h, v0.h[5]
+    smlal v20.4s, v4.4h, v1.h[5]
+    smlal v21.4s, v5.4h, v1.h[5]
+    smlal v22.4s, v6.4h, v1.h[5]
+    smlal v23.4s, v7.4h, v1.h[5]
+    smlal v24.4s, v4.4h, v2.h[5]
+    smlal v25.4s, v5.4h, v2.h[5]
+    smlal v26.4s, v6.4h, v2.h[5]
+    smlal v27.4s, v7.4h, v2.h[5]
+    smlal v28.4s, v4.4h, v3.h[5]
+    smlal v29.4s, v5.4h, v3.h[5]
+    smlal v30.4s, v6.4h, v3.h[5]
+    smlal v31.4s, v7.4h, v3.h[5]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[6]
+    smlal v17.4s, v5.4h, v0.h[6]
+    smlal v18.4s, v6.4h, v0.h[6]
+    smlal v19.4s, v7.4h, v0.h[6]
+    smlal v20.4s, v4.4h, v1.h[6]
+    smlal v21.4s, v5.4h, v1.h[6]
+    smlal v22.4s, v6.4h, v1.h[6]
+    smlal v23.4s, v7.4h, v1.h[6]
+    smlal v24.4s, v4.4h, v2.h[6]
+    smlal v25.4s, v5.4h, v2.h[6]
+    smlal v26.4s, v6.4h, v2.h[6]
+    smlal v27.4s, v7.4h, v2.h[6]
+    smlal v28.4s, v4.4h, v3.h[6]
+    smlal v29.4s, v5.4h, v3.h[6]
+    smlal v30.4s, v6.4h, v3.h[6]
+    smlal v31.4s, v7.4h, v3.h[6]
+    ld1  {{v4.4h, v5.4h, v6.4h, v7.4h}}, [x16], x13
+    smlal v16.4s, v4.4h, v0.h[7]
+    smlal v17.4s, v5.4h, v0.h[7]
+    smlal v18.4s, v6.4h, v0.h[7]
+    smlal v19.4s, v7.4h, v0.h[7]
+    smlal v20.4s, v4.4h, v1.h[7]
+    smlal v21.4s, v5.4h, v1.h[7]
+    smlal v22.4s, v6.4h, v1.h[7]
+    smlal v23.4s, v7.4h, v1.h[7]
+    smlal v24.4s, v4.4h, v2.h[7]
+    smlal v25.4s, v5.4h, v2.h[7]
+    smlal v26.4s, v6.4h, v2.h[7]
+    smlal v27.4s, v7.4h, v2.h[7]
+    smlal v28.4s, v4.4h, v3.h[7]
+    smlal v29.4s, v5.4h, v3.h[7]
+    smlal v30.4s, v6.4h, v3.h[7]
+    smlal v31.4s, v7.4h, v3.h[7]
+    add  x15, x15, x13, lsl #3
+    subs x14, x14, #8
+    b.ne .Lm4x16_k8
+    st1  {{v16.4s, v17.4s, v18.4s, v19.4s}}, [x5]
+    st1  {{v20.4s, v21.4s, v22.4s, v23.4s}}, [x10]
+    st1  {{v24.4s, v25.4s, v26.4s, v27.4s}}, [x11]
+    st1  {{v28.4s, v29.4s, v30.4s, v31.4s}}, [x12]
+    ret
+"#
+);
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn yscv_mlal4x16(
+        a: *const i8,
+        lda: usize,
+        b16: *const i16,
+        n: usize,
+        kp: usize,
+        out: *mut i32,
+        ldo: usize,
+    );
+}
+
+/// Intrinsics 4×NR (NR=8 or 4) mlal-lane tail for the columns the 4×16 asm
+/// kernel can't cover. `ap` = 4 rows kp apart (padded i8); `b16` = `[kp,N]` i16
+/// at the tail column. `nb` = NR/4 ∈ {1,2}. Same lane accumulation as the asm.
+///
+/// SAFETY: `ap` rows valid for `kp`; `b16` valid for `kp*n`; `out` rows for `nb*4`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn mlal_lane_tail_4xnr(
+    ap: *const i8,
+    kp: usize,
+    b16: *const i16,
+    n: usize,
+    out: *mut i32,
+    ldo: usize,
+    nb: usize,
+) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let ar = [ap, ap.add(kp), ap.add(2 * kp), ap.add(3 * kp)];
+        let mut acc = [[vdupq_n_s32(0); 2]; 4];
+        let mut kk = 0;
+        while kk < kp {
+            let va = [
+                vmovl_s8(vld1_s8(ar[0].add(kk))),
+                vmovl_s8(vld1_s8(ar[1].add(kk))),
+                vmovl_s8(vld1_s8(ar[2].add(kk))),
+                vmovl_s8(vld1_s8(ar[3].add(kk))),
+            ];
+            let vlo = [
+                vget_low_s16(va[0]),
+                vget_low_s16(va[1]),
+                vget_low_s16(va[2]),
+                vget_low_s16(va[3]),
+            ];
+            let vhi = [
+                vget_high_s16(va[0]),
+                vget_high_s16(va[1]),
+                vget_high_s16(va[2]),
+                vget_high_s16(va[3]),
+            ];
+            macro_rules! klane {
+                ($kl:expr, $vsrc:ident, $lane:expr) => {{
+                    let bp = b16.add((kk + $kl) * n);
+                    for cb in 0..nb {
+                        let bv = vld1_s16(bp.add(cb * 4));
+                        for r in 0..4 {
+                            acc[r][cb] = vmlal_lane_s16::<$lane>(acc[r][cb], bv, $vsrc[r]);
+                        }
+                    }
+                }};
+            }
+            klane!(0, vlo, 0);
+            klane!(1, vlo, 1);
+            klane!(2, vlo, 2);
+            klane!(3, vlo, 3);
+            klane!(4, vhi, 0);
+            klane!(5, vhi, 1);
+            klane!(6, vhi, 2);
+            klane!(7, vhi, 3);
+            kk += 8;
+        }
+        for r in 0..4 {
+            for cb in 0..nb {
+                vst1q_s32(out.add(r * ldo + cb * 4), acc[r][cb]);
+            }
+        }
+    }
+}
+
+/// Small-K int8 GEMM via the hand-asm 4×16 mlal-lane kernel. `a` is `[M,K]`
+/// row-major, `b` is `[K,N]` k-major. Pads K to a multiple of 8 (only copying
+/// A when `k % 8 != 0`; otherwise `a` is used in place) and pre-widens B to i16,
+/// then tiles 4×16 asm → 4×8 → 4×4 intrinsics → scalar N%4 / M%4 remainders.
+/// Bit-identical to the scalar reference (integer, unchanged k-order; zero pads
+/// contribute 0). Replaces the older 4×8 `neon_mlal_lane_gemm` on K≤48.
+///
+/// SAFETY: `a.len() >= m*k`, `b.len() >= k*n`, `out.len() >= m*n`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_mlal4x16_gemm(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, out: &mut [i32]) {
+    let b16 = widen_kmajor_b_i16(b, k, n);
+    let kp = k.div_ceil(8) * 8;
+    // SAFETY: b16 is [kp,n]; a=[m,k]; out=[m,n].
+    unsafe { neon_mlal4x16_i16b(a, &b16, m, k, kp, n, out) };
+}
+
+/// Widen a k-major `[K,N]` i8 RHS to i16 `[kp,N]` (kp = K padded to a multiple
+/// of 8, pad rows zero). Hoist this out of a per-block GEMM loop so the constant
+/// weight is widened once per conv, not once per block.
+pub fn widen_kmajor_b_i16(b: &[i8], k: usize, n: usize) -> Vec<i16> {
+    let kp = k.div_ceil(8) * 8;
+    let mut b16 = vec![0i16; kp * n];
+    for (dst, &v) in b16[..k * n].iter_mut().zip(&b[..k * n]) {
+        *dst = v as i16;
+    }
+    b16
+}
+
+/// Runtime-dispatched 4×16 mlal-lane GEMM consuming a PRE-WIDENED i16 k-major B
+/// `[kp,N]` (kp = k padded to a multiple of 8). aarch64 uses the hand-asm
+/// kernel; other targets fall back to a scalar loop over the i16 B. Bit-exact
+/// integer. `a` is `[m,k]` i8, `out` is `[m,n]` i32.
+pub fn int8_matmul_mlal4x16_i16b_dispatch(
+    a: &[i8],
+    b16: &[i16],
+    m: usize,
+    k: usize,
+    n: usize,
+    out: &mut [i32],
+) {
+    let kp = k.div_ceil(8) * 8;
+    debug_assert_eq!(a.len(), m * k);
+    debug_assert_eq!(b16.len(), kp * n);
+    debug_assert_eq!(out.len(), m * n);
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: shapes checked above.
+    unsafe {
+        neon_mlal4x16_i16b(a, b16, m, k, kp, n, out);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0i32;
+                for kk in 0..k {
+                    s += a[i * k + kk] as i32 * b16[kk * n + j] as i32;
+                }
+                out[i * n + j] = s;
+            }
+        }
+    }
+}
+
+/// Compute half of the 4×16 mlal-lane GEMM: pad A to `kp` (only when `kp != k`),
+/// tile 4×16 asm → 4×8 → 4×4 intrinsics → scalar N%4 / M%4. `b16` is the
+/// pre-widened i16 `[kp,N]` RHS. Bit-identical to the scalar reference.
+///
+/// SAFETY: `a.len() >= m*k`, `b16.len() >= kp*n`, `out.len() >= m*n`, `kp` is
+/// `k` rounded up to a multiple of 8.
+#[cfg(target_arch = "aarch64")]
+unsafe fn neon_mlal4x16_i16b(
+    a: &[i8],
+    b16: &[i16],
+    m: usize,
+    k: usize,
+    kp: usize,
+    n: usize,
+    out: &mut [i32],
+) {
+    // A: pad K to kp only when needed; else use `a` directly (kp == k).
+    let ap_owned: Vec<i8>;
+    let (ap, lda): (&[i8], usize) = if kp == k {
+        (a, k)
+    } else {
+        let mut buf = vec![0i8; m * kp];
+        for i in 0..m {
+            buf[i * kp..i * kp + k].copy_from_slice(&a[i * k..i * k + k]);
+        }
+        ap_owned = buf;
+        (&ap_owned, kp)
+    };
+    let mt = m & !3;
+    unsafe {
+        let mut i = 0;
+        while i < mt {
+            let arow = ap.as_ptr().add(i * lda);
+            let orow = out.as_mut_ptr().add(i * n);
+            let mut j = 0;
+            while j + 16 <= n {
+                yscv_mlal4x16(arow, lda, b16.as_ptr().add(j), n, kp, orow.add(j), n * 4);
+                j += 16;
+            }
+            while j + 8 <= n {
+                mlal_lane_tail_4xnr(arow, lda, b16.as_ptr().add(j), n, orow.add(j), n, 2);
+                j += 8;
+            }
+            while j + 4 <= n {
+                mlal_lane_tail_4xnr(arow, lda, b16.as_ptr().add(j), n, orow.add(j), n, 1);
+                j += 4;
+            }
+            // N%4 scalar tail (b16 rows kk<k equal the i8 B, widened).
+            while j < n {
+                for r in 0..4 {
+                    let mut s = 0i32;
+                    for kk in 0..k {
+                        s += a[(i + r) * k + kk] as i32 * b16[kk * n + j] as i32;
+                    }
+                    out[(i + r) * n + j] = s;
+                }
+                j += 1;
+            }
+            i += 4;
+        }
+        // M%4 remainder rows.
+        for ii in mt..m {
+            for j in 0..n {
+                let mut s = 0i32;
+                for kk in 0..k {
+                    s += a[ii * k + kk] as i32 * b16[kk * n + j] as i32;
+                }
+                out[ii * n + j] = s;
+            }
+        }
+    }
+}
+
 /// Plain ARMv8.0-A NEON widening int8 GEMM: `a` is `[M, K]` row-major, `bt`
 /// is the transposed RHS `[N, K]` (contiguous K per column). No
 /// `dotprod`/`i8mm` needed — this is the A53-class path.
@@ -1175,10 +1593,17 @@ unsafe fn int8_matmul_neon_widen(
     n: usize,
     out: &mut [i32],
 ) {
-    // Small-K (MobileNet 1×1 c_in ≤ 64): the hand-scheduled 4×8 SMLAL-lane
-    // kernel wins (no per-output horizontal reduction), and it consumes `b`
-    // in its native k-major `[K,N]` layout — no transpose. Larger K stays on
-    // the 8-wide `vmull_s8` widening kernel.
+    // Small-K (MobileNet 1×1 c_in ≤ 48, plus the im2col'd 3×3 stem K=27): the
+    // hand-asm 4×16 SMLAL-lane kernel wins big (no per-output horizontal
+    // reduction, wide NR, B prefetch), consuming `b` in its native k-major
+    // `[K,N]` layout — no transpose. Measured 1.2–1.6× over the c2 4×4 core on
+    // the A53 (stem 2.11→3.28, K=24 2.61→3.63 GMAC/s). K∈(48,64] and above stay
+    // on the 8-wide `vmull_s8` widening kernel, where the c2 pairing wins.
+    if k <= 48 {
+        // SAFETY: a=[m,k], b=[k,n] k-major, out=[m,n].
+        unsafe { neon_mlal4x16_gemm(a, b, m, k, n, out) };
+        return;
+    }
     if k <= 64 {
         // SAFETY: a=[m,k], b=[k,n] k-major, out=[m,n].
         unsafe { neon_mlal_lane_gemm(a, b, m, k, n, out) };
