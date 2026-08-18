@@ -188,8 +188,8 @@ pub use ops::rope::apply_rotary_embedding;
 pub use ops::{
     BinaryKind, CpuDispatchReport, DEFAULT_ELEMENTWISE_MIN_PARALLEL_ELEMENTS,
     DEFAULT_MATMUL_MIN_PARALLEL_OUTPUT_ELEMENTS, DEFAULT_MATMUL_MIN_PARALLEL_SHARED_DIM,
-    Depthwise3x3I8Params, DepthwiseI8Params, GemmEpilogue, PackedB, PackedNChwBc,
-    ParallelElementwiseConfig, ParallelMatmulConfig, SimdDispatchPath, add_nchwc,
+    DEPTHWISE_I8_MAX_KERNEL, Depthwise3x3I8Params, DepthwiseI8Params, GemmEpilogue, PackedB,
+    PackedNChwBc, ParallelElementwiseConfig, ParallelMatmulConfig, SimdDispatchPath, add_nchwc,
     add_reduce_dispatch, add_with_config_and_pool, avg_pool2d_nchw, avg_pool2d_nchwc,
     avg_pool2d_nhwc_with_config_and_pool, batch_norm2d_nchwc,
     batch_norm2d_nhwc_with_config_and_pool, binary_same_shape_dispatch,

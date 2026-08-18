@@ -96,10 +96,11 @@ pub use fused_pw_dw_3x3::{
     fused_pw_expand_dw_pw_reduce_3x3_nchwc_streaming, pack_dw_weight_nchwc_blocked,
 };
 pub use int8_depthwise::{
-    Depthwise3x3I8Params, DepthwiseI8Params, depthwise_i8_i32_nchw_khwc_dispatch,
-    depthwise_i8_i32_nchw_khwc_scalar, depthwise_i8_i32_nhwc_dispatch,
-    depthwise_i8_i32_nhwc_dispatch_with_pool, depthwise_i8_i32_nhwc_scalar,
-    depthwise3x3_i8_i32_nhwc_dispatch, depthwise3x3_i8_i32_nhwc_scalar,
+    DEPTHWISE_I8_MAX_KERNEL, Depthwise3x3I8Params, DepthwiseI8Params,
+    depthwise_i8_i32_nchw_khwc_dispatch, depthwise_i8_i32_nchw_khwc_scalar,
+    depthwise_i8_i32_nhwc_dispatch, depthwise_i8_i32_nhwc_dispatch_with_pool,
+    depthwise_i8_i32_nhwc_scalar, depthwise3x3_i8_i32_nhwc_dispatch,
+    depthwise3x3_i8_i32_nhwc_scalar,
 };
 pub use int8_fused_dw_pw_3x3::{Int8FusedDwPwParams, int8_fused_dw_pw_dispatch};
 pub use int8_fused_pw_dw_3x3::{

@@ -4,6 +4,38 @@
 use super::super::*;
 use super::*;
 
+/// KHWC depthwise filter, packing it here when the plan could not.
+///
+/// A filter produced by the graph rather than an initializer (cross-correlation
+/// convolves with a feature map) never reaches the plan's table, and without
+/// this the node drops to the scalar conv — a few kB of repack against ~12x.
+fn depthwise_khwc_weight(
+    env: &TensorEnv,
+    w_name: &str,
+    w: &Tensor,
+    c_out: usize,
+    kh: usize,
+    kw: usize,
+) -> Option<std::sync::Arc<Vec<i8>>> {
+    if let Some(packed) = env.prepacked_i8_depthwise(w_name) {
+        return Some(packed);
+    }
+    let data = w.data();
+    if data.len() != c_out * kh * kw {
+        return None;
+    }
+    let mut khwc = vec![0_i8; kh * kw * c_out];
+    for c in 0..c_out {
+        for ky in 0..kh {
+            for kx in 0..kw {
+                khwc[(ky * kw + kx) * c_out + c] =
+                    data[(c * kh + ky) * kw + kx].round().clamp(-128.0, 127.0) as i8;
+            }
+        }
+    }
+    Some(std::sync::Arc::new(khwc))
+}
+
 pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<(), OnnxError> {
     let x_scale = get_tensor(env, &node.name, &node.inputs[1])?.data()[0];
     let x_zp = get_tensor(env, &node.name, &node.inputs[2])?.data()[0];
@@ -514,13 +546,14 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     && c_out == group_usize
                     && c_in == group_usize
                     && kh == kw
-                    && (kh == 3 || kh == 5)
+                    && kh <= yscv_kernels::DEPTHWISE_I8_MAX_KERNEL
                     // The NCHW depthwise kernel (path above) handles large
                     // stride-2 planes, but only for NCHW input; an NHWC-resident
                     // activation must take this NHWC kernel regardless of size
                     // (otherwise it degrades to the scalar generic path).
                     && ((sh == 1 && sw == 1) || (sh == 2 && sw == 2 && (ih <= 64 || x_is_nhwc)))
-                    && let Some(dw_weight) = env.prepacked_i8_depthwise(&node.inputs[3])
+                    && let Some(dw_weight) =
+                        depthwise_khwc_weight(env, &node.inputs[3], &w, c_out, kh, kw)
                 {
                     let p = yscv_kernels::DepthwiseI8Params {
                         batch: n_n,

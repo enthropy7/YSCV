@@ -1439,7 +1439,9 @@ pub(crate) fn build_runtime_index(
                     && group as usize == c_out
                     && c_in == 1
                     && kh == kw
-                    && (kh == 3 || kh == 5)
+                    // Unpacked is not "unsupported": every kernel the SIMD path
+                    // takes must be packed here or it falls to the scalar conv.
+                    && kh <= yscv_kernels::DEPTHWISE_I8_MAX_KERNEL
                     && dilations == [1, 1]
                 {
                     let mut khwc = vec![0_i8; kh * kw * c_out];

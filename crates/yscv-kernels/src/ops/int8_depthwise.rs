@@ -42,6 +42,10 @@ impl Depthwise3x3I8Params {
     }
 }
 
+/// Largest square kernel the SIMD NHWC depthwise path keeps: beyond 49 taps it
+/// falls back to the scalar kernel, so routing there buys nothing.
+pub const DEPTHWISE_I8_MAX_KERNEL: usize = 7;
+
 /// Parameters for the generic INT8 depthwise kernels (kernel size, shapes, quant params).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DepthwiseI8Params {

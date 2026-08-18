@@ -323,11 +323,23 @@ fn qlinear_conv_depthwise_symmetric_fast_path_with_bias() {
     let _guard = lock_shared_state();
     let channels = 5;
     for (kernel, stride, h, w) in [
-        (3_usize, 1_usize, 5_usize, 4_usize),
+        (2_usize, 1_usize, 5_usize, 4_usize),
+        (3, 1, 5, 4),
+        (4, 1, 5, 4),
         (5, 1, 5, 4),
         (3, 2, 7, 6),
     ] {
-        check_qlinear_depthwise_with_bias(channels, h, w, kernel, stride);
+        check_qlinear_depthwise_with_bias(channels, h, w, kernel, stride, false);
+    }
+}
+
+/// The plan's prepack table is keyed on initializers, so a filter the graph
+/// produces stays on the integer depthwise kernel only if the runtime packs it.
+#[test]
+fn qlinear_conv_depthwise_runtime_filter() {
+    let _guard = lock_shared_state();
+    for kernel in [2_usize, 4] {
+        check_qlinear_depthwise_with_bias(5, 5, 4, kernel, 1, true);
     }
 }
 
@@ -337,6 +349,7 @@ fn check_qlinear_depthwise_with_bias(
     w: usize,
     kernel: usize,
     stride: usize,
+    runtime_filter: bool,
 ) {
     let pad = kernel / 2;
     let out_h = (h + 2 * pad - kernel) / stride + 1;
@@ -356,6 +369,7 @@ fn check_qlinear_depthwise_with_bias(
     let w_scale = 0.08_f32;
     let y_scale = 0.25_f32;
 
+    let w_name = if runtime_filter { "w_init" } else { "w" };
     let node = onnx::NodeProto {
         op_type: Some("QLinearConv".into()),
         name: Some("qdw".into()),
@@ -379,14 +393,25 @@ fn check_qlinear_depthwise_with_bias(
         ],
         ..Default::default()
     };
+    let mut nodes = Vec::new();
+    if runtime_filter {
+        nodes.push(onnx::NodeProto {
+            op_type: Some("Identity".into()),
+            name: Some("wpass".into()),
+            input: vec![w_name.into()],
+            output: vec!["w".into()],
+            ..Default::default()
+        });
+    }
+    nodes.push(node);
     let bytes = build_minimal_onnx_model(
-        vec![node],
+        nodes,
         vec![
             vec_init("x", vec![1, channels as i64, h as i64, w as i64], x_data),
             scalar_init("x_s", x_scale),
             scalar_init("x_zp", 0.0),
             vec_init(
-                "w",
+                w_name,
                 vec![channels as i64, 1, kernel as i64, kernel as i64],
                 w_data,
             ),
@@ -396,10 +421,17 @@ fn check_qlinear_depthwise_with_bias(
             scalar_init("y_zp", 0.0),
             vec_init("b", vec![channels as i64], b_data),
         ],
-        vec!["x", "x_s", "x_zp", "w", "w_s", "w_zp", "y_s", "y_zp", "b"],
+        vec![
+            "x", "x_s", "x_zp", w_name, "w_s", "w_zp", "y_s", "y_zp", "b",
+        ],
         vec!["y"],
     );
     let model = load_onnx_model(&bytes).unwrap();
+    assert_eq!(
+        model.runtime_index.prepacked_i8_depthwise.contains_key("w"),
+        !runtime_filter,
+        "prepack table must miss exactly when the filter is graph-produced"
+    );
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
