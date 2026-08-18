@@ -45,6 +45,7 @@ pub use quantize::{
     prune_unused_initializers, rewrite_to_qdq, rewrite_to_qlinear,
 };
 pub use runner::OnnxRunner;
+pub use runner::conv::phase::dump_conv_phases;
 pub use runner::dump_runner_profile;
 #[cfg(feature = "gpu")]
 pub use runner::gpu::profile_onnx_model_gpu;

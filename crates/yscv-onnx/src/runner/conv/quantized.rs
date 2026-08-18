@@ -164,6 +164,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                 // value of a real 0), so the correction below stays uniform per
                 // channel; the scratch comes back zeroed, so this fill is a no-op
                 // in the symmetric case. Source indexing follows the input layout.
+                let _t_im2col = super::phase::start();
                 let mut scratch = if zero_copy {
                     Vec::new()
                 } else {
@@ -252,16 +253,21 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     buf
                 };
                 let x_im2col: &[i8] = if zero_copy { x_i8.unwrap() } else { &scratch };
+                super::phase::stop(&super::phase::IM2COL_NS, _t_im2col);
 
                 // Per-channel composite requantize factors, independent of the
                 // row block: `composite = x_scale·w_scale[o]/y_scale`, and the
                 // correction `corr = bias − x_zp·Σw` folded in. `acc` rows are
                 // `[c_out]` row-major = NHWC, so the requantize writes NHWC
                 // directly (no output transpose).
+                let _t_setup = super::phase::start();
                 let bias_data = bias.as_ref().map(|b| b.data());
                 let composites: Vec<f32> = (0..c_out).map(&composite_at).collect();
                 let corrs: Vec<i32> = (0..c_out).map(|o| corr_at(o, bias_data)).collect();
+                super::phase::stop(&super::phase::SETUP_NS, _t_setup);
+                let _t_alloc = super::phase::start();
                 let mut out = vec![0_i8; m * c_out];
+                super::phase::stop(&super::phase::ALLOC_NS, _t_alloc);
 
                 // Decide the GEMM backend once: prepacked 4×16 RHS when the
                 // load-time pack exists and is profitable, else pack OIHW → [K,N]
@@ -360,6 +366,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                         let bm = block.min(m - r0);
                         let a_block = &x_im2col[r0 * k_dim..(r0 + bm) * k_dim];
                         let acc_b = &mut acc[..bm * c_out];
+                        let _t_gemm = super::phase::start();
                         if let Some(p) = &packed {
                             yscv_kernels::int8_matmul_prepacked_dispatch(a_block, p, bm, acc_b);
                         } else {
@@ -367,6 +374,8 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                                 a_block, &w_packed, bm, k_dim, c_out, acc_b,
                             );
                         }
+                        super::phase::stop(&super::phase::GEMM_NS, _t_gemm);
+                        let _t_rq = super::phase::start();
                         yscv_kernels::requant_i8_per_channel_dispatch(
                             acc_b,
                             &corrs,
@@ -375,6 +384,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                             &mut out[r0 * c_out..(r0 + bm) * c_out],
                             c_out,
                         );
+                        super::phase::stop(&super::phase::REQUANT_NS, _t_rq);
                         r0 += bm;
                     }
                     env.put_i32_scratch(acc);
@@ -548,12 +558,14 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     };
                     let x_nhwc: &[i8] = if zero_copy { x_i8.unwrap() } else { &x_scratch };
                     let mut acc = env.take_i32_scratch(n_n * oh * ow * c_out);
+                    let _t_dw = super::phase::start();
                     yscv_kernels::depthwise_i8_i32_nhwc_dispatch(
                         x_nhwc,
                         dw_weight.as_slice(),
                         p,
                         &mut acc,
                     );
+                    super::phase::stop(&super::phase::DW_NS, _t_dw);
 
                     // `acc` is NHWC `[N,H,W,C]`; requantize in place to NHWC with
                     // the vectorised per-channel epilogue.
@@ -561,6 +573,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                     let composites: Vec<f32> = (0..c_out).map(&composite_at).collect();
                     let corrs: Vec<i32> = (0..c_out).map(|c| corr_at(c, bias_data)).collect();
                     let mut out = vec![0_i8; n_n * oh * ow * c_out];
+                    let _t_rq = super::phase::start();
                     yscv_kernels::requant_i8_per_channel_dispatch(
                         &acc,
                         &corrs,
@@ -569,6 +582,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
                         &mut out,
                         c_out,
                     );
+                    super::phase::stop(&super::phase::REQUANT_NS, _t_rq);
                     env.put_i32_scratch(acc);
                     if !zero_copy {
                         x_scratch.clear();

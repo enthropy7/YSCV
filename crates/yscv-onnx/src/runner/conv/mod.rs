@@ -857,6 +857,8 @@ pub(super) fn exec_conv_transpose(node: &OnnxNode, env: &mut TensorEnv) -> Resul
 mod quantized;
 pub(crate) use quantized::*;
 
+pub(crate) mod phase;
+
 /// ONNX DeformConv: deformable convolution with learned offsets.
 ///
 /// Inputs: X (NCHW), offset, W (OIHW), [bias]
