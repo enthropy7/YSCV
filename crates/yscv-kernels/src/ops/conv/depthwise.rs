@@ -563,6 +563,243 @@ pub fn conv3d(
 // ---------------------------------------------------------------------------
 
 /// NEON-accelerated depthwise conv row for `depth_multiplier == 1`.
+/// Shape of a stride-1 depth_multiplier-1 NHWC depthwise convolution.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub(super) struct DwStride1 {
+    pub in_h: usize,
+    pub in_w: usize,
+    pub channels: usize,
+    pub kernel_h: usize,
+    pub kernel_w: usize,
+    pub pad_top: usize,
+    pub pad_left: usize,
+    pub out_w: usize,
+    /// Offset of this batch item inside `input`.
+    pub batch_base: usize,
+}
+
+/// One output pixel, eight channels at a time with the accumulator in
+/// registers.
+///
+/// The generic path's per-tap form keeps the accumulator in the output slice,
+/// paying a load and a store per multiply; at 5x5 over a 16x16 map the padded
+/// border is 44% of the pixels, so that costs more than the interior does.
+///
+/// # Safety
+/// `g` must describe the buffers the caller validated.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code)]
+unsafe fn dw_pixel_neon(
+    input: &[f32],
+    kernel: &[f32],
+    bias: Option<&[f32]>,
+    out_row: &mut [f32],
+    g: DwStride1,
+    oy: usize,
+    ox: usize,
+    relu: bool,
+) {
+    use core::arch::aarch64::*;
+    let (ky0, ky1) = dw_valid(oy, g.pad_top, g.in_h, g.kernel_h);
+    let (kx0, kx1) = dw_valid(ox, g.pad_left, g.in_w, g.kernel_w);
+    unsafe {
+        let inp = input.as_ptr();
+        let ker = kernel.as_ptr();
+        let op = out_row.as_mut_ptr().add(ox * g.channels);
+        let zero = vdupq_n_f32(0.0);
+        // Sixteen channels per pass: four accumulator chains, since two leave
+        // the 8-cycle FMLA latency exposed at 2-cycle throughput.
+        let ch16 = (g.channels / 16) * 16;
+        let mut ch = 0;
+        while ch < ch16 {
+            let mut a = match bias {
+                Some(b) => [
+                    vld1q_f32(b.as_ptr().add(ch)),
+                    vld1q_f32(b.as_ptr().add(ch + 4)),
+                    vld1q_f32(b.as_ptr().add(ch + 8)),
+                    vld1q_f32(b.as_ptr().add(ch + 12)),
+                ],
+                None => [zero; 4],
+            };
+            for ky in ky0..ky1 {
+                let in_y = oy + ky - g.pad_top;
+                for kx in kx0..kx1 {
+                    let in_x = ox + kx - g.pad_left;
+                    let i = g.batch_base + (in_y * g.in_w + in_x) * g.channels + ch;
+                    let k = (ky * g.kernel_w + kx) * g.channels + ch;
+                    a[0] = vfmaq_f32(a[0], vld1q_f32(inp.add(i)), vld1q_f32(ker.add(k)));
+                    a[1] = vfmaq_f32(a[1], vld1q_f32(inp.add(i + 4)), vld1q_f32(ker.add(k + 4)));
+                    a[2] = vfmaq_f32(a[2], vld1q_f32(inp.add(i + 8)), vld1q_f32(ker.add(k + 8)));
+                    a[3] = vfmaq_f32(a[3], vld1q_f32(inp.add(i + 12)), vld1q_f32(ker.add(k + 12)));
+                }
+            }
+            if relu {
+                a[0] = vmaxq_f32(a[0], zero);
+                a[1] = vmaxq_f32(a[1], zero);
+                a[2] = vmaxq_f32(a[2], zero);
+                a[3] = vmaxq_f32(a[3], zero);
+            }
+            vst1q_f32(op.add(ch), a[0]);
+            vst1q_f32(op.add(ch + 4), a[1]);
+            vst1q_f32(op.add(ch + 8), a[2]);
+            vst1q_f32(op.add(ch + 12), a[3]);
+            ch += 16;
+        }
+        for c in ch16..g.channels {
+            let mut acc = bias.map_or(0.0, |b| b[c]);
+            for ky in ky0..ky1 {
+                let in_y = oy + ky - g.pad_top;
+                for kx in kx0..kx1 {
+                    let in_x = ox + kx - g.pad_left;
+                    acc = f32::mul_add(
+                        input[g.batch_base + (in_y * g.in_w + in_x) * g.channels + c],
+                        kernel[(ky * g.kernel_w + kx) * g.channels + c],
+                        acc,
+                    );
+                }
+            }
+            *op.add(c) = if relu { acc.max(0.0) } else { acc };
+        }
+    }
+}
+
+/// Tap range that stays inside the input for output position `o`.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn dw_valid(o: usize, pad: usize, in_len: usize, k: usize) -> (usize, usize) {
+    (
+        pad.saturating_sub(o),
+        k.min((pad + in_len).saturating_sub(o)),
+    )
+}
+
+/// Stride-1 NHWC depthwise over a range of output rows.
+///
+/// Four output columns by eight channels per tile: the four columns read
+/// `kernel_w + 3` consecutive input positions, so each input vector is loaded
+/// once and reused across every tap instead of being re-loaded per tap — the
+/// per-tap form spends 20 loads on 16 multiplies. Eight channels give eight
+/// accumulator chains, which an 8-cycle FMLA latency at 2-cycle throughput
+/// needs to stay busy.
+///
+/// Tiles run only where every tap is in range, because a bounds check inside
+/// the window load costs more than the padding it avoids: it stops the window
+/// living in registers, which measured *slower* than the per-tap kernel this
+/// replaces. Pixels the tiles cannot cover go to [`dw_pixel_neon`].
+///
+/// # Safety
+/// `out_rows` must hold whole output rows starting at `oy0`, `input` must cover
+/// `g`, `kernel_w + 3 <= 8`, and stride must be 1 in both axes.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code)]
+pub(super) unsafe fn depthwise_nhwc_dm1_stride1_neon(
+    input: &[f32],
+    kernel: &[f32],
+    bias: Option<&[f32]>,
+    out_rows: &mut [f32],
+    oy0: usize,
+    g: DwStride1,
+    relu: bool,
+) {
+    use core::arch::aarch64::*;
+    let row_len = g.out_w * g.channels;
+    let ch8 = (g.channels / 8) * 8;
+    let n_rows = out_rows.len() / row_len;
+    // Output positions whose whole window is in range.
+    let oy_hi = g.pad_top + (g.in_h + 1).saturating_sub(g.kernel_h);
+    let ox_hi = g.pad_left + (g.in_w + 1).saturating_sub(g.kernel_w);
+
+    for r in 0..n_rows {
+        let oy = oy0 + r;
+        let row_interior = oy >= g.pad_top && oy < oy_hi;
+        let out_row = &mut out_rows[r * row_len..(r + 1) * row_len];
+        let mut ox = 0;
+        while ox < g.out_w {
+            let tiled = row_interior && ox >= g.pad_left && ox + 3 < ox_hi && ox + 3 < g.out_w;
+            if !tiled {
+                // SAFETY: preconditions carried from the caller.
+                unsafe { dw_pixel_neon(input, kernel, bias, out_row, g, oy, ox, relu) };
+                ox += 1;
+                continue;
+            }
+            unsafe {
+                let inp = input.as_ptr();
+                let ker = kernel.as_ptr();
+                let op = out_row.as_mut_ptr();
+                let zero = vdupq_n_f32(0.0);
+                let mut ch = 0;
+                while ch < ch8 {
+                    let (b0, b1) = match bias {
+                        Some(b) => (
+                            vld1q_f32(b.as_ptr().add(ch)),
+                            vld1q_f32(b.as_ptr().add(ch + 4)),
+                        ),
+                        None => (zero, zero),
+                    };
+                    let mut a = [b0, b1, b0, b1, b0, b1, b0, b1];
+                    for ky in 0..g.kernel_h {
+                        let in_y = oy + ky - g.pad_top;
+                        let row =
+                            g.batch_base + (in_y * g.in_w + ox - g.pad_left) * g.channels + ch;
+                        let mut x = [zero; 16];
+                        for j in 0..g.kernel_w + 3 {
+                            let o = row + j * g.channels;
+                            x[2 * j] = vld1q_f32(inp.add(o));
+                            x[2 * j + 1] = vld1q_f32(inp.add(o + 4));
+                        }
+                        for kx in 0..g.kernel_w {
+                            let kb = (ky * g.kernel_w + kx) * g.channels + ch;
+                            let w0 = vld1q_f32(ker.add(kb));
+                            let w1 = vld1q_f32(ker.add(kb + 4));
+                            a[0] = vfmaq_f32(a[0], x[2 * kx], w0);
+                            a[1] = vfmaq_f32(a[1], x[2 * kx + 1], w1);
+                            a[2] = vfmaq_f32(a[2], x[2 * kx + 2], w0);
+                            a[3] = vfmaq_f32(a[3], x[2 * kx + 3], w1);
+                            a[4] = vfmaq_f32(a[4], x[2 * kx + 4], w0);
+                            a[5] = vfmaq_f32(a[5], x[2 * kx + 5], w1);
+                            a[6] = vfmaq_f32(a[6], x[2 * kx + 6], w0);
+                            a[7] = vfmaq_f32(a[7], x[2 * kx + 7], w1);
+                        }
+                    }
+                    if relu {
+                        a[0] = vmaxq_f32(a[0], zero);
+                        a[1] = vmaxq_f32(a[1], zero);
+                        a[2] = vmaxq_f32(a[2], zero);
+                        a[3] = vmaxq_f32(a[3], zero);
+                        a[4] = vmaxq_f32(a[4], zero);
+                        a[5] = vmaxq_f32(a[5], zero);
+                        a[6] = vmaxq_f32(a[6], zero);
+                        a[7] = vmaxq_f32(a[7], zero);
+                    }
+                    let o0 = ox * g.channels + ch;
+                    vst1q_f32(op.add(o0), a[0]);
+                    vst1q_f32(op.add(o0 + 4), a[1]);
+                    let o1 = o0 + g.channels;
+                    vst1q_f32(op.add(o1), a[2]);
+                    vst1q_f32(op.add(o1 + 4), a[3]);
+                    let o2 = o1 + g.channels;
+                    vst1q_f32(op.add(o2), a[4]);
+                    vst1q_f32(op.add(o2 + 4), a[5]);
+                    let o3 = o2 + g.channels;
+                    vst1q_f32(op.add(o3), a[6]);
+                    vst1q_f32(op.add(o3 + 4), a[7]);
+                    ch += 8;
+                }
+            }
+            if ch8 < g.channels {
+                for c in ox..ox + 4 {
+                    // SAFETY: as above; writes only the channel remainder.
+                    unsafe { dw_pixel_neon(input, kernel, bias, out_row, g, oy, c, relu) };
+                }
+            }
+            ox += 4;
+        }
+    }
+}
+
 /// Vectorizes across the channel dimension (4 channels per `float32x4_t`).
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]

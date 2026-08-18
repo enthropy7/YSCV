@@ -1259,6 +1259,68 @@ pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
         None
     };
 
+    // Stride-1 dm1: run whole output rows through the sliding-window tile
+    // kernel instead of the row kernel plus a per-pixel border epilogue. The
+    // border was costing more per pixel than the interior, and the row-at-a-time
+    // call structure held the tile loop below its standalone rate.
+    #[cfg(target_arch = "aarch64")]
+    if depth_multiplier == 1
+        && stride_h == 1
+        && stride_w == 1
+        && kernel_w + 3 <= 8
+        // Below this the tile loop loses to the row kernel: too few channel
+        // blocks to amortize the window, and the map is large enough that the
+        // whole thing is memory-bound anyway.
+        && channels >= 64
+        && matches!(activation, Activation::None | Activation::Relu)
+        && !cfg!(miri)
+        && crate::host_cpu().features.neon
+    {
+        note_conv_path(ConvKernelPath::DwNeon);
+        let mut output = AlignedVec::<f32>::uninitialized(output_len);
+        let geom = |batch_idx: usize| DwStride1 {
+            in_h,
+            in_w,
+            channels,
+            kernel_h,
+            kernel_w,
+            pad_top,
+            pad_left,
+            out_w,
+            batch_base: batch_idx * in_h * in_w * channels,
+        };
+        let relu = matches!(activation, Activation::Relu);
+        let rows = output.as_mut_slice();
+        for (batch_idx, item) in rows.chunks_mut(out_h * out_row_len).enumerate() {
+            let g = geom(batch_idx);
+            let run = |oy0: usize, chunk: &mut [f32]| {
+                // SAFETY: `chunk` holds whole output rows from `oy0`, and the
+                // gate above guarantees the kernel's shape preconditions.
+                #[allow(unsafe_code)]
+                unsafe {
+                    depthwise_nhwc_dm1_stride1_neon(
+                        in_data,
+                        kernel_data,
+                        bias_data,
+                        chunk,
+                        oy0,
+                        g,
+                        relu,
+                    );
+                }
+            };
+            if should_parallelize_len(output_len, config.min_parallel_elements, thread_pool) {
+                super::super::scope_ctx::par_chunks_mut_dispatch(item, out_row_len, |oy0, row| {
+                    run(oy0, row)
+                });
+            } else {
+                run(0, item);
+            }
+        }
+        return Tensor::from_aligned(vec![batch, out_h, out_w, out_channels], output)
+            .map_err(Into::into);
+    }
+
     // Interior pixels (the bulk) run the dm1 row kernel; the padded border is
     // a per-tap scalar epilogue. Report the interior kernel — or scalar when
     // depth_multiplier > 1 leaves no vectorised interior.
