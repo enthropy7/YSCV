@@ -17,6 +17,9 @@ pub(crate) fn run_onnx_model_jit(
     let use_counts_by_id = &model.runtime_index.use_counts_by_id;
     let output_id_mask = build_output_id_mask(model, &env, use_counts_by_id.len());
 
+    if runner_profile_active() {
+        runner_profile_note_inference();
+    }
     let do_profile = std::env::var("YSCV_PROFILE").is_ok();
     let mut conv_ns: u64 = 0;
     let mut other_ns: u64 = 0;

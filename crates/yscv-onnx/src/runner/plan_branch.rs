@@ -1545,7 +1545,13 @@ pub(crate) fn execute_plan_branch(
                     (n.name.clone(), n.op_type.clone(), in_sh, out_sh)
                 }
             };
-            runner_profile_record(&name, &op, elapsed, in_shape, out_shape);
+            // Unnamed nodes would otherwise all merge under the empty key.
+            let key = if name.is_empty() {
+                format!("{op}@{action_idx}")
+            } else {
+                name
+            };
+            runner_profile_record(&key, &op, elapsed, in_shape, out_shape);
         }
 
         // Early deallocation: static slice match covers fixed-arity variants.

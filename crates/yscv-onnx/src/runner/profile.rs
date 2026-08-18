@@ -88,6 +88,14 @@ pub(crate) fn runner_profile_active() -> bool {
     })
 }
 
+/// Inferences seen since process start, so the dump divides by what actually
+/// ran rather than guessing from per-node counts.
+static INFERENCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn runner_profile_note_inference() {
+    INFERENCES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn runner_profile_record(
     name: &str,
     op: &str,
@@ -176,7 +184,7 @@ pub fn dump_runner_profile(path: &str) -> Result<(), OnnxError> {
     // a single inference.
     let mut entries: Vec<(&String, &RunnerNodeStat)> = merged.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
-    let iters: u64 = entries.iter().map(|(_, s)| s.count).max().unwrap_or(1);
+    let iters: u64 = INFERENCES.load(std::sync::atomic::Ordering::Relaxed).max(1);
 
     let mut out = String::with_capacity(256 * entries.len());
     out.push_str("{\"engine\":\"yscv\",\"total_ms\":");
