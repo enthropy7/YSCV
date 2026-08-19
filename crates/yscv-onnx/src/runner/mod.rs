@@ -284,6 +284,26 @@ impl<'m> OnnxRunner<'m> {
         self.run_with_env(env)
     }
 
+    /// Run inference where the named inputs are already NHWC.
+    ///
+    /// A graph declares its image input NCHW, so the first conv transposes it —
+    /// a full pass over the frame before any arithmetic. A caller that produced
+    /// the tensor itself (a crop, a camera buffer) usually has it in NHWC
+    /// already and had to transpose it *to* NCHW to call [`Self::run`]. Naming
+    /// it here skips both passes; the tensor is passed with its NHWC shape.
+    pub fn run_nhwc(
+        &self,
+        inputs: &[(&str, &Tensor)],
+        nhwc: &[&str],
+    ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
+        let mut env =
+            TensorEnv::from_model_with_inputs(self.model, Some(RuntimeInputs::Slice(inputs)));
+        for name in nhwc {
+            env.mark_nhwc(name);
+        }
+        self.run_with_env(env)
+    }
+
     /// Run inference with owned inputs FxHashMap.
     pub fn run_owned(
         &self,
