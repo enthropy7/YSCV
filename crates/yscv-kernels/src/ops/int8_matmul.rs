@@ -495,13 +495,32 @@ unsafe fn widen_dot_1col(ap: *const i8, bp: *const i8, k: usize) -> i32 {
 // Branch targets in all three blocks below are numeric locals: Mach-O does not
 // treat a `.L` name as assembler-local, so a conditional branch to one is
 // rejected outright when the same source is assembled for Darwin.
+/// The C-visible spelling of an assembly symbol. Mach-O decorates every such
+/// symbol with a leading underscore, so a `global_asm!` block that defines the
+/// bare name links everywhere except Darwin, where the `extern "C"` declaration
+/// looks for `_name`. The `.S` kernels get this from `CNAME` in
+/// `src/asm/asm_common.h`; these blocks are not preprocessed, so they need it
+/// here.
+#[cfg(target_vendor = "apple")]
+macro_rules! cname {
+    ($name:literal) => {
+        concat!("_", $name)
+    };
+}
+#[cfg(not(target_vendor = "apple"))]
+macro_rules! cname {
+    ($name:literal) => {
+        $name
+    };
+}
+
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
+    ".text",
+    ".align 4",
+    concat!(".global ", cname!("yscv_mlal4x8_kernel")),
+    concat!(cname!("yscv_mlal4x8_kernel"), ":"),
     r#"
-    .text
-    .align 4
-    .global yscv_mlal4x8_kernel
-yscv_mlal4x8_kernel:
     movi v16.4s, #0
     movi v17.4s, #0
     movi v18.4s, #0
@@ -636,11 +655,11 @@ unsafe extern "C" {
 // scheduling, not a copy of their assembly.
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
+    ".text",
+    ".align 4",
+    concat!(".global ", cname!("yscv_gemm4x4_i8")),
+    concat!(cname!("yscv_gemm4x4_i8"), ":"),
     r#"
-    .text
-    .align 4
-    .global yscv_gemm4x4_i8
-yscv_gemm4x4_i8:
     stp  d8, d9, [sp, #-32]!
     stp  d10, d11, [sp, #16]
     add  x7,  x0, x1
@@ -941,11 +960,11 @@ unsafe fn neon_mlal_lane_gemm(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, 
 // j), x3=n (elems, B k-stride), x4=kp, x5=out (i32 row0), x6=ldo (bytes).
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
+    ".text",
+    ".align 4",
+    concat!(".global ", cname!("yscv_mlal4x16")),
+    concat!(cname!("yscv_mlal4x16"), ":"),
     r#"
-    .text
-    .align 4
-    .global yscv_mlal4x16
-yscv_mlal4x16:
     add  x7,  x0, x1
     add  x8,  x7, x1
     add  x9,  x8, x1
