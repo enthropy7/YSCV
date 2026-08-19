@@ -500,14 +500,15 @@ unsafe fn widen_dot_1col(ap: *const i8, bp: *const i8, k: usize) -> i32 {
 /// bare name links everywhere except Darwin, where the `extern "C"` declaration
 /// looks for `_name`. The `.S` kernels get this from `CNAME` in
 /// `src/asm/asm_common.h`; these blocks are not preprocessed, so they need it
-/// here.
-#[cfg(target_vendor = "apple")]
+/// here. Gated on the arch as well, or it is an unused macro on every other
+/// target.
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
 macro_rules! cname {
     ($name:literal) => {
         concat!("_", $name)
     };
 }
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))]
 macro_rules! cname {
     ($name:literal) => {
         $name
