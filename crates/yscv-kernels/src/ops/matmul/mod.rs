@@ -970,11 +970,17 @@ fn use_blocked_aarch64_low_k(m: usize, k: usize, n: usize, has_prepacked_b: bool
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
-            .unwrap_or(1_048_576)
+            .unwrap_or(65_536)
     });
+    // B does not have to arrive prepacked: at low k it is `k*n` floats against
+    // `m*k*n` multiply-accumulates, so packing it here is a few per cent when
+    // `m` is a small multiple of `k`. That matters because the fused PW+DW
+    // kernel calls this one output row at a time, with the weight as a plain
+    // slice — the shape the old gate turned away.
+    let b_pack_is_cheap = has_prepacked_b || 4 * k <= m;
     enabled
         && !cfg!(miri)
-        && has_prepacked_b
+        && b_pack_is_cheap
         && m >= BLOCKED_THRESHOLD
         && (16..BLOCKED_THRESHOLD).contains(&k)
         && n >= 2 * NR
