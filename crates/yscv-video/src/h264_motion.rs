@@ -1079,7 +1079,7 @@ unsafe fn hpel_c_avx2(
 /// position (dst_x, dst_y). The motion vector is in quarter-pel units and the
 /// prediction is written into `output` (clause 8.4.2.2.1).
 ///
-/// `reference` is the full padded plane ([`padded_plane_geometry`] layout with
+/// `reference` is the full padded plane (`padded_plane_geometry` layout with
 /// replicated edges); `output` is an origin-based view of the destination
 /// plane with row pitch `out_stride`.
 #[allow(clippy::too_many_arguments)]

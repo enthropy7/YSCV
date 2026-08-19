@@ -312,7 +312,7 @@ impl<'a> CabacDecoder<'a> {
         self.bit_cnt = 0;
     }
 
-    /// Reads one raw I_PCM sample byte (after [`align_to_byte`]).
+    /// Reads one raw I_PCM sample byte (after [`Self::align_to_byte`]).
     pub fn read_pcm_byte(&mut self) -> u8 {
         let b = self.data.get(self.offset).copied().unwrap_or(0);
         self.offset += 1;

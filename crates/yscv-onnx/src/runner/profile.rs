@@ -360,7 +360,7 @@ impl ProfileFilter {
 ///
 /// `YSCV_PROFILE_FILTER` narrows both the detail table and the JSON to a
 /// chosen op/name set (e.g. `Conv`, `Conv,MatMul`, `name:head`); see
-/// [`ProfileFilter`]. Unset, the profiler shows the Conv detail table and an
+/// `ProfileFilter`. Unset, the profiler shows the Conv detail table and an
 /// unfiltered JSON.
 pub fn profile_onnx_model_cpu(
     model: &OnnxModel,
