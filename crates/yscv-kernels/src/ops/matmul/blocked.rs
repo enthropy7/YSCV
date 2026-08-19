@@ -461,10 +461,13 @@ unsafe fn gebp_kernel_raw_mr8(
             continue;
         }
 
-        // Col tail (nr < 12). Fast-path the common `nr == 8` case through
-        // the 8x12 asm kernel + compact copy-back, otherwise fall back to
-        // the NR=12-layout-aware scalar microkernel.
-        if nr == NR && !has_residual && mr8_tail8_asm_enabled() {
+        // Col tail (nr < 12). B is packed in 12-column panels, so the asm
+        // kernel can compute the tail into a 12-wide scratch whatever the tail
+        // width is and the copy-back keeps the valid columns — the padded ones
+        // are never read. This used to fire only at nr == 8, which left the
+        // widths in between on the scalar microkernel: at m=1024 k=24 an n of
+        // 88 or 90 ran at half the rate of 84 or 96.
+        if nr < NR12 && !has_residual && mr8_tail8_asm_enabled() {
             for ir in (0..mc).step_by(MR8) {
                 let mr = MR8.min(mc - ir);
                 let a_off = (ir / MR8) * kc * MR8;
@@ -472,15 +475,15 @@ unsafe fn gebp_kernel_raw_mr8(
                 if mr == MR8 {
                     let mut tmp = [0.0f32; MR8 * NR12];
                     if accumulate {
-                        // Seed tmp with the current C values in the valid 8
-                        // cols; the extra 4 cols stay zero-padded.
+                        // Seed tmp with the current C values in the valid
+                        // columns; the padding stays zero.
                         for row in 0..MR8 {
-                            let src = std::slice::from_raw_parts(c_ptr.add(row * n), NR);
+                            let src = std::slice::from_raw_parts(c_ptr.add(row * n), nr);
                             let dst = std::slice::from_raw_parts_mut(
                                 tmp.as_mut_ptr().add(row * NR12),
                                 NR12,
                             );
-                            dst[..NR].copy_from_slice(src);
+                            dst[..nr].copy_from_slice(src);
                         }
                     }
                     // Bias/activation are handled below over the real 8-cols
@@ -517,22 +520,22 @@ unsafe fn gebp_kernel_raw_mr8(
                     for row in 0..MR8 {
                         let tmp_row =
                             std::slice::from_raw_parts_mut(tmp.as_mut_ptr().add(row * NR12), NR12);
-                        let out_row = std::slice::from_raw_parts_mut(c_ptr.add(row * n), NR);
+                        let out_row = std::slice::from_raw_parts_mut(c_ptr.add(row * n), nr);
                         if is_last_k {
                             let bias_slice = epilogue
                                 .bias
-                                .map(|b| std::slice::from_raw_parts(b.add(col_offset), NR));
+                                .map(|b| std::slice::from_raw_parts(b.add(col_offset), nr));
                             if bias_slice.is_some() || activation_id_row != 0 {
                                 super::super::simd::fused_row_epilogue_dispatch(
-                                    &mut tmp_row[..NR],
+                                    &mut tmp_row[..nr],
                                     None,
                                     bias_slice,
                                     activation_id_row,
-                                    NR,
+                                    nr,
                                 );
                             }
                         }
-                        out_row.copy_from_slice(&tmp_row[..NR]);
+                        out_row.copy_from_slice(&tmp_row[..nr]);
                     }
                 } else {
                     microkernel_scalar_nr12_partial_mr8(
