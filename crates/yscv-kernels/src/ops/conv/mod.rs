@@ -1277,7 +1277,10 @@ pub fn depthwise_conv2d_nhwc_padded_with_activation_with_config_and_pool(
         && crate::host_cpu().features.neon
     {
         note_conv_path(ConvKernelPath::DwNeon);
-        let mut output = AlignedVec::<f32>::uninitialized(output_len);
+        // SAFETY: the tile kernel and its per-pixel border sibling between them
+        // write every output element before it is read.
+        #[allow(unsafe_code)]
+        let mut output = unsafe { AlignedVec::<f32>::uninitialized(output_len) };
         let geom = |batch_idx: usize| DwStride1 {
             in_h,
             in_w,
