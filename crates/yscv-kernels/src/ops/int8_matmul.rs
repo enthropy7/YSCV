@@ -491,6 +491,10 @@ unsafe fn widen_dot_1col(ap: *const i8, bp: *const i8, k: usize) -> i32 {
 // plain `ld1`, and all 8 B rows load up front so the 64 SMLAL flow across 8
 // independent accumulator chains. Beats the widening kernel by up to ~1.7× on the
 // small-K (c_in ≤ 32) MobileNet pointwise convs; ties it on large K.
+//
+// Branch targets in all three blocks below are numeric locals: Mach-O does not
+// treat a `.L` name as assembler-local, so a conditional branch to one is
+// rejected outright when the same source is assembled for Darwin.
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
     r#"
@@ -510,7 +514,7 @@ yscv_mlal4x8_kernel:
     add  x8, x7, x1
     add  x9, x8, x1
     lsr  x10, x6, #3
-.Lyscv_k8:
+2:
     ld1  {{v0.8b}}, [x0], #8
     ld1  {{v1.8b}}, [x7], #8
     ld1  {{v2.8b}}, [x8], #8
@@ -594,7 +598,7 @@ yscv_mlal4x8_kernel:
     smlal2 v23.4s, v31.8h, v3.h[7]
     add  x2, x2, x3, lsl #3
     subs x10, x10, #1
-    b.ne .Lyscv_k8
+    b.ne 2b
     add  x12, x4, x5
     add  x13, x12, x5
     add  x14, x13, x5
@@ -662,8 +666,8 @@ yscv_gemm4x4_i8:
     movi v30.4s, #0
     movi v31.4s, #0
     lsr  x14, x4, #4
-    cbz  x14, .Lg4i_tail8
-.Lg4i_loop16:
+    cbz  x14, 3f
+2:
     ld1  {{v0.16b}}, [x0], #16
     ld1  {{v1.16b}}, [x7], #16
     ld1  {{v2.16b}}, [x8], #16
@@ -721,10 +725,10 @@ yscv_gemm4x4_i8:
     sadalp v30.4s, v10.8h
     sadalp v31.4s, v11.8h
     subs x14, x14, #1
-    b.ne .Lg4i_loop16
-.Lg4i_tail8:
+    b.ne 2b
+3:
     tst  x4, #8
-    b.eq .Lg4i_reduce
+    b.eq 4f
     ld1  {{v0.8b}}, [x0]
     ld1  {{v1.8b}}, [x7]
     ld1  {{v2.8b}}, [x8]
@@ -765,7 +769,7 @@ yscv_gemm4x4_i8:
     sadalp v29.4s, v9.8h
     sadalp v30.4s, v10.8h
     sadalp v31.4s, v11.8h
-.Lg4i_reduce:
+4:
     add  x14, x5, x6, lsl #2
     add  x15, x14, x6, lsl #2
     add  x16, x15, x6, lsl #2
@@ -967,7 +971,7 @@ yscv_mlal4x16:
     movi v31.4s, #0
     mov  x14, x4
     mov  x15, x2
-.Lm4x16_k8:
+2:
     ldr  d0, [x0], #8
     ldr  d1, [x7], #8
     ldr  d2, [x8], #8
@@ -1116,7 +1120,7 @@ yscv_mlal4x16:
     smlal v31.4s, v7.4h, v3.h[7]
     add  x15, x15, x13, lsl #3
     subs x14, x14, #8
-    b.ne .Lm4x16_k8
+    b.ne 2b
     st1  {{v16.4s, v17.4s, v18.4s, v19.4s}}, [x5]
     st1  {{v20.4s, v21.4s, v22.4s, v23.4s}}, [x10]
     st1  {{v24.4s, v25.4s, v26.4s, v27.4s}}, [x11]
