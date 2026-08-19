@@ -260,20 +260,10 @@ fn infer_conv(
     let n = input.dims[0];
     let ih = input.dims[2];
     let iw = input.dims[3];
-    let oc = if model.khwc_weights.contains(weight_name) {
-        w_shape[3]
-    } else if model.dw_khwc_weights.contains(weight_name) {
-        w_shape[2]
-    } else {
-        w_shape[0]
-    };
-    let (kh, kw) = if model.khwc_weights.contains(weight_name)
-        || model.dw_khwc_weights.contains(weight_name)
-    {
-        (w_shape[0], w_shape[1])
-    } else {
-        (w_shape[2], w_shape[3])
-    };
+    // ONNX-native `[O, I/G, KH, KW]`. Weights the kernels read channel-last are
+    // permuted into copies the plan owns; the initializer keeps this layout.
+    let oc = w_shape[0];
+    let (kh, kw) = (w_shape[2], w_shape[3]);
 
     let strides = ints_attr(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
     let dilations = ints_attr(node, Attr::Dilations).unwrap_or_else(|| vec![1, 1]);

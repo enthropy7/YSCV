@@ -12,7 +12,7 @@
 //! be introduced by adding a case to one table rather than a branch to a hot
 //! function.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
 use super::ConvParams;
@@ -40,48 +40,14 @@ pub(crate) struct ConvShape {
     pub has_prepack: bool,
 }
 
-/// Weight geometry as the conv dispatch reads it, accounting for the layouts
-/// the loader pre-permutes weights into.
-struct WeightGeometry {
-    out_channels: usize,
-    in_per_group: usize,
-    kernel_h: usize,
-    kernel_w: usize,
-}
-
-fn weight_geometry(
-    name: &str,
-    shape: &[usize],
-    group: usize,
-    khwc: &FxHashSet<String>,
-    dw_khwc: &FxHashSet<String>,
-    group_khwc: &FxHashSet<String>,
-) -> Option<WeightGeometry> {
-    if shape.len() != 4 {
-        return None;
-    }
-    let is_dw_khwc = group > 1 && dw_khwc.contains(name);
-    let is_group_khwc = group > 1 && group_khwc.contains(name);
-    let (out_channels, in_per_group, kernel_h, kernel_w) = if khwc.contains(name) {
-        (shape[3], shape[2], shape[0], shape[1])
-    } else if is_dw_khwc {
-        (shape[2].saturating_mul(shape[3]), 1, shape[0], shape[1])
-    } else if is_group_khwc {
-        (shape[0], shape[3], shape[1], shape[2])
-    } else {
-        (shape[0], shape[1], shape[2], shape[3])
-    };
-    Some(WeightGeometry {
-        out_channels,
-        in_per_group,
-        kernel_h,
-        kernel_w,
-    })
-}
-
 /// The `yscv-kernels` entry point each Conv node will dispatch to, indexed by
 /// node index. `None` for nodes that are not Convs, or whose weight is not a
 /// constant the plan can inspect.
+///
+/// Reads the weight as ONNX-native `[O, I/G, KH, KW]`. Prepacking runs after
+/// this and keeps its permuted copies to itself, so there is no layout to
+/// dispatch on — which is also why the kernel a Conv gets does not depend on
+/// whether its weight was prepacked.
 ///
 /// Does not cover the Apple BNNS path: that one is chosen before the input is
 /// converted to NHWC, from whether the input happens to already be NCHW, so it
@@ -90,9 +56,6 @@ pub(crate) fn resolve_conv_kernels(
     nodes: &[OnnxNode],
     conv_params: &[Option<ConvParams>],
     initializers: &FxHashMap<String, Tensor>,
-    khwc: &FxHashSet<String>,
-    dw_khwc: &FxHashSet<String>,
-    group_khwc: &FxHashSet<String>,
     prepacked: &FxHashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
 ) -> Vec<Option<ConvKernel>> {
     nodes
@@ -102,7 +65,9 @@ pub(crate) fn resolve_conv_kernels(
             let cp = conv_params.get(idx).and_then(|o| o.as_ref())?;
             let w_name = node.inputs.get(1)?;
             let shape = initializers.get(w_name)?.shape();
-            let g = weight_geometry(w_name, shape, cp.group, khwc, dw_khwc, group_khwc)?;
+            if shape.len() != 4 {
+                return None;
+            }
             Some(select_conv_kernel(&ConvShape {
                 group: cp.group,
                 has_padding: cp.has_padding,
@@ -112,10 +77,10 @@ pub(crate) fn resolve_conv_kernels(
                 pad_left: cp.pad_left,
                 pad_bottom: cp.pad_bottom,
                 pad_right: cp.pad_right,
-                out_channels: g.out_channels,
-                in_per_group: g.in_per_group,
-                kernel_h: g.kernel_h,
-                kernel_w: g.kernel_w,
+                out_channels: shape[0],
+                in_per_group: shape[1],
+                kernel_h: shape[2],
+                kernel_w: shape[3],
                 has_prepack: prepacked.contains_key(w_name),
             }))
         })

@@ -13,7 +13,7 @@ pub(crate) use yscv_tensor::{DType, Tensor};
 pub(crate) use crate::attr::Attr;
 pub(crate) use crate::error::OnnxError;
 use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
-pub(crate) use crate::plan::NodeKind;
+pub(crate) use crate::plan::{ConvWeightLayout, NodeKind};
 
 mod compare;
 pub(crate) mod conv;

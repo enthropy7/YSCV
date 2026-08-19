@@ -267,13 +267,8 @@ fn cost_conv(
         return;
     }
     let group = int_attr(node, Attr::Group).unwrap_or(1).max(1) as usize;
-    let (ic_per_group, kh, kw) = if model.khwc_weights.contains(weight_name) {
-        (w_shape[2], w_shape[0], w_shape[1])
-    } else if model.dw_khwc_weights.contains(weight_name) {
-        (1, w_shape[0], w_shape[1])
-    } else {
-        (w_shape[1], w_shape[2], w_shape[3])
-    };
+    // ONNX-native `[O, I/G, KH, KW]`; see `plan::prepack`.
+    let (ic_per_group, kh, kw) = (w_shape[1], w_shape[2], w_shape[3]);
     let kernel_work = if group == w_shape[0] && ic_per_group == 1 {
         kh.saturating_mul(kw)
     } else {

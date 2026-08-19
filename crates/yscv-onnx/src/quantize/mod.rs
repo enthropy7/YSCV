@@ -214,9 +214,6 @@ mod tests {
                 outputs: vec!["output".to_string()],
                 attributes: FxHashMap::default(),
             }],
-            khwc_weights: Default::default(),
-            dw_khwc_weights: Default::default(),
-            group_khwc_weights: Default::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };
@@ -272,9 +269,6 @@ mod tests {
                 m
             },
             nodes: vec![],
-            khwc_weights: Default::default(),
-            dw_khwc_weights: Default::default(),
-            group_khwc_weights: Default::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         };

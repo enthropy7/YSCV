@@ -205,9 +205,6 @@ mod tests {
                 outputs: vec!["y".to_string()],
                 attributes: attrs,
             }],
-            khwc_weights: Default::default(),
-            dw_khwc_weights: Default::default(),
-            group_khwc_weights: Default::default(),
             packed_int4_weights: Default::default(),
             runtime_index: Default::default(),
         }

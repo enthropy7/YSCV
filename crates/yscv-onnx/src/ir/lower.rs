@@ -12,9 +12,9 @@
 //! means fixing the loader and the exporter together, which is not this
 //! change's job.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
-use super::{Graph, Node, Op, ValueKind, WeightLayout};
+use super::{Graph, Node, Op, ValueKind};
 use crate::loader::{OnnxModel, OnnxNode};
 
 impl OnnxModel {
@@ -31,24 +31,6 @@ impl OnnxModel {
         for (name, tensor) in &self.initializers {
             let id = graph.value_by_name(name);
             graph.set_constant(id, tensor.clone());
-
-            // The loader pre-permutes conv weights and records which
-            // permutation in three side sets; passes that rewrite a weight need
-            // to know, because the output channel sits on a different axis in
-            // each. Carried on the value so they ask once instead of consulting
-            // three sets. See `ir::weight_layout`.
-            let layout = if self.khwc_weights.contains(name) {
-                WeightLayout::Khwc
-            } else if self.dw_khwc_weights.contains(name) {
-                WeightLayout::DepthwiseKhwc
-            } else if self.group_khwc_weights.contains(name) {
-                WeightLayout::GroupKhwc
-            } else {
-                WeightLayout::Oihw
-            };
-            if layout != WeightLayout::Oihw {
-                graph.set_weight_layout(id, layout);
-            }
         }
 
         let input_ids: Vec<_> = self
@@ -129,17 +111,10 @@ impl Graph {
 impl OnnxModel {
     /// Writes an optimized graph back over this model.
     ///
-    /// Rebuilds `nodes`, `initializers` and the loader's weight-layout side
-    /// tables from the IR. The runtime index is left alone — the driver rebuilds
-    /// it once after the whole pipeline.
-    ///
-    /// The side tables cannot be carried over by name. A pass that rewrites a
-    /// weight is free to give the result a new one, and the runtime reads the
-    /// tables by the name the Conv actually points at, so a renamed weight
-    /// silently reverts to being read as ONNX-native OIHW — a pre-permuted
-    /// depthwise `[KH, KW, C, 1]` then parses as `[O, I, KH, KW]`, and the
-    /// output-channel count comes back as the kernel height. `weight_layouts`
-    /// is keyed by value, survives the rename, and is the authority here.
+    /// Rebuilds `nodes` and `initializers` from the IR. The runtime index is
+    /// left alone — the driver rebuilds it once after the whole pipeline, and
+    /// that rebuild is what re-derives every conv weight's packed layout from
+    /// whatever names the passes left behind.
     pub(crate) fn apply_ir(&mut self, graph: &Graph) {
         let nodes: Vec<OnnxNode> = graph
             .node_ids()
@@ -147,28 +122,15 @@ impl OnnxModel {
             .collect();
 
         let mut initializers = FxHashMap::default();
-        let mut khwc_weights = FxHashSet::default();
-        let mut dw_khwc_weights = FxHashSet::default();
-        let mut group_khwc_weights = FxHashSet::default();
         for idx in 0..graph.value_count() {
-            let id = super::ValueId(idx as u32);
-            let value = graph.value(id);
+            let value = graph.value(super::ValueId(idx as u32));
             if let ValueKind::Constant(tensor) = &value.kind {
                 initializers.insert(value.name.clone(), tensor.clone());
-                match graph.weight_layout(id) {
-                    WeightLayout::Khwc => khwc_weights.insert(value.name.clone()),
-                    WeightLayout::DepthwiseKhwc => dw_khwc_weights.insert(value.name.clone()),
-                    WeightLayout::GroupKhwc => group_khwc_weights.insert(value.name.clone()),
-                    WeightLayout::Oihw => false,
-                };
             }
         }
 
         self.nodes = nodes;
         self.initializers = initializers;
-        self.khwc_weights = khwc_weights;
-        self.dw_khwc_weights = dw_khwc_weights;
-        self.group_khwc_weights = group_khwc_weights;
         self.inputs = graph
             .graph_inputs()
             .iter()

@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
 use crate::error::OnnxError;
-use crate::ir::{Changed, Graph, Node, NodeId, Op, Pass, ValueId, WeightLayout};
+use crate::ir::{Changed, Graph, Node, NodeId, Op, Pass, ValueId};
 use crate::loader::OnnxAttribute;
 
 /// Rewrites `ConvTranspose` with `kernel == stride` into `Conv 1x1` followed by
@@ -71,11 +71,6 @@ fn match_rewrite(graph: &Graph, node_id: NodeId) -> Option<Rewrite> {
     let data = (*node.inputs.first()?)?;
     let weight_value = (*node.inputs.get(1)?)?;
     let weight = graph.constant(weight_value)?;
-    // The rewrite reinterprets the weight's axes, so a pre-permuted one would
-    // be read against the wrong layout.
-    if graph.weight_layout(weight_value) != WeightLayout::Oihw {
-        return None;
-    }
 
     let shape = weight.shape();
     if shape.len() != 4 {

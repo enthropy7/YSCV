@@ -591,9 +591,7 @@ pub fn compile_gpu_plan_f16(
     let mut env = TensorEnv::from_model(model);
     let mut gc: GpuCache = std::mem::take(&mut weight_cache.0);
 
-    for (name, tensor) in &model.initializers {
-        env.insert(name.clone(), tensor.clone());
-    }
+    env.insert_model_weights(model);
     env.insert(input_name.to_string(), input_tensor.clone());
 
     let nodes = &model.nodes;

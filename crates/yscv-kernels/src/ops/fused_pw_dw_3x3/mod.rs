@@ -15,10 +15,10 @@
 //!
 //! - Input NHWC `[N, H, W, C_in]`, contiguous f32.
 //! - PW weight KHWC `[1, 1, C_in, C_exp]` (flattened `C_in * C_exp` f32).
-//!   Caller must hand us the pre-permuted KHWC form — this is what the
-//!   loader stores in `khwc_weights`.
-//! - DW weight `[KH=3, KW=3, C_exp, 1]` (flattened `9 * C_exp` f32). The
-//!   loader's `dw_khwc_weights` permutation.
+//!   Caller must hand us the pre-permuted KHWC form — in yscv-onnx that is
+//!   the copy `plan::prepack` makes.
+//! - DW weight `[KH=3, KW=3, C_exp, 1]` (flattened `9 * C_exp` f32), the
+//!   depthwise variant of the same prepack.
 //! - Output NHWC `[N, out_h, out_w, C_exp]`, pre-allocated.
 //! - Kernel is hard-wired to `KH=KW=3`, symmetric pad `pad_h=pad_w=1`,
 //!   stride `s ∈ {1, 2}` (both matter on tracker). Other shapes fall
@@ -469,10 +469,10 @@ use super::conv::pointwise_nx16_direct_rows;
 /// Arguments for [`fused_pw_expand_dw_pw_reduce_3x3`].
 pub struct FusedPwDwPwReduce<'a> {
     pub input: &'a [f32],
-    /// PW expand weight, KHWC `[c_in * c_exp]` flat (loader's `khwc_weights` form).
+    /// PW expand weight, KHWC `[c_in * c_exp]` flat (the prepacked form).
     pub pw_expand_weight: &'a [f32],
     pub pw_expand_bias: Option<&'a [f32]>,
-    /// DW weight, `[9 * c_exp]` flat (loader's `dw_khwc_weights` form).
+    /// DW weight, `[9 * c_exp]` flat (the prepacked depthwise form).
     pub dw_weight: &'a [f32],
     pub dw_bias: Option<&'a [f32]>,
     /// PW reduce weight prepacked as `[c_exp, c_out_padded]` row-major with
@@ -996,7 +996,7 @@ pub fn fused_pw_expand_dw_pw_reduce_3x3_nchwc_streaming(
     }
 }
 
-/// Pack DW weight `[3, 3, c, 1]` KHWC (loader's form) into the
+/// Pack DW weight `[3, 3, c, 1]` KHWC (the prepacked form) into the
 /// NCHWc-blocked layout `[c_blocks][9][16]` expected by
 /// [`compute_dw_row_nchwc_avx512`] and
 /// [`fused_pw_expand_dw_pw_reduce_3x3_nchwc_streaming`]. x86_64-only: the
@@ -1020,7 +1020,7 @@ pub fn pack_dw_weight_nchwc_blocked(khwc: &[f32], c: usize) -> Vec<f32> {
 }
 
 /// Pack KHWC PW-reduce weight `[c_out, 1, 1, c_exp]` (flat `c_out * c_exp` f32,
-/// the loader's standard form for 1×1 conv) into the row-major
+/// the prepacked form for 1×1 conv) into the row-major
 /// `[c_exp, c_out_padded]` layout expected by [`fused_pw_expand_dw_pw_reduce_3x3`].
 /// The trailing `c_out_padded - c_out` lanes per row are zero-filled so the
 /// AVX-512 inner kernel can write 16-lane chunks without explicit tail logic.

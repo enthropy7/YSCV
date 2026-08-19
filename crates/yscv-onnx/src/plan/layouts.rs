@@ -6,9 +6,6 @@
 //! once the plan is built. Deciding it here is what lets the runner stop
 //! re-deriving it from tensor shapes on every inference.
 
-use rustc_hash::FxHashMap;
-use yscv_tensor::Tensor;
-
 use super::NodeAction;
 use crate::loader::OnnxNode;
 
@@ -33,7 +30,7 @@ use crate::loader::OnnxNode;
 pub(crate) fn resolve_nchwc_handoff(
     plan: &[NodeAction],
     nodes: &[OnnxNode],
-    initializers: &FxHashMap<String, Tensor>,
+    conv_weight: impl Fn(&str) -> Option<Vec<usize>>,
 ) -> Vec<bool> {
     // The next action that actually runs. Absorbed nodes are left in the plan
     // as `Skip`, so a genuine chain can have them sitting between its links.
@@ -43,14 +40,13 @@ pub(crate) fn resolve_nchwc_handoff(
             .find(|a| !matches!(a, NodeAction::Skip))
     };
 
-    // Reads a weight shape the way the runtime does. Depthwise weights are
-    // already permuted to KHWC `[kH, kW, C, dm]` by this point, which is the
-    // layout the gate below is written against.
+    // Reads a weight shape the way the runtime does — the packed copy, since
+    // the gate below is written against depthwise KHWC `[kH, kW, C, dm]` and
+    // the initializer keeps ONNX-native OIHW.
     let weight_shape = |node: &OnnxNode, port: usize| -> Vec<usize> {
         node.inputs
             .get(port)
-            .and_then(|n| initializers.get(n))
-            .map(|t| t.shape().to_vec())
+            .and_then(|n| conv_weight(n))
             .unwrap_or_default()
     };
 

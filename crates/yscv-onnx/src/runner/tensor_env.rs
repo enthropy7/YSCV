@@ -21,12 +21,12 @@ pub(crate) struct TensorEnv<'m, 'i> {
     /// size). Used by the M3 enclave to skip nhwc↔nchwc conversions when
     /// adjacent FusedDwPw_AVX512 ops share NCHWc layout.
     nchwc_block_flags: Vec<u8>,
-    /// Slot IDs whose tensors have been pre-permuted from OIHW to KHWC.
-    khwc_weights: &'m FxHashSet<usize>,
-    /// Slot IDs whose depthwise weights were pre-permuted [O,1,KH,KW] → [KH,KW,C,dm].
-    dw_khwc_weights: &'m FxHashSet<usize>,
-    /// Slot IDs whose grouped-conv weights were pre-permuted [O,I/G,KH,KW] → [O,KH,KW,I/G].
-    group_khwc_weights: &'m FxHashSet<usize>,
+    /// Conv weights the plan permuted into the layout their kernel reads,
+    /// by slot id. Served in place of the initializer, which stays ONNX-native
+    /// OIHW so the passes can read it as the model wrote it.
+    prepacked_conv_weights: &'m [Option<Tensor>],
+    /// Which layout each of the above is in, by slot id.
+    conv_weight_layouts: &'m [ConvWeightLayout],
     /// Pre-packed blocked-GEMM B-matrices keyed by weight tensor name. Built
     /// once at model load (`build_runtime_index`). Hot path looks up by the
     /// Conv/MatMul's weight input name and hands the shared `Arc<PackedB>`
@@ -72,9 +72,10 @@ pub(crate) struct TensorEnv<'m, 'i> {
 pub(crate) struct ConstEvalTables {
     names: FxHashMap<String, usize>,
     use_counts: Vec<usize>,
-    /// Shared by all three weight-layout sets; a const-eval environment holds
-    /// no pre-permuted weights, so one empty set does for all of them.
-    weight_ids: FxHashSet<usize>,
+    /// A const-eval environment holds no prepacked weights, so both tables
+    /// are empty and every slot reads as ONNX-native.
+    prepacked_conv_weights: Vec<Option<Tensor>>,
+    conv_weight_layouts: Vec<ConvWeightLayout>,
     prepacked_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedB>>,
     prepacked_i8_weights: FxHashMap<String, std::sync::Arc<yscv_kernels::PackedI8B>>,
     prepacked_i8_depthwise: FxHashMap<String, std::sync::Arc<Vec<i8>>>,
@@ -118,9 +119,8 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             quant_slots: Vec::new(),
             nhwc_flags: Vec::new(),
             nchwc_block_flags: Vec::new(),
-            khwc_weights: &tables.weight_ids,
-            dw_khwc_weights: &tables.weight_ids,
-            group_khwc_weights: &tables.weight_ids,
+            prepacked_conv_weights: &tables.prepacked_conv_weights,
+            conv_weight_layouts: &tables.conv_weight_layouts,
             prepacked_weights: &tables.prepacked_weights,
             prepacked_i8_weights: &tables.prepacked_i8_weights,
             prepacked_i8_depthwise: &tables.prepacked_i8_depthwise,
@@ -150,9 +150,8 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             quant_slots: vec![None; num_slots],
             nhwc_flags: vec![false; num_slots],
             nchwc_block_flags: vec![0u8; num_slots],
-            khwc_weights: &model.runtime_index.khwc_weight_ids,
-            dw_khwc_weights: &model.runtime_index.dw_khwc_weight_ids,
-            group_khwc_weights: &model.runtime_index.group_khwc_weight_ids,
+            prepacked_conv_weights: &model.runtime_index.prepacked_conv_weights,
+            conv_weight_layouts: &model.runtime_index.conv_weight_layouts,
             prepacked_weights: &model.runtime_index.prepacked_weights,
             prepacked_i8_weights: &model.runtime_index.prepacked_i8_weights,
             prepacked_i8_depthwise: &model.runtime_index.prepacked_i8_depthwise,
@@ -243,15 +242,26 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             .or_else(|| self.static_name_to_id.get(name).copied())
     }
 
-    /// Look up a tensor by name. Falls back to model initializers if the
-    /// slot is empty (zero-copy access to weights).
+    /// Look up a tensor by name. Falls back to the model's weights if the slot
+    /// is empty (zero-copy access).
+    ///
+    /// A Conv weight the plan prepacked resolves to the permuted copy, not the
+    /// initializer: the permuted one is what the kernels read, and the
+    /// initializer deliberately keeps the ONNX-native layout for the passes.
     #[inline]
     pub(crate) fn get(&self, name: &str) -> Option<&Tensor> {
         let id = self.resolve_id(name)?;
         self.slots[id]
             .as_ref()
+            .or_else(|| self.prepacked_conv_weight(id))
             .or_else(|| self.initializers.get(name))
             .or_else(|| self.runtime_input(name))
+    }
+
+    /// The permuted copy of the Conv weight in this slot, if the plan made one.
+    #[inline]
+    fn prepacked_conv_weight(&self, id: usize) -> Option<&Tensor> {
+        self.prepacked_conv_weights.get(id)?.as_ref()
     }
 
     /// Direct slot removal by pre-resolved ID — O(1), no FxHashMap lookup.
@@ -275,6 +285,24 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     /// allocated dynamically (this handles temporary names created by
     /// quantization ops, etc.).
     #[inline]
+    /// Seeds every model weight into its slot, preferring the packed copy.
+    ///
+    /// The accelerator paths pre-populate the environment rather than relying
+    /// on the lazy fallback in [`Self::get`]. Inserting the raw initializer
+    /// would put ONNX-native bytes into a slot that
+    /// [`Self::conv_weight_layout`] describes as channel-last, and the reader
+    /// believes the layout — so the two have to be seeded together.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn insert_model_weights(&mut self, model: &'m OnnxModel) {
+        for (name, tensor) in &model.initializers {
+            let packed = self
+                .resolve_id(name)
+                .and_then(|id| self.prepacked_conv_weight(id))
+                .cloned();
+            self.insert(name.clone(), packed.unwrap_or_else(|| tensor.clone()));
+        }
+    }
+
     pub(crate) fn insert(&mut self, name: String, tensor: Tensor) {
         crate::quantize::calibrate::record_activation(&name, &tensor);
         if let Some(id) = self.resolve_id(&name) {
@@ -526,7 +554,9 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut Tensor> {
         let id = self.resolve_id(name)?;
         if self.slots[id].is_none()
-            && let Some(t) = self.initializers.get(name)
+            && let Some(t) = self
+                .prepacked_conv_weight(id)
+                .or_else(|| self.initializers.get(name))
         {
             self.slots[id] = Some(t.clone());
         } else if self.slots[id].is_none()
@@ -551,9 +581,8 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             quant_slots: self.quant_slots.clone(),
             nhwc_flags: self.nhwc_flags.clone(),
             nchwc_block_flags: self.nchwc_block_flags.clone(),
-            khwc_weights: self.khwc_weights,
-            dw_khwc_weights: self.dw_khwc_weights,
-            group_khwc_weights: self.group_khwc_weights,
+            prepacked_conv_weights: self.prepacked_conv_weights,
+            conv_weight_layouts: self.conv_weight_layouts,
             prepacked_weights: self.prepacked_weights,
             prepacked_i8_weights: self.prepacked_i8_weights,
             prepacked_i8_depthwise: self.prepacked_i8_depthwise,
@@ -628,6 +657,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         }
         self.slots[id]
             .take()
+            .or_else(|| self.prepacked_conv_weight(id).cloned())
             .or_else(|| self.initializers.get(name).cloned())
             .or_else(|| self.runtime_input(name).cloned())
     }
@@ -650,27 +680,39 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
         }
     }
 
+    /// The layout the weight at `name` is stored in.
+    ///
+    /// `Oihw` covers both "not a conv weight" and "the plan declined to
+    /// prepack this one" — a dynamic kernel, a non-rank-4 tensor, or an
+    /// accelerator build. Those repack per inference, so the distinction does
+    /// not matter to a caller: what it must not do is read a weight as a layout
+    /// this did not report.
+    #[inline]
+    pub(crate) fn conv_weight_layout(&self, name: &str) -> ConvWeightLayout {
+        self.resolve_id(name)
+            .and_then(|id| self.conv_weight_layouts.get(id))
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// Returns true if the tensor has been pre-permuted to KHWC format.
     #[inline]
     pub(crate) fn is_khwc_weight(&self, name: &str) -> bool {
-        self.resolve_id(name)
-            .is_some_and(|id| self.khwc_weights.contains(&id))
+        self.conv_weight_layout(name) == ConvWeightLayout::Khwc
     }
 
     /// Returns true if the depthwise conv weight has been pre-permuted to
     /// `[KH, KW, C, depth_multiplier]` format at load time.
     #[inline]
     pub(crate) fn is_dw_khwc_weight(&self, name: &str) -> bool {
-        self.resolve_id(name)
-            .is_some_and(|id| self.dw_khwc_weights.contains(&id))
+        self.conv_weight_layout(name) == ConvWeightLayout::DepthwiseKhwc
     }
 
     /// Returns true if grouped conv weight has been pre-permuted to
     /// `[O, KH, KW, I/G]` format at load time.
     #[inline]
     pub(crate) fn is_group_khwc_weight(&self, name: &str) -> bool {
-        self.resolve_id(name)
-            .is_some_and(|id| self.group_khwc_weights.contains(&id))
+        self.conv_weight_layout(name) == ConvWeightLayout::GroupKhwc
     }
 
     /// Create a zero-copy alias: remap `alias_name` to the same slot as
@@ -682,11 +724,13 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
             Some(id) => id,
             None => return,
         };
-        // If the target lives only in `initializers`, materialize it into the
-        // slot so the alias name can resolve via `get()` — which otherwise
+        // If the target lives only in the model's weights, materialize it into
+        // the slot so the alias name can resolve via `get()` — which otherwise
         // would fall back to `initializers.get(alias_name)` and miss.
         if self.slots[target_id].is_none()
-            && let Some(t) = self.initializers.get(target_name)
+            && let Some(t) = self
+                .prepacked_conv_weight(target_id)
+                .or_else(|| self.initializers.get(target_name))
         {
             self.slots[target_id] = Some(t.clone());
         } else if self.slots[target_id].is_none()
