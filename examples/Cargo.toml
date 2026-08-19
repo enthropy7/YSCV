@@ -26,6 +26,7 @@ yscv-onnx = { path = "../crates/yscv-onnx" }
 yscv-pipeline = { path = "../crates/yscv-pipeline" }
 thiserror.workspace = true
 rustc-hash.workspace = true
+mimalloc.workspace = true
 
 [[example]]
 name = "classify_image"

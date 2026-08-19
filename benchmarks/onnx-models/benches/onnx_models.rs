@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use yscv_onnx::{OnnxModel, OnnxRunner, load_onnx_model_from_file, optimize_onnx_graph};
 use yscv_onnx_model_bench::{asset_dir, download_assets, make_inputs, model_cases};

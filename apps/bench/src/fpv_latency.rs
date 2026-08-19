@@ -13,6 +13,9 @@
 //! can model a real board's timing distribution without requiring that
 //! HW to be physically attached.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};

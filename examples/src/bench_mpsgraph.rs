@@ -5,6 +5,9 @@
 //!
 //! Also supports YOLO models from slowwork/ when no arg is given.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
 fn main() {
     eprintln!("bench_mpsgraph requires macOS with the metal-backend feature");

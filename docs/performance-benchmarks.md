@@ -259,6 +259,13 @@ NEON polynomial approximations trading a float-tolerance error for speed.
 - **Single-op:** p50 of 1000 iterations after 200 warmup (300 on the A53), each
   op isolated in its own process to avoid cross-op cache/allocator contamination.
 - **Ratios** are `competitor / yscv`; >1.0 means yscv is faster.
+- **Allocator caveat:** the tables above were captured while only `apps/bench`
+  and `benchmarks/onnx-models`' own binary installed mimalloc; the `compute_gap`
+  and `bench_tracker` harnesses that produced the single-op and tracker numbers
+  still ran on the system allocator, as did the tract competitor harness. All
+  harnesses now install mimalloc uniformly, so these numbers need a re-run
+  before they can be compared against post-unification measurements.
+  This needs to be removed once re-measured.
 - All landings in the kernel path are bitwise-identical or 1-ULP-close to the
   reference; the suite builds clean on x86_64 + aarch64 and passes with and
   without BLAS.
@@ -750,7 +757,8 @@ for the full when-to-enable / when-to-disable BLAS checklist.
 - **AlignedVec::uninitialized** — skip output zeroing in hot paths
 - **ImageU8/ImageF32** — zero-overhead wrappers bypass Tensor allocation
 - **GCD dispatch_apply** — macOS near-zero threading (~0.3µs)
-- **mimalloc** — thread-local arena pools
+- **mimalloc** — thread-local arena pools, installed by the bench harnesses (not
+  by the library crates; see [architecture.md](architecture.md#memory-patterns))
 - **Fused kernels** — single-pass softmax, sigmoid, attention
 - **im2col + BLAS** — Accelerate/OpenBLAS for matmul/conv2d/conv3d
 - **Flash Attention** — tiled O(Br×Bc) memory, online softmax

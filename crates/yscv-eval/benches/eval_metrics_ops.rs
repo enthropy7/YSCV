@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::time::Duration;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};

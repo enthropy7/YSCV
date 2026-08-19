@@ -1,6 +1,9 @@
 //! Benchmark competitor ONNX runtimes (tract, candle) against yscv.
 //! Outputs JSON timing results for automated comparison.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::time::Instant;
 
 fn main() {

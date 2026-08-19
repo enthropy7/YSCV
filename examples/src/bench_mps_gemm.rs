@@ -1,6 +1,9 @@
 //! Benchmark: MPS GEMM vs custom Metal matmul/conv kernel on representative YOLOv8n sizes.
 //! Tests pure GEMM (1x1 conv equivalent) performance.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
 fn main() {
     eprintln!("bench_mps_gemm requires macOS with the metal-backend feature");

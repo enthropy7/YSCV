@@ -20,7 +20,7 @@ yscv-video = { path = "../../crates/yscv-video" }
 yscv-detect = { path = "../../crates/yscv-detect" }
 yscv-track = { path = "../../crates/yscv-track" }
 yscv-optim = { path = "../../crates/yscv-optim" }
-mimalloc = { version = "0.1", default-features = false }
+mimalloc.workspace = true
 
 [[bin]]
 name = "yscv-bench"

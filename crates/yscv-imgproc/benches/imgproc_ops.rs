@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use yscv_imgproc::{
     box_blur_3x3, flip_horizontal, flip_vertical, normalize, resize_nearest, rgb_to_grayscale,

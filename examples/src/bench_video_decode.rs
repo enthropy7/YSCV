@@ -5,6 +5,9 @@
 //! `--luma-only` skips YUV-to-RGB for fair comparison with ffmpeg `-f null`.
 //! `--hw` uses hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation).
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::Path;
 use std::time::Instant;
 
