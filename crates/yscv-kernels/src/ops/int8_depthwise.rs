@@ -426,7 +426,7 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
     // in i16 with vmlal_s8, cutting the 2-cycle widen (vaddw) count per MAC.
     // Two independent pairs are interleaved so their vmull->vmlal->vaddw chains
     // overlap (a lone vmlal chain serialises and loses on the in-order A53).
-    let weight_pairs_safe = !weight.iter().any(|&w| w == i8::MIN);
+    let weight_pairs_safe = !weight.contains(&i8::MIN);
     // Relative tap offsets for a fully in-bounds (interior) pixel: the input
     // offset of tap (ky,kx) is `base_in + rel[t].0` where `base_in` is the
     // window's top-left offset, and `w_base = rel[t].1` is pixel-independent.

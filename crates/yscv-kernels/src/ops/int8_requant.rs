@@ -834,7 +834,7 @@ unsafe fn requant_i8_dq_hardswish_q_neon(
         let mut i = 0;
         while i < main {
             let q16 = vmovl_s8(vld1_s8(input.as_ptr().add(i)));
-            let mut chunk = |f32x4: float32x4_t| -> int16x4_t {
+            let chunk = |f32x4: float32x4_t| -> int16x4_t {
                 let f = vmulq_f32(vsubq_f32(f32x4, v_zp_in), v_sin);
                 let hs = vminq_f32(
                     vmaxq_f32(vaddq_f32(vmulq_f32(v_alpha, f), v_beta), zero),

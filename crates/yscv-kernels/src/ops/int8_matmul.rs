@@ -1380,11 +1380,11 @@ unsafe fn neon_widen_gemm(a: &[i8], bt: &[i8], m: usize, k: usize, n: usize, out
         // the (constant) weights; the scan is O(N·K), amortized over the O(M·N·K)
         // GEMM. This is the only thing that gives INT8 a real edge over f32 FMLA
         // on ARMv8.0 without dotprod (both are otherwise 4 MACs/instruction).
-        let pairs_safe = !bt.iter().any(|&w| w == i8::MIN);
+        let pairs_safe = !bt.contains(&i8::MIN);
         // Hand-scheduled asm 4×4 core beats this compiled loop by ~1.3× when it
         // applies: pairing is overflow-safe (no i8::MIN weight) and K is a
         // multiple of 8 (the kernel consumes 16- then 8-wide K blocks).
-        if pairs_safe && k >= 8 && k % 8 == 0 {
+        if pairs_safe && k >= 8 && k.is_multiple_of(8) {
             neon_gemm4x4_asm(a, bt, m, k, n, out);
             return;
         }
