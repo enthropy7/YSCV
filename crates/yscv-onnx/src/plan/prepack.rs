@@ -192,7 +192,9 @@ pub(super) fn prepack_conv_weights(
     for (idx, node) in nodes.iter().enumerate() {
         let is_conv = matches!(
             node_kinds.get(idx),
-            Some(NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu)
+            Some(
+                NodeKind::Conv | NodeKind::ConvRelu | NodeKind::ConvSilu | NodeKind::ConvHardSwish
+            )
         );
         if !is_conv || node.inputs.len() < 2 {
             continue;
