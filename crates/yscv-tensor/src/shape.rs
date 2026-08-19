@@ -1,17 +1,32 @@
+use super::tensor::{DimsVec, INLINE_CAP};
+
 pub(crate) fn shape_element_count(shape: &[usize]) -> Option<usize> {
     shape
         .iter()
         .try_fold(1usize, |acc, dim| acc.checked_mul(*dim))
 }
 
-pub(crate) fn compute_strides(shape: &[usize]) -> Option<Vec<usize>> {
+pub(crate) fn compute_strides(shape: &[usize]) -> Option<DimsVec> {
+    if shape.len() <= INLINE_CAP {
+        let mut buf = [0usize; INLINE_CAP];
+        let mut stride = 1usize;
+        for axis in (0..shape.len()).rev() {
+            buf[axis] = stride;
+            stride = stride.checked_mul(shape[axis])?;
+        }
+        return Some(DimsVec::Inline {
+            buf,
+            len: shape.len() as u8,
+        });
+    }
+
     let mut strides = vec![0usize; shape.len()];
     let mut stride = 1usize;
     for axis in (0..shape.len()).rev() {
         strides[axis] = stride;
         stride = stride.checked_mul(shape[axis])?;
     }
-    Some(strides)
+    Some(DimsVec::Heap(strides))
 }
 
 pub(crate) fn broadcast_shape(left: &[usize], right: &[usize]) -> Option<Vec<usize>> {
