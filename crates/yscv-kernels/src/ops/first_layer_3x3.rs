@@ -80,8 +80,8 @@ fn first_layer_par_disabled() -> bool {
 /// Default ON: the 4-pixel NEON tile broadcasts each RGB channel with vdupq_n
 /// (an ld1r on the NEON pipe, competing with the FMAs). The by-lane path loads
 /// a pixel's 3 channels per vld1q and feeds fmla-by-lane, off the NEON pipe.
-/// `YSCV_FIRST_BYLANE_OFF` reverts. (aarch64 only; mirrors the reduce kernel.)
-#[cfg(target_arch = "aarch64")]
+/// `YSCV_FIRST_BYLANE_OFF` reverts. Mirrors the reduce kernel.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 fn first_bylane() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::env::var_os("YSCV_FIRST_BYLANE_OFF").is_none())
@@ -295,7 +295,7 @@ fn select_variant(
             return avx2_run_rows_entry;
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if !cfg!(miri) && c_out.is_multiple_of(4) && crate::host_cpu().features.neon {
             return neon_run_rows_entry;
@@ -399,7 +399,7 @@ fn avx2_run_rows_entry(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(clippy::too_many_arguments)]
 fn neon_run_rows_entry(
     input: &[f32],
@@ -1284,11 +1284,14 @@ mod avx512 {
     }
 }
 
-// ── NEON (aarch64) ───────────────────────────────────────────────────
-#[cfg(target_arch = "aarch64")]
+// ── NEON (aarch64 + armv7) ───────────────────────────────────────────
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 mod neon {
     use super::*;
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     /// NEON implementation — 4-wide lanes. For c_out=16 this is 4 q-regs
     /// per output pixel. Interior pixels skip bounds check.
@@ -1397,22 +1400,54 @@ mod neon {
                                                 let w1 = vld1q_f32(wb.add(4));
                                                 let w2 = vld1q_f32(wb.add(8));
                                                 let w3 = vld1q_f32(wb.add(12));
-                                                a00 = vfmaq_laneq_f32::<$lane>(a00, w0, av0);
-                                                a01 = vfmaq_laneq_f32::<$lane>(a01, w1, av0);
-                                                a02 = vfmaq_laneq_f32::<$lane>(a02, w2, av0);
-                                                a03 = vfmaq_laneq_f32::<$lane>(a03, w3, av0);
-                                                a10 = vfmaq_laneq_f32::<$lane>(a10, w0, av1);
-                                                a11 = vfmaq_laneq_f32::<$lane>(a11, w1, av1);
-                                                a12 = vfmaq_laneq_f32::<$lane>(a12, w2, av1);
-                                                a13 = vfmaq_laneq_f32::<$lane>(a13, w3, av1);
-                                                a20 = vfmaq_laneq_f32::<$lane>(a20, w0, av2);
-                                                a21 = vfmaq_laneq_f32::<$lane>(a21, w1, av2);
-                                                a22 = vfmaq_laneq_f32::<$lane>(a22, w2, av2);
-                                                a23 = vfmaq_laneq_f32::<$lane>(a23, w3, av2);
-                                                a30 = vfmaq_laneq_f32::<$lane>(a30, w0, av3);
-                                                a31 = vfmaq_laneq_f32::<$lane>(a31, w1, av3);
-                                                a32 = vfmaq_laneq_f32::<$lane>(a32, w2, av3);
-                                                a33 = vfmaq_laneq_f32::<$lane>(a33, w3, av3);
+                                                a00 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a00, w0, av0,
+                                                );
+                                                a01 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a01, w1, av0,
+                                                );
+                                                a02 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a02, w2, av0,
+                                                );
+                                                a03 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a03, w3, av0,
+                                                );
+                                                a10 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a10, w0, av1,
+                                                );
+                                                a11 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a11, w1, av1,
+                                                );
+                                                a12 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a12, w2, av1,
+                                                );
+                                                a13 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a13, w3, av1,
+                                                );
+                                                a20 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a20, w0, av2,
+                                                );
+                                                a21 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a21, w1, av2,
+                                                );
+                                                a22 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a22, w2, av2,
+                                                );
+                                                a23 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a23, w3, av2,
+                                                );
+                                                a30 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a30, w0, av3,
+                                                );
+                                                a31 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a31, w1, av3,
+                                                );
+                                                a32 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a32, w2, av3,
+                                                );
+                                                a33 = crate::core::ops::fmaq_lane_neon::<$lane>(
+                                                    a33, w3, av3,
+                                                );
                                             }};
                                         }
                                         fma16_c!(0, 0);

@@ -1,3 +1,39 @@
+/// `vfmaq_laneq_f32` for both ARM arches: `acc + a * b[L]`.
+///
+/// ARMv7 has no q-register lane form of the fused multiply-add — its lane
+/// operand comes from a d-register, so only two of the four lanes are
+/// addressable. Broadcasting the lane first reaches all four, and the multiply
+/// stays fused, so both arches produce the same value.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn fmaq_lane_neon<const L: i32>(
+    acc: core::arch::aarch64::float32x4_t,
+    a: core::arch::aarch64::float32x4_t,
+    b: core::arch::aarch64::float32x4_t,
+) -> core::arch::aarch64::float32x4_t {
+    core::arch::aarch64::vfmaq_laneq_f32::<L>(acc, a, b)
+}
+
+/// See the aarch64 form above.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn fmaq_lane_neon<const L: i32>(
+    acc: core::arch::arm::float32x4_t,
+    a: core::arch::arm::float32x4_t,
+    b: core::arch::arm::float32x4_t,
+) -> core::arch::arm::float32x4_t {
+    use core::arch::arm::*;
+    vfmaq_f32(acc, a, vdupq_n_f32(vgetq_lane_f32::<L>(b)))
+}
+
 /// `x / d` where `d` is the same for the whole pass, without the divide: an
 /// A53's `FDIV.4S` is ~29 cycles and does not pipeline, so on a per-element
 /// quantize it costs more than the arithmetic it serves. `r` is `fl(1/d)`;
