@@ -51,7 +51,7 @@ pub enum ConvKernelPath {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     DwSse,
     /// Depthwise per-row NEON kernel (depth_multiplier=1).
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     DwNeon,
     /// Depthwise scalar fallback (depth_multiplier>1, tiny channels, or no SIMD).
     DwScalar,
@@ -79,7 +79,7 @@ impl ConvKernelPath {
             ConvKernelPath::DwAvx => "dw-avx",
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             ConvKernelPath::DwSse => "dw-sse",
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
             ConvKernelPath::DwNeon => "dw-neon",
             ConvKernelPath::DwScalar => "dw-scalar",
         }

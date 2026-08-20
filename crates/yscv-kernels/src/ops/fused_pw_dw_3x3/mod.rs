@@ -1903,7 +1903,7 @@ fn select_variant(c_exp: usize) -> Variant {
             };
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         let cpu = crate::host_cpu();
         // Microarch refinement hook (later phase): the column-reuse DW asm
@@ -1911,7 +1911,7 @@ fn select_variant(c_exp: usize) -> Variant {
         // `cpu.uarch.is_in_order()` (Cortex-A53/A55) is where a future split
         // selects it vs a plain-NEON variant for out-of-order cores. For now
         // every NEON core takes the same kernel — the asm stays env-gated
-        // inside it — so this is behaviourally identical to before.
+        // inside it, and is compiled out entirely on 32-bit ARM.
         if c_exp.is_multiple_of(4) && !cfg!(miri) && cpu.features.neon {
             return Variant {
                 compute_pw_row: neon::compute_pw_row_neon,
@@ -2386,7 +2386,7 @@ fn select_dw5_variant(c_exp: usize) -> Dw5Variant {
             };
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         let cpu = crate::host_cpu();
         // In-order cores (cpu.uarch.is_in_order()) drive the column-reuse DW5
@@ -2420,7 +2420,7 @@ fn select_tile_variant(c_exp: usize) -> TileVariant {
             };
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         let cpu = crate::host_cpu();
         if c_exp.is_multiple_of(4) && !cfg!(miri) && cpu.features.neon {
@@ -2459,9 +2459,9 @@ mod avx2;
 #[cfg(target_arch = "x86_64")]
 mod avx512;
 
-// ── NEON (aarch64) ────────────────────────────────────────────────────
+// ── NEON (aarch64 + armv7) ────────────────────────────────────────────
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 mod neon;
 
 // ── Tests: SIMD variants vs scalar reference ─────────────────────────

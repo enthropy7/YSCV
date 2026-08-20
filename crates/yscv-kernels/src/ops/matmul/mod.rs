@@ -408,7 +408,7 @@ pub(crate) unsafe fn dw3s2_creuse_neon(
 /// streaming PW-expand uses this — the broadcast kernel runs ~2.4× slower on
 /// the same `[in_w, c_in] × [c_in, c_exp]` shape. B-pack is cached by pointer
 /// via `get_or_pack_b`, so the per-row calls share one packed weight.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 pub fn matmul_2d_slices_blocked_fused(
     a: &[f32],
     m: usize,
@@ -421,6 +421,7 @@ pub fn matmul_2d_slices_blocked_fused(
     // The pipelined 8×8 microkernel (full A+B double-buffer) runs ~10% over the
     // 8×12/4×16 kernels on these PW shapes by hiding the load-to-use latency.
     // Gated to no-residual, n%8==0 (the M tail falls back inside the driver).
+    #[cfg(target_arch = "aarch64")]
     if !blocked_8x8_disabled() && n.is_multiple_of(8) && epilogue.residual.is_none() && m >= 1 {
         blocked::blocked_gemm_8x8(a, b, out, m, k, n, epilogue);
         return;

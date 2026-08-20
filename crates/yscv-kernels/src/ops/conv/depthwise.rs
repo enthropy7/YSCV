@@ -27,14 +27,14 @@ pub(super) fn depthwise_tap_fma(out: &mut [f32], inp: &[f32], ker: &[f32]) {
             return;
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         #[allow(unsafe_code)]
         unsafe {
             depthwise_tap_fma_neon(out, inp, ker);
         }
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7"))))]
     #[allow(clippy::needless_range_loop)]
     for i in 0..out.len() {
         out[i] += inp[i] * ker[i];
@@ -168,11 +168,14 @@ unsafe fn depthwise_tap_fma_avx_fma(out: &mut [f32], inp: &[f32], ker: &[f32]) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn depthwise_tap_fma_neon(out: &mut [f32], inp: &[f32], ker: &[f32]) {
+    #[cfg(target_arch = "aarch64")]
     use core::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use core::arch::arm::*;
     let n = out.len();
     let op = out.as_mut_ptr();
     let ip = inp.as_ptr();
@@ -801,9 +804,9 @@ pub(super) unsafe fn depthwise_nhwc_dm1_stride1_neon(
 }
 
 /// Vectorizes across the channel dimension (4 channels per `float32x4_t`).
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn depthwise_conv2d_nhwc_row_neon(
     input: &[f32],
     kernel: &[f32],
@@ -813,7 +816,10 @@ unsafe fn depthwise_conv2d_nhwc_row_neon(
     out_row: &mut [f32],
     activation: Activation,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use core::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use core::arch::arm::*;
 
     let batch_idx = row_idx / plan.out_h;
     let out_y = row_idx % plan.out_h;
@@ -2138,7 +2144,7 @@ pub(super) enum DwRowKind {
     Avx,
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     Sse,
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     Neon,
     Scalar,
 }
@@ -2154,7 +2160,7 @@ impl DwRowKind {
             DwRowKind::Avx => super::ConvKernelPath::DwAvx,
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             DwRowKind::Sse => super::ConvKernelPath::DwSse,
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
             DwRowKind::Neon => super::ConvKernelPath::DwNeon,
             DwRowKind::Scalar => super::ConvKernelPath::DwScalar,
         }
@@ -2172,6 +2178,9 @@ pub(super) fn dw_row_kind(plan: DepthwiseConv2dPlan) -> DwRowKind {
         if crate::host_cpu().features.neon {
             return DwRowKind::Neon;
         }
+        // No runtime probe on 32-bit ARM; the feature is the declaration.
+        #[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+        return DwRowKind::Neon;
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             // AVX-512 DW row kernel, with `YSCV_AVX512_DW_OFF=1` kill-switch.
@@ -2202,7 +2211,7 @@ pub(super) fn depthwise_conv2d_nhwc_row(
     activation: Activation,
 ) {
     match dw_row_kind(plan) {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         DwRowKind::Neon => {
             // SAFETY: NEON selected only when detected; pointers bounded by plan
             // dimensions validated at entry. Each output element written once.

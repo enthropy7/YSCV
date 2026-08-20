@@ -1,7 +1,10 @@
-//! aarch64 NEON fused PW-expand→DW kernels.
+//! ARM NEON fused PW-expand→DW kernels.
 
 use super::{Dw5RowCtx, Dw5TileCtx, PwTileCtx};
+#[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
+#[cfg(target_arch = "arm")]
+use std::arch::arm::*;
 const NEON_TILE_CHUNKS: usize = 8;
 
 #[inline]
@@ -18,6 +21,11 @@ fn pw_gemm_disabled() -> bool {
 }
 
 #[inline]
+// The column-reuse tiles below are hand-written aarch64 assembly (src/asm/
+// aarch64.S). 32-bit ARM has no such file, so every one of them — this
+// switch, the row pointers they take and their call sites — is compiled out
+// there and the per-tap intrinsics path is the only one.
+#[cfg(target_arch = "aarch64")]
 fn dw5_asm_disabled() -> bool {
     static C: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *C.get_or_init(|| std::env::var_os("YSCV_DW5_ASM_OFF").is_some())
@@ -311,6 +319,7 @@ unsafe fn compute_dw_row_neon_inner(
         let rows = [row0, row1, row2];
 
         // Column-reuse asm interior path: stride 2, all 3 ring rows present.
+        #[cfg(target_arch = "aarch64")]
         let interior_rows: Option<[*const f32; 3]> = if stride == 2 && !dw5_asm_disabled() {
             let mut ps = [core::ptr::null::<f32>(); 3];
             let mut ok = true;
@@ -333,6 +342,7 @@ unsafe fn compute_dw_row_neon_inner(
             while owi + 4 <= ow_end {
                 // Interior 4-column stride-2 tile (all 3×3 taps in bounds):
                 // hand-asm column-reuse kernel, 8 channels per call.
+                #[cfg(target_arch = "aarch64")]
                 if let Some(rp) = interior_rows
                     && owi * 2 >= pad
                     && (owi + 3) * 2 + 2 < in_w + pad
@@ -575,6 +585,7 @@ unsafe fn compute_dw_row_neon_inner(
 /// Shared read-only zero row for the DW vertical-padding (border) rows, so the
 /// column-reuse asm can run on the top/bottom rows. Sized once to cover the
 /// tracker's largest DW input row; larger shapes return `None` (fall back to the
+#[cfg(target_arch = "aarch64")]
 /// per-tap intrinsic, which is correctness-equivalent).
 fn dw5_zero_row(min_len: usize) -> Option<*const f32> {
     use std::sync::OnceLock;
@@ -631,7 +642,9 @@ unsafe fn compute_dw5_row_neon_inner(ctx: Dw5RowCtx<'_, '_>) {
         // the column-reuse asm runs on the border too (input 0 → contributes 0,
         // bit-identical to the per-tap path that skips a `None` row). Without it,
         // ~44% of a 16×16 (xif4) DW falls to the slower per-tap intrinsic.
+        #[cfg(target_arch = "aarch64")]
         let zrow = dw5_zero_row(in_w * c_exp);
+        #[cfg(target_arch = "aarch64")]
         let interior_rows: Option<[*const f32; 5]> = if stride == 1 && !dw5_asm_disabled() {
             let mut ps = [core::ptr::null::<f32>(); 5];
             let mut ok = true;
@@ -655,6 +668,7 @@ unsafe fn compute_dw5_row_neon_inner(ctx: Dw5RowCtx<'_, '_>) {
                 // Interior 4-column tile (all 5×5 taps in bounds): hand-asm
                 // column-reuse kernel, 8 channels per call. Borders / padded
                 // rows fall through to the per-tap-bounds intrinsic below.
+                #[cfg(target_arch = "aarch64")]
                 if let Some(rp) = interior_rows
                     && owi >= pad
                     && owi + 8 <= in_w + pad

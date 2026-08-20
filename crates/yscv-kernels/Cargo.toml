@@ -16,6 +16,10 @@ blas = ["dep:cblas-sys"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 metal-backend = ["dep:metal", "dep:objc", "dep:block", "dep:foreign-types"]
 rknn = ["dep:libc", "dep:tempfile"]
+# 32-bit ARM NEON. Needs a nightly compiler: the intrinsics and the arm
+# `target_feature` are both unstable. Compile-time only — there is no runtime
+# NEON check on this arch, so enable it for a target known to have NEON.
+neon-v7 = []
 
 [dependencies]
 bytemuck = { version = "1", optional = true, features = ["derive"] }
