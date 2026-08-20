@@ -11,6 +11,8 @@ use std::sync::OnceLock;
 
 #[cfg(target_arch = "aarch64")]
 mod detect_aarch64;
+#[cfg(target_arch = "arm")]
+mod detect_arm;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod detect_x86;
 
@@ -22,6 +24,8 @@ pub enum Microarch {
     // aarch64 — in-order
     CortexA53,
     CortexA55,
+    // 32-bit arm — in-order
+    CortexA7,
     // aarch64 — out-of-order
     CortexA72,
     CortexA73,
@@ -39,6 +43,7 @@ pub enum Microarch {
     IntelSapphireRapids,
     // fallbacks — always correct, just not specialised
     GenericAarch64,
+    GenericArm,
     GenericX86,
     Scalar,
 }
@@ -46,14 +51,20 @@ pub enum Microarch {
 impl Microarch {
     /// In-order cores where hand-baked instruction scheduling pays most.
     pub fn is_in_order(self) -> bool {
-        matches!(self, Microarch::CortexA53 | Microarch::CortexA55)
+        matches!(
+            self,
+            Microarch::CortexA53 | Microarch::CortexA55 | Microarch::CortexA7
+        )
     }
 
     /// True for fallback identities with no microarch specialisation.
     pub fn is_generic(self) -> bool {
         matches!(
             self,
-            Microarch::GenericAarch64 | Microarch::GenericX86 | Microarch::Scalar
+            Microarch::GenericAarch64
+                | Microarch::GenericArm
+                | Microarch::GenericX86
+                | Microarch::Scalar
         )
     }
 }
@@ -67,6 +78,8 @@ pub struct CpuFeatures {
     pub i8mm: bool,
     pub fp16: bool,
     pub sve: bool,
+    // 32-bit arm
+    pub vfpv4: bool,
     // x86_64
     pub sse: bool,
     pub sse2: bool,
@@ -158,7 +171,16 @@ fn detect_host() -> Cpu {
     {
         detect_x86::detect()
     }
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
+    #[cfg(target_arch = "arm")]
+    {
+        detect_arm::detect()
+    }
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "x86",
+        target_arch = "x86_64"
+    )))]
     {
         Cpu {
             uarch: Microarch::Scalar,
