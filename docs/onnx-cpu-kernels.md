@@ -126,8 +126,8 @@ reads see [`env-vars.md`](env-vars.md).
 | `YSCV_FUSED_DW_PW_TRUE_FUSED_OFF=1` | unset | Force-disable true-fused DM=1 path. |
 | `YSCV_QUANT_INT8_FAST=0` | unset | Disable internal quant-domain boundary folding while keeping standard QLinear kernels enabled. |
 | `YSCV_DIRECT_CONV_WORK_MAX=<N>` | arch/thread auto | Threshold for direct 3x3 conv path. |
-| `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` | unset | Disable aarch64 low-k blocked matmul route. |
-| `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` | 1048576 | Low-k blocked matmul activation threshold. |
+| `YSCV_NO_ARM_LOW_K_BLOCKED=1` | unset | Disable ARM low-k blocked matmul route. |
+| `YSCV_ARM_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` | 65536 | Low-k blocked matmul activation threshold. |
 
 ## Reproduction commands (tracker)
 

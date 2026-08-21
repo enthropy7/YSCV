@@ -586,11 +586,11 @@ pub fn matmul_2d_slices_fused_maybe_packed(
     // leaves throughput on the table versus blocked kernels. For static Conv
     // weights (prepacked B present), allow a low-k blocked route behind a
     // conservative work threshold + kill switch.
-    #[cfg(target_arch = "aarch64")]
-    let use_blocked_low_k = use_blocked_aarch64_low_k(m, k, n, packed_b.is_some());
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+    let use_blocked_low_k = use_blocked_arm_low_k(m, k, n, packed_b.is_some());
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let use_blocked_low_k = use_blocked_x86_low_k(m, k, n, packed_b.is_some(), epilogue);
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "arm")))]
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let use_blocked_low_k = false;
     let use_blocked_path = use_blocked(m, k, n) || use_blocked_low_k;
@@ -961,19 +961,21 @@ fn use_blocked(m: usize, k: usize, n: usize) -> bool {
 /// through row-GEMM. When weights are static (`has_prepacked_b=true`), blocked
 /// kernels can still win by reusing B-pack and increasing tile reuse.
 ///
-/// Kill switch: `YSCV_NO_AARCH64_LOW_K_BLOCKED=1`.
+/// Covers both ARM arches: the predicate is pure shape, and 32-bit ARM needs it
+/// more, since without it these shapes reach a scalar row GEMM.
+///
+/// Kill switch: `YSCV_NO_ARM_LOW_K_BLOCKED=1`.
 /// Work threshold override:
-/// `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` (default 1_048_576 FMAs).
-#[cfg(target_arch = "aarch64")]
+/// `YSCV_ARM_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` (default 65_536 FMAs).
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
 #[inline]
-fn use_blocked_aarch64_low_k(m: usize, k: usize, n: usize, has_prepacked_b: bool) -> bool {
+fn use_blocked_arm_low_k(m: usize, k: usize, n: usize, has_prepacked_b: bool) -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
     static MIN_WORK_FMAS: OnceLock<usize> = OnceLock::new();
-    let enabled =
-        *ENABLED.get_or_init(|| std::env::var_os("YSCV_NO_AARCH64_LOW_K_BLOCKED").is_none());
+    let enabled = *ENABLED.get_or_init(|| std::env::var_os("YSCV_NO_ARM_LOW_K_BLOCKED").is_none());
     let min_work_fmas = *MIN_WORK_FMAS.get_or_init(|| {
-        std::env::var("YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS")
+        std::env::var("YSCV_ARM_LOW_K_BLOCKED_MIN_WORK_FMAS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)

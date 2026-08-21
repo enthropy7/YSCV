@@ -2,13 +2,15 @@
 // fma_slice_dispatch + impls, matmul_row_dispatch + impls
 // ===========================================================================
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 use super::super::prefetch::{
     PREFETCH_AHEAD, matmul_prefetch_disabled, prefetch_l1_keep, prefetch_split,
 };
 use super::{SimdDispatchPath, dispatch_path};
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{float32x4_t, vdupq_n_f32, vfmaq_f32, vld1q_f32, vst1q_f32};
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+use std::arch::arm::{float32x4_t, vdupq_n_f32, vfmaq_f32, vld1q_f32, vst1q_f32};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     _mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps, _mm_storeu_ps,
@@ -230,7 +232,7 @@ pub unsafe fn matmul_row_dispatch(
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             matmul_row_neon(left_row, right, out_row, k, n);
@@ -483,7 +485,7 @@ unsafe fn matmul_row_avx_fma(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
@@ -571,7 +573,7 @@ pub unsafe fn matmul_row_set_dispatch(
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             matmul_row_set_neon(left_row, right, out_row, k, n);
@@ -963,7 +965,7 @@ unsafe fn matmul_row_set_avx512(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]

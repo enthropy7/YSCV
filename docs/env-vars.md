@@ -199,8 +199,8 @@ why each has both an `_ON` and an `_OFF` knob.
 | `YSCV_AVX512_ROWGEMM_MIN_DIM=<N>` | `4096` | Minimum `k` or `n` before the AVX-512 row-set kernel is preferred over the AVX FMA 6×8 tile. Below this, 6×8 wins — more accumulator chains hide latency at small K, and it has SW prefetch the row-set kernel lacks. |
 | `YSCV_LOW_K_TILE=1` | unset | **x86.** Opt into the specialized low-k pointwise tile. |
 | `YSCV_NO_X86_LOW_K_BLOCKED=1` | unset (route **on**) | Disable the x86 low-k pointwise route through the blocked 4x24/4x16 AVX+FMA kernels. |
-| `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` | unset (route **on**) | Disable the aarch64 low-k blocked matmul route. |
-| `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` | `1048576` | `m*k*n` work threshold for that route. Must be `> 0`. |
+| `YSCV_NO_ARM_LOW_K_BLOCKED=1` | unset (route **on**) | Disable the ARM low-k blocked matmul route. |
+| `YSCV_ARM_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` | `65536` | `m*k*n` work threshold for that route. Must be `> 0`. |
 | `YSCV_NO_AARCH64_RESIDUAL_BLOCKED=1` | unset (**on**) | Disable the blocked residual epilogue on aarch64 NEON matmul kernels. |
 | `YSCV_TRANS_A_DIRECT_OFF=1` | unset | Disable the direct transposed-A `FusedTransposeMatMul` path. |
 | `YSCV_NON_TRANS_4ROW_OFF=1` | unset | Disable the non-transposed 4-row × NR=16 tile. |

@@ -556,8 +556,8 @@ Metal, wgpu, benches, CI scripts), with defaults and parsing rules, is
 - `YSCV_X86_MEMORY_SIMD=avx2` — on x86/x86_64 with AVX-512 available,
   route memory-bound standalone elementwise/ReLU dispatch through the
   256-bit AVX path for A/B measurement. Default keeps AVX-512 enabled.
-- `YSCV_NO_AARCH64_LOW_K_BLOCKED=1` and
-  `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` — low-k blocked matmul route.
+- `YSCV_NO_ARM_LOW_K_BLOCKED=1` and
+  `YSCV_ARM_LOW_K_BLOCKED_MIN_WORK_FMAS=<N>` — low-k blocked matmul route.
 - `YSCV_NO_X86_LOW_K_BLOCKED=1` — disable the x86 low-k pointwise route
   through the blocked 4x24/4x16 AVX+FMA GEMM kernels.
 

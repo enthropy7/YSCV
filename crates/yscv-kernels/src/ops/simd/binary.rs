@@ -5,6 +5,9 @@
 #[cfg(target_arch = "aarch64")]
 #[allow(unused_imports)]
 use std::arch::aarch64::{vaddq_f32, vdupq_n_f32, vld1q_f32, vmulq_f32, vst1q_f32, vsubq_f32};
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[allow(unused_imports)]
+use std::arch::arm::{vaddq_f32, vdupq_n_f32, vld1q_f32, vmulq_f32, vst1q_f32, vsubq_f32};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     _mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_storeu_ps, _mm_sub_ps, _mm256_add_ps,
@@ -308,7 +311,7 @@ pub fn mul_scalar_inplace_dispatch(data: &mut [f32], scalar: f32) {
     }
     let path = dispatch_path(false, false);
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -637,7 +640,7 @@ pub fn add_relu_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -693,11 +696,14 @@ unsafe fn add_relu_inplace_avx(data: &mut [f32], rhs: &[f32]) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn add_relu_inplace_neon(data: &mut [f32], rhs: &[f32]) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::vmaxq_f32;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::vmaxq_f32;
     let len = data.len();
     let dp = data.as_mut_ptr();
     let rp = rhs.as_ptr();
@@ -746,7 +752,7 @@ pub fn add_inplace_dispatch(data: &mut [f32], rhs: &[f32]) {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -815,7 +821,7 @@ unsafe fn add_inplace_sse(data: &mut [f32], rhs: &[f32]) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn add_inplace_neon(data: &mut [f32], rhs: &[f32]) {
@@ -839,7 +845,7 @@ unsafe fn add_inplace_neon(data: &mut [f32], rhs: &[f32]) {
 // mul_scalar_inplace implementations
 // ===========================================================================
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn mul_scalar_inplace_neon(data: &mut [f32], scalar: f32) {

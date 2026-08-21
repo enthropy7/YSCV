@@ -156,7 +156,7 @@ fn dispatch_path_uncached(_prefer_avx512: bool, _prefer_sse2: bool) -> SimdDispa
             return SimdDispatchPath::Sse;
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if features.neon {
         return SimdDispatchPath::Neon;
     }
