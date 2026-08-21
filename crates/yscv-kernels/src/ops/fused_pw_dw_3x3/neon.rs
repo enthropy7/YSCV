@@ -14,6 +14,14 @@ const NEON_TILE_CHUNKS: usize = 8;
 #[cfg(target_arch = "arm")]
 const NEON_TILE_CHUNKS: usize = 4;
 
+// Channels one 4-column DW block holds live: 4 columns x DW_BLOCK_CHUNKS
+// accumulators, against the same q-register budget as the PW tile above.
+#[cfg(not(target_arch = "arm"))]
+const DW_BLOCK_CHUNKS: usize = 4;
+#[cfg(target_arch = "arm")]
+const DW_BLOCK_CHUNKS: usize = 2;
+const DW_BLOCK_LANES: usize = DW_BLOCK_CHUNKS * 4;
+
 #[inline]
 fn pw_2x_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -353,7 +361,7 @@ unsafe fn compute_dw_row_neon_inner(
         // columns (16 accumulators), cutting the per-column weight reload. Same
         // technique as the 5×5 path; bit-identical FMA order per accumulator.
         let mut owi = ow_start;
-        if c_exp.is_multiple_of(16) {
+        if c_exp.is_multiple_of(DW_BLOCK_LANES) {
             while owi + 4 <= ow_end {
                 // Interior 4-column stride-2 tile (all 3×3 taps in bounds):
                 // hand-asm column-reuse kernel, 8 channels per call.
@@ -394,21 +402,14 @@ unsafe fn compute_dw_row_neon_inner(
                 let iw0d = ((owi + 3) as i32) * (stride as i32) - (pad as i32);
                 let mut ch = 0usize;
                 while ch < c_exp {
-                    let (bb0, bb1, bb2, bb3) = if let Some(b) = dw_bias {
+                    let mut bb = [zero; DW_BLOCK_CHUNKS];
+                    if let Some(b) = dw_bias {
                         let bp = b.as_ptr().add(ch);
-                        (
-                            vld1q_f32(bp),
-                            vld1q_f32(bp.add(4)),
-                            vld1q_f32(bp.add(8)),
-                            vld1q_f32(bp.add(12)),
-                        )
-                    } else {
-                        (zero, zero, zero, zero)
-                    };
-                    let (mut a00, mut a01, mut a02, mut a03) = (bb0, bb1, bb2, bb3);
-                    let (mut a10, mut a11, mut a12, mut a13) = (bb0, bb1, bb2, bb3);
-                    let (mut a20, mut a21, mut a22, mut a23) = (bb0, bb1, bb2, bb3);
-                    let (mut a30, mut a31, mut a32, mut a33) = (bb0, bb1, bb2, bb3);
+                        for k in 0..DW_BLOCK_CHUNKS {
+                            bb[k] = vld1q_f32(bp.add(k * 4));
+                        }
+                    }
+                    let (mut a0, mut a1, mut a2, mut a3) = (bb, bb, bb, bb);
                     for ky in 0..3usize {
                         let pwp = match rows[ky] {
                             Some(r) => r.as_ptr(),
@@ -418,84 +419,60 @@ unsafe fn compute_dw_row_neon_inner(
                             let wp = dw_weight
                                 .as_ptr()
                                 .add(ky * w_ky_stride + kx * w_kx_stride + ch);
-                            let w0 = vld1q_f32(wp);
-                            let w1 = vld1q_f32(wp.add(4));
-                            let w2 = vld1q_f32(wp.add(8));
-                            let w3 = vld1q_f32(wp.add(12));
+                            let mut w = [zero; DW_BLOCK_CHUNKS];
+                            for k in 0..DW_BLOCK_CHUNKS {
+                                w[k] = vld1q_f32(wp.add(k * 4));
+                            }
                             let iwa = iw0a + kx as i32;
                             if iwa >= 0 && (iwa as usize) < in_w {
                                 let p = pwp.add(iwa as usize * c_exp + ch);
-                                a00 = vfmaq_f32(a00, vld1q_f32(p), w0);
-                                a01 = vfmaq_f32(a01, vld1q_f32(p.add(4)), w1);
-                                a02 = vfmaq_f32(a02, vld1q_f32(p.add(8)), w2);
-                                a03 = vfmaq_f32(a03, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a0[k] = vfmaq_f32(a0[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwb = iw0b + kx as i32;
                             if iwb >= 0 && (iwb as usize) < in_w {
                                 let p = pwp.add(iwb as usize * c_exp + ch);
-                                a10 = vfmaq_f32(a10, vld1q_f32(p), w0);
-                                a11 = vfmaq_f32(a11, vld1q_f32(p.add(4)), w1);
-                                a12 = vfmaq_f32(a12, vld1q_f32(p.add(8)), w2);
-                                a13 = vfmaq_f32(a13, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a1[k] = vfmaq_f32(a1[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwc = iw0c + kx as i32;
                             if iwc >= 0 && (iwc as usize) < in_w {
                                 let p = pwp.add(iwc as usize * c_exp + ch);
-                                a20 = vfmaq_f32(a20, vld1q_f32(p), w0);
-                                a21 = vfmaq_f32(a21, vld1q_f32(p.add(4)), w1);
-                                a22 = vfmaq_f32(a22, vld1q_f32(p.add(8)), w2);
-                                a23 = vfmaq_f32(a23, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a2[k] = vfmaq_f32(a2[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwd = iw0d + kx as i32;
                             if iwd >= 0 && (iwd as usize) < in_w {
                                 let p = pwp.add(iwd as usize * c_exp + ch);
-                                a30 = vfmaq_f32(a30, vld1q_f32(p), w0);
-                                a31 = vfmaq_f32(a31, vld1q_f32(p.add(4)), w1);
-                                a32 = vfmaq_f32(a32, vld1q_f32(p.add(8)), w2);
-                                a33 = vfmaq_f32(a33, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a3[k] = vfmaq_f32(a3[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                         }
                     }
                     if relu {
-                        a00 = vmaxq_f32(a00, zero);
-                        a01 = vmaxq_f32(a01, zero);
-                        a02 = vmaxq_f32(a02, zero);
-                        a03 = vmaxq_f32(a03, zero);
-                        a10 = vmaxq_f32(a10, zero);
-                        a11 = vmaxq_f32(a11, zero);
-                        a12 = vmaxq_f32(a12, zero);
-                        a13 = vmaxq_f32(a13, zero);
-                        a20 = vmaxq_f32(a20, zero);
-                        a21 = vmaxq_f32(a21, zero);
-                        a22 = vmaxq_f32(a22, zero);
-                        a23 = vmaxq_f32(a23, zero);
-                        a30 = vmaxq_f32(a30, zero);
-                        a31 = vmaxq_f32(a31, zero);
-                        a32 = vmaxq_f32(a32, zero);
-                        a33 = vmaxq_f32(a33, zero);
+                        for k in 0..DW_BLOCK_CHUNKS {
+                            a0[k] = vmaxq_f32(a0[k], zero);
+                            a1[k] = vmaxq_f32(a1[k], zero);
+                            a2[k] = vmaxq_f32(a2[k], zero);
+                            a3[k] = vmaxq_f32(a3[k], zero);
+                        }
                     }
                     let d = out_row.as_mut_ptr();
                     let d0 = d.add(owi * c_exp + ch);
-                    vst1q_f32(d0, a00);
-                    vst1q_f32(d0.add(4), a01);
-                    vst1q_f32(d0.add(8), a02);
-                    vst1q_f32(d0.add(12), a03);
                     let d1 = d.add((owi + 1) * c_exp + ch);
-                    vst1q_f32(d1, a10);
-                    vst1q_f32(d1.add(4), a11);
-                    vst1q_f32(d1.add(8), a12);
-                    vst1q_f32(d1.add(12), a13);
                     let d2 = d.add((owi + 2) * c_exp + ch);
-                    vst1q_f32(d2, a20);
-                    vst1q_f32(d2.add(4), a21);
-                    vst1q_f32(d2.add(8), a22);
-                    vst1q_f32(d2.add(12), a23);
                     let d3 = d.add((owi + 3) * c_exp + ch);
-                    vst1q_f32(d3, a30);
-                    vst1q_f32(d3.add(4), a31);
-                    vst1q_f32(d3.add(8), a32);
-                    vst1q_f32(d3.add(12), a33);
-                    ch += 16;
+                    for k in 0..DW_BLOCK_CHUNKS {
+                        vst1q_f32(d0.add(k * 4), a0[k]);
+                        vst1q_f32(d1.add(k * 4), a1[k]);
+                        vst1q_f32(d2.add(k * 4), a2[k]);
+                        vst1q_f32(d3.add(k * 4), a3[k]);
+                    }
+                    ch += DW_BLOCK_LANES;
                 }
                 owi += 4;
             }
@@ -678,7 +655,7 @@ unsafe fn compute_dw5_row_neon_inner(ctx: Dw5RowCtx<'_, '_>) {
         };
 
         let mut owi = ow_start;
-        if c_exp.is_multiple_of(16) {
+        if c_exp.is_multiple_of(DW_BLOCK_LANES) {
             while owi + 4 <= ow_end {
                 // Interior 4-column tile (all 5×5 taps in bounds): hand-asm
                 // column-reuse kernel, 8 channels per call. Borders / padded
@@ -719,21 +696,14 @@ unsafe fn compute_dw5_row_neon_inner(ctx: Dw5RowCtx<'_, '_>) {
                 let iw0d = ((owi + 3) as i32) * (stride as i32) - (pad as i32);
                 let mut ch = 0usize;
                 while ch < c_exp {
-                    let (bb0, bb1, bb2, bb3) = if let Some(b) = dw_bias {
+                    let mut bb = [zero; DW_BLOCK_CHUNKS];
+                    if let Some(b) = dw_bias {
                         let bp = b.as_ptr().add(ch);
-                        (
-                            vld1q_f32(bp),
-                            vld1q_f32(bp.add(4)),
-                            vld1q_f32(bp.add(8)),
-                            vld1q_f32(bp.add(12)),
-                        )
-                    } else {
-                        (zero, zero, zero, zero)
-                    };
-                    let (mut a00, mut a01, mut a02, mut a03) = (bb0, bb1, bb2, bb3);
-                    let (mut a10, mut a11, mut a12, mut a13) = (bb0, bb1, bb2, bb3);
-                    let (mut a20, mut a21, mut a22, mut a23) = (bb0, bb1, bb2, bb3);
-                    let (mut a30, mut a31, mut a32, mut a33) = (bb0, bb1, bb2, bb3);
+                        for k in 0..DW_BLOCK_CHUNKS {
+                            bb[k] = vld1q_f32(bp.add(k * 4));
+                        }
+                    }
+                    let (mut a0, mut a1, mut a2, mut a3) = (bb, bb, bb, bb);
                     for (ky, row) in rows.iter().enumerate() {
                         let pwp = match row {
                             Some(r) => r.as_ptr(),
@@ -743,84 +713,60 @@ unsafe fn compute_dw5_row_neon_inner(ctx: Dw5RowCtx<'_, '_>) {
                             let wp = dw_weight
                                 .as_ptr()
                                 .add(ky * w_ky_stride + kx * w_kx_stride + ch);
-                            let w0 = vld1q_f32(wp);
-                            let w1 = vld1q_f32(wp.add(4));
-                            let w2 = vld1q_f32(wp.add(8));
-                            let w3 = vld1q_f32(wp.add(12));
+                            let mut w = [zero; DW_BLOCK_CHUNKS];
+                            for k in 0..DW_BLOCK_CHUNKS {
+                                w[k] = vld1q_f32(wp.add(k * 4));
+                            }
                             let iwa = iw0a + kx as i32;
                             if iwa >= 0 && (iwa as usize) < in_w {
                                 let p = pwp.add(iwa as usize * c_exp + ch);
-                                a00 = vfmaq_f32(a00, vld1q_f32(p), w0);
-                                a01 = vfmaq_f32(a01, vld1q_f32(p.add(4)), w1);
-                                a02 = vfmaq_f32(a02, vld1q_f32(p.add(8)), w2);
-                                a03 = vfmaq_f32(a03, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a0[k] = vfmaq_f32(a0[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwb = iw0b + kx as i32;
                             if iwb >= 0 && (iwb as usize) < in_w {
                                 let p = pwp.add(iwb as usize * c_exp + ch);
-                                a10 = vfmaq_f32(a10, vld1q_f32(p), w0);
-                                a11 = vfmaq_f32(a11, vld1q_f32(p.add(4)), w1);
-                                a12 = vfmaq_f32(a12, vld1q_f32(p.add(8)), w2);
-                                a13 = vfmaq_f32(a13, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a1[k] = vfmaq_f32(a1[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwc = iw0c + kx as i32;
                             if iwc >= 0 && (iwc as usize) < in_w {
                                 let p = pwp.add(iwc as usize * c_exp + ch);
-                                a20 = vfmaq_f32(a20, vld1q_f32(p), w0);
-                                a21 = vfmaq_f32(a21, vld1q_f32(p.add(4)), w1);
-                                a22 = vfmaq_f32(a22, vld1q_f32(p.add(8)), w2);
-                                a23 = vfmaq_f32(a23, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a2[k] = vfmaq_f32(a2[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwd = iw0d + kx as i32;
                             if iwd >= 0 && (iwd as usize) < in_w {
                                 let p = pwp.add(iwd as usize * c_exp + ch);
-                                a30 = vfmaq_f32(a30, vld1q_f32(p), w0);
-                                a31 = vfmaq_f32(a31, vld1q_f32(p.add(4)), w1);
-                                a32 = vfmaq_f32(a32, vld1q_f32(p.add(8)), w2);
-                                a33 = vfmaq_f32(a33, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a3[k] = vfmaq_f32(a3[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                         }
                     }
                     if relu {
-                        a00 = vmaxq_f32(a00, zero);
-                        a01 = vmaxq_f32(a01, zero);
-                        a02 = vmaxq_f32(a02, zero);
-                        a03 = vmaxq_f32(a03, zero);
-                        a10 = vmaxq_f32(a10, zero);
-                        a11 = vmaxq_f32(a11, zero);
-                        a12 = vmaxq_f32(a12, zero);
-                        a13 = vmaxq_f32(a13, zero);
-                        a20 = vmaxq_f32(a20, zero);
-                        a21 = vmaxq_f32(a21, zero);
-                        a22 = vmaxq_f32(a22, zero);
-                        a23 = vmaxq_f32(a23, zero);
-                        a30 = vmaxq_f32(a30, zero);
-                        a31 = vmaxq_f32(a31, zero);
-                        a32 = vmaxq_f32(a32, zero);
-                        a33 = vmaxq_f32(a33, zero);
+                        for k in 0..DW_BLOCK_CHUNKS {
+                            a0[k] = vmaxq_f32(a0[k], zero);
+                            a1[k] = vmaxq_f32(a1[k], zero);
+                            a2[k] = vmaxq_f32(a2[k], zero);
+                            a3[k] = vmaxq_f32(a3[k], zero);
+                        }
                     }
                     let d = out_row.as_mut_ptr();
                     let d0 = d.add(owi * c_exp + ch);
-                    vst1q_f32(d0, a00);
-                    vst1q_f32(d0.add(4), a01);
-                    vst1q_f32(d0.add(8), a02);
-                    vst1q_f32(d0.add(12), a03);
                     let d1 = d.add((owi + 1) * c_exp + ch);
-                    vst1q_f32(d1, a10);
-                    vst1q_f32(d1.add(4), a11);
-                    vst1q_f32(d1.add(8), a12);
-                    vst1q_f32(d1.add(12), a13);
                     let d2 = d.add((owi + 2) * c_exp + ch);
-                    vst1q_f32(d2, a20);
-                    vst1q_f32(d2.add(4), a21);
-                    vst1q_f32(d2.add(8), a22);
-                    vst1q_f32(d2.add(12), a23);
                     let d3 = d.add((owi + 3) * c_exp + ch);
-                    vst1q_f32(d3, a30);
-                    vst1q_f32(d3.add(4), a31);
-                    vst1q_f32(d3.add(8), a32);
-                    vst1q_f32(d3.add(12), a33);
-                    ch += 16;
+                    for k in 0..DW_BLOCK_CHUNKS {
+                        vst1q_f32(d0.add(k * 4), a0[k]);
+                        vst1q_f32(d1.add(k * 4), a1[k]);
+                        vst1q_f32(d2.add(k * 4), a2[k]);
+                        vst1q_f32(d3.add(k * 4), a3[k]);
+                    }
+                    ch += DW_BLOCK_LANES;
                 }
                 owi += 4;
             }
@@ -1042,7 +988,7 @@ unsafe fn compute_dw5_tile_neon_inner(ctx: Dw5TileCtx<'_, '_>) {
         // xif4 [16,16,672]. Mirrors the row-kernel 4-wide; pw stride is c_tile,
         // weights/bias carry the oc_start offset, output is c_exp-strided.
         let mut owi = ow_start;
-        if c_tile.is_multiple_of(16) {
+        if c_tile.is_multiple_of(DW_BLOCK_LANES) {
             while owi + 4 <= ow_end {
                 let iw0a = (owi as i32) * (stride as i32) - (pad as i32);
                 let iw0b = ((owi + 1) as i32) * (stride as i32) - (pad as i32);
@@ -1050,21 +996,14 @@ unsafe fn compute_dw5_tile_neon_inner(ctx: Dw5TileCtx<'_, '_>) {
                 let iw0d = ((owi + 3) as i32) * (stride as i32) - (pad as i32);
                 let mut ch = 0usize;
                 while ch < c_tile {
-                    let (bb0, bb1, bb2, bb3) = if let Some(b) = dw_bias {
+                    let mut bb = [zero; DW_BLOCK_CHUNKS];
+                    if let Some(b) = dw_bias {
                         let bp = b.as_ptr().add(oc_start + ch);
-                        (
-                            vld1q_f32(bp),
-                            vld1q_f32(bp.add(4)),
-                            vld1q_f32(bp.add(8)),
-                            vld1q_f32(bp.add(12)),
-                        )
-                    } else {
-                        (zero, zero, zero, zero)
-                    };
-                    let (mut a00, mut a01, mut a02, mut a03) = (bb0, bb1, bb2, bb3);
-                    let (mut a10, mut a11, mut a12, mut a13) = (bb0, bb1, bb2, bb3);
-                    let (mut a20, mut a21, mut a22, mut a23) = (bb0, bb1, bb2, bb3);
-                    let (mut a30, mut a31, mut a32, mut a33) = (bb0, bb1, bb2, bb3);
+                        for k in 0..DW_BLOCK_CHUNKS {
+                            bb[k] = vld1q_f32(bp.add(k * 4));
+                        }
+                    }
+                    let (mut a0, mut a1, mut a2, mut a3) = (bb, bb, bb, bb);
                     for (ky, row) in rows.iter().enumerate() {
                         let pwp = match row {
                             Some(r) => r.as_ptr(),
@@ -1074,84 +1013,60 @@ unsafe fn compute_dw5_tile_neon_inner(ctx: Dw5TileCtx<'_, '_>) {
                             let wp = dw_weight
                                 .as_ptr()
                                 .add(ky * w_ky_stride + kx * w_kx_stride + oc_start + ch);
-                            let w0 = vld1q_f32(wp);
-                            let w1 = vld1q_f32(wp.add(4));
-                            let w2 = vld1q_f32(wp.add(8));
-                            let w3 = vld1q_f32(wp.add(12));
+                            let mut w = [zero; DW_BLOCK_CHUNKS];
+                            for k in 0..DW_BLOCK_CHUNKS {
+                                w[k] = vld1q_f32(wp.add(k * 4));
+                            }
                             let iwa = iw0a + kx as i32;
                             if iwa >= 0 && (iwa as usize) < in_w {
                                 let p = pwp.add(iwa as usize * c_tile + ch);
-                                a00 = vfmaq_f32(a00, vld1q_f32(p), w0);
-                                a01 = vfmaq_f32(a01, vld1q_f32(p.add(4)), w1);
-                                a02 = vfmaq_f32(a02, vld1q_f32(p.add(8)), w2);
-                                a03 = vfmaq_f32(a03, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a0[k] = vfmaq_f32(a0[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwb = iw0b + kx as i32;
                             if iwb >= 0 && (iwb as usize) < in_w {
                                 let p = pwp.add(iwb as usize * c_tile + ch);
-                                a10 = vfmaq_f32(a10, vld1q_f32(p), w0);
-                                a11 = vfmaq_f32(a11, vld1q_f32(p.add(4)), w1);
-                                a12 = vfmaq_f32(a12, vld1q_f32(p.add(8)), w2);
-                                a13 = vfmaq_f32(a13, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a1[k] = vfmaq_f32(a1[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwc = iw0c + kx as i32;
                             if iwc >= 0 && (iwc as usize) < in_w {
                                 let p = pwp.add(iwc as usize * c_tile + ch);
-                                a20 = vfmaq_f32(a20, vld1q_f32(p), w0);
-                                a21 = vfmaq_f32(a21, vld1q_f32(p.add(4)), w1);
-                                a22 = vfmaq_f32(a22, vld1q_f32(p.add(8)), w2);
-                                a23 = vfmaq_f32(a23, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a2[k] = vfmaq_f32(a2[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                             let iwd = iw0d + kx as i32;
                             if iwd >= 0 && (iwd as usize) < in_w {
                                 let p = pwp.add(iwd as usize * c_tile + ch);
-                                a30 = vfmaq_f32(a30, vld1q_f32(p), w0);
-                                a31 = vfmaq_f32(a31, vld1q_f32(p.add(4)), w1);
-                                a32 = vfmaq_f32(a32, vld1q_f32(p.add(8)), w2);
-                                a33 = vfmaq_f32(a33, vld1q_f32(p.add(12)), w3);
+                                for k in 0..DW_BLOCK_CHUNKS {
+                                    a3[k] = vfmaq_f32(a3[k], vld1q_f32(p.add(k * 4)), w[k]);
+                                }
                             }
                         }
                     }
                     if relu {
-                        a00 = vmaxq_f32(a00, zero);
-                        a01 = vmaxq_f32(a01, zero);
-                        a02 = vmaxq_f32(a02, zero);
-                        a03 = vmaxq_f32(a03, zero);
-                        a10 = vmaxq_f32(a10, zero);
-                        a11 = vmaxq_f32(a11, zero);
-                        a12 = vmaxq_f32(a12, zero);
-                        a13 = vmaxq_f32(a13, zero);
-                        a20 = vmaxq_f32(a20, zero);
-                        a21 = vmaxq_f32(a21, zero);
-                        a22 = vmaxq_f32(a22, zero);
-                        a23 = vmaxq_f32(a23, zero);
-                        a30 = vmaxq_f32(a30, zero);
-                        a31 = vmaxq_f32(a31, zero);
-                        a32 = vmaxq_f32(a32, zero);
-                        a33 = vmaxq_f32(a33, zero);
+                        for k in 0..DW_BLOCK_CHUNKS {
+                            a0[k] = vmaxq_f32(a0[k], zero);
+                            a1[k] = vmaxq_f32(a1[k], zero);
+                            a2[k] = vmaxq_f32(a2[k], zero);
+                            a3[k] = vmaxq_f32(a3[k], zero);
+                        }
                     }
                     let d = out_row.as_mut_ptr();
                     let d0 = d.add(owi * c_exp + oc_start + ch);
-                    vst1q_f32(d0, a00);
-                    vst1q_f32(d0.add(4), a01);
-                    vst1q_f32(d0.add(8), a02);
-                    vst1q_f32(d0.add(12), a03);
                     let d1 = d.add((owi + 1) * c_exp + oc_start + ch);
-                    vst1q_f32(d1, a10);
-                    vst1q_f32(d1.add(4), a11);
-                    vst1q_f32(d1.add(8), a12);
-                    vst1q_f32(d1.add(12), a13);
                     let d2 = d.add((owi + 2) * c_exp + oc_start + ch);
-                    vst1q_f32(d2, a20);
-                    vst1q_f32(d2.add(4), a21);
-                    vst1q_f32(d2.add(8), a22);
-                    vst1q_f32(d2.add(12), a23);
                     let d3 = d.add((owi + 3) * c_exp + oc_start + ch);
-                    vst1q_f32(d3, a30);
-                    vst1q_f32(d3.add(4), a31);
-                    vst1q_f32(d3.add(8), a32);
-                    vst1q_f32(d3.add(12), a33);
-                    ch += 16;
+                    for k in 0..DW_BLOCK_CHUNKS {
+                        vst1q_f32(d0.add(k * 4), a0[k]);
+                        vst1q_f32(d1.add(k * 4), a1[k]);
+                        vst1q_f32(d2.add(k * 4), a2[k]);
+                        vst1q_f32(d3.add(k * 4), a3[k]);
+                    }
+                    ch += DW_BLOCK_LANES;
                 }
                 owi += 4;
             }
