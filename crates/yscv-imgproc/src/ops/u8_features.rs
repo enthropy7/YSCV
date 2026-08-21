@@ -1015,7 +1015,7 @@ fn bilateral_u8_parallel_scalar(
                     wsum += w;
                 }
             }
-            dst[y * width + x] = (sum / wsum + 0.5) as u8;
+            dst[x] = (sum / wsum + 0.5) as u8;
         }
     };
 
