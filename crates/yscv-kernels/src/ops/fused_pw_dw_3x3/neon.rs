@@ -5,7 +5,14 @@ use super::{Dw5RowCtx, Dw5TileCtx, PwTileCtx};
 use std::arch::aarch64::*;
 #[cfg(target_arch = "arm")]
 use std::arch::arm::*;
+// Accumulators per tile. The 2-column PW block below keeps `2 *
+// NEON_TILE_CHUNKS` of them live at once, so this is a register-file budget,
+// not a cache one: 32-bit ARM has 16 q-registers against aarch64's 32, and at
+// 8 the allocator spills the accumulators to the stack every k-step.
+#[cfg(not(target_arch = "arm"))]
 const NEON_TILE_CHUNKS: usize = 8;
+#[cfg(target_arch = "arm")]
+const NEON_TILE_CHUNKS: usize = 4;
 
 #[inline]
 fn pw_2x_disabled() -> bool {
@@ -15,6 +22,7 @@ fn pw_2x_disabled() -> bool {
 }
 
 #[inline]
+#[cfg(not(target_arch = "arm"))]
 fn pw_gemm_disabled() -> bool {
     static C: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *C.get_or_init(|| std::env::var_os("YSCV_PW_GEMM_OFF").is_some())
@@ -32,6 +40,7 @@ fn dw5_asm_disabled() -> bool {
 }
 
 #[inline]
+#[cfg(not(target_arch = "arm"))]
 fn pw_gemm_max_threads() -> usize {
     // Default 4: the pipelined 8×8 GEMM (cached B-pack) now wins at 4T too
     // (−6.5 ms on the A53), unlike the old 4×16 it replaced. Bit-identical to
@@ -63,6 +72,12 @@ pub(super) fn compute_pw_row_neon(
     // (sequential, bias+Relu folded into the epilogue). Gated by thread count:
     // historically the sequential GEMM's per-call A-pack alloc lost to the
     // alloc-free broadcast at 4T (`YSCV_PW_GEMM_MAX_THREADS` tunes the cutoff).
+    //
+    // The route is aarch64-and-wider only. Packing a panel pays off against a
+    // microkernel wide enough to reuse it, and 32-bit ARM has half the
+    // q-registers, so its widest microkernel is 4×8 against aarch64's 4×24 —
+    // there the same call costs more than the broadcast row it replaces.
+    #[cfg(not(target_arch = "arm"))]
     if !pw_gemm_disabled()
         && iw_end > iw_start
         && rayon::current_num_threads() <= pw_gemm_max_threads()
