@@ -1,7 +1,6 @@
 //! Quantized convolution ops: QLinearConv, ConvInteger, and the fused
 //! int8 PW/DW / DW-residual quantized paths.
 
-use super::super::*;
 use super::*;
 
 /// Copies `count` runs of `KW` bytes, source stepping by `sw`, destination by

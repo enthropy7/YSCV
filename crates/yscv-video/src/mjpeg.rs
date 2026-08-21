@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(rgb.len(), 8 * 8 * 3);
 
         // All DC=0, dequant=0, IDCT(all-zero-except-dc=0) → all 128 after level shift
-        for pixel in rgb.chunks_exact(3) {
+        for pixel in rgb.as_chunks::<3>().0 {
             // Gray pixel: R=G=B, value should be 128 (DC=0 + level_shift=128)
             assert_eq!(pixel[0], pixel[1]);
             assert_eq!(pixel[1], pixel[2]);

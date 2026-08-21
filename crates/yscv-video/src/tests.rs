@@ -685,7 +685,7 @@ fn nv12_to_rgb8_pure_gray() {
     super::h264_yuv::nv12_to_rgb8(&y_plane, &uv_plane, w, h, &mut out)
         .expect("NV12 conversion should succeed");
 
-    for pixel in out.chunks_exact(3) {
+    for pixel in out.as_chunks::<3>().0 {
         assert_eq!(pixel[0], 128, "R should be 128 for neutral gray");
         assert_eq!(pixel[1], 128, "G should be 128 for neutral gray");
         assert_eq!(pixel[2], 128, "B should be 128 for neutral gray");
@@ -748,7 +748,7 @@ fn yuyv_to_rgb8_pure_gray() {
 
     super::h264_yuv::yuyv_to_rgb8(&data, w, h, &mut out).expect("YUYV conversion should succeed");
 
-    for pixel in out.chunks_exact(3) {
+    for pixel in out.as_chunks::<3>().0 {
         assert_eq!(pixel[0], 128, "R should be 128 for neutral gray");
         assert_eq!(pixel[1], 128, "G should be 128 for neutral gray");
         assert_eq!(pixel[2], 128, "B should be 128 for neutral gray");

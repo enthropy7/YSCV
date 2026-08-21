@@ -302,7 +302,7 @@ fn fill_frame_rgb_grayscale_heatmap(shape: (usize, usize), rgb: &[f32], out: &mu
         out.resize(pixel_count, 0.0);
     }
 
-    for (rgb, value) in rgb.chunks_exact(3).zip(out.iter_mut()) {
+    for (rgb, value) in rgb.as_chunks::<3>().0.iter().zip(out.iter_mut()) {
         *value = (rgb[0] + rgb[1] + rgb[2]) / 3.0;
     }
 }
@@ -315,7 +315,7 @@ fn fill_frame_rgb_skin_heatmap(shape: (usize, usize), rgb: &[f32], out: &mut Vec
 
     let max_value = rgb.iter().copied().fold(0.0f32, f32::max);
     let scale = if max_value > 1.5 { 1.0 / 255.0 } else { 1.0 };
-    for (rgb, value) in rgb.chunks_exact(3).zip(out.iter_mut()) {
+    for (rgb, value) in rgb.as_chunks::<3>().0.iter().zip(out.iter_mut()) {
         let r = clamp01(rgb[0] * scale);
         let g = clamp01(rgb[1] * scale);
         let b = clamp01(rgb[2] * scale);
@@ -338,7 +338,7 @@ fn fill_rgb8_skin_heatmap(
     }
 
     const SCALE: f32 = 1.0 / 255.0;
-    for (rgb, value) in rgb8.chunks_exact(3).zip(out.iter_mut()) {
+    for (rgb, value) in rgb8.as_chunks::<3>().0.iter().zip(out.iter_mut()) {
         let r = rgb[0] as f32 * SCALE;
         let g = rgb[1] as f32 * SCALE;
         let b = rgb[2] as f32 * SCALE;
@@ -362,7 +362,7 @@ fn fill_rgb8_grayscale_heatmap(
     }
 
     const SCALE: f32 = 1.0 / 255.0;
-    for (rgb, value) in rgb8.chunks_exact(3).zip(out.iter_mut()) {
+    for (rgb, value) in rgb8.as_chunks::<3>().0.iter().zip(out.iter_mut()) {
         *value = (rgb[0] as f32 + rgb[1] as f32 + rgb[2] as f32) * (SCALE / 3.0);
     }
     Ok(())

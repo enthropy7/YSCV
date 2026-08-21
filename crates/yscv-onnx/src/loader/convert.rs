@@ -96,13 +96,17 @@ pub(super) fn convert_tensor_proto(tp: &onnx::TensorProto) -> Result<Tensor, Onn
 }
 
 fn raw_bytes_to_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(4)
+    raw.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
 fn raw_bytes_to_f64_as_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(8)
+    raw.as_chunks::<8>()
+        .0
+        .iter()
         .map(|c| {
             let v = f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
             v as f32
@@ -111,7 +115,9 @@ fn raw_bytes_to_f64_as_f32(raw: &[u8]) -> Vec<f32> {
 }
 
 fn raw_bytes_to_i64_as_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(8)
+    raw.as_chunks::<8>()
+        .0
+        .iter()
         .map(|c| {
             let v = i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
             v as f32
@@ -120,7 +126,9 @@ fn raw_bytes_to_i64_as_f32(raw: &[u8]) -> Vec<f32> {
 }
 
 fn raw_bytes_to_i32_as_f32(raw: &[u8]) -> Vec<f32> {
-    raw.chunks_exact(4)
+    raw.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             let v = i32::from_le_bytes([c[0], c[1], c[2], c[3]]);
             v as f32

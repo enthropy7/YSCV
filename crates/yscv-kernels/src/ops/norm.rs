@@ -597,7 +597,12 @@ fn batch_norm_row_c3(input: &[f32], output: &mut [f32], scale: &[f32], shift: &[
     let b1 = shift[1];
     let b2 = shift[2];
 
-    for (src, dst) in input.chunks_exact(3).zip(output.chunks_exact_mut(3)) {
+    for (src, dst) in input
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(output.as_chunks_mut::<3>().0.iter_mut())
+    {
         dst[0] = src[0] * s0 + b0;
         dst[1] = src[1] * s1 + b1;
         dst[2] = src[2] * s2 + b2;

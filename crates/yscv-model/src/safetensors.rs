@@ -246,7 +246,9 @@ impl SafeTensorFile {
         match info.dtype {
             SafeTensorDType::F32 => {
                 let f32_data: Vec<f32> = raw
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Ok(Tensor::from_vec(info.shape.clone(), f32_data)?)
@@ -254,7 +256,9 @@ impl SafeTensorFile {
             SafeTensorDType::F16 => {
                 // Load as u16 bit patterns, then use Tensor's built-in to_dtype for F16->F32
                 let u16_data: Vec<u16> = raw
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let f16_tensor = Tensor::from_f16(info.shape.clone(), u16_data)?;
@@ -262,7 +266,9 @@ impl SafeTensorFile {
             }
             SafeTensorDType::BF16 => {
                 let u16_data: Vec<u16> = raw
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let bf16_tensor = Tensor::from_bf16(info.shape.clone(), u16_data)?;
@@ -270,7 +276,9 @@ impl SafeTensorFile {
             }
             SafeTensorDType::I32 => {
                 let f32_data: Vec<f32> = raw
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|chunk| {
                         i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32
                     })
@@ -279,7 +287,9 @@ impl SafeTensorFile {
             }
             SafeTensorDType::I64 => {
                 let f32_data: Vec<f32> = raw
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|chunk| {
                         i64::from_le_bytes([
                             chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],

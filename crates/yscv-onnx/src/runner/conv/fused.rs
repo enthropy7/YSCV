@@ -1,7 +1,6 @@
 //! fp32 fused convolution paths: PW→DW, DW→PW, and the streaming
 //! PW-expand→DW→PW-reduce MBConv block (incl. the NCHWc-chained variants).
 
-use super::super::*;
 use super::*;
 
 /// ONNX Conv: NHWC-aware. Skips layout conversion if input is already NHWC.

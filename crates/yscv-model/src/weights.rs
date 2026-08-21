@@ -149,7 +149,9 @@ fn bytes_to_f32_vec(data: &[u8]) -> Vec<f32> {
         data.len().is_multiple_of(4),
         "byte slice length must be multiple of 4"
     );
-    data.chunks_exact(4)
+    data.as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()
 }

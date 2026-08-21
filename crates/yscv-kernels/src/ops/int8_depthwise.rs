@@ -456,35 +456,35 @@ unsafe fn depthwise3x3_i8_i32_nhwc_neon_range(
                 }
                 let out_base = (pixel - pixel_start) * chan;
                 let mut taps: [(usize, usize); 49] = [(0, 0); 49];
-                let ntaps;
                 let ix0 = ow * p.stride_w;
-                if row_interior && ix0 >= p.pad_left && ix0 + p.kernel <= p.pad_left + p.in_w {
-                    // Interior: taps = base_in + rel[t] (no padding checks).
-                    let base_in =
-                        ((n * p.in_h + (iy0 - p.pad_top)) * p.in_w + (ix0 - p.pad_left)) * chan;
-                    for t in 0..ntaps_full {
-                        taps[t] = (base_in + rel[t].0, rel[t].1);
-                    }
-                    ntaps = ntaps_full;
-                } else {
-                    // Border: resolve the in-bounds taps with per-tap checks.
-                    let mut nt = 0usize;
-                    for ky in 0..p.kernel {
-                        let Some(iy) = p.valid_input_y(oh, ky) else {
-                            continue;
-                        };
-                        for kx in 0..p.kernel {
-                            let Some(ix) = p.valid_input_x(ow, kx) else {
+                let ntaps =
+                    if row_interior && ix0 >= p.pad_left && ix0 + p.kernel <= p.pad_left + p.in_w {
+                        // Interior: taps = base_in + rel[t] (no padding checks).
+                        let base_in =
+                            ((n * p.in_h + (iy0 - p.pad_top)) * p.in_w + (ix0 - p.pad_left)) * chan;
+                        for t in 0..ntaps_full {
+                            taps[t] = (base_in + rel[t].0, rel[t].1);
+                        }
+                        ntaps_full
+                    } else {
+                        // Border: resolve the in-bounds taps with per-tap checks.
+                        let mut nt = 0usize;
+                        for ky in 0..p.kernel {
+                            let Some(iy) = p.valid_input_y(oh, ky) else {
                                 continue;
                             };
-                            let in_base = ((n * p.in_h + iy) * p.in_w + ix) * chan;
-                            let w_base = (ky * p.kernel + kx) * chan;
-                            taps[nt] = (in_base, w_base);
-                            nt += 1;
+                            for kx in 0..p.kernel {
+                                let Some(ix) = p.valid_input_x(ow, kx) else {
+                                    continue;
+                                };
+                                let in_base = ((n * p.in_h + iy) * p.in_w + ix) * chan;
+                                let w_base = (ky * p.kernel + kx) * chan;
+                                taps[nt] = (in_base, w_base);
+                                nt += 1;
+                            }
                         }
-                    }
-                    ntaps = nt;
-                }
+                        nt
+                    };
                 let op = out.as_mut_ptr();
                 let mut c = 0;
                 // 16 channels/iter: one int8x16 load each for x and w amortises

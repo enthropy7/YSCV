@@ -183,7 +183,7 @@ impl AcceleratorDispatcher for CpuDispatcher {
             // shape, they must supply it via `input_shapes`.
             let n = bytes.len() / 4;
             let mut data: Vec<f32> = Vec::with_capacity(n);
-            for chunk in bytes.chunks_exact(4) {
+            for chunk in bytes.as_chunks::<4>().0 {
                 data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             let shape = self
@@ -690,8 +690,8 @@ impl AcceleratorDispatcher for GpuDispatcher {
             }
             let n = bytes.len() / 4;
             let mut data: Vec<f32> = Vec::with_capacity(n);
-            for chunk in bytes.chunks_exact(4) {
-                data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            for chunk in bytes.as_chunks::<4>().0 {
+                data.push(f32::from_le_bytes(*chunk));
             }
             let t = yscv_tensor::Tensor::from_vec(vec![n], data)
                 .map_err(|e| Error::Other(format!("input '{name}': tensor build failed — {e}")))?;

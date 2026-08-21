@@ -807,13 +807,17 @@ fn dataset_split_by_class_ratio_supports_one_hot_targets() {
         .train
         .targets()
         .data()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .collect::<Vec<_>>();
     let test_targets = split
         .test
         .targets()
         .data()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .collect::<Vec<_>>();
     let train_class_1 = train_targets
         .iter()

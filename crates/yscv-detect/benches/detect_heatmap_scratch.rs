@@ -48,7 +48,12 @@ fn build_rgb_frame(width: usize, height: usize) -> Frame {
     let rgb8 = build_rgb8(width, height);
     let mut data = vec![0.0f32; width * height * 3];
     const SCALE: f32 = 1.0 / 255.0;
-    for (rgb, out) in rgb8.chunks_exact(3).zip(data.chunks_exact_mut(3)) {
+    for (rgb, out) in rgb8
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(data.as_chunks_mut::<3>().0.iter_mut())
+    {
         out[0] = rgb[0] as f32 * SCALE;
         out[1] = rgb[1] as f32 * SCALE;
         out[2] = rgb[2] as f32 * SCALE;
