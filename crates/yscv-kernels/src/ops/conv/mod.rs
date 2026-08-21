@@ -61,7 +61,12 @@ fn mr16_enabled() -> bool {
 /// manual prefetch hint hides the load latency behind the FMA pipe — a bigger
 /// win on the in-order A53 NEON reduce kernel. Default ON; kill switch
 /// `YSCV_PW_PREFETCH_OFF=1`.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "arm", feature = "neon-v7")
+))]
 fn pw_prefetch_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| std::env::var_os("YSCV_PW_PREFETCH_OFF").is_none())

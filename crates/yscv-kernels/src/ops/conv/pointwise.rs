@@ -323,6 +323,16 @@ pub(crate) fn pointwise_nx16_direct_rows(
         }
         return;
     }
+    #[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+    if crate::host_cpu().features.neon {
+        #[allow(unsafe_code)]
+        unsafe {
+            pointwise_nx16_direct_rows_neon(
+                input, kernel, bias, residual, output, rows, k, n, activation,
+            );
+        }
+        return;
+    }
     pointwise_nx16_direct_rows_scalar(
         input, kernel, bias, residual, output, rows, k, n, activation,
     );
@@ -1246,7 +1256,7 @@ unsafe fn pointwise_nx16_direct_rows_avx2(
 /// K-iters ahead hides the load latency behind the FMA pipe. The local
 /// `PREFETCH_AHEAD` of 8 below is tuned for this weight stream and is
 /// deliberately longer than the shared GEMM default.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 use super::super::prefetch::prefetch_l1_keep;
 
 #[cfg(target_arch = "aarch64")]
@@ -1318,7 +1328,7 @@ unsafe fn pointwise_16x16_direct_rows_neon(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
 unsafe fn pointwise_nx16_direct_rows_neon(
@@ -1332,7 +1342,10 @@ unsafe fn pointwise_nx16_direct_rows_neon(
     n: usize,
     activation: Activation,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let zero = vdupq_n_f32(0.0);
     let do_relu = matches!(activation, Activation::Relu);
@@ -1355,7 +1368,14 @@ unsafe fn pointwise_nx16_direct_rows_neon(
         // in-order load latency — the same register-blocking the DW kernel uses.
         const PREFETCH_AHEAD: usize = 8;
         let pf = pw_prefetch_enabled();
+        // The 4-row tile holds 16 accumulators plus 4 weight and 4 activation
+        // vectors — 24 q-registers. 32-bit ARM has 16, so it takes the
+        // single-row loop below, whose 9 fit.
+        #[cfg(target_arch = "aarch64")]
         let mut row = 0;
+        #[cfg(not(target_arch = "aarch64"))]
+        let row = 0;
+        #[cfg(target_arch = "aarch64")]
         while row + 4 <= rows {
             let mut a00 = bias0;
             let mut a01 = bias1;
