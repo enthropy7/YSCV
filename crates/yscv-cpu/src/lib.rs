@@ -156,6 +156,28 @@ pub fn host_cpu() -> &'static Cpu {
     CPU.get_or_init(detect_host)
 }
 
+/// The `CPU part` field of `/proc/cpuinfo`, the implementer's part number.
+///
+/// Both ARM arches identify a core by this number. aarch64 prefers the MIDR
+/// register and falls back here; 32-bit ARM has only this.
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+pub(crate) fn cpuinfo_part(info: &str) -> Option<u32> {
+    info.lines()
+        .find_map(|l| l.strip_prefix("CPU part"))
+        .and_then(|rest| rest.find("0x").map(|i| &rest[i..]))
+        .and_then(parse_hex)
+        .map(|v| v as u32)
+}
+
+/// Leading `0x`-prefixed hex, ignoring whatever follows it.
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+pub(crate) fn parse_hex(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
+    let hex: String = s.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    u64::from_str_radix(&hex, 16).ok()
+}
+
 fn detect_host() -> Cpu {
     if cfg!(miri) {
         return Cpu {

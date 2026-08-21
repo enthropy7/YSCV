@@ -38,28 +38,13 @@ fn detect_uarch() -> Microarch {
 fn read_midr_part() -> Option<u32> {
     if let Ok(s) =
         std::fs::read_to_string("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1")
-        && let Some(midr) = parse_hex_u64(s.trim())
+        && let Some(midr) = super::parse_hex(s.trim())
     {
         return Some(((midr >> 4) & 0xfff) as u32);
     }
-    if let Ok(info) = std::fs::read_to_string("/proc/cpuinfo") {
-        for line in info.lines() {
-            if let Some(rest) = line.strip_prefix("CPU part")
-                && let Some(idx) = rest.find("0x")
-                && let Some(part) = parse_hex_u64(rest[idx..].trim())
-            {
-                return Some(part as u32);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(not(target_os = "macos"))]
-fn parse_hex_u64(s: &str) -> Option<u64> {
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
-    let hex: String = s.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
-    u64::from_str_radix(&hex, 16).ok()
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|info| super::cpuinfo_part(&info))
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -46,21 +46,8 @@ fn features_from_hwcap(caps: core::ffi::c_ulong) -> CpuFeatures {
     }
 }
 
-/// First value of a `key : value` line, as `/proc/cpuinfo` formats it.
-fn field<'a>(info: &'a str, key: &str) -> Option<&'a str> {
-    info.lines()
-        .find(|l| l.trim_start().starts_with(key))
-        .and_then(|l| l.split(':').nth(1))
-        .map(str::trim)
-}
-
 fn detect_uarch(info: &str) -> Microarch {
-    match field(info, "CPU part") {
-        Some(part) => u32::from_str_radix(part.trim_start_matches("0x"), 16)
-            .map(part_to_uarch)
-            .unwrap_or(Microarch::GenericArm),
-        None => Microarch::GenericArm,
-    }
+    super::cpuinfo_part(info).map_or(Microarch::GenericArm, part_to_uarch)
 }
 
 /// Only the parts we have measured on. Everything else stays `GenericArm`,
