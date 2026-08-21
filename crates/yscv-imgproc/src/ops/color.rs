@@ -109,7 +109,10 @@ fn grayscale_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn grayscale_neon_row(src: &[f32], dst: &mut [f32]) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::{vdupq_n_f32, vfmaq_f32, vld3q_f32, vmulq_f32, vst1q_f32};
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::{vdupq_n_f32, vfmaq_f32, vld3q_f32, vmulq_f32, vst1q_f32};
 
     let w = dst.len();
     let sp = src.as_ptr();
@@ -394,7 +397,10 @@ fn hsv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn hsv_neon_row(src: &[f32], dst: &mut [f32]) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let w = dst.len() / 3;
     let sp = src.as_ptr();
@@ -927,7 +933,12 @@ fn lab_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn lab_neon_row(src: &[f32], dst: &mut [f32]) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::{
+        vdupq_n_f32, vfmaq_f32, vgetq_lane_f32, vld1q_f32, vld3q_f32, vmulq_f32, vst1q_f32,
+    };
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::{
         vdupq_n_f32, vfmaq_f32, vgetq_lane_f32, vld1q_f32, vld3q_f32, vmulq_f32, vst1q_f32,
     };
 
@@ -1432,9 +1443,12 @@ fn yuv_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn yuv_neon_row(src: &[f32], dst: &mut [f32]) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::{
         float32x4x3_t, vdupq_n_f32, vfmaq_f32, vld3q_f32, vmulq_f32, vst3q_f32,
     };
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::{float32x4x3_t, vdupq_n_f32, vfmaq_f32, vld3q_f32, vmulq_f32, vst3q_f32};
 
     let w = dst.len() / 3;
     let sp = src.as_ptr();
@@ -1832,7 +1846,10 @@ fn bgr_simd_row(src: &[f32], dst: &mut [f32]) -> usize {
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn bgr_neon_row(src: &[f32], dst: &mut [f32]) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::{float32x4x3_t, vld3q_f32, vst3q_f32};
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::{float32x4x3_t, vld3q_f32, vst3q_f32};
 
     let w = dst.len() / 3;
     let sp = src.as_ptr();

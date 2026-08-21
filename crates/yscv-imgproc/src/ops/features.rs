@@ -44,7 +44,7 @@ pub fn harris_corners(
     let n = h * w;
     let mut prods = vec![0.0f32; n * 3]; // interleaved [sxx0,sxy0,syy0, sxx1,sxy1,syy1, ...]
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
@@ -187,11 +187,14 @@ fn vec_add_row(acc: &mut [f32], src: &[f32]) {
     let n = acc.len().min(src.len());
     let mut i = 0;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) {
         // SAFETY: ISA guard (cfg aarch64 guarantees NEON); i+4 <= n bounds checked.
         unsafe {
+            #[cfg(target_arch = "aarch64")]
             use std::arch::aarch64::*;
+            #[cfg(target_arch = "arm")]
+            use std::arch::arm::*;
             let ap = acc.as_mut_ptr();
             let sp = src.as_ptr();
             while i + 4 <= n {
@@ -237,11 +240,14 @@ fn vec_sub_row(acc: &mut [f32], src: &[f32]) {
     let n = acc.len().min(src.len());
     let mut i = 0;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) {
         // SAFETY: ISA guard (cfg aarch64 guarantees NEON); i+4 <= n bounds checked.
         unsafe {
+            #[cfg(target_arch = "aarch64")]
             use std::arch::aarch64::*;
+            #[cfg(target_arch = "arm")]
+            use std::arch::arm::*;
             let ap = acc.as_mut_ptr();
             let sp = src.as_ptr();
             while i + 4 <= n {
@@ -301,11 +307,14 @@ fn sobel_products_interleaved_scalar(data: &[f32], prods: &mut [f32], h: usize, 
 }
 
 /// NEON SIMD fused Sobel gradient + interleaved product computation.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn sobel_products_interleaved_neon(data: &[f32], prods: &mut [f32], h: usize, w: usize) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let two = vdupq_n_f32(2.0);
 
@@ -841,7 +850,7 @@ pub fn distance_transform(input: &Tensor) -> Result<Tensor, ImgProcError> {
 fn dt_vertical_min_forward(dist: &mut [f32], src_start: usize, cur_start: usize, w: usize) {
     let mut x = 0usize;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -867,7 +876,7 @@ fn dt_vertical_min_forward(dist: &mut [f32], src_start: usize, cur_start: usize,
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn dt_vertical_neon(
@@ -876,7 +885,10 @@ unsafe fn dt_vertical_neon(
     cur_start: usize,
     w: usize,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let one = vdupq_n_f32(1.0);
     let sp = dist.as_ptr().add(src_start);
     let cp = dist.as_mut_ptr().add(cur_start);
@@ -1062,7 +1074,7 @@ fn dt_l2_vertical3(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
     }
     let mut x = 1usize;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         x = unsafe { dt_l2_vertical3_neon(dist, src, cur, w, a, b) };
@@ -1098,7 +1110,7 @@ fn dt_l2_vertical3(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
     dist[cur + w - 1] = best;
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn dt_l2_vertical3_neon(
@@ -1109,7 +1121,10 @@ unsafe fn dt_l2_vertical3_neon(
     a: f32,
     b: f32,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let av = vdupq_n_f32(a);
     let bv = vdupq_n_f32(b);
     let sp = dist.as_ptr().add(src);
@@ -1216,7 +1231,7 @@ fn dt_l2_vertical5(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
     }
     let mut x = 2usize;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         x = unsafe { dt_l2_vertical5_neon(dist, src, cur, w, a, b, c) };
@@ -1246,7 +1261,7 @@ fn dt_l2_vertical5(dist: &mut [f32], src: usize, cur: usize, w: usize, a: f32, b
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn dt_l2_vertical5_neon(
@@ -1258,7 +1273,10 @@ unsafe fn dt_l2_vertical5_neon(
     b: f32,
     c: f32,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let av = vdupq_n_f32(a);
     let bv = vdupq_n_f32(b);
     let cv = vdupq_n_f32(c);
@@ -1332,7 +1350,7 @@ fn dt_l2_knight(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) {
     }
     let mut x = 1usize;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         x = unsafe { dt_l2_knight_neon(dist, src2, cur, w, c) };
@@ -1362,11 +1380,14 @@ fn dt_l2_knight(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) {
     dist[cur + w - 1] = dist[cur + w - 1].min(dist[src2 + w - 2] + c);
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn dt_l2_knight_neon(dist: &mut [f32], src2: usize, cur: usize, w: usize, c: f32) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let cv = vdupq_n_f32(c);
     let sp = dist.as_ptr().add(src2);
     let cp = dist.as_mut_ptr().add(cur);

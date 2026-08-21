@@ -223,7 +223,7 @@ fn pool2d_2x2s2_max_row_mc(
 
         let mut i = 0usize;
 
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         if !cfg!(miri) && c >= 4 && features.neon {
             unsafe {
                 pool2d_2x2s2_max_mc_neon(input, p00, p01, p10, p11, out_slice, &mut i);
@@ -249,7 +249,7 @@ fn pool2d_2x2s2_max_row_mc(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn pool2d_2x2s2_max_mc_neon(
@@ -261,7 +261,10 @@ unsafe fn pool2d_2x2s2_max_mc_neon(
     out: &mut [f32],
     i: &mut usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let ip = input.as_ptr();
     let op = out.as_mut_ptr();
     let len = out.len();
@@ -324,7 +327,7 @@ fn pool2d_2x2s2_max_row(
     let features = crate::host_cpu().features;
 
     // SIMD batch: process 4 output pixels (= 8 input pixels per row) at a time.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && features.neon {
         unsafe {
             pool2d_2x2s2_max_row_neon(input, row0_base, row1_base, out_row, plan.out_w, &mut out_x);
@@ -350,7 +353,7 @@ fn pool2d_2x2s2_max_row(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn pool2d_2x2s2_max_row_neon(
@@ -361,7 +364,10 @@ unsafe fn pool2d_2x2s2_max_row_neon(
     out_w: usize,
     out_x: &mut usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let ip = input.as_ptr();
     let op = out_row.as_mut_ptr();
     while *out_x + 4 <= out_w {
@@ -375,7 +381,7 @@ unsafe fn pool2d_2x2s2_max_row_neon(
         let max0 = vmaxq_f32(r0a, r1a);
         let max1 = vmaxq_f32(r0b, r1b);
         // Pairwise max: take max of even/odd elements → 4 results
-        let result = vpmaxq_f32(max0, max1);
+        let result = super::pmaxq_f32_neon(max0, max1);
         vst1q_f32(op.add(*out_x), result);
         *out_x += 4;
     }
@@ -443,7 +449,7 @@ fn pool_accumulate(out: &mut [f32], input: &[f32], kind: Pool2dKind) {
 
     let features = crate::host_cpu().features;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if features.neon {
             unsafe { pool_accumulate_neon(out, input, kind) };
@@ -473,11 +479,14 @@ fn pool_accumulate(out: &mut [f32], input: &[f32], kind: Pool2dKind) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn pool_accumulate_neon(out: &mut [f32], input: &[f32], kind: Pool2dKind) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let len = out.len();
     let op = out.as_mut_ptr();
     let ip = input.as_ptr();

@@ -145,7 +145,7 @@ fn threshold_binary_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32, max
     let mut i = 0usize;
 
     if !cfg!(miri) {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         {
             if yscv_cpu::host_cpu().features.neon {
                 // SAFETY: feature detected; pointers valid for len elements.
@@ -177,7 +177,7 @@ fn threshold_binary_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32, max
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn threshold_binary_neon(
@@ -187,7 +187,10 @@ unsafe fn threshold_binary_neon(
     threshold: f32,
     max_val: f32,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let thresh_v = vdupq_n_f32(threshold);
     let max_v = vdupq_n_f32(max_val);
     let zero_v = vdupq_n_f32(0.0);
@@ -336,7 +339,7 @@ fn threshold_binary_inv_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32,
     let mut i = 0usize;
 
     if !cfg!(miri) {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         {
             if yscv_cpu::host_cpu().features.neon {
                 // SAFETY: feature detected; pointers valid for len elements.
@@ -386,7 +389,7 @@ fn threshold_binary_inv_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32,
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn threshold_binary_inv_neon(
@@ -396,7 +399,10 @@ unsafe fn threshold_binary_inv_neon(
     threshold: f32,
     max_val: f32,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let thresh_v = vdupq_n_f32(threshold);
     let max_v = vdupq_n_f32(max_val);
     let zero_v = vdupq_n_f32(0.0);
@@ -499,7 +505,7 @@ fn threshold_truncate_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32) {
     let mut i = 0usize;
 
     if !cfg!(miri) {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         {
             if yscv_cpu::host_cpu().features.neon {
                 // SAFETY: feature detected; pointers valid for len elements.
@@ -535,7 +541,7 @@ fn threshold_truncate_simd_slice(src: &[f32], dst: &mut [f32], threshold: f32) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn threshold_truncate_neon(
@@ -544,7 +550,10 @@ unsafe fn threshold_truncate_neon(
     len: usize,
     threshold: f32,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let thresh_v = vdupq_n_f32(threshold);
     let mut x = 0usize;
     // Process 16 floats (4x4) per iteration for better throughput

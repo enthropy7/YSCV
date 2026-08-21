@@ -65,10 +65,13 @@ pub fn histogram_256(input: &Tensor) -> Result<[u32; 256], ImgProcError> {
 fn histogram_bin_chunk(data: &[u8], hist: &mut [u32]) {
     let mut i = 0;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) {
         unsafe {
+            #[cfg(target_arch = "aarch64")]
             use std::arch::aarch64::*;
+            #[cfg(target_arch = "arm")]
+            use std::arch::arm::*;
             let ptr = data.as_ptr();
             let len = data.len();
             // Use two sub-histograms to reduce store-to-load forwarding stalls
@@ -201,10 +204,13 @@ pub fn integral_image(input: &Tensor) -> Result<Tensor, ImgProcError> {
 fn integral_add_row(sat: &mut [f32], prev_off: usize, cur_off: usize, w: usize) {
     let mut x = 0;
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) {
         unsafe {
+            #[cfg(target_arch = "aarch64")]
             use std::arch::aarch64::*;
+            #[cfg(target_arch = "arm")]
+            use std::arch::arm::*;
             let p = sat.as_mut_ptr();
             while x + 4 <= w {
                 let a = vld1q_f32(p.add(cur_off + x));

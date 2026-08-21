@@ -82,7 +82,7 @@ fn grayscale_u8_simd_row(src: &[u8], dst: &mut [u8]) -> usize {
         return 0;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -103,11 +103,14 @@ fn grayscale_u8_simd_row(src: &[u8], dst: &mut [u8]) -> usize {
     0
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn grayscale_u8_neon(src: &[u8], dst: &mut [u8], w: usize) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     // Integer approximation: gray = (77*R + 150*G + 29*B + 128) >> 8
     // which approximates BT.601: 0.299*R + 0.587*G + 0.114*B
@@ -223,7 +226,7 @@ fn morph_3x3_separable(input: &ImageU8, is_dilate: bool) -> Option<ImageU8> {
     let border = if is_dilate { 0u8 } else { 255u8 };
     let mut out = vec![0u8; h * w];
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
@@ -308,7 +311,7 @@ fn morph_3x3_separable(input: &ImageU8, is_dilate: bool) -> Option<ImageU8> {
 
 /// Process one morph row — branchless NEON inner loop with 2x unrolling.
 /// Zero branches in steady state.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn morph_row_neon<const IS_DILATE: bool>(
@@ -318,7 +321,10 @@ unsafe fn morph_row_neon<const IS_DILATE: bool>(
     dst: *mut u8,
     w: usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     #[inline(always)]
     unsafe fn cmp<const D: bool>(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
@@ -463,7 +469,7 @@ unsafe fn morph_row_neon<const IS_DILATE: bool>(
 
 /// Direct 3×3 morphology — GCD parallel on macOS, sequential fallback.
 /// Eliminates border_row allocation by using vdupq_n_u8 border vectors directly.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn morph_3x3_direct_neon<const IS_DILATE: bool>(
@@ -1530,7 +1536,7 @@ unsafe fn sobel_row_sse(
 }
 
 /// NEON sobel row — gradient magnitude using NEON intrinsics.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn sobel_row_neon(
@@ -1540,7 +1546,10 @@ unsafe fn sobel_row_neon(
     dst: *mut u8,
     w: usize,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let mut x = 1usize;
 
@@ -1655,7 +1664,7 @@ pub fn gaussian_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
 
     // Direct 3×3 gaussian [1,2,1]×[1,2,1]/16 — no intermediate buffer.
     // Same approach as morph: vextq for horizontal shifts, GCD for parallelism.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
@@ -1699,11 +1708,14 @@ pub fn gaussian_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
 
 /// Direct 3×3 gaussian row — vextq for horizontal neighbors, all u16 arithmetic.
 /// Kernel weights `[1,2,1]`x`[1,2,1]`, max sum = 4080, fits u16. Divide by >>4 with rounding.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn gauss_row_neon(top: *const u8, mid: *const u8, bot: *const u8, dst: *mut u8, w: usize) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     // Inline helper: compute h_sum = left + 2*center + right in u16 for low/high halves
     #[inline(always)]
@@ -1804,7 +1816,7 @@ unsafe fn gauss_row_neon(top: *const u8, mid: *const u8, bot: *const u8, dst: *m
 }
 
 /// Direct 3×3 gaussian — GCD parallel on macOS, sequential fallback.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn gauss_3x3_direct_neon(src: &[u8], out: &mut [u8], h: usize, w: usize) {
@@ -1890,7 +1902,7 @@ pub fn box_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
     let src = input.data();
     let mut out = vec![0u8; h * w];
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: (category 1) NEON guaranteed by feature detection; src/out same h*w allocation.
         unsafe {
@@ -1945,11 +1957,14 @@ pub fn box_blur_3x3_u8(input: &ImageU8) -> Option<ImageU8> {
 /// Direct 3×3 box blur row — NEON single-pass using vextq for horizontal shifts.
 /// Kernel: [1,1,1] x [1,1,1] / 9. Max u16 sum = 255*9 = 2295, fits u16.
 /// Division by 9 via (sum * 3641) >> 15.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn box_row_neon(top: *const u8, mid: *const u8, bot: *const u8, dst: *mut u8, w: usize) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     // h_sum = left + center + right (uniform [1,1,1] kernel)
     // Uses vaddl_u8 (widening add: u8+u8->u16) + vaddw_u8 (add wide: u16+u8->u16)
@@ -2066,7 +2081,7 @@ unsafe fn box_row_neon(top: *const u8, mid: *const u8, bot: *const u8, dst: *mut
 }
 
 /// Direct 3×3 box blur — sequential for moderate images, chunked parallel for large.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn box_3x3_direct_neon(src: &[u8], out: &mut [u8], h: usize, w: usize) {
@@ -2214,7 +2229,7 @@ fn box_h_u8_simd(src: &[u8], dst: &mut [u16], w: usize) -> usize {
         return 1;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -2282,11 +2297,14 @@ unsafe fn box_h_u8_sse(src: &[u8], dst: &mut [u16], w: usize) -> usize {
 }
 
 /// NEON horizontal `[1,1,1]` pass -- 16 pixels per iteration.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_op_in_unsafe_fn, dead_code)]
 #[target_feature(enable = "neon")]
 unsafe fn box_h_u8_neon(src: &[u8], dst: &mut [u16], w: usize) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let ptr = src.as_ptr();
     let out = dst.as_mut_ptr();
     let mut x = 1usize;
@@ -2324,7 +2342,7 @@ fn box_v_u16_simd(above: &[u16], center: &[u16], below: &[u16], dst: &mut [u8], 
         return 0;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -2396,7 +2414,7 @@ unsafe fn box_v_u16_sse(
 /// NEON vertical `[1,1,1]`/9 pass -- 8 pixels per iteration.
 /// Divides by 9 via: (sum * 3641) >> 15.
 /// u16 sum max = 765*3 = 2295; 2295*3641 = 8,355,495 fits u32.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_op_in_unsafe_fn, dead_code)]
 #[target_feature(enable = "neon")]
 unsafe fn box_v_u16_neon(
@@ -2406,7 +2424,10 @@ unsafe fn box_v_u16_neon(
     dst: &mut [u8],
     w: usize,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let ap = above.as_ptr();
     let cp = center.as_ptr();
     let bp = below.as_ptr();
@@ -2471,7 +2492,7 @@ pub fn sobel_3x3_magnitude_u8(input: &ImageU8) -> Option<ImageU8> {
 
     let process_sobel_row = |row0: &[u8], row1: &[u8], row2: &[u8], dst: &mut [u8]| {
         let mut done = 1usize;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
             done = unsafe {
@@ -2689,7 +2710,7 @@ fn median_u8_simd_row(row0: &[u8], row1: &[u8], row2: &[u8], out: &mut [u8], w: 
         return 1;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -2714,7 +2735,7 @@ fn median_u8_simd_row(row0: &[u8], row1: &[u8], row2: &[u8], out: &mut [u8], w: 
     1
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn median_u8_neon_row(
@@ -2724,7 +2745,10 @@ unsafe fn median_u8_neon_row(
     out: &mut [u8],
     w: usize,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     #[inline(always)]
     unsafe fn cas(a: &mut uint8x16_t, b: &mut uint8x16_t) {

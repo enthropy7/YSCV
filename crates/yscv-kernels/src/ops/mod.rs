@@ -124,6 +124,40 @@ pub(crate) unsafe fn maxvq_f32_neon(v: std::arch::arm::float32x4_t) -> f32 {
     vget_lane_f32::<0>(vpmax_f32(pairs, pairs))
 }
 
+/// `vpaddq_f32`-style pairwise max across two vectors:
+/// `[max(a0,a1), max(a2,a3), max(b0,b1), max(b2,b3)]`.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn pmaxq_f32_neon(
+    a: std::arch::aarch64::float32x4_t,
+    b: std::arch::aarch64::float32x4_t,
+) -> std::arch::aarch64::float32x4_t {
+    std::arch::aarch64::vpmaxq_f32(a, b)
+}
+
+/// See the aarch64 form above. 32-bit ARM pairs within a d-register only, so
+/// fold each operand's halves and recombine.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn pmaxq_f32_neon(
+    a: std::arch::arm::float32x4_t,
+    b: std::arch::arm::float32x4_t,
+) -> std::arch::arm::float32x4_t {
+    use std::arch::arm::*;
+    vcombine_f32(
+        vpmax_f32(vget_low_f32(a), vget_high_f32(a)),
+        vpmax_f32(vget_low_f32(b), vget_high_f32(b)),
+    )
+}
+
 pub(crate) mod attention;
 #[cfg(all(target_os = "macos", yscv_blas))]
 pub mod bnns_conv;

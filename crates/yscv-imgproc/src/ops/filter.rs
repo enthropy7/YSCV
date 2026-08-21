@@ -46,7 +46,10 @@ unsafe fn box_blur_neon_row_c1(
     out: &mut [f32],
     w: usize,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let inv9 = vdupq_n_f32(1.0 / 9.0);
     let mut x = 1usize;
     while x + 5 <= w {
@@ -304,7 +307,10 @@ fn gauss_h_simd_row_c1(src: &[f32], out: &mut [f32], w: usize) -> usize {
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn gauss_h_neon_row_c1(src: &[f32], out: &mut [f32], w: usize) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let two = vdupq_n_f32(2.0);
     let quarter = vdupq_n_f32(0.25);
     let mut x = 1usize;
@@ -543,7 +549,10 @@ unsafe fn gauss_v_neon_c1(
     out: &mut [f32],
     w: usize,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let two = vdupq_n_f32(2.0);
     let quarter = vdupq_n_f32(0.25);
     let mut x = 0usize;
@@ -929,7 +938,10 @@ unsafe fn bilateral_neon_row(
     color_lut: &[f32; 256],
     row_out: &mut [f32],
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let scale_255 = vdupq_n_f32(255.0);
     let max255 = vdupq_n_u32(255);

@@ -502,7 +502,7 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
     let x86_fast = c % 8 == 0 && hw % 8 == 0 && crate::host_cpu().features.avx;
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let x86_fast = false;
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     let neon_fast = c % 4 == 0 && hw % 4 == 0 && crate::host_cpu().features.neon;
     #[cfg(not(target_arch = "aarch64"))]
     let neon_fast = false;
@@ -554,7 +554,7 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
                     );
                 }
             }
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
             #[allow(unsafe_code)]
             if neon_fast {
                 // SAFETY: NEON is mandatory on aarch64; `src` read-only/shared,
@@ -581,7 +581,7 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
                 nhwc_to_nchw_inner_avx(src, dst, n, h, w, c);
             }
         }
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         #[allow(unsafe_code)]
         if neon_fast && !x86_fast {
             // SAFETY: NEON is part of mandatory ARMv8 ISA on aarch64; the
@@ -601,7 +601,7 @@ pub fn nhwc_to_nchw_fast(input: &Tensor) -> Result<Tensor, KernelError> {
 /// aarch64 NEON 4×4 block transpose for NHWC → NCHW. Mirror of the x86 AVX
 /// 8×8 path. Requires `c % 4 == 0 && hw % 4 == 0`. Loops batches and delegates
 /// the per-batch transpose to [`nhwc_to_nchw_block_neon`].
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, clippy::too_many_arguments)]
 unsafe fn nhwc_to_nchw_inner_neon(
@@ -635,7 +635,7 @@ unsafe fn nhwc_to_nchw_inner_neon(
 /// at the batch's NHWC data (`[hw, c_full]`); `d_chunk` at the channel block's
 /// NCHW rows. Shared read-only source columns let this run per-thread over
 /// disjoint channel blocks.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[inline]
 #[allow(unsafe_code)]
@@ -647,7 +647,12 @@ unsafe fn nhwc_to_nchw_block_neon(
     ci_start: usize,
     g: usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::{
+        float32x4_t, vcombine_f32, vget_high_f32, vget_low_f32, vld1q_f32, vst1q_f32, vtrnq_f32,
+    };
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::{
         float32x4_t, vcombine_f32, vget_high_f32, vget_low_f32, vld1q_f32, vst1q_f32, vtrnq_f32,
     };
     unsafe {

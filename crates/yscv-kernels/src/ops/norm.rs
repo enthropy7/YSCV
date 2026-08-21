@@ -550,7 +550,7 @@ fn batch_norm2d_nhwc_row(
     // SIMD: process pixel-by-pixel, each pixel has `channels` values
     // For channels divisible by 4 (common: 16, 32, 64, 128), use NEON/AVX
     let path = dispatch_path(true, true);
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if channels >= 4 && path == SimdDispatchPath::Neon {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { batch_norm_row_neon(input_row, out_row, scale, shift, channels) };
@@ -609,7 +609,7 @@ fn batch_norm_row_c3(input: &[f32], output: &mut [f32], scale: &[f32], shift: &[
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn batch_norm_row_neon(
@@ -619,7 +619,10 @@ unsafe fn batch_norm_row_neon(
     shift: &[f32],
     channels: usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let total = input.len();
     let inp = input.as_ptr();
     let outp = output.as_mut_ptr();
@@ -865,7 +868,7 @@ fn layer_norm_stats(data: &[f32]) -> (f32, f32) {
     let n = data.len();
     let path = dispatch_path(true, false);
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if n >= 4 && path == SimdDispatchPath::Neon {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         return unsafe { layer_norm_stats_neon(data) };
@@ -890,11 +893,14 @@ fn layer_norm_stats(data: &[f32]) -> (f32, f32) {
     (sum, sum_sq)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn layer_norm_stats_neon(data: &[f32]) -> (f32, f32) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let mut vsum = vdupq_n_f32(0.0);
     let mut vsq = vdupq_n_f32(0.0);
     let ptr = data.as_ptr();
@@ -906,8 +912,8 @@ unsafe fn layer_norm_stats_neon(data: &[f32]) -> (f32, f32) {
         vsq = vfmaq_f32(vsq, v, v);
         i += 4;
     }
-    let mut sum = vaddvq_f32(vsum);
-    let mut sum_sq = vaddvq_f32(vsq);
+    let mut sum = super::addvq_f32_neon(vsum);
+    let mut sum_sq = super::addvq_f32_neon(vsq);
     while i < data.len() {
         let v = *ptr.add(i);
         sum += v;
@@ -1005,7 +1011,7 @@ fn layer_norm_apply(
     let n = input.len();
     let path = dispatch_path(true, false);
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if n >= 4 && path == SimdDispatchPath::Neon {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_neon(input, out, gamma, beta, mean, inv_std) };
@@ -1034,7 +1040,7 @@ fn layer_norm_apply_identity(input: &[f32], out: &mut [f32], mean: f32, inv_std:
     let n = input.len();
     let path = dispatch_path(true, false);
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if n >= 4 && path == SimdDispatchPath::Neon {
         // SAFETY: guarded by runtime feature detection in `dispatch_path`.
         unsafe { layer_norm_apply_identity_neon(input, out, mean, inv_std) };
@@ -1058,11 +1064,14 @@ fn layer_norm_apply_identity(input: &[f32], out: &mut [f32], mean: f32, inv_std:
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn layer_norm_apply_identity_neon(input: &[f32], out: &mut [f32], mean: f32, inv_std: f32) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let vmean = vdupq_n_f32(mean);
     let vinv = vdupq_n_f32(inv_std);
     let mut i = 0usize;
@@ -1132,7 +1141,7 @@ unsafe fn layer_norm_apply_identity_avx(input: &[f32], out: &mut [f32], mean: f3
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn layer_norm_apply_neon(
@@ -1143,7 +1152,10 @@ unsafe fn layer_norm_apply_neon(
     mean: f32,
     inv_std: f32,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let vmean = vdupq_n_f32(mean);
     let vinv = vdupq_n_f32(inv_std);
     let mut i = 0usize;

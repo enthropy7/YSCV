@@ -68,9 +68,12 @@ unsafe fn normalize_3ch(
     let (m0, m1, m2) = (mean[0], mean[1], mean[2]);
     let (s0, s1, s2) = (inv_std[0], inv_std[1], inv_std[2]);
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
+        #[cfg(target_arch = "aarch64")]
         use std::arch::aarch64::*;
+        #[cfg(target_arch = "arm")]
+        use std::arch::arm::*;
         let vm = vld1q_f32([m0, m1, m2, 0.0].as_ptr());
         let vs = vld1q_f32([s0, s1, s2, 0.0].as_ptr());
         let full_quads = num_pixels / 4;
@@ -235,9 +238,12 @@ unsafe fn normalize_1ch(
     inv_std: f32,
     len: usize,
 ) {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
+        #[cfg(target_arch = "aarch64")]
         use std::arch::aarch64::*;
+        #[cfg(target_arch = "arm")]
+        use std::arch::arm::*;
         let vm = vdupq_n_f32(mean);
         let vs = vdupq_n_f32(inv_std);
         let mut i = 0usize;
@@ -341,9 +347,12 @@ unsafe fn normalize_generic(
     channels: usize,
     num_pixels: usize,
 ) {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
+        #[cfg(target_arch = "aarch64")]
         use std::arch::aarch64::*;
+        #[cfg(target_arch = "arm")]
+        use std::arch::arm::*;
         let simd_end = channels & !3;
         for px in 0..num_pixels {
             let base = px * channels;

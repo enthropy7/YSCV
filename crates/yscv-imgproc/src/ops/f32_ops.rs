@@ -81,7 +81,7 @@ fn grayscale_f32_simd(src: &[f32], dst: &mut [f32], total: usize) -> usize {
         return 0;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -98,11 +98,14 @@ fn grayscale_f32_simd(src: &[f32], dst: &mut [f32], total: usize) -> usize {
     0
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn grayscale_f32_neon(src: &[f32], dst: &mut [f32], total: usize) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let coeff_r = vdupq_n_f32(0.299);
     let coeff_g = vdupq_n_f32(0.587);
     let coeff_b = vdupq_n_f32(0.114);
@@ -186,7 +189,7 @@ pub fn gaussian_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     let mut out = vec![0.0f32; h * w];
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
@@ -228,7 +231,7 @@ pub fn gaussian_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     ImageF32::new(out, h, w, 1)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn gauss_row_f32_neon(
@@ -238,7 +241,10 @@ unsafe fn gauss_row_f32_neon(
     dst: *mut f32,
     w: usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let inv16 = vdupq_n_f32(1.0 / 16.0);
     let two = vdupq_n_f32(2.0);
 
@@ -309,7 +315,7 @@ unsafe fn gauss_row_f32_neon(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn gauss_3x3_direct_f32_neon(src: &[f32], out: &mut [f32], h: usize, w: usize) {
@@ -505,7 +511,7 @@ pub fn box_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     let mut out = vec![0.0f32; h * w];
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
@@ -550,7 +556,7 @@ pub fn box_blur_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     ImageF32::new(out, h, w, 1)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn box_row_f32_neon(
@@ -560,7 +566,10 @@ unsafe fn box_row_f32_neon(
     dst: *mut f32,
     w: usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let inv9 = vdupq_n_f32(1.0 / 9.0);
 
     let border_t = vdupq_n_f32(*top);
@@ -628,7 +637,7 @@ unsafe fn box_row_f32_neon(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn box_3x3_direct_f32_neon(src: &[f32], out: &mut [f32], h: usize, w: usize) {
@@ -819,7 +828,7 @@ pub fn dilate_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
 
     let mut out = vec![0.0f32; h * w];
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: ISA guard (feature detection) above.
         unsafe {
@@ -859,7 +868,7 @@ pub fn dilate_3x3_f32(input: &ImageF32) -> Option<ImageF32> {
     ImageF32::new(out, h, w, 1)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn dilate_row_f32_neon(
@@ -869,7 +878,10 @@ unsafe fn dilate_row_f32_neon(
     dst: *mut f32,
     w: usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let border_v = vdupq_n_f32(f32::NEG_INFINITY);
     let mut prev_t = border_v;
@@ -925,7 +937,7 @@ unsafe fn dilate_row_f32_neon(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn dilate_3x3_direct_f32_neon(src: &[f32], out: &mut [f32], h: usize, w: usize) {
@@ -1159,7 +1171,7 @@ fn sobel_f32_simd_row(
         return 1;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -1176,7 +1188,7 @@ fn sobel_f32_simd_row(
     1
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn sobel_f32_neon_row(
@@ -1186,7 +1198,10 @@ unsafe fn sobel_f32_neon_row(
     dst: &mut [f32],
     w: usize,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let two = vdupq_n_f32(2.0);
     let p0 = row0.as_ptr();
     let p1 = row1.as_ptr();
@@ -1329,7 +1344,7 @@ fn threshold_f32_simd(
         return 0;
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: ISA guard (feature detection) above.
@@ -1346,7 +1361,7 @@ fn threshold_f32_simd(
     0
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn threshold_f32_neon(
@@ -1356,7 +1371,10 @@ unsafe fn threshold_f32_neon(
     thresh: f32,
     max_val: f32,
 ) -> usize {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let thresh_v = vdupq_n_f32(thresh);
     let max_v = vdupq_n_f32(max_val);
     let zero = vdupq_n_f32(0.0);

@@ -65,7 +65,10 @@ impl CropPixel for u8 {
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn load4(p: *const Self) -> super::neon_compat::float32x4_t {
         #[cfg(target_arch = "aarch64")]
+        #[cfg(target_arch = "aarch64")]
         use std::arch::aarch64::*;
+        #[cfg(target_arch = "arm")]
+        use std::arch::arm::*;
         #[cfg(target_arch = "arm")]
         use std::arch::arm::*;
         // One unaligned 4-byte read: the four values are adjacent channels, and
@@ -389,7 +392,10 @@ unsafe fn tap4_neon<T: CropPixel>(
     ayv: super::neon_compat::float32x4_t,
 ) {
     #[cfg(target_arch = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
     let sp = src.as_ptr();
@@ -413,7 +419,10 @@ unsafe fn tap4_neon<T: CropPixel>(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn frac_x_neon(a: f32) -> super::neon_compat::float32x4_t {
     #[cfg(target_arch = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
     let d = vdupq_n_f32(a);
@@ -426,7 +435,10 @@ unsafe fn frac_x_neon(a: f32) -> super::neon_compat::float32x4_t {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn frac_y_neon(a: f32) -> super::neon_compat::float32x4_t {
     #[cfg(target_arch = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
     let d = vdupq_n_f32(a);
@@ -464,7 +476,10 @@ unsafe fn group4_neon<T: CropPixel>(
     ayv: super::neon_compat::float32x4_t,
 ) -> bool {
     #[cfg(target_arch = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
     let ramp = vld1q_s32([0i32, 1, 2, 3].as_ptr());
@@ -519,7 +534,10 @@ unsafe fn crop_resize_neon<T: CropPixel>(
     tpl_h: usize,
 ) -> Vec<f32> {
     #[cfg(target_arch = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
 
@@ -1009,7 +1027,10 @@ unsafe fn crop_resize_border_neon<T: CropPixel>(
     border: &[f32],
 ) -> Vec<f32> {
     #[cfg(target_arch = "aarch64")]
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
 

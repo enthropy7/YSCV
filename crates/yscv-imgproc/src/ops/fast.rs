@@ -136,7 +136,7 @@ pub fn fast9_detect_raw(
             let row_base = y * w;
             let mut x = x_start;
 
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
             if yscv_cpu::host_cpu().features.neon {
                 while x + 4 <= x_end {
                     // SAFETY: ISA guard (feature detection) above; indices bounded by border.
@@ -253,7 +253,7 @@ pub fn fast9_detect_raw(
 
             // SIMD batch: check 4 consecutive center pixels at a time
             // This vectorizes the cardinal early-rejection test
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
             if yscv_cpu::host_cpu().features.neon {
                 while x + 4 <= x_end {
                     // SAFETY: ISA guard (feature detection) above; indices bounded by border.
@@ -387,7 +387,7 @@ pub fn fast9_detect_raw(
 
 /// SIMD cardinal check for 4 consecutive center pixels (NEON).
 /// Returns a 4-bit mask: bit i is set if pixel i passes cardinal test.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn fast9_cardinal_check_neon(
@@ -396,7 +396,10 @@ unsafe fn fast9_cardinal_check_neon(
     card: &[isize; 4],
     threshold: f32,
 ) -> u32 {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let ptr = data.as_ptr();
     let thresh = vdupq_n_f32(threshold);
