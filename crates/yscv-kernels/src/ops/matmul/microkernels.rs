@@ -1,8 +1,10 @@
 //! gebp_kernel_raw and the per-arch register-tiled microkernels
 //! (AVX-512/AVX2/FMA/SSE/NEON/scalar) plus their SiLU epilogue helpers.
 
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+use super::neon::microkernel_4x8_neon;
 #[cfg(target_arch = "aarch64")]
-use super::neon::{microkernel_4x8_neon, microkernel_4x16_neon, microkernel_4x24_neon};
+use super::neon::{microkernel_4x16_neon, microkernel_4x24_neon};
 use super::*;
 
 /// Raw pointer version for use from parallel context.
@@ -533,7 +535,7 @@ unsafe fn microkernel_4x8_dispatch(
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if crate::host_cpu().features.neon {
             microkernel_4x8_neon(

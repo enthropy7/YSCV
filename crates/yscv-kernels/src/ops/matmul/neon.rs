@@ -1,13 +1,17 @@
-//! aarch64 NEON register-tiled GEMM microkernels (4x8 / 4x16 / 4x24),
-//! dispatched from gebp_kernel_raw on aarch64 targets.
+//! ARM NEON register-tiled GEMM microkernels, dispatched from
+//! `gebp_kernel_raw`. The 4x16 and 4x24 tiles need 16 and 24 accumulators
+//! and stay aarch64-only: armv7 has 16 q-registers in total, so only the
+//! 4x8 tile leaves room for operands.
 
 use super::*;
+#[cfg(target_arch = "arm")]
+use core::arch::arm::*;
 
 // ---------------------------------------------------------------------------
 // NEON micro-kernel (aarch64)
 // ---------------------------------------------------------------------------
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
@@ -44,14 +48,14 @@ pub(super) unsafe fn microkernel_4x8_neon(
         let b0 = vld1q_f32(b_panel.add(b_off));
         let b1 = vld1q_f32(b_panel.add(b_off + 4));
 
-        c00 = vfmaq_laneq_f32::<0>(c00, b0, a);
-        c01 = vfmaq_laneq_f32::<0>(c01, b1, a);
-        c10 = vfmaq_laneq_f32::<1>(c10, b0, a);
-        c11 = vfmaq_laneq_f32::<1>(c11, b1, a);
-        c20 = vfmaq_laneq_f32::<2>(c20, b0, a);
-        c21 = vfmaq_laneq_f32::<2>(c21, b1, a);
-        c30 = vfmaq_laneq_f32::<3>(c30, b0, a);
-        c31 = vfmaq_laneq_f32::<3>(c31, b1, a);
+        c00 = crate::core::ops::fmaq_lane_neon::<0>(c00, b0, a);
+        c01 = crate::core::ops::fmaq_lane_neon::<0>(c01, b1, a);
+        c10 = crate::core::ops::fmaq_lane_neon::<1>(c10, b0, a);
+        c11 = crate::core::ops::fmaq_lane_neon::<1>(c11, b1, a);
+        c20 = crate::core::ops::fmaq_lane_neon::<2>(c20, b0, a);
+        c21 = crate::core::ops::fmaq_lane_neon::<2>(c21, b1, a);
+        c30 = crate::core::ops::fmaq_lane_neon::<3>(c30, b0, a);
+        c31 = crate::core::ops::fmaq_lane_neon::<3>(c31, b1, a);
     }
 
     let cp0 = c;
@@ -602,6 +606,24 @@ pub(super) unsafe fn microkernel_4x24_neon(
 }
 
 /// SiLU using NEON: x / (1 + exp(-x)), uses fast sigmoid helper.
+/// SiLU for armv7, one lane at a time.
+///
+/// The vector form needs a divide and a round-to-nearest convert, and armv7
+/// NEON has neither — approximating both would make this arch disagree with
+/// aarch64 on every activation. No graph we run on this board uses SiLU, so
+/// the scalar round-trip costs nothing and keeps the two arches comparable.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#[target_feature(enable = "neon")]
+unsafe fn silu_neon(x: float32x4_t) -> float32x4_t {
+    let mut lanes = [0f32; 4];
+    vst1q_f32(lanes.as_mut_ptr(), x);
+    for v in &mut lanes {
+        *v /= 1.0 + (-*v).exp();
+    }
+    vld1q_f32(lanes.as_ptr())
+}
+
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]

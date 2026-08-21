@@ -1454,7 +1454,7 @@ mod kernels;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod low_k;
 mod microkernels;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 mod neon;
 use kernels::*;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
