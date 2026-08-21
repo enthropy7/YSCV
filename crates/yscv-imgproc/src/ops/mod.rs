@@ -24,6 +24,9 @@ impl<T> SendConstPtr<T> {
     }
 }
 
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+mod neon_compat;
+
 mod augment;
 mod bitwise;
 mod brief;

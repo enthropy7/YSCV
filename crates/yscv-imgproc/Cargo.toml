@@ -10,6 +10,11 @@ repository.workspace = true
 categories.workspace = true
 keywords.workspace = true
 
+[features]
+# 32-bit ARM NEON. Off by default: the intrinsics are nightly-only, so stable
+# builds must not see them.
+neon-v7 = []
+
 [dependencies]
 yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
 yscv-cpu = { version = "0.1", path = "../yscv-cpu" }

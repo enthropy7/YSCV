@@ -29,8 +29,8 @@ pub(crate) trait CropPixel: Copy {
     ///
     /// # Safety
     /// `p` must admit a four-element read.
-    #[cfg(target_arch = "aarch64")]
-    unsafe fn load4(p: *const Self) -> std::arch::aarch64::float32x4_t;
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    unsafe fn load4(p: *const Self) -> super::neon_compat::float32x4_t;
 }
 
 impl CropPixel for f32 {
@@ -39,11 +39,18 @@ impl CropPixel for f32 {
         self
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     #[inline(always)]
     #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe fn load4(p: *const Self) -> std::arch::aarch64::float32x4_t {
-        std::arch::aarch64::vld1q_f32(p)
+    unsafe fn load4(p: *const Self) -> super::neon_compat::float32x4_t {
+        #[cfg(target_arch = "aarch64")]
+        {
+            std::arch::aarch64::vld1q_f32(p)
+        }
+        #[cfg(target_arch = "arm")]
+        {
+            std::arch::arm::vld1q_f32(p)
+        }
     }
 }
 
@@ -53,11 +60,14 @@ impl CropPixel for u8 {
         self as f32
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     #[inline(always)]
     #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe fn load4(p: *const Self) -> std::arch::aarch64::float32x4_t {
+    unsafe fn load4(p: *const Self) -> super::neon_compat::float32x4_t {
+        #[cfg(target_arch = "aarch64")]
         use std::arch::aarch64::*;
+        #[cfg(target_arch = "arm")]
+        use std::arch::arm::*;
         // One unaligned 4-byte read: the four values are adjacent channels, and
         // a wider NEON load would need bounds the callers do not guarantee.
         let w = (p as *const u32).read_unaligned();
@@ -81,7 +91,7 @@ pub fn crop_resize_bilinear_raw(
     tpl_w: usize,
     tpl_h: usize,
 ) -> Vec<f32> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
         return unsafe { crop_resize_neon(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
@@ -126,7 +136,7 @@ pub fn crop_resize_bilinear_raw_u8(
     tpl_w: usize,
     tpl_h: usize,
 ) -> Vec<f32> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
         return unsafe { crop_resize_neon(src, h, w, ch, cx, cy, win_w, win_h, tpl_w, tpl_h) };
@@ -155,7 +165,7 @@ pub fn crop_resize_bilinear_border_raw_u8(
     tpl_h: usize,
     border: &[f32],
 ) -> Vec<f32> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
         return unsafe {
@@ -217,7 +227,7 @@ pub fn crop_resize_bilinear_border_raw(
     tpl_h: usize,
     border: &[f32],
 ) -> Vec<f32> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     if !cfg!(miri) && (1..=4).contains(&ch) && yscv_cpu::host_cpu().features.neon {
         // SAFETY: guarded by runtime NEON detection; bit-exact vs scalar.
         return unsafe {
@@ -365,7 +375,7 @@ fn crop_resize_scalar<T: CropPixel>(
 /// # Safety
 /// `o00`/`o10` must admit a 4-element read at `o + ch`, and `base` a 4-element
 /// write.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn tap4_neon<T: CropPixel>(
@@ -375,41 +385,50 @@ unsafe fn tap4_neon<T: CropPixel>(
     o10: usize,
     ch: usize,
     base: usize,
-    axv: std::arch::aarch64::float32x4_t,
-    ayv: std::arch::aarch64::float32x4_t,
+    axv: super::neon_compat::float32x4_t,
+    ayv: super::neon_compat::float32x4_t,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let sp = src.as_ptr();
     let wv = vmulq_f32(axv, ayv);
     let p00 = T::load4(sp.add(o00));
     let p01 = T::load4(sp.add(o00 + ch));
     let p10 = T::load4(sp.add(o10));
     let p11 = T::load4(sp.add(o10 + ch));
-    let mut acc = vmulq_laneq_f32(p00, wv, 0);
-    acc = vaddq_f32(acc, vmulq_laneq_f32(p01, wv, 1));
-    acc = vaddq_f32(acc, vmulq_laneq_f32(p10, wv, 2));
-    acc = vaddq_f32(acc, vmulq_laneq_f32(p11, wv, 3));
+    let mut acc = super::neon_compat::mulq_lane_f32::<0>(p00, wv);
+    acc = vaddq_f32(acc, super::neon_compat::mulq_lane_f32::<1>(p01, wv));
+    acc = vaddq_f32(acc, super::neon_compat::mulq_lane_f32::<2>(p10, wv));
+    acc = vaddq_f32(acc, super::neon_compat::mulq_lane_f32::<3>(p11, wv));
     // Lanes past `ch` belong to the next output pixel and are rewritten when it
     // is stored; the tail slack in `out` covers the last one.
     vst1q_f32(out.as_mut_ptr().add(base), acc);
 }
 
 /// `[1-a, a, 1-a, a]`, the x half of the tap weights.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn frac_x_neon(a: f32) -> std::arch::aarch64::float32x4_t {
+unsafe fn frac_x_neon(a: f32) -> super::neon_compat::float32x4_t {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let d = vdupq_n_f32(a);
-    vzip1q_f32(vsubq_f32(vdupq_n_f32(1.0), d), d)
+    super::neon_compat::zip1q_f32(vsubq_f32(vdupq_n_f32(1.0), d), d)
 }
 
 /// `[1-a, 1-a, a, a]`, the y half of the tap weights.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn frac_y_neon(a: f32) -> std::arch::aarch64::float32x4_t {
+unsafe fn frac_y_neon(a: f32) -> super::neon_compat::float32x4_t {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let d = vdupq_n_f32(a);
     vcombine_f32(
         vget_low_f32(vsubq_f32(vdupq_n_f32(1.0), d)),
@@ -427,7 +446,7 @@ unsafe fn frac_y_neon(a: f32) -> std::arch::aarch64::float32x4_t {
 ///
 /// # Safety
 /// Caller must be on a NEON target, and `out` must have four elements of slack.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
 unsafe fn group4_neon<T: CropPixel>(
@@ -442,9 +461,12 @@ unsafe fn group4_neon<T: CropPixel>(
     y0: usize,
     y1: usize,
     base: usize,
-    ayv: std::arch::aarch64::float32x4_t,
+    ayv: super::neon_compat::float32x4_t,
 ) -> bool {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
     let ramp = vld1q_s32([0i32, 1, 2, 3].as_ptr());
     let fi = vcvtq_f32_s32(vaddq_s32(vdupq_n_s32(i as i32), ramp));
     let half = vdupq_n_f32(0.5);
@@ -453,7 +475,7 @@ unsafe fn group4_neon<T: CropPixel>(
         vaddq_f32(vdupq_n_f32(ox), vmulq_n_f32(vaddq_f32(fi, half), sx)),
         half,
     );
-    let fl = vrndmq_f32(fx);
+    let fl = super::neon_compat::rndmq_f32(fx);
     let mut ax = [0f32; 4];
     let mut ix = [0i32; 4];
     vst1q_f32(ax.as_mut_ptr(), vsubq_f32(fx, fl));
@@ -481,7 +503,7 @@ unsafe fn group4_neon<T: CropPixel>(
     true
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn crop_resize_neon<T: CropPixel>(
@@ -496,7 +518,10 @@ unsafe fn crop_resize_neon<T: CropPixel>(
     tpl_w: usize,
     tpl_h: usize,
 ) -> Vec<f32> {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     // load ch (<=4) contiguous floats at element offset `o` into lanes [0,ch)
     #[inline(always)]
@@ -967,7 +992,7 @@ fn crop_resize_border_scalar<T: CropPixel>(
     out
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn, clippy::too_many_arguments)]
 unsafe fn crop_resize_border_neon<T: CropPixel>(
@@ -983,7 +1008,10 @@ unsafe fn crop_resize_border_neon<T: CropPixel>(
     tpl_h: usize,
     border: &[f32],
 ) -> Vec<f32> {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     #[inline(always)]
     unsafe fn loadn<S: CropPixel>(src: &[S], o: usize, ch: usize) -> float32x4_t {
@@ -1552,7 +1580,7 @@ mod tests {
                         );
                     }
                 }
-                #[cfg(target_arch = "aarch64")]
+                #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
                 unsafe {
                     bitexact(
                         &want,
@@ -1672,7 +1700,7 @@ mod tests {
                         );
                     }
                 }
-                #[cfg(target_arch = "aarch64")]
+                #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
                 unsafe {
                     bitexact(
                         &want,
