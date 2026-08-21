@@ -3,6 +3,12 @@ use std::arch::aarch64::{
     float32x4_t, vaddq_f32, vdivq_f32, vdupq_n_f32, vfmaq_f32, vfmaq_laneq_f32, vld1q_f32,
     vmaxq_f32, vnegq_f32, vst1q_f32,
 };
+// armv7 has neither the vector divide nor the q-register lane form of the fused
+// multiply-add; the kernels that need those carry their own replacements.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+use std::arch::arm::{
+    float32x4_t, vaddq_f32, vdupq_n_f32, vfmaq_f32, vld1q_f32, vmaxq_f32, vnegq_f32, vst1q_f32,
+};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     __m128, __m256, _mm_add_ps, _mm_div_ps, _mm_loadu_ps, _mm_max_ps, _mm_mul_ps, _mm_set1_ps,

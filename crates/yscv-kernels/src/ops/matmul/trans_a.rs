@@ -2,7 +2,12 @@
 //! transposed-A 4-row × NR=16 outer-product tiles (AVX-512/AVX2/NEON) and
 //! their dispatchers.
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "arm"
+))]
 use super::super::prefetch::{
     PREFETCH_AHEAD, matmul_prefetch_disabled, prefetch_l1_keep, prefetch_split,
 };
@@ -46,7 +51,7 @@ pub(super) fn non_trans_a_4row_dispatch(
             return;
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             #[allow(unsafe_code)]
@@ -276,7 +281,7 @@ unsafe fn non_trans_a_4row_avx2(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code)]
 unsafe fn non_trans_a_4row_neon(
@@ -511,7 +516,7 @@ pub(super) fn trans_a_4row_supported(n: usize) -> bool {
             return true;
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             return true;
@@ -555,7 +560,7 @@ fn trans_a_4row_dispatch(
             return;
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             #[allow(unsafe_code)]
@@ -604,7 +609,7 @@ fn trans_a_row_set_dispatch(
             return;
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if !cfg!(miri) && n.is_multiple_of(4) && crate::host_cpu().features.neon {
             #[allow(unsafe_code)]
@@ -739,7 +744,7 @@ unsafe fn trans_a_row_set_avx2(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code)]
 unsafe fn trans_a_row_set_neon(
@@ -1021,7 +1026,7 @@ unsafe fn trans_a_4row_avx2(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code)]
 unsafe fn trans_a_4row_neon(

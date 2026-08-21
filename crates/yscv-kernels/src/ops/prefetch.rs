@@ -27,7 +27,12 @@ pub(crate) const PREFETCH_AHEAD: usize = 4;
 /// caller will not read. It must still be a pointer the caller formed without
 /// running off the end of the allocation, since computing an out-of-bounds
 /// pointer is already undefined behaviour regardless of this call.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "arm"
+))]
 #[inline(always)]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn prefetch_l1_keep(p: *const f32) {
@@ -41,6 +46,13 @@ pub(crate) unsafe fn prefetch_l1_keep(p: *const f32) {
         p = in(reg) p,
         options(nostack, preserves_flags, readonly),
     );
+    // armv7 spells the same hint `pld`, and has no cache-level selector.
+    #[cfg(target_arch = "arm")]
+    core::arch::asm!(
+        "pld [{p}]",
+        p = in(reg) p,
+        options(nostack, preserves_flags, readonly),
+    );
 }
 
 /// Split point for a K-loop that prefetches `PREFETCH_AHEAD` iterations ahead.
@@ -49,7 +61,12 @@ pub(crate) unsafe fn prefetch_l1_keep(p: *const f32) {
 /// plain. When `enabled` is false this is `0`, so the prefetching loop is
 /// skipped entirely and the plain loop stays branch-free — that is the whole
 /// point of returning a bound instead of a flag to test per iteration.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "arm"
+))]
 #[inline(always)]
 pub(crate) fn prefetch_split(enabled: bool, k: usize) -> usize {
     if enabled {
@@ -64,7 +81,12 @@ pub(crate) fn prefetch_split(enabled: bool, k: usize) -> usize {
 /// Presence-checked and cached. The hoisted split leaves the disabled path
 /// branch-free, so an A/B costs one predictable load per kernel call rather
 /// than a branch per K-iteration.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "arm"
+))]
 pub(crate) fn matmul_prefetch_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::env::var_os("YSCV_MATMUL_PREFETCH_OFF").is_some())
