@@ -7,6 +7,10 @@ use std::arch::aarch64::{
     vaddq_f32, vdivq_f32, vdupq_n_f32, vld1q_f32, vmaxq_f32, vminq_f32, vmulq_f32, vnegq_f32,
     vst1q_f32,
 };
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+use std::arch::arm::{
+    vaddq_f32, vdupq_n_f32, vld1q_f32, vmaxq_f32, vminq_f32, vmulq_f32, vst1q_f32,
+};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_min_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps,
@@ -79,7 +83,7 @@ pub fn relu_slice_dispatch(values: &mut [f32]) {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -141,7 +145,7 @@ pub fn relu_to_slice_dispatch(input: &[f32], output: &mut [f32]) {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -1108,7 +1112,7 @@ unsafe fn relu_slice_avx512(values: &mut [f32]) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
@@ -1249,7 +1253,7 @@ unsafe fn relu_to_slice_avx512(input: &[f32], output: &mut [f32]) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
@@ -2107,7 +2111,7 @@ pub fn hardswish_slice_dispatch(input: &[f32], output: &mut [f32]) {
 
     let path = dispatch_path(true, false);
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -2145,7 +2149,7 @@ fn hardswish_slice_scalar(input: &[f32], output: &mut [f32]) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, dead_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
@@ -2155,6 +2159,7 @@ unsafe fn hardswish_slice_neon(input: &[f32], output: &mut [f32]) {
     let op = output.as_mut_ptr();
     let three = vdupq_n_f32(3.0);
     let six = vdupq_n_f32(6.0);
+    let inv_six = vdupq_n_f32(1.0 / 6.0);
     let zero = vdupq_n_f32(0.0);
     let mut i = 0usize;
     while i + 16 <= len {
@@ -2162,14 +2167,20 @@ unsafe fn hardswish_slice_neon(input: &[f32], output: &mut [f32]) {
             let off = i + k * 4;
             let x = vld1q_f32(ip.add(off));
             let t = vminq_f32(vmaxq_f32(vaddq_f32(x, three), zero), six);
-            vst1q_f32(op.add(off), vmulq_f32(x, vdivq_f32(t, six)));
+            vst1q_f32(
+                op.add(off),
+                vmulq_f32(x, super::super::div_invariant_neon(t, six, inv_six)),
+            );
         }
         i += 16;
     }
     while i + 4 <= len {
         let x = vld1q_f32(ip.add(i));
         let t = vminq_f32(vmaxq_f32(vaddq_f32(x, three), zero), six);
-        vst1q_f32(op.add(i), vmulq_f32(x, vdivq_f32(t, six)));
+        vst1q_f32(
+            op.add(i),
+            vmulq_f32(x, super::super::div_invariant_neon(t, six, inv_six)),
+        );
         i += 4;
     }
     while i < len {
@@ -2185,7 +2196,7 @@ unsafe fn hardswish_slice_neon(input: &[f32], output: &mut [f32]) {
 /// `Conv + HardSwish` epilogue to apply the activation on the conv output
 /// without a second buffer + pass.
 pub fn hardswish_slice_inplace(data: &mut [f32]) {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if !cfg!(miri) && dispatch_path(true, false) == SimdDispatchPath::Neon {
             // SAFETY: NEON guarded by runtime feature detection.
@@ -2201,7 +2212,7 @@ pub fn hardswish_slice_inplace(data: &mut [f32]) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, dead_code, unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn hardswish_slice_inplace_neon(data: &mut [f32]) {
@@ -2209,12 +2220,16 @@ unsafe fn hardswish_slice_inplace_neon(data: &mut [f32]) {
     let p = data.as_mut_ptr();
     let three = vdupq_n_f32(3.0);
     let six = vdupq_n_f32(6.0);
+    let inv_six = vdupq_n_f32(1.0 / 6.0);
     let zero = vdupq_n_f32(0.0);
     let mut i = 0usize;
     while i + 4 <= len {
         let x = vld1q_f32(p.add(i));
         let t = vminq_f32(vmaxq_f32(vaddq_f32(x, three), zero), six);
-        vst1q_f32(p.add(i), vmulq_f32(x, vdivq_f32(t, six)));
+        vst1q_f32(
+            p.add(i),
+            vmulq_f32(x, super::super::div_invariant_neon(t, six, inv_six)),
+        );
         i += 4;
     }
     while i < len {

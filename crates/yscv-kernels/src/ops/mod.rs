@@ -56,6 +56,74 @@ pub(crate) unsafe fn div_invariant_neon(
     vfmaq_f32(q, e, r)
 }
 
+/// See the aarch64 form above.
+///
+/// # Safety
+/// Caller must be on a NEON target; `d` must be finite and non-zero.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn div_invariant_neon(
+    x: std::arch::arm::float32x4_t,
+    d: std::arch::arm::float32x4_t,
+    r: std::arch::arm::float32x4_t,
+) -> std::arch::arm::float32x4_t {
+    use std::arch::arm::*;
+    let q = vmulq_f32(x, r);
+    let e = vfmsq_f32(x, d, q);
+    vfmaq_f32(q, e, r)
+}
+
+/// `vaddvq_f32`: sum the four lanes.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn addvq_f32_neon(v: std::arch::aarch64::float32x4_t) -> f32 {
+    std::arch::aarch64::vaddvq_f32(v)
+}
+
+/// See the aarch64 form above. 32-bit ARM has no across-vector reduction, so
+/// fold pairwise — `vpadd` twice pairs the lanes as `(v0+v1)+(v2+v3)`, which is
+/// the order aarch64's `FADDP` pair produces, so the rounding matches.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn addvq_f32_neon(v: std::arch::arm::float32x4_t) -> f32 {
+    use std::arch::arm::*;
+    let pairs = vpadd_f32(vget_low_f32(v), vget_high_f32(v));
+    vget_lane_f32::<0>(vpadd_f32(pairs, pairs))
+}
+
+/// `vmaxvq_f32`: the largest of the four lanes.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn maxvq_f32_neon(v: std::arch::aarch64::float32x4_t) -> f32 {
+    std::arch::aarch64::vmaxvq_f32(v)
+}
+
+/// See the aarch64 form above.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn maxvq_f32_neon(v: std::arch::arm::float32x4_t) -> f32 {
+    use std::arch::arm::*;
+    let pairs = vpmax_f32(vget_low_f32(v), vget_high_f32(v));
+    vget_lane_f32::<0>(vpmax_f32(pairs, pairs))
+}
+
 pub(crate) mod attention;
 #[cfg(all(target_os = "macos", yscv_blas))]
 pub mod bnns_conv;

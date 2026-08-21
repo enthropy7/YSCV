@@ -5,6 +5,8 @@
 use super::{SimdDispatchPath, dispatch_path};
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{vaddq_f32, vdupq_n_f32, vld1q_f32, vmaxq_f32};
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+use std::arch::arm::{vaddq_f32, vdupq_n_f32, vld1q_f32, vmaxq_f32};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
     _mm_add_ps, _mm_loadu_ps, _mm_max_ps, _mm_set1_ps, _mm_setzero_ps, _mm_storeu_ps,
@@ -58,7 +60,7 @@ pub fn max_reduce_dispatch(data: &[f32]) -> f32 {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -100,7 +102,7 @@ pub fn add_reduce_dispatch(data: &[f32]) -> f32 {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if path == SimdDispatchPath::Neon {
             // SAFETY: guarded by runtime feature detection in `dispatch_path`.
@@ -249,12 +251,12 @@ unsafe fn max_reduce_avx512(data: &[f32]) -> f32 {
     result
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, dead_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn max_reduce_neon(data: &[f32]) -> f32 {
-    use std::arch::aarch64::vmaxvq_f32;
+    use super::super::maxvq_f32_neon as vmaxvq_f32;
 
     let len = data.len();
     let ptr = data.as_ptr();
@@ -397,12 +399,12 @@ unsafe fn add_reduce_avx512(data: &[f32]) -> f32 {
     result
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[allow(unsafe_code, dead_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
 #[target_feature(enable = "neon")]
 unsafe fn add_reduce_neon(data: &[f32]) -> f32 {
-    use std::arch::aarch64::vaddvq_f32;
+    use super::super::addvq_f32_neon as vaddvq_f32;
 
     let len = data.len();
     let ptr = data.as_ptr();
