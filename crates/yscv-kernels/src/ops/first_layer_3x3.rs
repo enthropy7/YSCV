@@ -81,10 +81,21 @@ fn first_layer_par_disabled() -> bool {
 /// (an ld1r on the NEON pipe, competing with the FMAs). The by-lane path loads
 /// a pixel's 3 channels per vld1q and feeds fmla-by-lane, off the NEON pipe.
 /// `YSCV_FIRST_BYLANE_OFF` reverts. Mirrors the reduce kernel.
+///
+/// 32-bit ARM has no lane-indexed FMA, so the by-lane form lowers back to a
+/// broadcast plus the same multiply-accumulate — the vector load of the pixel's
+/// channels is then pure overhead, and the path is a measured loss there.
+/// `YSCV_FIRST_BYLANE_ON` opts back in for A/B.
 #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 fn first_bylane() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var_os("YSCV_FIRST_BYLANE_OFF").is_none())
+    *CACHED.get_or_init(|| {
+        if cfg!(target_arch = "arm") {
+            std::env::var_os("YSCV_FIRST_BYLANE_ON").is_some()
+        } else {
+            std::env::var_os("YSCV_FIRST_BYLANE_OFF").is_none()
+        }
+    })
 }
 
 /// Entry point. Dispatches to the fastest available SIMD implementation
