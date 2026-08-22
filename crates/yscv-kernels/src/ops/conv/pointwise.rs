@@ -1371,9 +1371,9 @@ unsafe fn pointwise_nx16_direct_rows_neon(
         // The 4-row tile holds 16 accumulators plus 4 weight and 4 activation
         // vectors — 24 q-registers. 32-bit ARM has 16, so it takes the
         // single-row loop below, whose 9 fit.
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
         let mut row = 0;
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(not(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7"))))]
         let row = 0;
         #[cfg(target_arch = "aarch64")]
         while row + 4 <= rows {
@@ -1565,6 +1565,79 @@ unsafe fn pointwise_nx16_direct_rows_neon(
             }
             row += 4;
         }
+        // Two rows at a time is what 16 q-registers allow: eight accumulators,
+        // the four weight vectors and two broadcasts. It halves the weight
+        // stream — the single-row loop below spends five loads on four FMAs,
+        // this one spends six on eight.
+        #[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+        while row + 2 <= rows {
+            let (mut a0, mut a1, mut a2, mut a3) = (bias0, bias1, bias2, bias3);
+            let (mut b0, mut b1, mut b2, mut b3) = (bias0, bias1, bias2, bias3);
+            if let Some(res) = residual {
+                let rp = res.as_ptr().add(row * n + oc_base);
+                a0 = vaddq_f32(a0, vld1q_f32(rp));
+                a1 = vaddq_f32(a1, vld1q_f32(rp.add(4)));
+                a2 = vaddq_f32(a2, vld1q_f32(rp.add(8)));
+                a3 = vaddq_f32(a3, vld1q_f32(rp.add(12)));
+                let rp = rp.add(n);
+                b0 = vaddq_f32(b0, vld1q_f32(rp));
+                b1 = vaddq_f32(b1, vld1q_f32(rp.add(4)));
+                b2 = vaddq_f32(b2, vld1q_f32(rp.add(8)));
+                b3 = vaddq_f32(b3, vld1q_f32(rp.add(12)));
+            }
+            let ip0 = input.as_ptr().add(row * k);
+            let ip1 = ip0.add(k);
+            for ic in 0..k {
+                if pf && ic + PREFETCH_AHEAD < k {
+                    prefetch_l1_keep(kernel.as_ptr().add((ic + PREFETCH_AHEAD) * n + oc_base));
+                }
+                let kp = kernel.as_ptr().add(ic * n + oc_base);
+                let w0 = vld1q_f32(kp);
+                let w1 = vld1q_f32(kp.add(4));
+                let w2 = vld1q_f32(kp.add(8));
+                let w3 = vld1q_f32(kp.add(12));
+                let x0 = vdupq_n_f32(*ip0.add(ic));
+                a0 = vfmaq_f32(a0, x0, w0);
+                a1 = vfmaq_f32(a1, x0, w1);
+                a2 = vfmaq_f32(a2, x0, w2);
+                a3 = vfmaq_f32(a3, x0, w3);
+                let x1 = vdupq_n_f32(*ip1.add(ic));
+                b0 = vfmaq_f32(b0, x1, w0);
+                b1 = vfmaq_f32(b1, x1, w1);
+                b2 = vfmaq_f32(b2, x1, w2);
+                b3 = vfmaq_f32(b3, x1, w3);
+            }
+            if do_relu {
+                a0 = vmaxq_f32(a0, zero);
+                a1 = vmaxq_f32(a1, zero);
+                a2 = vmaxq_f32(a2, zero);
+                a3 = vmaxq_f32(a3, zero);
+                b0 = vmaxq_f32(b0, zero);
+                b1 = vmaxq_f32(b1, zero);
+                b2 = vmaxq_f32(b2, zero);
+                b3 = vmaxq_f32(b3, zero);
+            }
+            let op = output.as_mut_ptr().add(row * n + oc_base);
+            vst1q_f32(op, a0);
+            vst1q_f32(op.add(4), a1);
+            vst1q_f32(op.add(8), a2);
+            vst1q_f32(op.add(12), a3);
+            let op = op.add(n);
+            vst1q_f32(op, b0);
+            vst1q_f32(op.add(4), b1);
+            vst1q_f32(op.add(8), b2);
+            vst1q_f32(op.add(12), b3);
+            if do_silu {
+                for r in 0..2 {
+                    let base = (row + r) * n + oc_base;
+                    for v in &mut output[base..base + 16] {
+                        *v = apply_conv_activation_scalar(*v, Activation::Silu);
+                    }
+                }
+            }
+            row += 2;
+        }
+
         for row in row..rows {
             let mut a0 = bias0;
             let mut a1 = bias1;
