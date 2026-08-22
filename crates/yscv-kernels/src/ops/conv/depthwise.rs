@@ -803,6 +803,18 @@ pub(super) unsafe fn depthwise_nhwc_dm1_stride1_neon(
     }
 }
 
+// Channels one 4-column tile holds live: 4 columns x DW_CH_CHUNKS accumulators
+// plus the weight vectors. 32-bit ARM has 16 q-registers against aarch64's 32,
+// and at 4 chunks the allocator spills the accumulators on every tap.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+#[cfg(not(target_arch = "arm"))]
+const DW_CH_CHUNKS: usize = 4;
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+#[cfg(target_arch = "arm")]
+const DW_CH_CHUNKS: usize = 2;
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+const DW_CH_LANES: usize = DW_CH_CHUNKS * 4;
+
 /// Vectorizes across the channel dimension (4 channels per `float32x4_t`).
 #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
@@ -837,7 +849,7 @@ unsafe fn depthwise_conv2d_nhwc_row_neon(
     let zero = vdupq_n_f32(0.0);
 
     let stride_w = plan.stride_w;
-    let ch16_end = (channels / 16) * 16;
+    let ch16_end = (channels / DW_CH_LANES) * DW_CH_LANES;
     let tile_end = (plan.out_w / 4) * 4;
 
     // Spatial register blocking: process 4 output columns per pass over the
@@ -854,20 +866,13 @@ unsafe fn depthwise_conv2d_nhwc_row_neon(
         let mut ch = 0;
         while ch < ch16_end {
             unsafe {
-                let (b0, b1, b2, b3) = if let Some(bp) = bias_ptr {
-                    (
-                        vld1q_f32(bp.add(ch)),
-                        vld1q_f32(bp.add(ch + 4)),
-                        vld1q_f32(bp.add(ch + 8)),
-                        vld1q_f32(bp.add(ch + 12)),
-                    )
-                } else {
-                    (zero, zero, zero, zero)
-                };
-                let (mut a00, mut a01, mut a02, mut a03) = (b0, b1, b2, b3);
-                let (mut a10, mut a11, mut a12, mut a13) = (b0, b1, b2, b3);
-                let (mut a20, mut a21, mut a22, mut a23) = (b0, b1, b2, b3);
-                let (mut a30, mut a31, mut a32, mut a33) = (b0, b1, b2, b3);
+                let mut b = [zero; DW_CH_CHUNKS];
+                if let Some(bp) = bias_ptr {
+                    for k in 0..DW_CH_CHUNKS {
+                        b[k] = vld1q_f32(bp.add(ch + k * 4));
+                    }
+                }
+                let (mut a0, mut a1, mut a2, mut a3) = (b, b, b, b);
                 let col = stride_w * channels;
                 for ky in 0..kh {
                     let in_y = in_y0 + ky;
@@ -875,72 +880,48 @@ unsafe fn depthwise_conv2d_nhwc_row_neon(
                     let kernel_row_base = (ky * kw) * channels;
                     for kx in 0..kw {
                         let kb = kernel_row_base + kx * channels + ch;
-                        let w0 = vld1q_f32(ker_ptr.add(kb));
-                        let w1 = vld1q_f32(ker_ptr.add(kb + 4));
-                        let w2 = vld1q_f32(ker_ptr.add(kb + 8));
-                        let w3 = vld1q_f32(ker_ptr.add(kb + 12));
+                        let mut w = [zero; DW_CH_CHUNKS];
+                        for k in 0..DW_CH_CHUNKS {
+                            w[k] = vld1q_f32(ker_ptr.add(kb + k * 4));
+                        }
                         let q0 = input_row_base + kx * channels + ch;
-                        a00 = vfmaq_f32(a00, vld1q_f32(inp_ptr.add(q0)), w0);
-                        a01 = vfmaq_f32(a01, vld1q_f32(inp_ptr.add(q0 + 4)), w1);
-                        a02 = vfmaq_f32(a02, vld1q_f32(inp_ptr.add(q0 + 8)), w2);
-                        a03 = vfmaq_f32(a03, vld1q_f32(inp_ptr.add(q0 + 12)), w3);
+                        for k in 0..DW_CH_CHUNKS {
+                            a0[k] = vfmaq_f32(a0[k], vld1q_f32(inp_ptr.add(q0 + k * 4)), w[k]);
+                        }
                         let q1 = q0 + col;
-                        a10 = vfmaq_f32(a10, vld1q_f32(inp_ptr.add(q1)), w0);
-                        a11 = vfmaq_f32(a11, vld1q_f32(inp_ptr.add(q1 + 4)), w1);
-                        a12 = vfmaq_f32(a12, vld1q_f32(inp_ptr.add(q1 + 8)), w2);
-                        a13 = vfmaq_f32(a13, vld1q_f32(inp_ptr.add(q1 + 12)), w3);
+                        for k in 0..DW_CH_CHUNKS {
+                            a1[k] = vfmaq_f32(a1[k], vld1q_f32(inp_ptr.add(q1 + k * 4)), w[k]);
+                        }
                         let q2 = q1 + col;
-                        a20 = vfmaq_f32(a20, vld1q_f32(inp_ptr.add(q2)), w0);
-                        a21 = vfmaq_f32(a21, vld1q_f32(inp_ptr.add(q2 + 4)), w1);
-                        a22 = vfmaq_f32(a22, vld1q_f32(inp_ptr.add(q2 + 8)), w2);
-                        a23 = vfmaq_f32(a23, vld1q_f32(inp_ptr.add(q2 + 12)), w3);
+                        for k in 0..DW_CH_CHUNKS {
+                            a2[k] = vfmaq_f32(a2[k], vld1q_f32(inp_ptr.add(q2 + k * 4)), w[k]);
+                        }
                         let q3 = q2 + col;
-                        a30 = vfmaq_f32(a30, vld1q_f32(inp_ptr.add(q3)), w0);
-                        a31 = vfmaq_f32(a31, vld1q_f32(inp_ptr.add(q3 + 4)), w1);
-                        a32 = vfmaq_f32(a32, vld1q_f32(inp_ptr.add(q3 + 8)), w2);
-                        a33 = vfmaq_f32(a33, vld1q_f32(inp_ptr.add(q3 + 12)), w3);
+                        for k in 0..DW_CH_CHUNKS {
+                            a3[k] = vfmaq_f32(a3[k], vld1q_f32(inp_ptr.add(q3 + k * 4)), w[k]);
+                        }
                     }
                 }
                 if do_relu {
-                    a00 = vmaxq_f32(a00, zero);
-                    a01 = vmaxq_f32(a01, zero);
-                    a02 = vmaxq_f32(a02, zero);
-                    a03 = vmaxq_f32(a03, zero);
-                    a10 = vmaxq_f32(a10, zero);
-                    a11 = vmaxq_f32(a11, zero);
-                    a12 = vmaxq_f32(a12, zero);
-                    a13 = vmaxq_f32(a13, zero);
-                    a20 = vmaxq_f32(a20, zero);
-                    a21 = vmaxq_f32(a21, zero);
-                    a22 = vmaxq_f32(a22, zero);
-                    a23 = vmaxq_f32(a23, zero);
-                    a30 = vmaxq_f32(a30, zero);
-                    a31 = vmaxq_f32(a31, zero);
-                    a32 = vmaxq_f32(a32, zero);
-                    a33 = vmaxq_f32(a33, zero);
+                    for k in 0..DW_CH_CHUNKS {
+                        a0[k] = vmaxq_f32(a0[k], zero);
+                        a1[k] = vmaxq_f32(a1[k], zero);
+                        a2[k] = vmaxq_f32(a2[k], zero);
+                        a3[k] = vmaxq_f32(a3[k], zero);
+                    }
                 }
                 let o0 = out_base + ch;
-                vst1q_f32(out_ptr.add(o0), a00);
-                vst1q_f32(out_ptr.add(o0 + 4), a01);
-                vst1q_f32(out_ptr.add(o0 + 8), a02);
-                vst1q_f32(out_ptr.add(o0 + 12), a03);
                 let o1 = o0 + channels;
-                vst1q_f32(out_ptr.add(o1), a10);
-                vst1q_f32(out_ptr.add(o1 + 4), a11);
-                vst1q_f32(out_ptr.add(o1 + 8), a12);
-                vst1q_f32(out_ptr.add(o1 + 12), a13);
                 let o2 = o1 + channels;
-                vst1q_f32(out_ptr.add(o2), a20);
-                vst1q_f32(out_ptr.add(o2 + 4), a21);
-                vst1q_f32(out_ptr.add(o2 + 8), a22);
-                vst1q_f32(out_ptr.add(o2 + 12), a23);
                 let o3 = o2 + channels;
-                vst1q_f32(out_ptr.add(o3), a30);
-                vst1q_f32(out_ptr.add(o3 + 4), a31);
-                vst1q_f32(out_ptr.add(o3 + 8), a32);
-                vst1q_f32(out_ptr.add(o3 + 12), a33);
+                for k in 0..DW_CH_CHUNKS {
+                    vst1q_f32(out_ptr.add(o0 + k * 4), a0[k]);
+                    vst1q_f32(out_ptr.add(o1 + k * 4), a1[k]);
+                    vst1q_f32(out_ptr.add(o2 + k * 4), a2[k]);
+                    vst1q_f32(out_ptr.add(o3 + k * 4), a3[k]);
+                }
             }
-            ch += 16;
+            ch += DW_CH_LANES;
         }
         tx += 4;
     }
