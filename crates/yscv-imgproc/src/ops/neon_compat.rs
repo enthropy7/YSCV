@@ -88,3 +88,96 @@ pub(crate) unsafe fn rndmq_f32(x: float32x4_t) -> float32x4_t {
     let one = vreinterpretq_u32_f32(vdupq_n_f32(1.0));
     vsubq_f32(trunc, vreinterpretq_f32_u32(vandq_u32(overshot, one)))
 }
+
+/// Lane-wise square root.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn sqrtq_f32(x: float32x4_t) -> float32x4_t {
+    std::arch::aarch64::vsqrtq_f32(x)
+}
+
+/// See the aarch64 form above. ARMv7 NEON has no square root, but its VFP does —
+/// and the two share one register file, where `q0` is `s0..s3`. So the scalar
+/// instruction runs on the vector's own lanes: correctly rounded, and with no
+/// trip through memory. Pinning `q0` is what makes the lane names line up.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn sqrtq_f32(x: float32x4_t) -> float32x4_t {
+    let mut v = x;
+    core::arch::asm!(
+        "vsqrt.f32 s0, s0",
+        "vsqrt.f32 s1, s1",
+        "vsqrt.f32 s2, s2",
+        "vsqrt.f32 s3, s3",
+        inout("q0") v,
+        options(pure, nomem, nostack),
+    );
+    v
+}
+
+/// Lane-wise division.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn divq_f32(a: float32x4_t, b: float32x4_t) -> float32x4_t {
+    std::arch::aarch64::vdivq_f32(a, b)
+}
+
+/// See `sqrtq_f32` for why the scalar VFP instruction can read the vector's
+/// lanes directly. `q1` is `s4..s7`.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn divq_f32(a: float32x4_t, b: float32x4_t) -> float32x4_t {
+    let mut q = a;
+    core::arch::asm!(
+        "vdiv.f32 s0, s0, s4",
+        "vdiv.f32 s1, s1, s5",
+        "vdiv.f32 s2, s2, s6",
+        "vdiv.f32 s3, s3, s7",
+        inout("q0") q,
+        in("q1") b,
+        options(pure, nomem, nostack),
+    );
+    q
+}
+
+/// Sum of the four lanes.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn addvq_f32(v: float32x4_t) -> f32 {
+    std::arch::aarch64::vaddvq_f32(v)
+}
+
+/// See the aarch64 form above. 32-bit ARM has no across-vector reduction, so
+/// fold pairwise — `vpadd` twice pairs the lanes as `(v0+v1)+(v2+v3)`, the order
+/// aarch64's `FADDP` pair produces, so the rounding matches.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn addvq_f32(v: float32x4_t) -> f32 {
+    use std::arch::arm::*;
+    let pairs = vpadd_f32(vget_low_f32(v), vget_high_f32(v));
+    vget_lane_f32::<0>(vpadd_f32(pairs, pairs))
+}

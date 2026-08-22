@@ -22,7 +22,6 @@ mod proptest_tests;
 // `[H, W]` for grayscale or `[H, W, C]` for color. See individual function
 // docs in their defining modules for full shape requirements.
 
-/// Axis-aligned bounding box.
 pub use ops::BBox;
 /// 256-bit BRIEF binary descriptor.
 pub use ops::BriefDescriptor;
@@ -60,6 +59,8 @@ pub use ops::SurfKeypoint;
 pub use ops::TemplateMatchMethod;
 /// Result of template matching (location + score).
 pub use ops::TemplateMatchResult;
+/// Axis-aligned bounding box.
+pub use ops::hog;
 
 /// Euclidean distance transform. Input: `[H, W]` binary f32.
 pub use ops::DistanceTransformMask;

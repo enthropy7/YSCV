@@ -1,6 +1,6 @@
 [package]
 name = "yscv-imgproc"
-description = "100+ SIMD-accelerated image processing operations for u8 and f32"
+description = "180+ SIMD-accelerated image processing operations for u8 and f32"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ keywords.workspace = true
 [features]
 # 32-bit ARM NEON. Off by default: the intrinsics are nightly-only, so stable
 # builds must not see them.
+default = ["neon-v7"]
 neon-v7 = []
 
 [dependencies]

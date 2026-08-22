@@ -11,7 +11,7 @@ categories.workspace = true
 keywords.workspace = true
 
 [features]
-default = []
+default = ["neon-v7"]
 blas = ["dep:cblas-sys"]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 metal-backend = ["dep:metal", "dep:objc", "dep:block", "dep:foreign-types"]
