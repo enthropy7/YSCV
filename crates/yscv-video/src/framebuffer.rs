@@ -16,7 +16,10 @@ mod linux_impl {
     unsafe extern "C" {
         fn open(path: *const c_char, flags: i32) -> i32;
         fn close(fd: i32) -> i32;
-        fn ioctl(fd: i32, request: u64, ...) -> i32;
+        // `unsigned long`, so it follows the pointer width — 32-bit on armhf.
+        // Declaring it `u64` here disagreed with the same symbol in `v4l2.rs`
+        // and passed a wrong-width argument on a 32-bit board.
+        fn ioctl(fd: i32, request: usize, ...) -> i32;
         fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
         fn munmap(addr: *mut u8, len: usize) -> i32;
     }
@@ -28,8 +31,8 @@ mod linux_impl {
     const MAP_FAILED: *mut u8 = !0usize as *mut u8;
 
     // ioctl numbers for fbdev (from <linux/fb.h>)
-    const FBIOGET_VSCREENINFO: u64 = 0x4600;
-    const FBIOGET_FSCREENINFO: u64 = 0x4602;
+    const FBIOGET_VSCREENINFO: usize = 0x4600;
+    const FBIOGET_FSCREENINFO: usize = 0x4602;
 
     // -----------------------------------------------------------------------
     // fbdev kernel ABI structs

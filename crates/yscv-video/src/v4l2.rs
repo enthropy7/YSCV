@@ -13,7 +13,7 @@ use std::os::unix::io::AsRawFd;
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn ioctl(fd: i32, request: u64, ...) -> i32;
+    fn ioctl(fd: i32, request: IoctlReq, ...) -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
     /// POSIX `close(2)` — used by `V4l2DmaBufGuard::Drop`.
@@ -24,19 +24,53 @@ unsafe extern "C" {
 // V4L2 ioctl numbers (from <linux/videodev2.h>)
 // ---------------------------------------------------------------------------
 
-const VIDIOC_QUERYCAP: u64 = 0x80685600;
-const VIDIOC_S_FMT: u64 = 0xC0D05605;
-const VIDIOC_REQBUFS: u64 = 0xC0145608;
-const VIDIOC_QUERYBUF: u64 = 0xC0585609;
-const VIDIOC_QBUF: u64 = 0xC058560F;
-const VIDIOC_DQBUF: u64 = 0xC0585611;
-const VIDIOC_STREAMON: u64 = 0x40045612;
-const VIDIOC_STREAMOFF: u64 = 0x40045613;
+/// `ioctl`'s second parameter is `unsigned long`: 64-bit on LP64, **32-bit on
+/// ILP32** (armhf). Declaring it `u64` breaks the call on 32-bit ARM — AAPCS
+/// puts a 64-bit argument in an even-aligned register *pair*, so the kernel
+/// reads the request number out of the wrong register and every V4L2 call
+/// fails. Measured on an OrangePi Zero H3 with a UVC camera attached: every
+/// mode reported "QUERYCAP failed" until this became pointer-width.
+type IoctlReq = usize;
+
+// `_IOC(dir, type, nr, size)` from asm-generic/ioctl.h. Deriving the numbers
+// from `size_of` rather than hard-coding the LP64 hex is what keeps them right
+// on both arches: `v4l2_buffer` is 88 bytes on 64-bit and 68 on 32-bit (a
+// 32-bit `struct timeval` and a 32-bit `unsigned long` in its union), and
+// `v4l2_format` is 208 against 204, so the constants genuinely differ.
+const fn ioc(dir: usize, nr: usize, size: usize) -> IoctlReq {
+    (dir << 30) | (size << 16) | (0x56 << 8) | nr
+}
+const DIR_W: usize = 1;
+const DIR_R: usize = 2;
+const DIR_RW: usize = 3;
+
+const VIDIOC_QUERYCAP: IoctlReq = ioc(DIR_R, 0, size_of::<V4l2Capability>());
+const VIDIOC_S_FMT: IoctlReq = ioc(DIR_RW, 5, size_of::<V4l2Format>());
+const VIDIOC_REQBUFS: IoctlReq = ioc(DIR_RW, 8, size_of::<V4l2RequestBuffers>());
+const VIDIOC_QUERYBUF: IoctlReq = ioc(DIR_RW, 9, size_of::<V4l2Buffer>());
+const VIDIOC_QBUF: IoctlReq = ioc(DIR_RW, 15, size_of::<V4l2Buffer>());
+const VIDIOC_DQBUF: IoctlReq = ioc(DIR_RW, 17, size_of::<V4l2Buffer>());
+const VIDIOC_STREAMON: IoctlReq = ioc(DIR_W, 18, size_of::<i32>());
+const VIDIOC_STREAMOFF: IoctlReq = ioc(DIR_W, 19, size_of::<i32>());
+
+// The LP64 numbers these used to be written as, so a layout change cannot drift
+// them silently.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(VIDIOC_QUERYCAP == 0x8068_5600);
+    assert!(VIDIOC_S_FMT == 0xC0D0_5605);
+    assert!(VIDIOC_REQBUFS == 0xC014_5608);
+    assert!(VIDIOC_QUERYBUF == 0xC058_5609);
+    assert!(VIDIOC_QBUF == 0xC058_560F);
+    assert!(VIDIOC_DQBUF == 0xC058_5611);
+    assert!(VIDIOC_STREAMON == 0x4004_5612);
+    assert!(VIDIOC_STREAMOFF == 0x4004_5613);
+};
 /// `VIDIOC_EXPBUF` — export a V4L2 buffer as a DMA-BUF file descriptor.
 ///
 /// Requests a `dma-buf` fd for buffer `index` so it can be shared with
 /// other kernel subsystems (NPU, GPU, display) without CPU copy.
-const VIDIOC_EXPBUF: u64 = 0xC0405610;
+const VIDIOC_EXPBUF: IoctlReq = ioc(DIR_RW, 16, size_of::<V4l2ExportBuffer>());
 
 /// DMA-BUF access mode flags for `VIDIOC_EXPBUF`.
 const O_CLOEXEC: u32 = 0o2000000;
@@ -119,15 +153,23 @@ struct V4l2PixFormat {
     xfer_func: u32,
 }
 
-/// `struct v4l2_format` — 208 bytes total.
-/// We only use `type_` + the pix format union member.
+/// The 200-byte union inside `v4l2_format`. It is **pointer-aligned**: one of
+/// its members is `struct v4l2_window`, which carries a `struct v4l2_clip *`.
+/// That alignment is why `v4l2_format` is 208 bytes on LP64 (the union starts
+/// at offset 8) and 204 on ILP32 (offset 4) — get it wrong and the kernel
+/// writes past the end of the struct.
+#[repr(C)]
+struct V4l2FormatUnion {
+    pix: V4l2PixFormat,
+    _pad: [u8; 152],
+    _align: [usize; 0],
+}
+
+/// `struct v4l2_format`. We only use `type_` + the pix format union member.
 #[repr(C)]
 struct V4l2Format {
     type_: u32,
-    pix: V4l2PixFormat,
-    // The union in the kernel is 200 bytes; V4l2PixFormat is 48 bytes.
-    // Pad the remaining 152 bytes.
-    _pad: [u8; 152],
+    fmt: V4l2FormatUnion,
 }
 
 /// `struct v4l2_requestbuffers` — 20 bytes.
@@ -141,15 +183,17 @@ struct V4l2RequestBuffers {
     reserved: [u8; 3],
 }
 
-/// Timeval structure used inside `v4l2_buffer`.
+/// `struct timeval` inside `v4l2_buffer`: two `long`s, so it is 16 bytes on
+/// LP64 and 8 on ILP32 — and that difference is what moves `v4l2_buffer`'s size
+/// (and therefore its ioctl numbers) between the arches.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct Timeval {
-    tv_sec: i64,
-    tv_usec: i64,
+    tv_sec: isize,
+    tv_usec: isize,
 }
 
-/// `struct v4l2_buffer` — 88 bytes on 64-bit.
+/// `struct v4l2_buffer` — 88 bytes on 64-bit, 68 on 32-bit.
 /// The kernel struct has a union for `m` (offset / userptr / planes / fd).
 #[repr(C)]
 struct V4l2Buffer {
@@ -163,7 +207,8 @@ struct V4l2Buffer {
     sequence: u32,
     memory: u32,
     // union m { __u32 offset; unsigned long userptr; struct v4l2_plane *planes; __s32 fd; }
-    m_offset: u64, // use u64 to cover the largest union member on 64-bit
+    // Its widest member is pointer-sized, so this is `usize`, not `u64`.
+    m_offset: usize,
     length: u32,
     reserved2: u32,
     // union { __s32 request_fd; __u32 reserved; }
@@ -296,19 +341,19 @@ impl V4l2Camera {
         // S_FMT — set desired format
         let mut fmt: V4l2Format = unsafe { std::mem::zeroed() };
         fmt.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        fmt.pix.width = width;
-        fmt.pix.height = height;
-        fmt.pix.pixelformat = format.fourcc();
-        fmt.pix.field = 1; // V4L2_FIELD_NONE
+        fmt.fmt.pix.width = width;
+        fmt.fmt.pix.height = height;
+        fmt.fmt.pix.pixelformat = format.fourcc();
+        fmt.fmt.pix.field = 1; // V4L2_FIELD_NONE
 
         let ret = unsafe { ioctl(fd, VIDIOC_S_FMT, &mut fmt as *mut V4l2Format as *mut u8) };
         if ret < 0 {
             return Err(VideoError::Source("V4L2: S_FMT failed".into()));
         }
 
-        let actual_w = fmt.pix.width;
-        let actual_h = fmt.pix.height;
-        let actual_fmt = fmt.pix.pixelformat;
+        let actual_w = fmt.fmt.pix.width;
+        let actual_h = fmt.fmt.pix.height;
+        let actual_fmt = fmt.fmt.pix.pixelformat;
 
         // REQBUFS — request mmap'd buffers
         let mut reqbufs: V4l2RequestBuffers = unsafe { std::mem::zeroed() };

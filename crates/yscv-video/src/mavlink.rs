@@ -534,8 +534,8 @@ mod serial {
     use std::ffi::{CString, c_char};
 
     // termios constants (Linux aarch64 / x86_64)
-    const TCGETS2: u64 = 0x802C_542A;
-    const TCSETS2: u64 = 0x402C_542B;
+    const TCGETS2: usize = 0x802C_542A;
+    const TCSETS2: usize = 0x402C_542B;
     const BOTHER: u32 = 0x1000;
     const CLOCAL: u32 = 0x0800;
     const CREAD: u32 = 0x0080;
@@ -593,7 +593,9 @@ mod serial {
     }
 
     unsafe extern "C" {
-        fn ioctl(fd: i32, request: u64, ...) -> i32;
+        // `unsigned long`: pointer-width, so 32-bit on armhf. Must agree with the
+        // same symbol declared in `v4l2.rs` and `framebuffer.rs`.
+        fn ioctl(fd: i32, request: usize, ...) -> i32;
         fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
         fn open(path: *const c_char, flags: i32) -> i32;
         fn close(fd: i32) -> i32;
