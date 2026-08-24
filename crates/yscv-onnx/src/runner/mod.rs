@@ -119,7 +119,7 @@ fn runtime_input_shapes(
 /// Use `with_threads(1)` for single-threaded execution.
 pub struct OnnxRunner<'m> {
     model: &'m OnnxModel,
-    pool: Option<rayon::ThreadPool>,
+    pool: Option<std::sync::Arc<rayon::ThreadPool>>,
     shape_specialization: std::sync::OnceLock<ShapeSpecialization>,
     /// Pool-agnostic scope for kernels migrated to `&dyn ParallelScope`.
     /// Built in lock-step with `pool`: when `pool == Some(p)`, this is a
@@ -130,6 +130,45 @@ pub struct OnnxRunner<'m> {
     /// showed in isolation (1.66× faster install-per-task vs rayon).
     parallel_scope: std::sync::Arc<dyn yscv_threadpool::ParallelScope>,
     single_thread: bool,
+}
+
+thread_local! {
+    /// Rayon pools, kept per thread and per thread-count.
+    ///
+    /// Building one spawns its worker threads, and a caller that makes a runner
+    /// per inference — the natural shape for a tracker that calls a graph once
+    /// per frame — pays that on every call: on an ARM Cortex-A SBC that per-call
+    /// pool build was a large fraction of the wall time and made two threads
+    /// look like a much smaller win than they really are.
+    ///
+    /// Per *thread*, not global: a rayon worker inherits the affinity mask of
+    /// the thread that spawned it, so a pool must never be handed to a thread
+    /// pinned somewhere else — that is precisely what the two-core supervisor
+    /// pinned beside a pinned DCF depends on. Cached this way, a pool keeps the
+    /// mask of the thread it was built for, which is the semantics the
+    /// build-every-time code already had.
+    static POOL_CACHE: std::cell::RefCell<Vec<(usize, std::sync::Arc<rayon::ThreadPool>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// This thread's rayon pool of `threads` workers, built on first use.
+fn cached_pool(threads: usize) -> Result<std::sync::Arc<rayon::ThreadPool>, OnnxError> {
+    POOL_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((_, p)) = c.iter().find(|(n, _)| *n == threads) {
+            return Ok(p.clone());
+        }
+        let p = std::sync::Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|e| OnnxError::DecodeFailed {
+                    message: format!("failed to create thread pool: {e}"),
+                })?,
+        );
+        c.push((threads, p.clone()));
+        Ok(p)
+    })
 }
 
 /// Builds the `ParallelScope` for an `OnnxRunner` given a rayon pool (or
@@ -229,17 +268,7 @@ impl<'m> OnnxRunner<'m> {
                 (None, all_count)
             } else {
                 // Heterogeneous CPU detected — cap the pool to big cores.
-                (
-                    Some(
-                        rayon::ThreadPoolBuilder::new()
-                            .num_threads(big_count)
-                            .build()
-                            .map_err(|e| OnnxError::DecodeFailed {
-                                message: format!("failed to create thread pool: {e}"),
-                            })?,
-                    ),
-                    big_count,
-                )
+                (Some(cached_pool(big_count)?), big_count)
             }
         } else {
             let requested_threads = threads;
@@ -248,19 +277,9 @@ impl<'m> OnnxRunner<'m> {
             } else {
                 requested_threads.min(crate::cpu_topology::physical_cores_count())
             };
-            (
-                Some(
-                    rayon::ThreadPoolBuilder::new()
-                        .num_threads(capped_threads)
-                        .build()
-                        .map_err(|e| OnnxError::DecodeFailed {
-                            message: format!("failed to create thread pool: {e}"),
-                        })?,
-                ),
-                capped_threads,
-            )
+            (Some(cached_pool(capped_threads)?), capped_threads)
         };
-        let scope = build_parallel_scope(pool.as_ref(), effective_threads);
+        let scope = build_parallel_scope(pool.as_deref(), effective_threads);
         Ok(Self {
             model,
             pool,
