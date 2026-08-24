@@ -31,6 +31,29 @@ pub(crate) trait CropPixel: Copy {
     /// `p` must admit a four-element read.
     #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     unsafe fn load4(p: *const Self) -> super::neon_compat::float32x4_t;
+
+    /// The two horizontal taps of one output pixel: `load4(p)` and
+    /// `load4(p.add(ch))`. They are **adjacent in memory**, which for a
+    /// byte-per-channel image means one NEON load covers both — and that is the
+    /// difference between a NEON-side load and two trips through the integer
+    /// register file, which on a Cortex-A7 are the expensive kind.
+    ///
+    /// # Safety
+    /// `p` must admit a read of `4 + ch` elements for `f32`, and of **eight
+    /// bytes** for `u8`; `ch` must be 1..=4.
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    unsafe fn load4_pair(
+        p: *const Self,
+        ch: usize,
+    ) -> (
+        super::neon_compat::float32x4_t,
+        super::neon_compat::float32x4_t,
+    );
+
+    /// Elements [`load4_pair`] reads past its own start, so a caller can bound
+    /// it. The `u8` form reads a fixed eight bytes whatever `ch` is.
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    fn pair_span(ch: usize) -> usize;
 }
 
 impl CropPixel for f32 {
@@ -52,6 +75,26 @@ impl CropPixel for f32 {
             std::arch::arm::vld1q_f32(p)
         }
     }
+
+    /// Already a vector load on both taps — nothing to fuse.
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    #[inline(always)]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn load4_pair(
+        p: *const Self,
+        ch: usize,
+    ) -> (
+        super::neon_compat::float32x4_t,
+        super::neon_compat::float32x4_t,
+    ) {
+        (Self::load4(p), Self::load4(p.add(ch)))
+    }
+
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    #[inline(always)]
+    fn pair_span(ch: usize) -> usize {
+        ch + 4
+    }
 }
 
 impl CropPixel for u8 {
@@ -65,17 +108,77 @@ impl CropPixel for u8 {
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn load4(p: *const Self) -> super::neon_compat::float32x4_t {
         #[cfg(target_arch = "aarch64")]
-        #[cfg(target_arch = "aarch64")]
         use std::arch::aarch64::*;
         #[cfg(target_arch = "arm")]
         use std::arch::arm::*;
-        #[cfg(target_arch = "arm")]
-        use std::arch::arm::*;
-        // One unaligned 4-byte read: the four values are adjacent channels, and
-        // a wider NEON load would need bounds the callers do not guarantee.
+        // One unaligned 4-byte read. Prefer `load4_pair` where both taps are
+        // wanted: this form goes through the integer register file, which the
+        // pair form avoids.
         let w = (p as *const u32).read_unaligned();
         let b = vreinterpret_u8_u32(vdup_n_u32(w));
         vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(b))))
+    }
+
+    /// On aarch64 the two scalar loads win: an integer→NEON move is cheap there,
+    /// and fusing the taps would only add a rotate and a branch. Measured, the
+    /// fused form below is a loss on aarch64 while it wins on 32-bit ARM, so the
+    /// two arches keep different loads.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn load4_pair(
+        p: *const Self,
+        ch: usize,
+    ) -> (
+        super::neon_compat::float32x4_t,
+        super::neon_compat::float32x4_t,
+    ) {
+        (Self::load4(p), Self::load4(p.add(ch)))
+    }
+
+    /// On 32-bit ARM the integer→NEON transfer is the expensive instruction, so
+    /// the second tap is taken out of the *same* eight bytes with a lane rotate
+    /// instead of a second trip through the core registers. Same bits, and
+    /// measurably cheaper on a Cortex-A7.
+    #[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+    #[inline(always)]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn load4_pair(
+        p: *const Self,
+        ch: usize,
+    ) -> (
+        super::neon_compat::float32x4_t,
+        super::neon_compat::float32x4_t,
+    ) {
+        use std::arch::arm::*;
+        #[inline(always)]
+        #[allow(unsafe_op_in_unsafe_fn)]
+        unsafe fn widen4(b: uint8x8_t) -> super::neon_compat::float32x4_t {
+            use std::arch::arm::*;
+            vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(b))))
+        }
+        // `ch` is fixed for a whole crop, so the match predicts perfectly.
+        let b = vld1_u8(p);
+        let shifted = match ch {
+            1 => vext_u8::<1>(b, b),
+            2 => vext_u8::<2>(b, b),
+            3 => vext_u8::<3>(b, b),
+            _ => vext_u8::<4>(b, b),
+        };
+        (widen4(b), widen4(shifted))
+    }
+
+    /// aarch64 reads the two taps separately, 32-bit ARM reads eight bytes once.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn pair_span(ch: usize) -> usize {
+        ch + 4
+    }
+
+    #[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+    #[inline(always)]
+    fn pair_span(_ch: usize) -> usize {
+        8
     }
 }
 
@@ -392,18 +495,14 @@ unsafe fn tap4_neon<T: CropPixel>(
     ayv: super::neon_compat::float32x4_t,
 ) {
     #[cfg(target_arch = "aarch64")]
-    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
-    #[cfg(target_arch = "arm")]
-    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
     let sp = src.as_ptr();
     let wv = vmulq_f32(axv, ayv);
-    let p00 = T::load4(sp.add(o00));
-    let p01 = T::load4(sp.add(o00 + ch));
-    let p10 = T::load4(sp.add(o10));
-    let p11 = T::load4(sp.add(o10 + ch));
+    // Both x-taps of a row come out of one load; see `CropPixel::load4_pair`.
+    let (p00, p01) = T::load4_pair(sp.add(o00), ch);
+    let (p10, p11) = T::load4_pair(sp.add(o10), ch);
     let mut acc = super::neon_compat::mulq_lane_f32::<0>(p00, wv);
     acc = vaddq_f32(acc, super::neon_compat::mulq_lane_f32::<1>(p01, wv));
     acc = vaddq_f32(acc, super::neon_compat::mulq_lane_f32::<2>(p10, wv));
@@ -413,16 +512,75 @@ unsafe fn tap4_neon<T: CropPixel>(
     vst1q_f32(out.as_mut_ptr().add(base), acc);
 }
 
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+#[derive(Clone, Copy)]
+struct XStep {
+    ramp: super::neon_compat::float32x4_t,
+    ox: super::neon_compat::float32x4_t,
+    sx: super::neon_compat::float32x4_t,
+    half: super::neon_compat::float32x4_t,
+    one: super::neon_compat::float32x4_t,
+}
+
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+impl XStep {
+    /// The parts of the four-pixel step that do not change while walking a row.
+    ///
+    /// They used to be rebuilt for every group of four: the lane ramp loaded out
+    /// of a stack array, `0.5` and `1.0` splatted, and the window origin and
+    /// scale moved over from core registers. A channel sweep showed the kernel
+    /// is bound by exactly this kind of per-pixel scaffolding and not by the
+    /// taps — four times the tap data costs a Cortex-A7 measurably more and a
+    /// Cortex-A53 nothing — so hoisting it is the lever.
+    ///
+    /// # Safety
+    /// Caller must be on a NEON target.
+    #[inline(always)]
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn new(ox: f32, sx: f32) -> Self {
+        #[cfg(target_arch = "aarch64")]
+        use std::arch::aarch64::*;
+        #[cfg(target_arch = "arm")]
+        use std::arch::arm::*;
+        XStep {
+            ramp: vcvtq_f32_s32(vld1q_s32([0i32, 1, 2, 3].as_ptr())),
+            ox: vdupq_n_f32(ox),
+            sx: vdupq_n_f32(sx),
+            half: vdupq_n_f32(0.5),
+            one: vdupq_n_f32(1.0),
+        }
+    }
+}
+
+/// `[1-a, a, 1-a, a]` for lane `L` of `v`, the x half of the tap weights.
+///
+/// The lane form exists so the four fractions a group computed in one vector
+/// never leave it: spilling them to an array and re-broadcasting each scalar
+/// costs a NEON→memory→NEON round trip plus an integer→NEON transfer per pixel,
+/// and on a Cortex-A7 that transfer is the expensive instruction in the loop.
+/// Same bits either way — it is the same register value.
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn frac_x_neon_lane<const L: i32>(
+    v: super::neon_compat::float32x4_t,
+    one: super::neon_compat::float32x4_t,
+) -> super::neon_compat::float32x4_t {
+    #[cfg(target_arch = "aarch64")]
+    use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
+    let d = super::neon_compat::dupq_lane_f32::<L>(v);
+    super::neon_compat::zip1q_f32(vsubq_f32(one, d), d)
+}
+
 /// `[1-a, a, 1-a, a]`, the x half of the tap weights.
 #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn frac_x_neon(a: f32) -> super::neon_compat::float32x4_t {
     #[cfg(target_arch = "aarch64")]
-    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
-    #[cfg(target_arch = "arm")]
-    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
     let d = vdupq_n_f32(a);
@@ -435,10 +593,7 @@ unsafe fn frac_x_neon(a: f32) -> super::neon_compat::float32x4_t {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn frac_y_neon(a: f32) -> super::neon_compat::float32x4_t {
     #[cfg(target_arch = "aarch64")]
-    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
-    #[cfg(target_arch = "arm")]
-    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
     let d = vdupq_n_f32(a);
@@ -465,56 +620,60 @@ unsafe fn group4_neon<T: CropPixel>(
     src: &[T],
     out: &mut [f32],
     i: usize,
-    ox: f32,
-    sx: f32,
+    xs: &XStep,
     ch: usize,
-    w: usize,
     wi: isize,
-    y0: usize,
-    y1: usize,
+    o0: usize,
+    o1: usize,
     base: usize,
     ayv: super::neon_compat::float32x4_t,
 ) -> bool {
     #[cfg(target_arch = "aarch64")]
-    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
-    #[cfg(target_arch = "arm")]
-    use std::arch::arm::*;
-    let ramp = vld1q_s32([0i32, 1, 2, 3].as_ptr());
-    let fi = vcvtq_f32_s32(vaddq_s32(vdupq_n_s32(i as i32), ramp));
-    let half = vdupq_n_f32(0.5);
-    // Same operation order as the scalar path, so the fractions are the same bits.
+    // Same operation order as the scalar path, so the fractions are the same
+    // bits. `i` is well under 2^24, so splatting it as f32 and adding the ramp
+    // is exactly the integer add-then-convert this used to do.
+    let fi = vaddq_f32(vdupq_n_f32(i as f32), xs.ramp);
     let fx = vsubq_f32(
-        vaddq_f32(vdupq_n_f32(ox), vmulq_n_f32(vaddq_f32(fi, half), sx)),
-        half,
+        vaddq_f32(xs.ox, vmulq_f32(vaddq_f32(fi, xs.half), xs.sx)),
+        xs.half,
     );
     let fl = super::neon_compat::rndmq_f32(fx);
-    let mut ax = [0f32; 4];
+    // The fractions stay in this vector; only the integer positions, which are
+    // addresses, have to reach the integer side.
+    let axv = vsubq_f32(fx, fl);
     let mut ix = [0i32; 4];
-    vst1q_f32(ax.as_mut_ptr(), vsubq_f32(fx, fl));
     vst1q_s32(ix.as_mut_ptr(), vcvtq_s32_f32(fl));
     // sx > 0, so the group is ordered: the ends bound it.
     if (ix[0] as isize) < 0 || (ix[3] as isize) + 1 >= wi {
         return false;
     }
-    if (y1 * w + ix[3] as usize) * ch + ch + 4 > src.len() {
+    if o1 + ix[3] as usize * ch + T::pair_span(ch) > src.len() {
         return false;
     }
-    for k in 0..4 {
-        let x = ix[k] as usize;
-        tap4_neon(
-            src,
-            out,
-            (y0 * w + x) * ch,
-            (y1 * w + x) * ch,
-            ch,
-            base + k * ch,
-            frac_x_neon(ax[k]),
-            ayv,
-        );
+    // `o0`/`o1` are the two source rows' element offsets, so a pixel costs one
+    // multiply-add instead of the `(y * w + x) * ch` it used to recompute twice.
+    macro_rules! tap {
+        ($k:expr) => {{
+            let x = ix[$k] as usize * ch;
+            tap4_neon(
+                src,
+                out,
+                o0 + x,
+                o1 + x,
+                ch,
+                base + $k * ch,
+                frac_x_neon_lane::<$k>(axv, xs.one),
+                ayv,
+            );
+        }};
     }
+    tap!(0);
+    tap!(1);
+    tap!(2);
+    tap!(3);
     true
 }
 
@@ -534,10 +693,7 @@ unsafe fn crop_resize_neon<T: CropPixel>(
     tpl_h: usize,
 ) -> Vec<f32> {
     #[cfg(target_arch = "aarch64")]
-    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
-    #[cfg(target_arch = "arm")]
-    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
 
@@ -562,6 +718,7 @@ unsafe fn crop_resize_neon<T: CropPixel>(
     let sx = win_w as f32 / tpl_w as f32;
     let sy = win_h as f32 / tpl_h as f32;
     let (wi, hi) = (w as isize, h as isize);
+    let xs = XStep::new(ox, sx);
     let n = tpl_h * tpl_w * ch;
     // Slack for the 4-lane store of the last pixel; see `tap4_neon`.
     let mut out = vec![0f32; n + 4];
@@ -579,7 +736,7 @@ unsafe fn crop_resize_neon<T: CropPixel>(
             let at = (j * tpl_w + i) * ch;
             if rows_free
                 && i + 4 <= tpl_w
-                && group4_neon(src, &mut out, i, ox, sx, ch, w, wi, y0, y1, at, ayv)
+                && group4_neon(src, &mut out, i, &xs, ch, wi, y0 * w * ch, y1 * w * ch, at, ayv)
             {
                 i += 4;
                 continue;
@@ -1027,10 +1184,7 @@ unsafe fn crop_resize_border_neon<T: CropPixel>(
     border: &[f32],
 ) -> Vec<f32> {
     #[cfg(target_arch = "aarch64")]
-    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
-    #[cfg(target_arch = "arm")]
-    use std::arch::arm::*;
     #[cfg(target_arch = "arm")]
     use std::arch::arm::*;
 
@@ -1054,6 +1208,7 @@ unsafe fn crop_resize_border_neon<T: CropPixel>(
     let sx = win_w as f32 / tpl_w as f32;
     let sy = win_h as f32 / tpl_h as f32;
     let (wi, hi) = (w as isize, h as isize);
+    let xs = XStep::new(ox, sx);
     let bv = loadn(border, 0, ch);
     let n = tpl_h * tpl_w * ch;
     // Slack for the 4-lane store of the last pixel; see `tap4_neon`.
@@ -1073,7 +1228,7 @@ unsafe fn crop_resize_border_neon<T: CropPixel>(
             let at = (j * tpl_w + i) * ch;
             if rows_free
                 && i + 4 <= tpl_w
-                && group4_neon(src, &mut out, i, ox, sx, ch, w, wi, y0, y1, at, ayv)
+                && group4_neon(src, &mut out, i, &xs, ch, wi, y0 * w * ch, y1 * w * ch, at, ayv)
             {
                 i += 4;
                 continue;
@@ -1557,7 +1712,7 @@ mod tests {
                 .fold(0.0, f32::max);
             assert_eq!(mx, 0.0, "{label} max diff {mx}");
         };
-        for &ch in &[1usize, 3] {
+        for &ch in &[1usize, 2, 3, 4] {
             let src = synth(h, w, ch);
             let border: Vec<f32> = (0..ch).map(|c| 30.0 + 50.0 * c as f32).collect();
             for &(ww, wh, tw, th, cx, cy) in &cases {
@@ -1627,7 +1782,7 @@ mod tests {
             (300, 300, 128, 128, 18.0, 12.0), // off the top-left corner
             (150, 150, 48, 48, 236.0, 196.0), // off the bottom-right corner
         ];
-        for &ch in &[1usize, 3] {
+        for &ch in &[1usize, 2, 3, 4] {
             let mut st = 11u32;
             let src8: Vec<u8> = (0..h * w * ch)
                 .map(|_| {
@@ -1684,7 +1839,7 @@ mod tests {
                 .fold(0.0, f32::max);
             assert_eq!(mx, 0.0, "{label} max diff {mx}");
         };
-        for &ch in &[1usize, 3] {
+        for &ch in &[1usize, 2, 3, 4] {
             let src = synth(h, w, ch);
             for &(ww, wh, tw, th) in &cases {
                 let (cx, cy) = (623.4f32, 408.6f32);

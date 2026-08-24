@@ -181,3 +181,32 @@ pub(crate) unsafe fn addvq_f32(v: float32x4_t) -> f32 {
     let pairs = vpadd_f32(vget_low_f32(v), vget_high_f32(v));
     vget_lane_f32::<0>(vpadd_f32(pairs, pairs))
 }
+
+/// Broadcast lane `L` of `v` to all four lanes.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn dupq_lane_f32<const L: i32>(v: float32x4_t) -> float32x4_t {
+    std::arch::aarch64::vdupq_laneq_f32::<L>(v)
+}
+
+/// See the aarch64 form above. The 32-bit lane form broadcasts out of a
+/// d-register, which holds two lanes, so pick the half holding `L` first.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+pub(crate) unsafe fn dupq_lane_f32<const L: i32>(v: float32x4_t) -> float32x4_t {
+    use std::arch::arm::*;
+    match L {
+        0 => vdupq_lane_f32::<0>(vget_low_f32(v)),
+        1 => vdupq_lane_f32::<1>(vget_low_f32(v)),
+        2 => vdupq_lane_f32::<0>(vget_high_f32(v)),
+        _ => vdupq_lane_f32::<1>(vget_high_f32(v)),
+    }
+}
