@@ -558,7 +558,7 @@ fn yuv420_to_rgb8_rows(
     start_row: usize,
     end_row: usize,
 ) {
-#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: feature detected at runtime.
@@ -1143,7 +1143,7 @@ pub fn nv12_to_rgb8(
         )));
     }
 
-#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             unsafe {
@@ -1408,7 +1408,7 @@ pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(
         return Err(VideoError::Codec("YUYV: width must be even".into()));
     }
 
-#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             unsafe {
@@ -1446,7 +1446,10 @@ pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn zip1_u8(a: std::arch::aarch64::uint8x8_t, b: std::arch::aarch64::uint8x8_t) -> std::arch::aarch64::uint8x8_t {
+unsafe fn zip1_u8(
+    a: std::arch::aarch64::uint8x8_t,
+    b: std::arch::aarch64::uint8x8_t,
+) -> std::arch::aarch64::uint8x8_t {
     std::arch::aarch64::vzip1_u8(a, b)
 }
 
@@ -1457,7 +1460,10 @@ unsafe fn zip1_u8(a: std::arch::aarch64::uint8x8_t, b: std::arch::aarch64::uint8
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn zip2_u8(a: std::arch::aarch64::uint8x8_t, b: std::arch::aarch64::uint8x8_t) -> std::arch::aarch64::uint8x8_t {
+unsafe fn zip2_u8(
+    a: std::arch::aarch64::uint8x8_t,
+    b: std::arch::aarch64::uint8x8_t,
+) -> std::arch::aarch64::uint8x8_t {
     std::arch::aarch64::vzip2_u8(a, b)
 }
 
@@ -1469,7 +1475,10 @@ unsafe fn zip2_u8(a: std::arch::aarch64::uint8x8_t, b: std::arch::aarch64::uint8
 #[cfg(all(target_arch = "arm", feature = "neon-v7"))]
 #[inline(always)]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn zip1_u8(a: std::arch::arm::uint8x8_t, b: std::arch::arm::uint8x8_t) -> std::arch::arm::uint8x8_t {
+unsafe fn zip1_u8(
+    a: std::arch::arm::uint8x8_t,
+    b: std::arch::arm::uint8x8_t,
+) -> std::arch::arm::uint8x8_t {
     std::arch::arm::vzip_u8(a, b).0
 }
 
@@ -1480,7 +1489,10 @@ unsafe fn zip1_u8(a: std::arch::arm::uint8x8_t, b: std::arch::arm::uint8x8_t) ->
 #[cfg(all(target_arch = "arm", feature = "neon-v7"))]
 #[inline(always)]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
-unsafe fn zip2_u8(a: std::arch::arm::uint8x8_t, b: std::arch::arm::uint8x8_t) -> std::arch::arm::uint8x8_t {
+unsafe fn zip2_u8(
+    a: std::arch::arm::uint8x8_t,
+    b: std::arch::arm::uint8x8_t,
+) -> std::arch::arm::uint8x8_t {
     std::arch::arm::vzip_u8(a, b).1
 }
 

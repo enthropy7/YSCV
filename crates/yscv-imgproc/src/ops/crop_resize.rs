@@ -736,7 +736,18 @@ unsafe fn crop_resize_neon<T: CropPixel>(
             let at = (j * tpl_w + i) * ch;
             if rows_free
                 && i + 4 <= tpl_w
-                && group4_neon(src, &mut out, i, &xs, ch, wi, y0 * w * ch, y1 * w * ch, at, ayv)
+                && group4_neon(
+                    src,
+                    &mut out,
+                    i,
+                    &xs,
+                    ch,
+                    wi,
+                    y0 * w * ch,
+                    y1 * w * ch,
+                    at,
+                    ayv,
+                )
             {
                 i += 4;
                 continue;
@@ -1228,7 +1239,18 @@ unsafe fn crop_resize_border_neon<T: CropPixel>(
             let at = (j * tpl_w + i) * ch;
             if rows_free
                 && i + 4 <= tpl_w
-                && group4_neon(src, &mut out, i, &xs, ch, wi, y0 * w * ch, y1 * w * ch, at, ayv)
+                && group4_neon(
+                    src,
+                    &mut out,
+                    i,
+                    &xs,
+                    ch,
+                    wi,
+                    y0 * w * ch,
+                    y1 * w * ch,
+                    at,
+                    ayv,
+                )
             {
                 i += 4;
                 continue;
