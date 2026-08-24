@@ -21,6 +21,11 @@
       "url": "https://huggingface.co/vlad-m-dev/mobilenet_v3_small_onnx_photo_doc/resolve/main/mobilenet_v3_small.onnx"
     },
     {
+      "path": "nanotrack-v3.onnx",
+      "env": "YSCV_BENCH_NANOTRACK_V3_URL",
+      "url": "https://github.com/Human9000-bit/SiamTrackers/raw/refs/heads/master/NanoTrack/models/nanotrackv3/nanotrack_fused.onnx"
+    },
+    {
       "path": "people.jpg",
       "env": "YSCV_BENCH_PEOPLE_IMAGE_URL",
       "url": "https://raw.githubusercontent.com/ultralytics/ultralytics/refs/heads/main/ultralytics/assets/bus.jpg"
@@ -62,6 +67,27 @@
       "image": "people.jpg",
       "image_input": "images",
       "image_size": 640
+    },
+    {
+      "name": "nanotrack_v3_255",
+      "model": "nanotrack-v3.onnx",
+      "iters": 100,
+      "iters_env": "YSCV_PR_BENCH_MODEL_ITERS",
+      "inputs": [
+        {
+          "name": "template",
+          "shape": [1, 3, 127, 127],
+          "source": "random"
+        },
+        {
+          "name": "search",
+          "shape": [1, 3, 255, 255],
+          "source": "image"
+        }
+      ],
+      "image": "people.jpg",
+      "image_input": "search",
+      "image_size": 255
     },
     {
       "name": "resnet18_224",
