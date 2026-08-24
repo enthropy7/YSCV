@@ -11,7 +11,11 @@ categories.workspace = true
 keywords.workspace = true
 
 [features]
-default = []
+# 32-bit ARM NEON. Needs a nightly compiler: the intrinsics and the arm
+# `target_feature` are both unstable. Compile-time only in the sense that the
+# code has to be built in; the NEON *use* is still runtime-detected via HWCAP.
+default = ["neon-v7"]
+neon-v7 = []
 native-camera = ["dep:nokhwa"]
 ## Hardware video decode backends (opt-in, platform-specific)
 videotoolbox = []  # macOS: Apple VideoToolbox HW decode

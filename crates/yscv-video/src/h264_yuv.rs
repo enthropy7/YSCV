@@ -558,7 +558,7 @@ fn yuv420_to_rgb8_rows(
     start_row: usize,
     end_row: usize,
 ) {
-    #[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             // SAFETY: feature detected at runtime.
@@ -637,7 +637,7 @@ fn yuv420_to_rgb8_rows_scalar(
 
 /// NEON-accelerated YUV420→RGB8 conversion (aarch64).
 /// Processes 8 pixels per iteration using i16 fixed-point arithmetic.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn yuv420_to_rgb8_rows_neon(
@@ -650,7 +650,10 @@ unsafe fn yuv420_to_rgb8_rows_neon(
     start_row: usize,
     end_row: usize,
 ) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     // BT.601 fixed-point Q7 constants (fit in i16 without overflow)
     let c_179 = vdupq_n_s16(179); // 1.402 * 128
@@ -678,8 +681,8 @@ unsafe fn yuv420_to_rgb8_rows_neon(
             let v8_vals = vld1_u8(v_row_ptr.add(col / 2));
 
             // Duplicate each U/V to cover 2 pixels horizontally → 16 values
-            let u16_dup = vcombine_u8(vzip1_u8(u8_vals, u8_vals), vzip2_u8(u8_vals, u8_vals));
-            let v16_dup = vcombine_u8(vzip1_u8(v8_vals, v8_vals), vzip2_u8(v8_vals, v8_vals));
+            let u16_dup = vcombine_u8(zip1_u8(u8_vals, u8_vals), zip2_u8(u8_vals, u8_vals));
+            let v16_dup = vcombine_u8(zip1_u8(v8_vals, v8_vals), zip2_u8(v8_vals, v8_vals));
 
             // Process low 8 pixels
             let y_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(y16)));
@@ -1106,8 +1109,9 @@ unsafe fn yuv420_to_rgb8_rows_sse2(
 /// `y` is the luma plane (`w * h` bytes), `uv` is the interleaved chroma plane
 /// (`w * (h/2)` bytes with U,V pairs). Output is `w * h * 3` bytes RGB8.
 ///
-/// Uses BT.601 full-range coefficients with NEON acceleration on aarch64,
-/// SSE2 on x86_64, and a scalar fallback.
+/// Uses BT.601 full-range coefficients with NEON acceleration on ARM (aarch64,
+/// and 32-bit ARM under the `neon-v7` feature), SSE2 on x86_64, and a scalar
+/// fallback. Every path is checked bit-for-bit against the scalar one in tests.
 #[allow(unsafe_code)]
 pub fn nv12_to_rgb8(
     y: &[u8],
@@ -1139,7 +1143,7 @@ pub fn nv12_to_rgb8(
         )));
     }
 
-    #[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             unsafe {
@@ -1188,11 +1192,14 @@ fn nv12_to_rgb8_scalar(y: &[u8], uv: &[u8], w: usize, h: usize, out: &mut [u8]) 
 }
 
 /// NEON-accelerated NV12 → RGB8 (aarch64). Processes 16 pixels per iteration.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn nv12_to_rgb8_neon(y: &[u8], uv: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let c_179 = vdupq_n_s16(179);
     let c_44 = vdupq_n_s16(44);
@@ -1217,8 +1224,8 @@ unsafe fn nv12_to_rgb8_neon(y: &[u8], uv: &[u8], w: usize, h: usize, out: &mut [
             let v8_vals = uv16.1; // 8 V values
 
             // Duplicate each U/V value for 2 horizontal pixels
-            let u_dup = vcombine_u8(vzip1_u8(u8_vals, u8_vals), vzip2_u8(u8_vals, u8_vals));
-            let v_dup = vcombine_u8(vzip1_u8(v8_vals, v8_vals), vzip2_u8(v8_vals, v8_vals));
+            let u_dup = vcombine_u8(zip1_u8(u8_vals, u8_vals), zip2_u8(u8_vals, u8_vals));
+            let v_dup = vcombine_u8(zip1_u8(v8_vals, v8_vals), zip2_u8(v8_vals, v8_vals));
 
             // Low 8 pixels
             let y_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(y16)));
@@ -1377,8 +1384,9 @@ unsafe fn nv12_to_rgb8_sse2(y: &[u8], uv: &[u8], w: usize, h: usize, out: &mut [
 /// Each 4 bytes encode 2 pixels: `[Y0, U, Y1, V]`.
 /// `data` is `w * h * 2` bytes, `out` must be at least `w * h * 3` bytes.
 ///
-/// Uses BT.601 full-range coefficients with NEON acceleration on aarch64,
-/// SSE2 on x86_64, and a scalar fallback.
+/// Uses BT.601 full-range coefficients with NEON acceleration on ARM (aarch64,
+/// and 32-bit ARM under the `neon-v7` feature), SSE2 on x86_64, and a scalar
+/// fallback. Every path is checked bit-for-bit against the scalar one in tests.
 #[allow(unsafe_code)]
 pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(), VideoError> {
     let expected_in = w * h * 2;
@@ -1400,7 +1408,7 @@ pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(
         return Err(VideoError::Codec("YUYV: width must be even".into()));
     }
 
-    #[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
     {
         if yscv_cpu::host_cpu().features.neon {
             unsafe {
@@ -1422,6 +1430,58 @@ pub fn yuyv_to_rgb8(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Result<(
 
     yuyv_to_rgb8_scalar(data, w, h, out);
     Ok(())
+}
+
+// ---------------------------------------------------------------- NEON, both ARMs
+//
+// The YUV kernels below are one kernel per format, built for aarch64 and for
+// 32-bit ARM (`neon-v7`, nightly). Every intrinsic they use is spelled the same
+// on both arches except the byte interleave, which ARMv7 writes as one
+// instruction producing both halves; these two shims give it the aarch64 name.
+
+/// `[a0, b0, a1, b1, ...]` — the low half of the interleave.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn zip1_u8(a: std::arch::aarch64::uint8x8_t, b: std::arch::aarch64::uint8x8_t) -> std::arch::aarch64::uint8x8_t {
+    std::arch::aarch64::vzip1_u8(a, b)
+}
+
+/// The high half of the interleave. See [`zip1_u8`].
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn zip2_u8(a: std::arch::aarch64::uint8x8_t, b: std::arch::aarch64::uint8x8_t) -> std::arch::aarch64::uint8x8_t {
+    std::arch::aarch64::vzip2_u8(a, b)
+}
+
+/// See the aarch64 form. ARMv7's `VZIP.8` writes both halves, so the two
+/// aarch64 intrinsics are its two outputs.
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn zip1_u8(a: std::arch::arm::uint8x8_t, b: std::arch::arm::uint8x8_t) -> std::arch::arm::uint8x8_t {
+    std::arch::arm::vzip_u8(a, b).0
+}
+
+/// See [`zip1_u8`].
+///
+/// # Safety
+/// Caller must be on a NEON target.
+#[cfg(all(target_arch = "arm", feature = "neon-v7"))]
+#[inline(always)]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn zip2_u8(a: std::arch::arm::uint8x8_t, b: std::arch::arm::uint8x8_t) -> std::arch::arm::uint8x8_t {
+    std::arch::arm::vzip_u8(a, b).1
 }
 
 /// Scalar YUYV → RGB8 fallback.
@@ -1458,11 +1518,14 @@ fn yuyv_to_rgb8_scalar(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
 }
 
 /// NEON-accelerated YUYV → RGB8 (aarch64). Processes 16 pixels (32 YUYV bytes) per iteration.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 unsafe fn yuyv_to_rgb8_neon(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
+    #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
 
     let c_179 = vdupq_n_s16(179);
     let c_44 = vdupq_n_s16(44);
@@ -1519,12 +1582,12 @@ unsafe fn yuyv_to_rgb8_neon(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
             let b_hi = vqmovun_s16(b1);
 
             // Zip Y0 and Y1 results: R = [r0_0, r1_0, r0_1, r1_1, ...]
-            let r_zip = vzip1_u8(r_lo, r_hi);
-            let r_zip2 = vzip2_u8(r_lo, r_hi);
-            let g_zip = vzip1_u8(g_lo, g_hi);
-            let g_zip2 = vzip2_u8(g_lo, g_hi);
-            let b_zip = vzip1_u8(b_lo, b_hi);
-            let b_zip2 = vzip2_u8(b_lo, b_hi);
+            let r_zip = zip1_u8(r_lo, r_hi);
+            let r_zip2 = zip2_u8(r_lo, r_hi);
+            let g_zip = zip1_u8(g_lo, g_hi);
+            let g_zip2 = zip2_u8(g_lo, g_hi);
+            let b_zip = zip1_u8(b_lo, b_hi);
+            let b_zip2 = zip2_u8(b_lo, b_hi);
 
             // Store first 8 pixels
             let rgb_first = uint8x8x3_t(r_zip, g_zip, b_zip);
@@ -1667,6 +1730,71 @@ unsafe fn yuyv_to_rgb8_sse2(data: &[u8], w: usize, h: usize, out: &mut [u8]) {
             *dst_row.add(di + 5) = b1.clamp(0, 255) as u8;
 
             col += 2;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A byte pattern that walks the whole 0..=255 range, so the conversions are
+    /// exercised where they saturate as well as where they do not.
+    fn pattern(n: usize, seed: u32) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|i| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                // every 8th byte is an extreme, to pin the clamps down
+                match i % 8 {
+                    0 => 0,
+                    4 => 255,
+                    _ => (x >> 16) as u8,
+                }
+            })
+            .collect()
+    }
+
+    /// The dispatched path (NEON here, SSE2 on x86) must equal the scalar one
+    /// byte for byte — a SIMD kernel that "looks right" but shifts a channel is
+    /// exactly the bug that survives a visual check.
+    #[test]
+    fn yuyv_matches_scalar() {
+        for &(w, h) in &[(2, 2), (16, 2), (18, 3), (32, 4), (640, 4), (34, 2)] {
+            let src = pattern(w * h * 2, (w * h) as u32);
+            let mut simd = vec![0u8; w * h * 3];
+            let mut scalar = vec![0u8; w * h * 3];
+            yuyv_to_rgb8(&src, w, h, &mut simd).unwrap();
+            yuyv_to_rgb8_scalar(&src, w, h, &mut scalar);
+            assert_eq!(simd, scalar, "YUYV {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn nv12_matches_scalar() {
+        for &(w, h) in &[(16, 2), (18, 4), (32, 4), (640, 4), (34, 2)] {
+            let y = pattern(w * h, 7);
+            let uv = pattern(w * (h / 2), 11);
+            let mut simd = vec![0u8; w * h * 3];
+            let mut scalar = vec![0u8; w * h * 3];
+            nv12_to_rgb8(&y, &uv, w, h, &mut simd).unwrap();
+            nv12_to_rgb8_scalar(&y, &uv, w, h, &mut scalar);
+            assert_eq!(simd, scalar, "NV12 {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn yuv420_rows_match_scalar() {
+        for &(w, h) in &[(16, 2), (18, 4), (32, 4), (640, 4), (34, 2)] {
+            let uv_stride = w / 2;
+            let y = pattern(w * h, 13);
+            let u = pattern(uv_stride * (h / 2), 17);
+            let v = pattern(uv_stride * (h / 2), 19);
+            let mut simd = vec![0u8; w * h * 3];
+            let mut scalar = vec![0u8; w * h * 3];
+            yuv420_to_rgb8_rows(&y, &u, &v, &mut simd, w, uv_stride, 0, h);
+            yuv420_to_rgb8_rows_scalar(&y, &u, &v, &mut scalar, w, uv_stride, 0, h);
+            assert_eq!(simd, scalar, "YUV420 {w}x{h}");
         }
     }
 }

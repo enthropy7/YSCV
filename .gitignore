@@ -65,3 +65,4 @@ private/
 # Nix
 **/.direnv
 **/result
+/target-v7
