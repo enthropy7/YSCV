@@ -1992,3 +1992,70 @@ fn plan_fuses_transpose_into_matmul_and_keeps_a_shared_transpose() {
     names.sort();
     assert_eq!(names, vec!["side_out", "y"], "output names diverged");
 }
+
+/// A constant `Transpose` feeding a MatMul's right-hand side must be folded
+/// into the initializer, so the GEMM reads a pre-permuted weight instead of
+/// permuting it on every inference.
+///
+/// This used to be a hand-rolled fold in the loader, running unconditionally at
+/// load time and matching only MatMul RHS. `FoldConstants` already covers it —
+/// and covers every other constant `Transpose` besides — so the loader copy was
+/// deleted. This test pins the coverage that deletion depends on.
+#[test]
+fn optimize_folds_a_constant_transpose_into_the_matmul_weight() {
+    let w = onnx::TensorProto {
+        name: Some("w".into()),
+        dims: vec![4, 3],
+        data_type: Some(1),
+        float_data: (0..12).map(|v| v as f32 * 0.5).collect(),
+        ..Default::default()
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Transpose".into()),
+            name: Some("wt".into()),
+            input: vec!["w".into()],
+            output: vec!["w_t".into()],
+            attribute: vec![make_ints_attr("perm", vec![1, 0])],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("MatMul".into()),
+            name: Some("mm".into()),
+            input: vec!["x".into(), "w_t".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![w], vec!["x"], vec!["y"]);
+
+    let mut rng = crate::tests::equivalence::Lcg::new(0x7EA5_0002);
+    let mut feed = FxHashMap::default();
+    feed.insert("x".to_string(), rng.tensor(vec![2, 3]));
+    crate::tests::equivalence::assert_transform_preserves_numerics(
+        "optimize/const-transpose-into-matmul",
+        &bytes,
+        &feed,
+        crate::tests::equivalence::Tolerance::Exact,
+        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+    );
+
+    let mut model = load_onnx_model(&bytes).unwrap();
+    assert_eq!(model.node_count(), 2, "the fold must not happen at load");
+
+    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    assert!(
+        model.nodes.iter().all(|n| n.op_type != "Transpose"),
+        "the constant Transpose should be folded away, got {:?}",
+        model.nodes.iter().map(|n| &n.op_type).collect::<Vec<_>>()
+    );
+    let folded = model
+        .initializers
+        .get("w_t")
+        .expect("the transposed weight should now be an initializer");
+    assert_eq!(folded.shape(), &[3, 4]);
+    assert_eq!(
+        folded.data(),
+        &[0.0, 1.5, 3.0, 4.5, 0.5, 2.0, 3.5, 5.0, 1.0, 2.5, 4.0, 5.5]
+    );
+}

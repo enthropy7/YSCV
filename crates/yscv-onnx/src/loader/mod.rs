@@ -1,5 +1,3 @@
-use rustc_hash::FxHashSet;
-
 use prost::Message;
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
@@ -134,37 +132,6 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
             attributes,
         });
     }
-
-    let matmul_rhs_inputs: FxHashSet<String> = nodes
-        .iter()
-        .filter(|node| node.op_type == "MatMul")
-        .filter_map(|node| node.inputs.get(1).cloned())
-        .collect();
-    let graph_outputs: FxHashSet<String> = outputs.iter().cloned().collect();
-    let mut folded_nodes = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        let can_fold_const_transpose = node.op_type == "Transpose"
-            && node.inputs.len() == 1
-            && node.outputs.len() == 1
-            && matmul_rhs_inputs.contains(&node.outputs[0])
-            && !graph_outputs.contains(&node.outputs[0]);
-        if can_fold_const_transpose && let Some(input) = initializers.get(&node.inputs[0]) {
-            let axes: Vec<usize> = match node.attributes.get(&Attr::Perm) {
-                Some(OnnxAttribute::Ints(v)) if v.len() == input.rank() => {
-                    v.iter().map(|&x| x as usize).collect()
-                }
-                _ => (0..input.rank()).rev().collect(),
-            };
-            if axes.iter().all(|&axis| axis < input.rank())
-                && let Ok(permuted) = input.permute(&axes)
-            {
-                initializers.insert(node.outputs[0].clone(), permuted);
-                continue;
-            }
-        }
-        folded_nodes.push(node);
-    }
-    let nodes = folded_nodes;
 
     let runtime_index = build_runtime_index(&inputs, &outputs, &initializers, &nodes);
 
