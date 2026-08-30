@@ -181,6 +181,30 @@ jobs:
       - name: Benchmark (u8 ops)
         run: cargo run --release -p yscv-bench 2>&1 | grep "u8_"
 
+  armv7-neon:
+    name: ARMv7 NEON (gated path, nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (nightly + armv7)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: armv7-unknown-linux-gnueabihf
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The 32-bit ARM NEON path (feature `neon-v7`, `target_arch = "arm"`) is
+      # nightly-only and built for a NEON-capable target, so it is never seen by
+      # the x86_64 or aarch64 jobs (aarch64 has NEON in its baseline). Check it
+      # here so the gated intrinsics and inline asm cannot rot unnoticed.
+      - name: Check ARMv7 NEON path (imgproc + kernels)
+        env:
+          RUSTFLAGS: "-C target-feature=+neon"
+        run: cargo check -p yscv-imgproc -p yscv-kernels --target armv7-unknown-linux-gnueabihf
+
   quality:
     runs-on: ubuntu-latest
 
