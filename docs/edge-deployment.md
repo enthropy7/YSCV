@@ -87,6 +87,27 @@ performance on the table. On an Orange Pi Zero 3 (Cortex-A53) this alone is
 ~4-5% on a Siamese-tracker workload. Leave it off for portable release binaries
 (an A53 schedule is suboptimal on A72/A76); set it when you control the target.
 
+## 32-bit ARM (ARMv7 / Cortex-A7)
+
+The section above is aarch64. On **32-bit ARM** (`target_arch = "arm"`, e.g. the
+Cortex-A7 core) NEON is a separate story: the intrinsics and the
+arm `target_feature` are both unstable, so the NEON kernels are gated behind the
+`neon-v7` feature (default-on for `yscv-imgproc`, `yscv-kernels`, `yscv-video`)
+and need a **nightly** compiler. Unlike aarch64, NEON is not in the ARMv7
+baseline and there is no runtime NEON check on this arch — it is a compile-time
+commitment — so enable it explicitly for a NEON-capable board:
+
+```bash
+# Tuned ARMv7 NEON build (Cortex-A7):
+RUSTFLAGS="-C target-feature=+neon -C target-cpu=cortex-a7" \
+  cargo +nightly build --release --target armv7-unknown-linux-gnueabihf
+```
+
+Without `+neon` the gated inline asm fails to build (`register class ... requires
+the neon target feature`); the `neon-v7` code is otherwise inert on non-NEON
+targets. This path is exercised on CI (a nightly `armv7-unknown-linux-gnueabihf`
+`cargo check`) so it cannot rot unnoticed.
+
 ## Rockchip NPU acceleration (`rknn` feature)
 
 Enable with `--features rknn` on `yscv-kernels`. Binary runs everywhere: on
