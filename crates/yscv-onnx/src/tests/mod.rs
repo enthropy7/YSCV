@@ -18,7 +18,13 @@ mod shape_infer;
 use crate::attr::Attr;
 use prost::Message;
 
-use super::loader::{OnnxAttribute, load_onnx_model};
+// Fixtures are asserted against the graph as written, and the pass tests drive
+// their pass explicitly, so every test here wants the loader *without* the
+// load-time optimizer `load_onnx_model` now runs. Aliased in one place rather
+// than renamed at the ~110 call sites below; the load-time default has its own
+// tests in `tests/loader.rs`.
+use super::loader::OnnxAttribute;
+use super::loader::load_onnx_model_unoptimized as load_onnx_model;
 use super::proto::onnx;
 use super::runner::run_onnx_model;
 use rustc_hash::FxHashMap;

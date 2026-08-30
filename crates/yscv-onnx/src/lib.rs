@@ -31,6 +31,7 @@ pub use exporter::{
 pub use generate::{GenerateConfig, generate};
 pub use loader::{
     OnnxAttribute, OnnxModel, OnnxNode, OnnxTensor, load_onnx_model, load_onnx_model_from_file,
+    load_onnx_model_unoptimized,
 };
 pub use optimizer::{
     GraphCost, GraphCostDiff, GraphStats, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,

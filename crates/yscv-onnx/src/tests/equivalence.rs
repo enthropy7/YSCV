@@ -13,7 +13,10 @@
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
-use super::super::loader::{OnnxModel, load_onnx_model};
+use super::super::loader::OnnxModel;
+// The harness compares a graph against a transform of *the same* graph, so the
+// baseline has to be the file as written — see the note in `tests/mod.rs`.
+use super::super::loader::load_onnx_model_unoptimized as load_onnx_model;
 use super::super::runner::run_onnx_model;
 
 /// Serializes tests that mutate *or read* the process environment.

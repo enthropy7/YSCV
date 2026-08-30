@@ -66,23 +66,67 @@ impl OnnxModel {
     }
 
     /// Rebuilds runtime slot/id metadata after graph mutations.
+    ///
+    /// One action per node is *not* an invariant of the finished plan, and this
+    /// used to assert it was: the `FusedPwDwPwReduce` merge deliberately drops
+    /// the actions it absorbs, so a merged plan is shorter than the node list
+    /// and `nchwc_handoff` is documented as indexed by plan position for
+    /// exactly that reason. Nothing downstream reads a node through its plan
+    /// position — every action carries its own `node_idx` — so a short plan
+    /// executes correctly. The place the correspondence does have to hold is
+    /// the build loop that establishes it, before the merge runs, and
+    /// [`build_runtime_index`] asserts it there.
     pub(crate) fn rebuild_runtime_index(&mut self) {
         self.runtime_index =
             build_runtime_index(&self.inputs, &self.outputs, &self.initializers, &self.nodes);
-        // Execution now has no non-plan fallback: the runner walks the plan and
-        // nothing else. A plan shorter than the node list would silently skip
-        // the trailing nodes, so hold the one-action-per-node invariant here,
-        // where it is established, rather than at the point it would be missed.
-        debug_assert_eq!(
-            self.runtime_index.execution_plan.len(),
-            self.nodes.len(),
-            "execution plan must carry one action per node"
-        );
     }
 }
 
-/// Loads an ONNX model from raw protobuf bytes.
+/// Loads an ONNX model from raw protobuf bytes, optimized for inference.
+///
+/// The graph optimizer runs as part of loading. It used to be a separate
+/// [`optimize_onnx_graph`](crate::optimize_onnx_graph) call every caller had to
+/// remember, and forgetting it did not produce an unoptimized model so much as
+/// a slow one — or, on the Conv paths, a runtime shape error from a kernel
+/// handed a weight the plan builder never got to permute.
+///
+/// Set `YSCV_ONNX_OPTIMIZE_OFF=1` to skip it process-wide, or call
+/// [`load_onnx_model_unoptimized`] for the graph exactly as the file spells it.
+/// The variable is read per load rather than cached, because loading is not a
+/// hot path and a cached read would ignore anything set after the first model.
 pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
+    let mut model = parse_onnx_model(data)?;
+    if optimize_on_load() {
+        crate::optimizer::optimize_onnx_graph(&mut model)?;
+    } else {
+        model.rebuild_runtime_index();
+    }
+    Ok(model)
+}
+
+/// Loads an ONNX model from raw protobuf bytes without optimizing it.
+///
+/// The graph comes back node-for-node as the file spells it. That is what an
+/// inspection tool wants to report on, and what a test asserting the shape of a
+/// fixture wants to assert against; it is not what an inference caller wants,
+/// since none of the load-time fusions or weight folds have run.
+pub fn load_onnx_model_unoptimized(data: &[u8]) -> Result<OnnxModel, OnnxError> {
+    let mut model = parse_onnx_model(data)?;
+    model.rebuild_runtime_index();
+    Ok(model)
+}
+
+/// Whether [`load_onnx_model`] should run the optimizer.
+fn optimize_on_load() -> bool {
+    std::env::var_os("YSCV_ONNX_OPTIMIZE_OFF").is_none()
+}
+
+/// Decodes the protobuf into a model, leaving the runtime index empty.
+///
+/// The index is expensive to build — plan construction and weight prepacking —
+/// and the optimizer invalidates it, so it is built exactly once, by whichever
+/// entry point above finishes the load.
+fn parse_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
     let model_proto = onnx::ModelProto::decode(data).map_err(|e| OnnxError::DecodeFailed {
         message: e.to_string(),
     })?;
@@ -133,8 +177,6 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         });
     }
 
-    let runtime_index = build_runtime_index(&inputs, &outputs, &initializers, &nodes);
-
     Ok(OnnxModel {
         ir_version: model_proto.ir_version.unwrap_or(0),
         opset_version,
@@ -145,13 +187,15 @@ pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         initializers,
         nodes,
         packed_int4_weights: FxHashMap::default(),
-        runtime_index,
+        runtime_index: RuntimeModelIndex::default(),
     })
 }
 
-/// Loads an ONNX model from a file path.
+/// Loads an ONNX model from a file path, optimized for inference.
 ///
 /// Accepts any path-like type (`&str`, `String`, `&Path`, `PathBuf`, etc.).
+/// See [`load_onnx_model`] for the optimizer's role in loading and how to opt
+/// out of it.
 pub fn load_onnx_model_from_file(
     path: impl AsRef<std::path::Path>,
 ) -> Result<OnnxModel, OnnxError> {

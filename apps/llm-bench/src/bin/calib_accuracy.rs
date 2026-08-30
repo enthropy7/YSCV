@@ -30,7 +30,7 @@ use yscv_onnx::quantize::{
     CalibrationCollector,
     derive::{QuantTarget, derive_mse_optimal, derive_percentile, derive_symmetric},
 };
-use yscv_onnx::{OnnxRunner, load_onnx_model_from_file, optimize_onnx_graph};
+use yscv_onnx::{OnnxRunner, load_onnx_model_from_file};
 use yscv_tensor::Tensor;
 
 const N_SAMPLES: usize = 100_000;
@@ -209,13 +209,11 @@ fn collect_real_activations(
     inputs: &[(&str, Vec<usize>)],
     n_runs: usize,
 ) -> Result<Vec<(String, Vec<f32>)>, String> {
-    let mut model = load_onnx_model_from_file(model_path).map_err(|e| format!("load: {e}"))?;
-    // The CPU runner expects the optimizer to have run first — it
-    // pre-permutes Conv weights OIHW → KHWC and registers fusions the
-    // exec paths rely on. Skipping this step makes Conv kernels see
-    // raw OIHW shapes and triggers "bias shape mismatch" on the first
-    // conv layer.
-    optimize_onnx_graph(&mut model).map_err(|e| format!("optimize: {e}"))?;
+    // The CPU runner expects the optimizer to have run — it pre-permutes Conv
+    // weights OIHW → KHWC and registers fusions the exec paths rely on, and
+    // without it the Conv kernels see raw OIHW shapes and report a bias shape
+    // mismatch on the first conv layer. Loading now runs it.
+    let model = load_onnx_model_from_file(model_path).map_err(|e| format!("load: {e}"))?;
     let runner = OnnxRunner::new(&model).map_err(|e| format!("runner: {e}"))?;
     let coll = CalibrationCollector::new();
     coll.enable_histograms(true);

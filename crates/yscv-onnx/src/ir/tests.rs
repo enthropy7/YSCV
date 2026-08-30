@@ -6,7 +6,9 @@
 //! check that the index says the *right* thing, and that lowering round-trips.
 
 use super::*;
-use crate::loader::load_onnx_model;
+// These lower a fixture and drive passes by hand; the load-time optimizer would
+// rewrite the fixture first. See the note in `tests/mod.rs`.
+use crate::loader::load_onnx_model_unoptimized as load_onnx_model;
 use crate::proto::onnx;
 use crate::tests::build_minimal_onnx_model;
 

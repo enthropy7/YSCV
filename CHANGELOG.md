@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `load_onnx_model` and `load_onnx_model_from_file` now run the
+  graph optimizer as part of loading. It was a separate `optimize_onnx_graph`
+  call every caller had to remember, and forgetting it did not produce an
+  unoptimized model so much as a slow one — or, on the Conv paths, a runtime
+  shape error from a kernel handed a weight the plan builder never permuted.
+  Every in-tree caller was already loading and immediately optimizing, except
+  `yscv-pipeline`'s CPU dispatcher, which was silently running unoptimized.
+  `YSCV_ONNX_OPTIMIZE_OFF=1` disables it process-wide, and the new
+  `load_onnx_model_unoptimized` returns the graph as the file spells it, for
+  inspection tools and for tests asserting against a fixture. The runtime index
+  is still built exactly once per load either way.
+- `OnnxModel::rebuild_runtime_index` no longer asserts one plan action per node.
+  The `FusedPwDwPwReduce` merge deliberately drops the actions it absorbs, so a
+  merged plan is legitimately shorter than the node list — `nchwc_handoff` is
+  documented as indexed by plan position for that reason, and every action
+  carries its own `node_idx`, so nothing reads a node through its plan position.
+  The assertion only escaped notice because the load path did not go through
+  this function; routing loads through it made a merged plan trip it. The
+  correspondence that does have to hold is checked where it is established, in
+  `plan/build.rs`, before the merge runs.
+
 - **Breaking:** operator attributes are keyed by the new `Attr` enum instead of
   `String`. `OnnxNode.attributes` is now `FxHashMap<Attr, OnnxAttribute>` and the
   `get_attr_*` helpers take an `Attr`. ONNX attribute names are a closed

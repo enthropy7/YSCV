@@ -5,11 +5,15 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use yscv_onnx::load_onnx_model_from_file;
+use yscv_onnx::load_onnx_model_unoptimized;
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: inspect <path.onnx>");
-    let m = load_onnx_model_from_file(&path).expect("load");
+    // Unoptimized on purpose: this reports what is in the file. Loading the
+    // ordinary way would optimize first, and the node names and counts printed
+    // below would be the optimizer's, not the exporter's.
+    let bytes = std::fs::read(&path).expect("read");
+    let m = load_onnx_model_unoptimized(&bytes).expect("load");
     println!("inputs ({}):", m.inputs.len());
     for n in &m.inputs {
         println!("  {n}");

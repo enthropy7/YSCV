@@ -44,9 +44,9 @@ use yscv_onnx::quantize::{
     rewrite_to_qdq, rewrite_to_qlinear,
 };
 use yscv_onnx::{
-    OnnxRunner, export_onnx_model_to_file, load_onnx_model_from_file, onnx_model_to_export_graph,
-    optimize_onnx_graph, quant_runtime_stats, reset_quant_runtime_stats,
-    strip_qdq_within_fusion_chains,
+    OnnxRunner, export_onnx_model_to_file, load_onnx_model, load_onnx_model_from_file,
+    load_onnx_model_unoptimized, onnx_model_to_export_graph, quant_runtime_stats,
+    reset_quant_runtime_stats, strip_qdq_within_fusion_chains,
 };
 use yscv_tensor::Tensor;
 
@@ -445,9 +445,8 @@ fn run(args: Args) -> Result<(), String> {
     let inputs = parse_shapes(&args.shape_spec)?;
 
     eprintln!("loading {}…", args.model);
-    let mut model_fp32 =
+    let model_fp32 =
         load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load fp32: {e}"))?;
-    optimize_onnx_graph(&mut model_fp32).map_err(|e| format!("optimize fp32: {e}"))?;
     let runner_fp32 = OnnxRunner::new(&model_fp32).map_err(|e| format!("runner fp32: {e}"))?;
 
     let calibration_samples = if let Some(spec) = args.calibration_jsonl.as_ref() {
@@ -512,7 +511,6 @@ fn run(args: Args) -> Result<(), String> {
     );
     let mut model_qdq =
         load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load q: {e}"))?;
-    optimize_onnx_graph(&mut model_qdq).map_err(|e| format!("optimize q: {e}"))?;
     match args.format {
         QuantFormat::Qdq => rewrite_to_qdq(&mut model_qdq, &stats, &args.keep_fp32)
             .map_err(|e| format!("rewrite_to_qdq: {e}"))?,
@@ -556,11 +554,16 @@ fn run(args: Args) -> Result<(), String> {
         )
         .map_err(|e| format!("save: {e}"))?;
         eprintln!("reloading quantized model to verify protobuf round-trip…");
-        let mut reloaded = load_onnx_model_from_file(Path::new(output_path))
-            .map_err(|e| format!("reload: {e}"))?;
-        if args.format == QuantFormat::Qdq {
-            optimize_onnx_graph(&mut reloaded).map_err(|e| format!("optimize reload: {e}"))?;
-        }
+        // Only the QDQ arm optimizes the reloaded model; the QLinear arm is
+        // checking the protobuf round-trip against ORT's reading of it, so it
+        // wants the file's own graph. Hence the unoptimized loader rather than
+        // the optimize-on-load default.
+        let reloaded_bytes = std::fs::read(output_path).map_err(|e| format!("reload: {e}"))?;
+        let reloaded = if args.format == QuantFormat::Qdq {
+            load_onnx_model(&reloaded_bytes).map_err(|e| format!("reload: {e}"))?
+        } else {
+            load_onnx_model_unoptimized(&reloaded_bytes).map_err(|e| format!("reload: {e}"))?
+        };
         model_qdq = reloaded;
     }
 

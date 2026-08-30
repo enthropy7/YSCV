@@ -83,6 +83,7 @@ Independent graph branches ("towers") run in parallel above a thread-count gate.
 
 | Variable | Default | Effect |
 |---|---|---|
+| `YSCV_ONNX_OPTIMIZE_OFF=1` | unset (optimize **on**) | Skip the whole graph optimizer at model load. `load_onnx_model` optimizes by default; this turns that off process-wide, for checking whether a bad output is the optimizer's doing. Read per load rather than cached in a `OnceLock`, unlike most knobs here, since loading is not a hot path. For turning off one pass rather than all of them, use `YSCV_ONNX_PASSES=-name`. |
 | `YSCV_REORDER_FUSION_OFF=1` | unset (reorder **on**) | Skip the node-reorder pass that restores producer/consumer adjacency before the fusion passes. The reorder only permutes independent nodes, so outputs are unchanged either way — disabling it just costs fusions on models whose export order interleaves branches. |
 | `YSCV_NCHWC=on` | unset | **Exact value `on`.** Print NCHWc capability stats (`capable`/`chains`/`max_chain`/`mean_chain`) to stderr after optimization. Diagnostic only; does not change execution. |
 | `YSCV_NO_PREPACKED_BY_ID=1` | unset | Disable the prepacked-weight-by-id lookup for Conv nodes, forcing a repack per call. |

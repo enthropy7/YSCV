@@ -20,6 +20,7 @@ let outputs = run_onnx_model(&model, inputs)?;
 ```
 
 CPU inference is fully optimized by default:
+- **Graph optimizer**: Dropout removal, Conv+BatchNormalization folding, constant folding, Conv+Relu fusion and the rest of the pipeline run as part of `load_onnx_model` — there is no separate optimize step to remember. `YSCV_ONNX_OPTIMIZE_OFF=1` skips it; `load_onnx_model_unoptimized` loads the file's own graph for inspection
 - **Multi-threaded**: All ops above 262K elements use rayon parallelism automatically
 - **SIMD**: NEON (aarch64), AVX (x86_64), SSE (x86) — runtime detected, no flags needed
 - **BLAS**: Accelerate (macOS) or OpenBLAS (Linux) for matmul and standard conv

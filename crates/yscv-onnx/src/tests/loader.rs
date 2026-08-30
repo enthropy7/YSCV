@@ -191,3 +191,105 @@ fn shape_mismatch_error() {
     let result = load_onnx_model(&bytes);
     assert!(result.is_err());
 }
+
+/// `x -> Relu -> Dropout -> Relu -> y`. Dropout is the identity at inference,
+/// so the optimizer removes it — which makes its presence a cheap probe for
+/// whether the optimizer ran.
+fn dropout_probe_model() -> Vec<u8> {
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu0".into()),
+            input: vec!["x".into()],
+            output: vec!["relu_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Dropout".into()),
+            name: Some("drop0".into()),
+            input: vec!["relu_out".into()],
+            output: vec!["drop_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu1".into()),
+            input: vec!["drop_out".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"])
+}
+
+/// The load-time optimizer is the default, so a caller that only loads still
+/// gets the fused, folded graph the runner is tuned for. Forgetting the
+/// separate `optimize_onnx_graph` call is what this closes.
+///
+/// Note this file's alias: `load_onnx_model` here is the *unoptimized* loader
+/// (see `tests/mod.rs`), so the public entry point is named in full.
+#[test]
+fn load_runs_the_optimizer_by_default() {
+    // Held because this *reads* `YSCV_ONNX_OPTIMIZE_OFF`, and the test below
+    // sets it. Without the lock the two race and this one intermittently sees
+    // the optimizer switched off under it.
+    let _env = crate::tests::equivalence::lock_env();
+    let bytes = dropout_probe_model();
+
+    let model = crate::loader::load_onnx_model(&bytes).expect("load");
+    assert_eq!(
+        model.node_count(),
+        2,
+        "loading should have removed the Dropout, got {:?}",
+        model.nodes.iter().map(|n| &n.op_type).collect::<Vec<_>>()
+    );
+    assert!(model.nodes.iter().all(|n| n.op_type == "Relu"));
+    assert_eq!(model.nodes[1].inputs[0], "relu_out");
+}
+
+/// The opt-out for a caller that wants the file's own graph — an inspector, or
+/// a test asserting against a fixture.
+#[test]
+fn load_unoptimized_keeps_the_graph_as_written() {
+    let bytes = dropout_probe_model();
+
+    let model = crate::loader::load_onnx_model_unoptimized(&bytes).expect("load");
+    assert_eq!(model.node_count(), 3);
+    assert_eq!(model.nodes[1].op_type, "Dropout");
+}
+
+/// `YSCV_ONNX_OPTIMIZE_OFF=1` turns the load-time optimizer off process-wide,
+/// for bisecting a model the optimizer miscompiles without rebuilding against
+/// the unoptimized entry point.
+#[test]
+fn optimize_off_env_var_disables_the_load_time_optimizer() {
+    // Held for the whole test: `load_onnx_model` reads this variable, so a
+    // sibling test loading a model concurrently would see the toggle.
+    let _env = crate::tests::equivalence::lock_env();
+    let bytes = dropout_probe_model();
+
+    // SAFETY: `set_var`/`remove_var` are not thread-safe and `cargo test` runs
+    // tests concurrently. The `EnvGuard` above proves this thread has exclusive
+    // use of the environment for the whole test. The load's result is held
+    // unexamined until after `remove_var`, so a failing load clears the
+    // variable rather than leaking it into every later test.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("YSCV_ONNX_OPTIMIZE_OFF", "1");
+    }
+    let disabled = crate::loader::load_onnx_model(&bytes);
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("YSCV_ONNX_OPTIMIZE_OFF");
+    }
+    let disabled = disabled.expect("load with the optimizer off");
+    let enabled = crate::loader::load_onnx_model(&bytes).expect("load");
+
+    assert_eq!(disabled.node_count(), 3, "the Dropout should have survived");
+    assert_eq!(disabled.nodes[1].op_type, "Dropout");
+    assert_eq!(
+        enabled.node_count(),
+        2,
+        "and be gone once the knob is unset"
+    );
+}
