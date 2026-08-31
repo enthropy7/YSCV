@@ -73,7 +73,7 @@ fn run_ir_pipeline(model: &mut OnnxModel) -> Result<(), OnnxError> {
 /// it leaves behind is what reaches `build_runtime_index`, and what that order
 /// now decides is peak memory rather than which fusions fire.
 fn pipeline() -> Vec<Box<dyn Pass>> {
-    vec![
+    let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(RemoveDropout) as Box<dyn Pass>,
         Box::new(EliminateSqueezeUnsqueezePairs),
         Box::new(RewriteConvTransposeToDepthToSpace),
@@ -81,12 +81,19 @@ fn pipeline() -> Vec<Box<dyn Pass>> {
         Box::new(FoldConvConstBinary::mul()),
         Box::new(FoldConvConstBinary::add()),
         Box::new(FoldConstants),
-        Box::new(FuseActivation::conv_relu()),
-        Box::new(FuseActivation::conv_hardswish()),
-        Box::new(FuseActivation::bn_relu()),
-        Box::new(EliminateDeadCode),
-        Box::new(ReorderForFusion),
-    ]
+    ];
+    // Conv+Relu fusion is a win where a fused Conv_Relu kernel exists (aarch64,
+    // x86) but a measured regression on 32-bit ARM, which has none: the fused
+    // node runs measurably slower than a plain Conv plus a separate vectorized
+    // Relu. Skip it there; the HardSwish/BN fusions and the topological reorder
+    // still help on armv7.
+    #[cfg(not(target_arch = "arm"))]
+    passes.push(Box::new(FuseActivation::conv_relu()));
+    passes.push(Box::new(FuseActivation::conv_hardswish()));
+    passes.push(Box::new(FuseActivation::bn_relu()));
+    passes.push(Box::new(EliminateDeadCode));
+    passes.push(Box::new(ReorderForFusion));
+    passes
 }
 
 /// Optimizes an ONNX model graph in-place for inference.
