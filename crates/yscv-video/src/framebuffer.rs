@@ -14,7 +14,10 @@ mod linux_impl {
     // -----------------------------------------------------------------------
 
     unsafe extern "C" {
-        fn open(path: *const c_char, flags: i32) -> i32;
+        // Variadic to match POSIX `open(path, flags, ...)` — the optional `mode`
+        // arg. A non-variadic redeclaration shadows the libc symbol the std
+        // runtime uses and newer rustc rejects it (suspicious_runtime_symbol_*).
+        fn open(path: *const c_char, flags: i32, ...) -> i32;
         fn close(fd: i32) -> i32;
         // `unsigned long`, so it follows the pointer width — 32-bit on armhf.
         // Declaring it `u64` here disagreed with the same symbol in `v4l2.rs`
