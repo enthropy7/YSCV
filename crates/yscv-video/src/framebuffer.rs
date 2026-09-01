@@ -23,7 +23,16 @@ mod linux_impl {
         // Declaring it `u64` here disagreed with the same symbol in `v4l2.rs`
         // and passed a wrong-width argument on a 32-bit board.
         fn ioctl(fd: i32, request: usize, ...) -> i32;
-        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+        // `off_t` is `long`, same story as `request` above — pointer-width, so
+        // `i64` mis-passes it on 32-bit ARM. Use `isize`.
+        fn mmap(
+            addr: *mut u8,
+            len: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            offset: isize,
+        ) -> *mut u8;
         fn munmap(addr: *mut u8, len: usize) -> i32;
     }
 

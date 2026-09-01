@@ -14,7 +14,10 @@ use std::os::unix::io::AsRawFd;
 
 unsafe extern "C" {
     fn ioctl(fd: i32, request: IoctlReq, ...) -> i32;
-    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+    // `off_t` is `long` — pointer-width, so 32-bit on armhf. Declaring it `i64`
+    // mis-passes the argument on 32-bit ARM: mmap then sees a misaligned offset
+    // and fails in glibc before the syscall, so V4L2 buffer mmap never happens.
+    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: isize) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
     /// POSIX `close(2)` — used by `V4l2DmaBufGuard::Drop`.
     fn close(fd: i32) -> i32;
@@ -405,7 +408,7 @@ impl V4l2Camera {
                     PROT_READ | PROT_WRITE,
                     MAP_SHARED,
                     fd,
-                    buf.m_offset as i64,
+                    buf.m_offset as isize,
                 )
             };
             if ptr == MAP_FAILED {
