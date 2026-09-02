@@ -55,6 +55,8 @@ const VIDIOC_QBUF: IoctlReq = ioc(DIR_RW, 15, size_of::<V4l2Buffer>());
 const VIDIOC_DQBUF: IoctlReq = ioc(DIR_RW, 17, size_of::<V4l2Buffer>());
 const VIDIOC_STREAMON: IoctlReq = ioc(DIR_W, 18, size_of::<i32>());
 const VIDIOC_STREAMOFF: IoctlReq = ioc(DIR_W, 19, size_of::<i32>());
+const VIDIOC_S_PARM: IoctlReq = ioc(DIR_RW, 22, size_of::<V4l2StreamParm>());
+const VIDIOC_S_CTRL: IoctlReq = ioc(DIR_RW, 28, size_of::<V4l2Control>());
 
 // The LP64 numbers these used to be written as, so a layout change cannot drift
 // them silently.
@@ -68,6 +70,7 @@ const _: () = {
     assert!(VIDIOC_DQBUF == 0xC058_5611);
     assert!(VIDIOC_STREAMON == 0x4004_5612);
     assert!(VIDIOC_STREAMOFF == 0x4004_5613);
+    assert!(VIDIOC_S_PARM == 0xC0CC_5616);
 };
 /// `VIDIOC_EXPBUF` — export a V4L2 buffer as a DMA-BUF file descriptor.
 ///
@@ -259,6 +262,43 @@ pub struct V4l2Camera {
 // &mut self on capture_frame).
 unsafe impl Send for V4l2Camera {}
 
+/// `struct v4l2_fract` — a rational; a frame interval is `numerator/denominator`
+/// seconds (so 30 fps is 1/30).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct V4l2Fract {
+    numerator: u32,
+    denominator: u32,
+}
+
+/// `struct v4l2_captureparm` — the capture half of `v4l2_streamparm`'s union.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct V4l2CaptureParm {
+    capability: u32,
+    capturemode: u32,
+    timeperframe: V4l2Fract,
+    extendedmode: u32,
+    readbuffers: u32,
+    reserved: [u32; 4],
+}
+
+/// `struct v4l2_streamparm` — 204 bytes: `type` plus a 200-byte union whose head
+/// is the capture parm; the remainder is padding to keep the ioctl size exact.
+#[repr(C)]
+struct V4l2StreamParm {
+    type_: u32,
+    capture: V4l2CaptureParm,
+    _pad: [u8; 160],
+}
+
+/// `struct v4l2_control` — one control id/value pair (VIDIOC_S_CTRL).
+#[repr(C)]
+struct V4l2Control {
+    id: u32,
+    value: i32,
+}
+
 /// A dequeued V4L2 frame.
 ///
 /// The camera buffer remains owned by this guard until it is dropped. `Drop`
@@ -298,6 +338,53 @@ impl Drop for V4l2Frame<'_> {
 }
 
 impl V4l2Camera {
+    /// Request a capture frame rate of `fps` via `VIDIOC_S_PARM`. Best-effort:
+    /// the driver clamps to a supported interval, and a device that ignores the
+    /// call keeps its default. Call after `open`, before `start_streaming` — a
+    /// UVC camera otherwise streams YUYV at its own default (often ~15 fps),
+    /// which halves the pipeline rate.
+    pub fn set_frame_rate(&mut self, fps: u32) -> Result<(), VideoError> {
+        if fps == 0 {
+            return Ok(());
+        }
+        let mut parm: V4l2StreamParm = unsafe { std::mem::zeroed() };
+        parm.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        parm.capture.timeperframe = V4l2Fract {
+            numerator: 1,
+            denominator: fps,
+        };
+        let ret = unsafe {
+            ioctl(
+                self.fd,
+                VIDIOC_S_PARM,
+                &mut parm as *mut V4l2StreamParm as *mut u8,
+            )
+        };
+        if ret < 0 {
+            return Err(VideoError::Source(
+                "V4L2: S_PARM (set frame rate) failed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Set a single V4L2 control by id (`VIDIOC_S_CTRL`) — e.g. the auto-exposure
+    /// mode or the absolute exposure time. Best-effort per control.
+    pub fn set_control(&mut self, id: u32, value: i32) -> Result<(), VideoError> {
+        let mut ctrl = V4l2Control { id, value };
+        let ret = unsafe {
+            ioctl(
+                self.fd,
+                VIDIOC_S_CTRL,
+                &mut ctrl as *mut V4l2Control as *mut u8,
+            )
+        };
+        if ret < 0 {
+            return Err(VideoError::Source(format!("V4L2: S_CTRL {id:#x} failed")));
+        }
+        Ok(())
+    }
+
     /// Open a V4L2 camera device (e.g. `"/dev/video0"`), set format, and
     /// prepare mmap'd buffers for streaming.
     pub fn open(
