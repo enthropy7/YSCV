@@ -94,11 +94,17 @@ mod linux_impl {
     }
 
     /// `struct fb_fix_screeninfo` — only the fields we need.
+    ///
+    /// `smem_start` and `mmio_start` are `unsigned long` in the kernel, i.e.
+    /// **pointer-width** — 8 bytes on LP64 but 4 on a 32-bit board. Declaring
+    /// them `u64` shifts every field after them, so `smem_len` is read out of the
+    /// wrong bytes and the mmap that follows is handed a garbage length and
+    /// fails. Same trap as `ioctl`'s request and `mmap`'s offset above.
     #[repr(C)]
     #[derive(Default)]
     struct FbFixScreenInfo {
         id: [u8; 16],
-        smem_start: u64,
+        smem_start: usize,
         smem_len: u32,
         fb_type: u32,
         type_aux: u32,
@@ -108,7 +114,7 @@ mod linux_impl {
         ywrapstep: u16,
         _pad: u16,
         line_length: u32,
-        mmio_start: u64,
+        mmio_start: usize,
         mmio_len: u32,
         accel: u32,
         capabilities: u16,
