@@ -215,6 +215,27 @@ mod linux_impl {
             })
         }
 
+        /// Bytes per row. Not `width * bpp/8` in general — the driver may pad.
+        pub fn stride(&self) -> u32 {
+            self.stride
+        }
+
+        /// The mapped framebuffer as raw bytes, for callers that compose the
+        /// final image themselves rather than handing over an RGB frame.
+        ///
+        /// Writing a scaled frame through `write_rgb8` costs two passes over the
+        /// image — one to build the RGB source, one to convert it into the
+        /// framebuffer's own format — and on a small board that second pass is
+        /// real memory bandwidth. A caller that already knows the geometry can do
+        /// both at once by writing here directly. The layout is [`Self::stride`]
+        /// bytes per row at [`Self::bpp`] bits per pixel; `&mut self` is what
+        /// makes handing out the mapping safe.
+        pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+            // SAFETY: the mapping is valid for the lifetime of `self`, and `&mut
+            // self` guarantees no other reference to it exists.
+            unsafe { std::slice::from_raw_parts_mut(self.mmap_ptr, self.mmap_len) }
+        }
+
         /// Framebuffer display width in pixels.
         pub fn width(&self) -> u32 {
             self.width
