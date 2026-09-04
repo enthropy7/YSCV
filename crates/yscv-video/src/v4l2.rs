@@ -56,6 +56,7 @@ const VIDIOC_DQBUF: IoctlReq = ioc(DIR_RW, 17, size_of::<V4l2Buffer>());
 const VIDIOC_STREAMON: IoctlReq = ioc(DIR_W, 18, size_of::<i32>());
 const VIDIOC_STREAMOFF: IoctlReq = ioc(DIR_W, 19, size_of::<i32>());
 const VIDIOC_S_PARM: IoctlReq = ioc(DIR_RW, 22, size_of::<V4l2StreamParm>());
+const VIDIOC_G_CTRL: IoctlReq = ioc(DIR_RW, 27, size_of::<V4l2Control>());
 const VIDIOC_S_CTRL: IoctlReq = ioc(DIR_RW, 28, size_of::<V4l2Control>());
 
 // The LP64 numbers these used to be written as, so a layout change cannot drift
@@ -383,6 +384,27 @@ impl V4l2Camera {
             return Err(VideoError::Source(format!("V4L2: S_CTRL {id:#x} failed")));
         }
         Ok(())
+    }
+
+    /// Read a single V4L2 control by id (`VIDIOC_G_CTRL`).
+    ///
+    /// The counterpart to [`Self::set_control`], and the half that makes it
+    /// possible to freeze an automatic control at whatever the camera has
+    /// currently settled on: read the value the automatic mode produced, then
+    /// write it back as a manual one.
+    pub fn get_control(&mut self, id: u32) -> Result<i32, VideoError> {
+        let mut ctrl = V4l2Control { id, value: 0 };
+        let ret = unsafe {
+            ioctl(
+                self.fd,
+                VIDIOC_G_CTRL,
+                &mut ctrl as *mut V4l2Control as *mut u8,
+            )
+        };
+        if ret < 0 {
+            return Err(VideoError::Source(format!("V4L2: G_CTRL {id:#x} failed")));
+        }
+        Ok(ctrl.value)
     }
 
     /// Open a V4L2 camera device (e.g. `"/dev/video0"`), set format, and
