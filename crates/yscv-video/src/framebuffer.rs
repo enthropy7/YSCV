@@ -45,6 +45,8 @@ mod linux_impl {
     // ioctl numbers for fbdev (from <linux/fb.h>)
     const FBIOGET_VSCREENINFO: usize = 0x4600;
     const FBIOGET_FSCREENINFO: usize = 0x4602;
+    const FBIOBLANK: usize = 0x4611;
+    const FB_BLANK_UNBLANK: usize = 0;
 
     // -----------------------------------------------------------------------
     // fbdev kernel ABI structs
@@ -216,6 +218,22 @@ mod linux_impl {
         }
 
         /// Bytes per row. Not `width * bpp/8` in general — the driver may pad.
+        /// Power the panel back on.
+        ///
+        /// A framebuffer can be left blanked (`FB_BLANK_POWERDOWN`) with the CRTC
+        /// still reporting itself enabled — unbinding the framebuffer console does
+        /// exactly that. Writes into the mapping then land in the scanout buffer and
+        /// go nowhere visible, which looks like "the program draws but the screen is
+        /// dead". Callers that drive the display directly should unblank once after
+        /// opening; it is idempotent and harmless when already on.
+        pub fn unblank(&self) -> Result<(), VideoError> {
+            let ret = unsafe { ioctl(self.fd, FBIOBLANK, FB_BLANK_UNBLANK) };
+            if ret < 0 {
+                return Err(VideoError::Codec("FBIOBLANK (unblank) failed".into()));
+            }
+            Ok(())
+        }
+
         pub fn stride(&self) -> u32 {
             self.stride
         }
