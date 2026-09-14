@@ -17,7 +17,7 @@ use crate::h264_motion::MotionVector;
 /// - 2: either block contains coded residual coefficients
 /// - 1: motion vectors differ by >= 1 integer sample (4 quarter-pel units)
 /// - 0: no filtering needed
-pub fn compute_boundary_strength(
+pub const fn compute_boundary_strength(
     is_intra_p: bool,
     is_intra_q: bool,
     mv_p: MotionVector,

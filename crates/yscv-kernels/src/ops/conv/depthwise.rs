@@ -2131,7 +2131,7 @@ pub(super) enum DwRowKind {
 }
 
 impl DwRowKind {
-    pub(super) fn path(self) -> super::ConvKernelPath {
+    pub(super) const fn path(self) -> super::ConvKernelPath {
         match self {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             DwRowKind::Avx512 => super::ConvKernelPath::DwAvx512,

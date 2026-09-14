@@ -46,7 +46,7 @@ pub(crate) enum ConvKernel {
 
 impl ConvKernel {
     /// Stable short label for profiler output.
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             #[cfg(target_arch = "aarch64")]
             ConvKernel::IndirectNhwc3x3 => "indirect-nhwc-3x3",

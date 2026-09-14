@@ -170,7 +170,7 @@ pub(crate) const PLANE_PAD: usize = 32;
 
 /// Row pitch, index of sample (0, 0) and total length of a padded plane.
 #[inline]
-pub(crate) fn padded_plane_geometry(w: usize, h: usize) -> (usize, usize, usize) {
+pub(crate) const fn padded_plane_geometry(w: usize, h: usize) -> (usize, usize, usize) {
     let stride = w + 2 * PLANE_PAD;
     (
         stride,
@@ -277,7 +277,7 @@ enum LumaOp {
 
 /// The one or two operands whose rounded average forms the prediction for
 /// fractional position (`xf`, `yf`) per clause 8.4.2.2.1.
-fn luma_ops(xf: i32, yf: i32) -> (LumaOp, Option<LumaOp>) {
+const fn luma_ops(xf: i32, yf: i32) -> (LumaOp, Option<LumaOp>) {
     use LumaFilter::{C, H, V};
     use LumaOp::{Copy, Filter};
     let g = Copy { dx: 0, dy: 0 };
@@ -1188,7 +1188,7 @@ pub fn mc_luma_block(
 /// Bilinear chroma tap weights for an eighth-pel fraction: A=(8-xf)(8-yf),
 /// B=xf(8-yf), C=(8-xf)yf, D=xf*yf (all ≤ 64).
 #[inline]
-fn chroma_weights(xf: i32, yf: i32) -> [u8; 4] {
+const fn chroma_weights(xf: i32, yf: i32) -> [u8; 4] {
     [
         ((8 - xf) * (8 - yf)) as u8,
         (xf * (8 - yf)) as u8,
@@ -1597,7 +1597,7 @@ pub struct ReferenceFrameBuffer {
 
 impl ReferenceFrameBuffer {
     /// Creates a new buffer that keeps at most `max_refs` reference frames.
-    pub fn new(max_refs: usize) -> Self {
+    pub const fn new(max_refs: usize) -> Self {
         Self {
             frames: Vec::new(),
             max_refs,
@@ -1624,12 +1624,12 @@ impl ReferenceFrameBuffer {
     }
 
     /// Returns the number of reference frames currently stored.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.frames.len()
     }
 
     /// Returns `true` if the buffer contains no reference frames.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
 }

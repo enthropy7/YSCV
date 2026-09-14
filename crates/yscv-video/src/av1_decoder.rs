@@ -117,7 +117,7 @@ impl Av1Decoder {
     }
 
     /// Access the current sequence header, if set.
-    pub fn seq_header(&self) -> Option<&Av1SequenceHeader> {
+    pub const fn seq_header(&self) -> Option<&Av1SequenceHeader> {
         self.seq_header.as_ref()
     }
 

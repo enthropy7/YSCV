@@ -1297,7 +1297,7 @@ pub struct AsyncFrame {
 
 impl AsyncFrame {
     /// Frame ID passed at submission time.
-    pub fn id(&self) -> u64 {
+    pub const fn id(&self) -> u64 {
         self.id
     }
 
@@ -1308,7 +1308,7 @@ impl AsyncFrame {
 
     /// Configured deadline in milliseconds. `-1` means caller will block
     /// indefinitely.
-    pub fn deadline_ms(&self) -> i32 {
+    pub const fn deadline_ms(&self) -> i32 {
         self.deadline_ms
     }
 
@@ -1624,7 +1624,7 @@ impl ContextPool {
     }
 
     /// Total number of contexts (= number of NPU cores in the pool).
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         self.contexts.len()
     }
 
@@ -1868,7 +1868,7 @@ impl RknnMatmul {
     }
 
     /// Tensor attribute for A input (shape, size, type).
-    pub fn a_attr(&self) -> &RknnMatmulTensorAttr {
+    pub const fn a_attr(&self) -> &RknnMatmulTensorAttr {
         &self.io_attr.a
     }
 
@@ -1923,12 +1923,12 @@ impl RknnMatmul {
     }
 
     /// Tensor attribute for B input.
-    pub fn b_attr(&self) -> &RknnMatmulTensorAttr {
+    pub const fn b_attr(&self) -> &RknnMatmulTensorAttr {
         &self.io_attr.b
     }
 
     /// Tensor attribute for C output.
-    pub fn c_attr(&self) -> &RknnMatmulTensorAttr {
+    pub const fn c_attr(&self) -> &RknnMatmulTensorAttr {
         &self.io_attr.c
     }
 

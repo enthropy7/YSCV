@@ -163,7 +163,7 @@ pub fn generate_slice_group_map(pps: &Pps, sps: &Sps) -> Vec<u8> {
 /// - 1 = YUV 4:2:0 (default, half width and half height)
 /// - 2 = YUV 4:2:2 (half width, full height)
 /// - 3 = YUV 4:4:4 (full width, full height)
-pub fn chroma_dimensions(width: usize, height: usize, chroma_format: u32) -> (usize, usize) {
+pub const fn chroma_dimensions(width: usize, height: usize, chroma_format: u32) -> (usize, usize) {
     match chroma_format {
         0 => (0, 0),                  // monochrome
         1 => (width / 2, height / 2), // 4:2:0

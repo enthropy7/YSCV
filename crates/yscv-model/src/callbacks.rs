@@ -69,22 +69,22 @@ impl EarlyStopping {
     }
 
     /// Whether stop was triggered.
-    pub fn stopped(&self) -> bool {
+    pub const fn stopped(&self) -> bool {
         self.stopped
     }
 
     /// Best value seen so far.
-    pub fn best_value(&self) -> f32 {
+    pub const fn best_value(&self) -> f32 {
         self.best_value
     }
 
     /// Number of epochs without improvement.
-    pub fn counter(&self) -> usize {
+    pub const fn counter(&self) -> usize {
         self.counter
     }
 
     /// Reset state for a new training run.
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.best_value = match self.mode {
             MonitorMode::Min => f32::INFINITY,
             MonitorMode::Max => f32::NEG_INFINITY,
@@ -141,7 +141,7 @@ impl BestModelCheckpoint {
     }
 
     /// Best value seen.
-    pub fn best_value(&self) -> f32 {
+    pub const fn best_value(&self) -> f32 {
         self.best_value
     }
 }

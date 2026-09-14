@@ -149,7 +149,7 @@ impl ModelArchitecture {
     }
 
     /// Returns a filesystem-safe name for this architecture (used for weight files).
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
             Self::ResNet18 => "resnet18",
             Self::ResNet34 => "resnet34",
@@ -172,7 +172,7 @@ impl ModelArchitecture {
     }
 
     /// All known architectures.
-    pub fn all() -> &'static [ModelArchitecture] {
+    pub const fn all() -> &'static [ModelArchitecture] {
         &[
             Self::ResNet18,
             Self::ResNet34,

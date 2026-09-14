@@ -68,7 +68,7 @@ pub struct DeepSortTracker {
 
 impl DeepSortTracker {
     /// Create a new DeepSORT tracker with the given configuration.
-    pub fn new(config: DeepSortConfig) -> Self {
+    pub const fn new(config: DeepSortConfig) -> Self {
         Self {
             config,
             tracks: Vec::new(),

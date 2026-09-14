@@ -94,7 +94,7 @@ impl MkvDemuxer {
     }
 
     /// Detected video codec.
-    pub fn codec(&self) -> MkvCodec {
+    pub const fn codec(&self) -> MkvCodec {
         self.codec
     }
 
@@ -104,7 +104,7 @@ impl MkvDemuxer {
     }
 
     /// Total number of video frames found.
-    pub fn frame_count(&self) -> usize {
+    pub const fn frame_count(&self) -> usize {
         self.frame_index.len()
     }
 
@@ -129,12 +129,12 @@ impl MkvDemuxer {
     }
 
     /// Audio track info, if an audio track was found.
-    pub fn audio_info(&self) -> Option<&super::audio::AudioTrackInfo> {
+    pub const fn audio_info(&self) -> Option<&super::audio::AudioTrackInfo> {
         self.audio_info.as_ref()
     }
 
     /// Reset to beginning.
-    pub fn seek_start(&mut self) {
+    pub const fn seek_start(&mut self) {
         self.current_frame = 0;
     }
 

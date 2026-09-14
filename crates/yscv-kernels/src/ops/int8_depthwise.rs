@@ -83,32 +83,32 @@ impl From<Depthwise3x3I8Params> for DepthwiseI8Params {
 
 impl DepthwiseI8Params {
     #[inline]
-    fn input_len(self) -> usize {
+    const fn input_len(self) -> usize {
         self.batch * self.in_h * self.in_w * self.channels
     }
 
     #[inline]
-    fn output_len(self) -> usize {
+    const fn output_len(self) -> usize {
         self.batch * self.out_h * self.out_w * self.channels
     }
 
     #[inline]
-    fn weight_len(self) -> usize {
+    const fn weight_len(self) -> usize {
         self.kernel * self.kernel * self.channels
     }
 
     #[inline]
-    fn input_offset(self, n: usize, y: usize, x: usize, c: usize) -> usize {
+    const fn input_offset(self, n: usize, y: usize, x: usize, c: usize) -> usize {
         ((n * self.in_h + y) * self.in_w + x) * self.channels + c
     }
 
     #[inline]
-    fn weight_offset(self, ky: usize, kx: usize, c: usize) -> usize {
+    const fn weight_offset(self, ky: usize, kx: usize, c: usize) -> usize {
         (ky * self.kernel + kx) * self.channels + c
     }
 
     #[inline]
-    fn valid_input_y(self, oh: usize, ky: usize) -> Option<usize> {
+    const fn valid_input_y(self, oh: usize, ky: usize) -> Option<usize> {
         let y = oh * self.stride_h + ky;
         if y >= self.pad_top && y < self.pad_top + self.in_h {
             Some(y - self.pad_top)
@@ -118,7 +118,7 @@ impl DepthwiseI8Params {
     }
 
     #[inline]
-    fn valid_input_x(self, ow: usize, kx: usize) -> Option<usize> {
+    const fn valid_input_x(self, ow: usize, kx: usize) -> Option<usize> {
         let x = ow * self.stride_w + kx;
         if x >= self.pad_left && x < self.pad_left + self.in_w {
             Some(x - self.pad_left)

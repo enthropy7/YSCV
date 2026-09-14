@@ -168,7 +168,7 @@ impl ModelLayer {
         }
     }
 
-    pub fn supports_graph_forward(&self) -> bool {
+    pub const fn supports_graph_forward(&self) -> bool {
         // Bilinear upsample still requires inference-only mode.
         if let Self::Upsample(u) = self {
             !u.is_bilinear()
@@ -177,7 +177,7 @@ impl ModelLayer {
         }
     }
 
-    pub fn supports_inference_forward(&self) -> bool {
+    pub const fn supports_inference_forward(&self) -> bool {
         matches!(
             self,
             Self::Conv2d(_)

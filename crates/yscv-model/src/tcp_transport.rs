@@ -266,12 +266,12 @@ impl TcpTransport {
     }
 
     /// Returns the rank of this transport instance.
-    pub fn rank(&self) -> usize {
+    pub const fn rank(&self) -> usize {
         self.rank
     }
 
     /// Returns the world size (total number of nodes).
-    pub fn world_size(&self) -> usize {
+    pub const fn world_size(&self) -> usize {
         // For coordinator, world_size is set during construction.
         // For workers, world_size = peers.len() + 1 (self).
         if self.world_size > 0 {
@@ -289,7 +289,7 @@ pub struct TcpAllReduceAggregator {
 
 impl TcpAllReduceAggregator {
     /// Create a new aggregator wrapping the given TCP transport.
-    pub fn new(transport: TcpTransport) -> Self {
+    pub const fn new(transport: TcpTransport) -> Self {
         Self { transport }
     }
 

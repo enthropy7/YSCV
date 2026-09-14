@@ -410,7 +410,7 @@ impl GpuBackend {
     }
 
     /// Returns and resets the total number of GPU compute dispatches since last call.
-    pub fn take_dispatch_count(&self) -> u32 {
+    pub const fn take_dispatch_count(&self) -> u32 {
         self.dispatch_count.replace(0)
     }
 
@@ -724,12 +724,12 @@ impl GpuBackend {
     }
 
     /// Returns whether f16 I/O pipelines are available.
-    pub fn has_f16_io(&self) -> bool {
+    pub const fn has_f16_io(&self) -> bool {
         self.pipelines.conv_gemm_f16_io.is_some()
     }
 
     /// Returns the number of GPU buffer pool cache hits (diagnostic).
-    pub fn pool_cache_hits(&self) -> u64 {
+    pub const fn pool_cache_hits(&self) -> u64 {
         self.pool.cache_hits()
     }
 

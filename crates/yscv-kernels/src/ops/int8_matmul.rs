@@ -54,7 +54,7 @@ enum Int8MatmulPath {
 
 impl Int8MatmulPath {
     #[inline]
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
             #[cfg(target_arch = "x86_64")]
             Int8MatmulPath::Avx512Vnni => "avx512-vnni",
@@ -144,12 +144,12 @@ struct PackedI8BVnni4x16 {
 
 impl PackedI8B {
     #[inline]
-    pub fn k(&self) -> usize {
+    pub const fn k(&self) -> usize {
         self.k
     }
 
     #[inline]
-    pub fn n(&self) -> usize {
+    pub const fn n(&self) -> usize {
         self.n
     }
 

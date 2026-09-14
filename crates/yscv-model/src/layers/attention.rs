@@ -37,13 +37,13 @@ impl EmbeddingLayer {
         })
     }
 
-    pub fn num_embeddings(&self) -> usize {
+    pub const fn num_embeddings(&self) -> usize {
         self.num_embeddings
     }
-    pub fn embedding_dim(&self) -> usize {
+    pub const fn embedding_dim(&self) -> usize {
         self.embedding_dim
     }
-    pub fn weight_node(&self) -> NodeId {
+    pub const fn weight_node(&self) -> NodeId {
         self.weight
     }
 
@@ -114,7 +114,7 @@ impl Clone for MultiHeadAttentionLayer {
 }
 
 impl MultiHeadAttentionLayer {
-    pub fn w_q_node(&self) -> Option<NodeId> {
+    pub const fn w_q_node(&self) -> Option<NodeId> {
         self.w_q_node
     }
 
@@ -238,7 +238,7 @@ impl Clone for TransformerEncoderLayer {
 }
 
 impl TransformerEncoderLayer {
-    pub fn ln1_gamma_node(&self) -> Option<NodeId> {
+    pub const fn ln1_gamma_node(&self) -> Option<NodeId> {
         self.ln1_gamma_node
     }
 
@@ -372,7 +372,7 @@ impl Clone for FeedForwardLayer {
 }
 
 impl FeedForwardLayer {
-    pub fn w1_node(&self) -> Option<NodeId> {
+    pub const fn w1_node(&self) -> Option<NodeId> {
         self.w1_node
     }
 

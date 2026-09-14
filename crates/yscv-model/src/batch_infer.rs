@@ -92,7 +92,7 @@ pub struct BatchCollector {
 }
 
 impl BatchCollector {
-    pub fn new(sample_shape: Vec<usize>, max_batch: usize) -> Self {
+    pub const fn new(sample_shape: Vec<usize>, max_batch: usize) -> Self {
         Self {
             samples: Vec::new(),
             sample_shape,
@@ -114,7 +114,7 @@ impl BatchCollector {
     }
 
     /// Returns true if the collector has enough samples for a full batch.
-    pub fn is_ready(&self) -> bool {
+    pub const fn is_ready(&self) -> bool {
         self.samples.len() >= self.max_batch
     }
 
@@ -132,7 +132,7 @@ impl BatchCollector {
     }
 
     /// Number of pending samples.
-    pub fn pending(&self) -> usize {
+    pub const fn pending(&self) -> usize {
         self.samples.len()
     }
 }

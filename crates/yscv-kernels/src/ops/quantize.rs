@@ -200,14 +200,14 @@ pub fn quantize_linear_f32_to_i8_dispatch(
 
 /// Extract low nibble from byte and sign-extend to i8.
 #[inline(always)]
-fn nibble_lo(byte: u8) -> i8 {
+const fn nibble_lo(byte: u8) -> i8 {
     let v = (byte & 0x0F) as i8;
     if v >= 8 { v - 16 } else { v }
 }
 
 /// Extract high nibble from byte and sign-extend to i8.
 #[inline(always)]
-fn nibble_hi(byte: u8) -> i8 {
+const fn nibble_hi(byte: u8) -> i8 {
     let v = ((byte >> 4) & 0x0F) as i8;
     if v >= 8 { v - 16 } else { v }
 }

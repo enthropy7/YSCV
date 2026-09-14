@@ -15,7 +15,7 @@ impl OnnxDtype {
     ///
     /// See <https://onnx.ai/onnx/repo-docs/IR.html#standard-data-types> for
     /// the canonical mapping.
-    pub fn from_onnx_type(t: i32) -> Option<Self> {
+    pub const fn from_onnx_type(t: i32) -> Option<Self> {
         match t {
             1 => Some(Self::Float32),
             10 => Some(Self::Float16),
@@ -29,7 +29,7 @@ impl OnnxDtype {
     }
 
     /// Number of bytes occupied by a single element of this dtype.
-    pub fn byte_size(&self) -> usize {
+    pub const fn byte_size(&self) -> usize {
         match self {
             Self::Float32 | Self::Int32 => 4,
             Self::Float16 => 2,
@@ -84,7 +84,7 @@ impl OnnxTensorData {
     }
 
     /// Number of elements in this tensor data.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
             Self::Float32(v) => v.len(),
             Self::Int8(v) => v.len(),
@@ -95,7 +95,7 @@ impl OnnxTensorData {
     }
 
     /// Returns `true` if the tensor data is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }

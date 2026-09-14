@@ -14,12 +14,12 @@ impl GpuBuffer {
     }
 
     /// Returns the number of f32 elements.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.size
     }
 
     /// Returns true if this buffer contains no elements.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.size == 0
     }
 
@@ -30,13 +30,13 @@ impl GpuBuffer {
     }
 
     /// Get a reference to the underlying wgpu::Buffer.
-    pub fn raw_buffer(&self) -> &wgpu::Buffer {
+    pub const fn raw_buffer(&self) -> &wgpu::Buffer {
         &self.buffer
     }
 
     /// Construct a GpuBuffer from raw parts (for compiled plan replay).
     /// The caller is responsible for ensuring the buffer matches the declared size/shape.
-    pub fn from_raw_parts(buffer: wgpu::Buffer, size: usize, shape: Vec<usize>) -> Self {
+    pub const fn from_raw_parts(buffer: wgpu::Buffer, size: usize, shape: Vec<usize>) -> Self {
         Self {
             buffer,
             size,
@@ -125,7 +125,7 @@ impl BufferPool {
     }
 
     /// Total cache hits (diagnostic).
-    pub(crate) fn cache_hits(&self) -> u64 {
+    pub(crate) const fn cache_hits(&self) -> u64 {
         self.hits.get()
     }
 }

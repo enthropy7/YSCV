@@ -192,13 +192,13 @@ impl MultiGpuBackend {
     }
 
     /// Sets the scheduling strategy.
-    pub fn with_strategy(mut self, strategy: SchedulingStrategy) -> Self {
+    pub const fn with_strategy(mut self, strategy: SchedulingStrategy) -> Self {
         self.strategy = strategy;
         self
     }
 
     /// Number of managed devices.
-    pub fn device_count(&self) -> usize {
+    pub const fn device_count(&self) -> usize {
         self.devices.len()
     }
 
@@ -208,7 +208,7 @@ impl MultiGpuBackend {
     }
 
     /// Current scheduling strategy.
-    pub fn strategy(&self) -> SchedulingStrategy {
+    pub const fn strategy(&self) -> SchedulingStrategy {
         self.strategy
     }
 

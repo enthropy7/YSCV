@@ -43,7 +43,7 @@ pub struct RuntimeConfigReport {
 }
 
 impl RuntimeConfigReport {
-    pub fn has_overrides(&self) -> bool {
+    pub const fn has_overrides(&self) -> bool {
         !self.yscv_env.is_empty()
     }
 }

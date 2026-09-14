@@ -19,7 +19,7 @@ pub(crate) enum DimsVec {
 
 impl DimsVec {
     #[inline]
-    fn new() -> Self {
+    const fn new() -> Self {
         DimsVec::Inline {
             buf: [0; INLINE_CAP],
             len: 0,
@@ -155,7 +155,7 @@ impl PartialEq for Storage {
 }
 
 impl Storage {
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         match self {
             Storage::F32(v) => v.len(),
             Storage::F16(v) => v.len(),
@@ -163,7 +163,7 @@ impl Storage {
         }
     }
 
-    fn dtype(&self) -> DType {
+    const fn dtype(&self) -> DType {
         match self {
             Storage::F32(_) => DType::F32,
             Storage::F16(_) => DType::F16,
@@ -439,7 +439,7 @@ impl Tensor {
     }
 
     /// Returns the logical device this tensor is associated with.
-    pub fn device(&self) -> Device {
+    pub const fn device(&self) -> Device {
         self.device
     }
 
@@ -458,7 +458,7 @@ impl Tensor {
     }
 
     /// Returns the memory-layout tag. Defaults to `Layout::NCHW`.
-    pub fn layout(&self) -> Layout {
+    pub const fn layout(&self) -> Layout {
         self.layout
     }
 
@@ -466,7 +466,7 @@ impl Tensor {
     /// **metadata** change only — the caller is responsible for having
     /// already laid out the data correctly for the new layout (use
     /// `yscv_kernels::ops::layout` kernels for actual reordering).
-    pub fn with_layout(mut self, layout: Layout) -> Self {
+    pub const fn with_layout(mut self, layout: Layout) -> Self {
         self.layout = layout;
         self
     }
@@ -708,7 +708,7 @@ fn panic_not_f32() -> ! {
 
 // ── FP16/BF16 bit conversion primitives ────────────────────────────
 
-fn f32_to_fp16_bits(val: f32) -> u16 {
+const fn f32_to_fp16_bits(val: f32) -> u16 {
     let bits = val.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
     let exponent = ((bits >> 23) & 0xFF) as i32;
@@ -734,7 +734,7 @@ fn f32_to_fp16_bits(val: f32) -> u16 {
     sign | fp16_exp | fp16_man
 }
 
-fn fp16_bits_to_f32(half: u16) -> f32 {
+const fn fp16_bits_to_f32(half: u16) -> f32 {
     let sign = ((half & 0x8000) as u32) << 16;
     let exponent = (half >> 10) & 0x1F;
     let mantissa = (half & 0x03FF) as u32;
@@ -761,14 +761,14 @@ fn fp16_bits_to_f32(half: u16) -> f32 {
     f32::from_bits(sign | f32_exp | f32_man)
 }
 
-fn f32_to_bf16_bits(val: f32) -> u16 {
+const fn f32_to_bf16_bits(val: f32) -> u16 {
     let bits = val.to_bits();
     // Round to nearest even
     let rounding_bias = 0x7FFF + ((bits >> 16) & 1);
     ((bits.wrapping_add(rounding_bias)) >> 16) as u16
 }
 
-fn bf16_bits_to_f32(bits: u16) -> f32 {
+const fn bf16_bits_to_f32(bits: u16) -> f32 {
     f32::from_bits((bits as u32) << 16)
 }
 

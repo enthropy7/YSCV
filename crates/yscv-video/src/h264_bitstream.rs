@@ -14,7 +14,7 @@ pub struct BitstreamReader<'a> {
 }
 
 impl<'a> BitstreamReader<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
+    pub const fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             byte_offset: 0,
@@ -23,7 +23,7 @@ impl<'a> BitstreamReader<'a> {
     }
 
     /// Returns the number of bits remaining.
-    pub fn bits_remaining(&self) -> usize {
+    pub const fn bits_remaining(&self) -> usize {
         if self.byte_offset >= self.data.len() {
             return 0;
         }
@@ -31,7 +31,7 @@ impl<'a> BitstreamReader<'a> {
     }
 
     /// Returns the total number of bits consumed so far.
-    pub fn bits_consumed(&self) -> usize {
+    pub const fn bits_consumed(&self) -> usize {
         self.byte_offset * 8 + self.bit_offset as usize
     }
 

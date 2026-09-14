@@ -138,40 +138,40 @@ impl Conv2dLayer {
         Ok(())
     }
 
-    pub fn in_channels(&self) -> usize {
+    pub const fn in_channels(&self) -> usize {
         self.in_channels
     }
-    pub fn out_channels(&self) -> usize {
+    pub const fn out_channels(&self) -> usize {
         self.out_channels
     }
-    pub fn kernel_h(&self) -> usize {
+    pub const fn kernel_h(&self) -> usize {
         self.kernel_h
     }
-    pub fn kernel_w(&self) -> usize {
+    pub const fn kernel_w(&self) -> usize {
         self.kernel_w
     }
-    pub fn stride_h(&self) -> usize {
+    pub const fn stride_h(&self) -> usize {
         self.stride_h
     }
-    pub fn stride_w(&self) -> usize {
+    pub const fn stride_w(&self) -> usize {
         self.stride_w
     }
-    pub fn weight(&self) -> &Tensor {
+    pub const fn weight(&self) -> &Tensor {
         &self.weight
     }
-    pub fn bias(&self) -> Option<&Tensor> {
+    pub const fn bias(&self) -> Option<&Tensor> {
         self.bias.as_ref()
     }
-    pub fn weight_mut(&mut self) -> &mut Tensor {
+    pub const fn weight_mut(&mut self) -> &mut Tensor {
         &mut self.weight
     }
-    pub fn bias_mut(&mut self) -> Option<&mut Tensor> {
+    pub const fn bias_mut(&mut self) -> Option<&mut Tensor> {
         self.bias.as_mut()
     }
-    pub fn weight_node(&self) -> Option<NodeId> {
+    pub const fn weight_node(&self) -> Option<NodeId> {
         self.weight_node
     }
-    pub fn bias_node(&self) -> Option<NodeId> {
+    pub const fn bias_node(&self) -> Option<NodeId> {
         self.bias_node
     }
 
@@ -290,37 +290,37 @@ impl DepthwiseConv2dLayer {
         Ok(())
     }
 
-    pub fn channels(&self) -> usize {
+    pub const fn channels(&self) -> usize {
         self.channels
     }
-    pub fn kernel_h(&self) -> usize {
+    pub const fn kernel_h(&self) -> usize {
         self.kernel_h
     }
-    pub fn kernel_w(&self) -> usize {
+    pub const fn kernel_w(&self) -> usize {
         self.kernel_w
     }
-    pub fn stride_h(&self) -> usize {
+    pub const fn stride_h(&self) -> usize {
         self.stride_h
     }
-    pub fn stride_w(&self) -> usize {
+    pub const fn stride_w(&self) -> usize {
         self.stride_w
     }
-    pub fn weight(&self) -> &Tensor {
+    pub const fn weight(&self) -> &Tensor {
         &self.weight
     }
-    pub fn bias(&self) -> Option<&Tensor> {
+    pub const fn bias(&self) -> Option<&Tensor> {
         self.bias.as_ref()
     }
-    pub fn weight_mut(&mut self) -> &mut Tensor {
+    pub const fn weight_mut(&mut self) -> &mut Tensor {
         &mut self.weight
     }
-    pub fn bias_mut(&mut self) -> Option<&mut Tensor> {
+    pub const fn bias_mut(&mut self) -> Option<&mut Tensor> {
         self.bias.as_mut()
     }
-    pub fn weight_node(&self) -> Option<NodeId> {
+    pub const fn weight_node(&self) -> Option<NodeId> {
         self.weight_node
     }
-    pub fn bias_node(&self) -> Option<NodeId> {
+    pub const fn bias_node(&self) -> Option<NodeId> {
         self.bias_node
     }
 
@@ -428,34 +428,34 @@ impl SeparableConv2dLayer {
         Ok(())
     }
 
-    pub fn in_channels(&self) -> usize {
+    pub const fn in_channels(&self) -> usize {
         self.depthwise.channels()
     }
-    pub fn out_channels(&self) -> usize {
+    pub const fn out_channels(&self) -> usize {
         self.pointwise.out_channels()
     }
-    pub fn kernel_h(&self) -> usize {
+    pub const fn kernel_h(&self) -> usize {
         self.depthwise.kernel_h()
     }
-    pub fn kernel_w(&self) -> usize {
+    pub const fn kernel_w(&self) -> usize {
         self.depthwise.kernel_w()
     }
-    pub fn stride_h(&self) -> usize {
+    pub const fn stride_h(&self) -> usize {
         self.depthwise.stride_h()
     }
-    pub fn stride_w(&self) -> usize {
+    pub const fn stride_w(&self) -> usize {
         self.depthwise.stride_w()
     }
-    pub fn depthwise(&self) -> &DepthwiseConv2dLayer {
+    pub const fn depthwise(&self) -> &DepthwiseConv2dLayer {
         &self.depthwise
     }
-    pub fn pointwise(&self) -> &Conv2dLayer {
+    pub const fn pointwise(&self) -> &Conv2dLayer {
         &self.pointwise
     }
-    pub fn depthwise_mut(&mut self) -> &mut DepthwiseConv2dLayer {
+    pub const fn depthwise_mut(&mut self) -> &mut DepthwiseConv2dLayer {
         &mut self.depthwise
     }
-    pub fn pointwise_mut(&mut self) -> &mut Conv2dLayer {
+    pub const fn pointwise_mut(&mut self) -> &mut Conv2dLayer {
         &mut self.pointwise
     }
 
@@ -585,35 +585,35 @@ impl DeformableConv2dLayer {
         )
     }
 
-    pub fn in_channels(&self) -> usize {
+    pub const fn in_channels(&self) -> usize {
         self.in_channels
     }
-    pub fn out_channels(&self) -> usize {
+    pub const fn out_channels(&self) -> usize {
         self.out_channels
     }
-    pub fn kernel_h(&self) -> usize {
+    pub const fn kernel_h(&self) -> usize {
         self.kernel_h
     }
-    pub fn kernel_w(&self) -> usize {
+    pub const fn kernel_w(&self) -> usize {
         self.kernel_w
     }
-    pub fn stride(&self) -> usize {
+    pub const fn stride(&self) -> usize {
         self.stride
     }
-    pub fn padding(&self) -> usize {
+    pub const fn padding(&self) -> usize {
         self.padding
     }
-    pub fn weight(&self) -> &Tensor {
+    pub const fn weight(&self) -> &Tensor {
         &self.weight
     }
-    pub fn offset_weight(&self) -> &Tensor {
+    pub const fn offset_weight(&self) -> &Tensor {
         &self.offset_weight
     }
-    pub fn bias(&self) -> Option<&Tensor> {
+    pub const fn bias(&self) -> Option<&Tensor> {
         self.bias.as_ref()
     }
 
-    pub fn weight_node(&self) -> Option<NodeId> {
+    pub const fn weight_node(&self) -> Option<NodeId> {
         self.weight_node
     }
 
@@ -752,25 +752,25 @@ impl Conv1dLayer {
         })
     }
 
-    pub fn kernel_size(&self) -> usize {
+    pub const fn kernel_size(&self) -> usize {
         self.kernel_size
     }
-    pub fn kernel(&self) -> &Tensor {
+    pub const fn kernel(&self) -> &Tensor {
         &self.weight
     }
-    pub fn in_channels(&self) -> usize {
+    pub const fn in_channels(&self) -> usize {
         self.in_channels
     }
-    pub fn out_channels(&self) -> usize {
+    pub const fn out_channels(&self) -> usize {
         self.out_channels
     }
-    pub fn stride(&self) -> usize {
+    pub const fn stride(&self) -> usize {
         self.stride
     }
-    pub fn weight_node(&self) -> Option<NodeId> {
+    pub const fn weight_node(&self) -> Option<NodeId> {
         self.weight_node
     }
-    pub fn bias_node(&self) -> Option<NodeId> {
+    pub const fn bias_node(&self) -> Option<NodeId> {
         self.bias_node
     }
 
@@ -878,16 +878,16 @@ impl ConvTranspose2dLayer {
         })
     }
 
-    pub fn kernel(&self) -> &Tensor {
+    pub const fn kernel(&self) -> &Tensor {
         &self.weight
     }
-    pub fn stride(&self) -> usize {
+    pub const fn stride(&self) -> usize {
         self.stride_h
     }
-    pub fn weight_node(&self) -> Option<NodeId> {
+    pub const fn weight_node(&self) -> Option<NodeId> {
         self.weight_node
     }
-    pub fn bias_node(&self) -> Option<NodeId> {
+    pub const fn bias_node(&self) -> Option<NodeId> {
         self.bias_node
     }
 
@@ -1101,22 +1101,22 @@ impl Conv3dLayer {
         Ok(())
     }
 
-    pub fn in_channels(&self) -> usize {
+    pub const fn in_channels(&self) -> usize {
         self.in_channels
     }
-    pub fn out_channels(&self) -> usize {
+    pub const fn out_channels(&self) -> usize {
         self.out_channels
     }
-    pub fn weight(&self) -> &Tensor {
+    pub const fn weight(&self) -> &Tensor {
         &self.weight
     }
-    pub fn bias(&self) -> Option<&Tensor> {
+    pub const fn bias(&self) -> Option<&Tensor> {
         self.bias.as_ref()
     }
-    pub fn weight_node(&self) -> Option<NodeId> {
+    pub const fn weight_node(&self) -> Option<NodeId> {
         self.weight_node
     }
-    pub fn bias_node(&self) -> Option<NodeId> {
+    pub const fn bias_node(&self) -> Option<NodeId> {
         self.bias_node
     }
 

@@ -85,7 +85,7 @@ fn amd_uarch(family: u32, model: u32) -> Microarch {
     }
 }
 
-fn intel_uarch(family: u32, model: u32) -> Microarch {
+const fn intel_uarch(family: u32, model: u32) -> Microarch {
     if family != 0x6 {
         return Microarch::GenericX86;
     }

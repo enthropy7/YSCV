@@ -50,28 +50,28 @@ pub enum FramePayload {
 impl FramePayload {
     /// Construct an owned-bytes payload. Use for copy-based pipelines
     /// or for test / fixture inputs.
-    pub fn owned(bytes: Vec<u8>) -> Self {
+    pub const fn owned(bytes: Vec<u8>) -> Self {
         FramePayload::Owned(bytes)
     }
 
     /// Construct a DMA-BUF payload from a camera-exported fd + length.
     /// See the module-level ownership rules.
-    pub fn dma_buf(fd: i32, len: usize) -> Self {
+    pub const fn dma_buf(fd: i32, len: usize) -> Self {
         FramePayload::DmaBuf { fd, len }
     }
 
     /// Whether this payload is DMA-BUF-backed (zero-copy).
-    pub fn is_dma_buf(&self) -> bool {
+    pub const fn is_dma_buf(&self) -> bool {
         matches!(self, FramePayload::DmaBuf { .. })
     }
 
     /// Whether this payload owns an in-memory `Vec<u8>`.
-    pub fn is_owned(&self) -> bool {
+    pub const fn is_owned(&self) -> bool {
         matches!(self, FramePayload::Owned(_))
     }
 
     /// Payload length in bytes. Constant-time for both variants.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
             FramePayload::Owned(v) => v.len(),
             FramePayload::DmaBuf { len, .. } => *len,
@@ -79,7 +79,7 @@ impl FramePayload {
     }
 
     /// True if there's no data in this payload.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -88,7 +88,7 @@ impl FramePayload {
     /// should go through the camera's `buffer_mut()` API (which
     /// returns the mmap'd region) rather than through this payload
     /// abstraction.
-    pub fn bytes(&self) -> Option<&[u8]> {
+    pub const fn bytes(&self) -> Option<&[u8]> {
         match self {
             FramePayload::Owned(v) => Some(v.as_slice()),
             FramePayload::DmaBuf { .. } => None,
@@ -96,7 +96,7 @@ impl FramePayload {
     }
 
     /// DMA-BUF file descriptor, if applicable.
-    pub fn dma_buf_fd(&self) -> Option<i32> {
+    pub const fn dma_buf_fd(&self) -> Option<i32> {
         match self {
             FramePayload::DmaBuf { fd, .. } => Some(*fd),
             FramePayload::Owned(_) => None,
@@ -104,7 +104,7 @@ impl FramePayload {
     }
 
     /// DMA-BUF byte count, if applicable.
-    pub fn dma_buf_len(&self) -> Option<usize> {
+    pub const fn dma_buf_len(&self) -> Option<usize> {
         match self {
             FramePayload::DmaBuf { len, .. } => Some(*len),
             FramePayload::Owned(_) => None,

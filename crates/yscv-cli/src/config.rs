@@ -85,21 +85,21 @@ impl DetectTarget {
         }
     }
 
-    pub fn class_id(self) -> usize {
+    pub const fn class_id(self) -> usize {
         match self {
             Self::People => CLASS_ID_PERSON,
             Self::Faces => CLASS_ID_FACE,
         }
     }
 
-    pub fn count_label(self) -> &'static str {
+    pub const fn count_label(self) -> &'static str {
         match self {
             Self::People => "people",
             Self::Faces => "faces",
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::People => "people",
             Self::Faces => "face",

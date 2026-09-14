@@ -29,7 +29,7 @@ unsafe impl<T: Send> Sync for RawSliceMut<T> {}
 
 impl<T> RawSliceMut<T> {
     #[inline]
-    pub(crate) fn from_slice(slice: &mut [T]) -> Self {
+    pub(crate) const fn from_slice(slice: &mut [T]) -> Self {
         Self {
             ptr: slice.as_mut_ptr(),
             len: slice.len(),
@@ -43,17 +43,17 @@ impl<T> RawSliceMut<T> {
     /// `ptr` must be valid for `len` elements and properly aligned. The caller
     /// must enforce the aliasing and synchronization rules for each access.
     #[allow(unsafe_code)]
-    pub(crate) unsafe fn from_raw_parts(ptr: *mut T, len: usize) -> Self {
+    pub(crate) const unsafe fn from_raw_parts(ptr: *mut T, len: usize) -> Self {
         Self { ptr, len }
     }
 
     #[inline]
-    pub(crate) fn len(self) -> usize {
+    pub(crate) const fn len(self) -> usize {
         self.len
     }
 
     #[inline]
-    pub(crate) fn ptr(self) -> *mut T {
+    pub(crate) const fn ptr(self) -> *mut T {
         self.ptr
     }
 }
@@ -298,7 +298,7 @@ pub struct TileBounds {
 
 impl TileBounds {
     /// Construct bounds that cover the entire picture (no clipping).
-    pub fn full(w: usize, h: usize) -> Self {
+    pub const fn full(w: usize, h: usize) -> Self {
         TileBounds {
             col_start: 0,
             col_end: w,
@@ -477,7 +477,7 @@ fn parse_intra_mode_luma(state: &mut HevcSliceCabacState<'_>) -> u8 {
 }
 
 /// Decode `mpm_idx` — truncated unary bypass code, max value 2.
-fn parse_mpm_idx(state: &mut HevcSliceCabacState<'_>) -> u8 {
+const fn parse_mpm_idx(state: &mut HevcSliceCabacState<'_>) -> u8 {
     // mpm_idx is bypass-coded as truncated unary with cMax=2
     if !state.cabac.decode_bypass() {
         0
@@ -503,7 +503,7 @@ fn build_default_mpm_list() -> [u8; 3] {
 ///
 /// Follows ITU-T H.265 section 8.4.2 for constructing the three most
 /// probable modes.
-pub fn build_mpm_list(left_mode: u8, above_mode: u8) -> [u8; 3] {
+pub const fn build_mpm_list(left_mode: u8, above_mode: u8) -> [u8; 3] {
     let mut mpm = [0u8; 3];
     if left_mode == above_mode {
         if left_mode < 2 {
@@ -999,7 +999,7 @@ fn decode_coeff_abs_level_remaining(state: &mut HevcSliceCabacState<'_>, rice_pa
 
 /// Convert a sub-block scan index to raster (x, y) position within the
 /// sub-block grid.
-fn scan_idx_to_sub_pos(scan_idx: usize, num_sub_x: u32) -> (u32, u32) {
+const fn scan_idx_to_sub_pos(scan_idx: usize, num_sub_x: u32) -> (u32, u32) {
     let num_sub = (num_sub_x * num_sub_x) as usize;
     if num_sub <= 4 {
         // 2x2 grid

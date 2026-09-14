@@ -127,17 +127,17 @@ impl RknnTensorAttr {
     }
 
     /// Decoded data type.
-    pub fn data_type(&self) -> RknnTensorType {
+    pub const fn data_type(&self) -> RknnTensorType {
         RknnTensorType::from_u32(self.typ)
     }
 
     /// Decoded tensor format.
-    pub fn format(&self) -> RknnTensorFormat {
+    pub const fn format(&self) -> RknnTensorFormat {
         RknnTensorFormat::from_u32(self.fmt)
     }
 
     /// Decoded quantization type.
-    pub fn quant_type(&self) -> RknnQuantType {
+    pub const fn quant_type(&self) -> RknnQuantType {
         RknnQuantType::from_u32(self.qnt_type)
     }
 }
@@ -701,7 +701,7 @@ pub(crate) fn query_raw<T>(
 /// Used in error messages to make `KernelError::Rknn` self-explanatory.
 /// Unknown codes (e.g. negative values from custom-op handlers) return
 /// `"UNKNOWN"`.
-pub(crate) fn rknn_error_name(code: i32) -> &'static str {
+pub(crate) const fn rknn_error_name(code: i32) -> &'static str {
     use super::consts::*;
     match code {
         RKNN_SUCC => "SUCC",

@@ -153,7 +153,7 @@ pub struct StageWatchdog {
 const WATCHDOG_THRESHOLD: usize = 5;
 
 impl StageWatchdog {
-    pub fn new(budget_us: u64) -> Self {
+    pub const fn new(budget_us: u64) -> Self {
         Self {
             budget_us: AtomicU64::new(budget_us),
             overrun_streak: AtomicUsize::new(0),

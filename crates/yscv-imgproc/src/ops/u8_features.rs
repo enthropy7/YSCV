@@ -29,7 +29,7 @@ use rayon::prelude::*;
 /// Bresenham circle offsets for radius 3, given image width `w`.
 /// Returns 16 offsets in row-major order starting from N, going clockwise.
 #[inline]
-fn fast9_circle_offsets(w: isize) -> [isize; 16] {
+const fn fast9_circle_offsets(w: isize) -> [isize; 16] {
     [
         -3 * w,     // 0:  N
         -3 * w + 1, // 1:  NNE
@@ -53,7 +53,7 @@ fn fast9_circle_offsets(w: isize) -> [isize; 16] {
 /// Check if there are 9 contiguous pixels in a 16-element circular mask
 /// that are all set. `bits` is a 16-bit bitmask (one bit per circle position).
 #[inline]
-fn has_9_contiguous(bits: u32) -> bool {
+const fn has_9_contiguous(bits: u32) -> bool {
     // Duplicate the ring to handle wrap-around: 32 bits = bits | (bits << 16)
     let ring = bits | (bits << 16);
     // AND shifted versions to find runs of contiguous 1-bits.

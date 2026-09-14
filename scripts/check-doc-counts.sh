@@ -35,16 +35,16 @@ actual_crates=$(find crates -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
 actual_version=$(awk -F\" '/^version = "/{print $2; exit}' Cargo.toml)
 actual_onnx_ops=$(awk '/match node.op_type/,/^}$/' crates/yscv-onnx/src/runner/dispatch.rs \
     | grep -cE '^[[:space:]]+"[A-Z]')
-tensor_ops=$(grep -h '^    pub fn' crates/yscv-tensor/src/ops/*.rs | wc -l | tr -d ' ')
-tensor_main=$(grep -c '^    pub fn' crates/yscv-tensor/src/tensor.rs)
-tensor_linalg=$(grep -c '^    pub fn' crates/yscv-tensor/src/linalg.rs)
+tensor_ops=$(grep -hE '^    pub (const )?fn' crates/yscv-tensor/src/ops/*.rs | wc -l | tr -d ' ')
+tensor_main=$(grep -cE '^    pub (const )?fn' crates/yscv-tensor/src/tensor.rs)
+tensor_linalg=$(grep -cE '^    pub (const )?fn' crates/yscv-tensor/src/linalg.rs)
 actual_tensor_methods=$((tensor_ops + tensor_main + tensor_linalg))
-actual_imgproc_fns=$(grep -h '^pub fn' crates/yscv-imgproc/src/ops/*.rs | wc -l | tr -d ' ')
+actual_imgproc_fns=$(grep -hE '^pub (const )?fn' crates/yscv-imgproc/src/ops/*.rs | wc -l | tr -d ' ')
 actual_autograd_ops=$(awk '/enum Op \{/,/^}/' crates/yscv-autograd/src/node.rs \
     | grep -cE '^    [A-Z]')
 actual_model_layers=$(awk '/enum ModelLayer/,/^}/' crates/yscv-model/src/layers/mod.rs \
     | grep -cE '^    [A-Z]')
-actual_loss_fns=$(grep -c '^pub fn ' crates/yscv-model/src/loss.rs)
+actual_loss_fns=$(grep -cE '^pub (const )?fn ' crates/yscv-model/src/loss.rs)
 actual_optimizers=$(ls crates/yscv-optim/src/{sgd,adam,adamw,adagrad,radam,rmsprop,lamb,lars}.rs 2>/dev/null \
     | wc -l | tr -d ' ')
 actual_lr_schedulers=$(grep -c '^pub struct' crates/yscv-optim/src/scheduler.rs)

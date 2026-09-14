@@ -37,7 +37,7 @@ impl Default for CameraConfig {
 }
 
 impl CameraConfig {
-    pub fn validate(&self) -> Result<(), VideoError> {
+    pub const fn validate(&self) -> Result<(), VideoError> {
         if self.width == 0 || self.height == 0 {
             return Err(VideoError::InvalidCameraResolution {
                 width: self.width,
@@ -102,7 +102,7 @@ pub fn list_camera_devices() -> Result<Vec<CameraDeviceInfo>, VideoError> {
 }
 
 #[cfg(not(feature = "native-camera"))]
-pub fn list_camera_devices() -> Result<Vec<CameraDeviceInfo>, VideoError> {
+pub const fn list_camera_devices() -> Result<Vec<CameraDeviceInfo>, VideoError> {
     Err(VideoError::CameraBackendDisabled)
 }
 
@@ -324,7 +324,7 @@ impl CameraFrameSource {
 }
 
 #[cfg(feature = "native-camera")]
-fn preferred_camera_backend() -> ApiBackend {
+const fn preferred_camera_backend() -> ApiBackend {
     if cfg!(target_os = "linux") {
         ApiBackend::Video4Linux
     } else if cfg!(target_os = "windows") {
@@ -354,7 +354,7 @@ impl CameraFrameSource {
         Err(VideoError::CameraBackendDisabled)
     }
 
-    pub fn next_rgb8_frame(&mut self) -> Result<Option<Rgb8Frame>, VideoError> {
+    pub const fn next_rgb8_frame(&mut self) -> Result<Option<Rgb8Frame>, VideoError> {
         Err(VideoError::CameraBackendDisabled)
     }
 }

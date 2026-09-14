@@ -129,7 +129,7 @@ pub enum RknnTensorType {
 
 impl RknnTensorType {
     /// Create from a raw `u32`. Unknown values map to `Uint8` for safety.
-    pub fn from_u32(v: u32) -> Self {
+    pub const fn from_u32(v: u32) -> Self {
         match v {
             0 => Self::Float32,
             1 => Self::Float16,
@@ -162,7 +162,7 @@ pub enum RknnTensorFormat {
 }
 
 impl RknnTensorFormat {
-    pub fn from_u32(v: u32) -> Self {
+    pub const fn from_u32(v: u32) -> Self {
         match v {
             0 => Self::Nchw,
             1 => Self::Nhwc,
@@ -186,7 +186,7 @@ pub enum RknnQuantType {
 }
 
 impl RknnQuantType {
-    pub fn from_u32(v: u32) -> Self {
+    pub const fn from_u32(v: u32) -> Self {
         match v {
             0 => Self::None,
             1 => Self::Dfp,
@@ -223,7 +223,7 @@ pub enum NpuCoreMask {
 
 impl NpuCoreMask {
     /// Raw bitmask value passed to `rknn_set_core_mask`.
-    pub fn as_raw(self) -> u32 {
+    pub const fn as_raw(self) -> u32 {
         match self {
             Self::Auto => 0,
             Self::Core0 => 1,
@@ -254,7 +254,7 @@ pub enum MemAllocFlags {
 }
 
 impl MemAllocFlags {
-    pub fn as_raw(self) -> u64 {
+    pub const fn as_raw(self) -> u64 {
         match self {
             Self::Default => 0,
             Self::Cacheable => 1,
@@ -276,7 +276,7 @@ pub enum MemSyncMode {
 }
 
 impl MemSyncMode {
-    pub fn as_raw(self) -> u32 {
+    pub const fn as_raw(self) -> u32 {
         match self {
             Self::ToDevice => 0x1,
             Self::FromDevice => 0x2,

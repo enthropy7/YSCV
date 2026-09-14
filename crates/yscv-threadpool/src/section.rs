@@ -123,7 +123,7 @@ pub struct PersistentSection {
 }
 
 impl PersistentSection {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             current_loop: AtomicPtr::new(std::ptr::null_mut()),
             chunk_counter: AtomicUsize::new(0),

@@ -49,28 +49,28 @@ pub(crate) fn validate_step_gamma(gamma: f32) -> Result<(), OptimError> {
     Ok(())
 }
 
-pub(crate) fn validate_step_size(step_size: usize) -> Result<(), OptimError> {
+pub(crate) const fn validate_step_size(step_size: usize) -> Result<(), OptimError> {
     if step_size == 0 {
         return Err(OptimError::InvalidStepSize { step_size });
     }
     Ok(())
 }
 
-pub(crate) fn validate_cosine_t_max(t_max: usize) -> Result<(), OptimError> {
+pub(crate) const fn validate_cosine_t_max(t_max: usize) -> Result<(), OptimError> {
     if t_max == 0 {
         return Err(OptimError::InvalidCosineTMax { t_max });
     }
     Ok(())
 }
 
-pub(crate) fn validate_warmup_steps(warmup_steps: usize) -> Result<(), OptimError> {
+pub(crate) const fn validate_warmup_steps(warmup_steps: usize) -> Result<(), OptimError> {
     if warmup_steps == 0 {
         return Err(OptimError::InvalidWarmupSteps { warmup_steps });
     }
     Ok(())
 }
 
-pub(crate) fn validate_one_cycle_total_steps(total_steps: usize) -> Result<(), OptimError> {
+pub(crate) const fn validate_one_cycle_total_steps(total_steps: usize) -> Result<(), OptimError> {
     if total_steps == 0 {
         return Err(OptimError::InvalidOneCycleTotalSteps { total_steps });
     }

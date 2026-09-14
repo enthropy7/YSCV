@@ -1083,7 +1083,7 @@ pub fn skeletonize(input: &Tensor) -> Result<Tensor, ImgProcError> {
 
 /// Returns the 8 neighbors P2..P9 in Zhang-Suen order.
 /// P2=N, P3=NE, P4=E, P5=SE, P6=S, P7=SW, P8=W, P9=NW
-fn zhang_suen_neighbors(img: &[u8], w: usize, x: usize, y: usize) -> [u8; 8] {
+const fn zhang_suen_neighbors(img: &[u8], w: usize, x: usize, y: usize) -> [u8; 8] {
     [
         img[(y - 1) * w + x],     // P2 (N)
         img[(y - 1) * w + x + 1], // P3 (NE)

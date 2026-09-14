@@ -44,11 +44,11 @@ impl SupervisedDataset {
         self.len() == 0
     }
 
-    pub fn inputs(&self) -> &Tensor {
+    pub const fn inputs(&self) -> &Tensor {
         &self.inputs
     }
 
-    pub fn targets(&self) -> &Tensor {
+    pub const fn targets(&self) -> &Tensor {
         &self.targets
     }
 

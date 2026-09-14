@@ -9,7 +9,7 @@ pub struct FrameStream<S: FrameSource> {
 }
 
 impl<S: FrameSource> FrameStream<S> {
-    pub fn new(source: S) -> Self {
+    pub const fn new(source: S) -> Self {
         Self {
             source,
             max_frames: None,
@@ -17,7 +17,7 @@ impl<S: FrameSource> FrameStream<S> {
         }
     }
 
-    pub fn with_max_frames(mut self, max_frames: usize) -> Self {
+    pub const fn with_max_frames(mut self, max_frames: usize) -> Self {
         self.max_frames = Some(max_frames);
         self
     }

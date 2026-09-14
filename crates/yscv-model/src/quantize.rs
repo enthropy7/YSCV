@@ -76,22 +76,22 @@ impl QuantizedTensor {
     }
 
     /// Number of elements.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Whether empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
     /// Compression ratio vs f32 (4x for INT8).
-    pub fn compression_ratio(&self) -> f32 {
+    pub const fn compression_ratio(&self) -> f32 {
         4.0
     }
 
     /// Total bytes of quantized data (not including metadata).
-    pub fn byte_size(&self) -> usize {
+    pub const fn byte_size(&self) -> usize {
         self.data.len()
     }
 }

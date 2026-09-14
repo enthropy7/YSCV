@@ -47,7 +47,7 @@ pub enum HevcIntraMode {
 
 impl HevcIntraMode {
     /// Convert from a raw mode index (0..=34).
-    pub fn from_index(idx: u8) -> Option<Self> {
+    pub const fn from_index(idx: u8) -> Option<Self> {
         match idx {
             0 => Some(Self::Planar),
             1 => Some(Self::Dc),

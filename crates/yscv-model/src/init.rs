@@ -11,11 +11,11 @@ use crate::ModelError;
 struct Rng(u64);
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    const fn new(seed: u64) -> Self {
         Self(if seed == 0 { 0xDEAD_BEEF } else { seed })
     }
 
-    fn next_u64(&mut self) -> u64 {
+    const fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x << 13;
         x ^= x >> 7;

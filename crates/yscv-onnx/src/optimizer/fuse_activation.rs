@@ -25,7 +25,7 @@ pub(crate) struct FuseActivation {
 }
 
 impl FuseActivation {
-    pub(crate) fn conv_relu() -> Self {
+    pub(crate) const fn conv_relu() -> Self {
         Self {
             name: "fuse_conv_relu",
             base: Op::Conv,
@@ -34,7 +34,7 @@ impl FuseActivation {
         }
     }
 
-    pub(crate) fn bn_relu() -> Self {
+    pub(crate) const fn bn_relu() -> Self {
         Self {
             name: "fuse_bn_relu",
             base: Op::BatchNormalization,

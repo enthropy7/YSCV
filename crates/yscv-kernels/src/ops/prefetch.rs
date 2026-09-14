@@ -68,7 +68,7 @@ pub(crate) unsafe fn prefetch_l1_keep(p: *const f32) {
     target_arch = "arm"
 ))]
 #[inline(always)]
-pub(crate) fn prefetch_split(enabled: bool, k: usize) -> usize {
+pub(crate) const fn prefetch_split(enabled: bool, k: usize) -> usize {
     if enabled {
         k.saturating_sub(PREFETCH_AHEAD)
     } else {

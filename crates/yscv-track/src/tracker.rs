@@ -176,7 +176,7 @@ impl Tracker {
         self.count_by_class(CLASS_ID_PERSON)
     }
 
-    fn alloc_track_id(&mut self) -> u64 {
+    const fn alloc_track_id(&mut self) -> u64 {
         let id = self.next_track_id;
         self.next_track_id += 1;
         id

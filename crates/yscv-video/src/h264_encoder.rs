@@ -470,7 +470,7 @@ fn cavlc_encode_block(writer: &mut BitWriter, coeffs: &[i32; 16], nc: i32) -> us
 }
 
 /// Encode level_code into (prefix, suffix_value, suffix_length).
-fn encode_level_code(level_code: u32, suffix_length: u8) -> (u32, u32, u8) {
+const fn encode_level_code(level_code: u32, suffix_length: u8) -> (u32, u32, u8) {
     if suffix_length == 0 {
         if level_code < 14 {
             (level_code, 0, 0)
@@ -1026,11 +1026,11 @@ impl H264Encoder {
         output
     }
 
-    fn mb_width(&self) -> u32 {
+    const fn mb_width(&self) -> u32 {
         self.width.div_ceil(16)
     }
 
-    fn mb_height(&self) -> u32 {
+    const fn mb_height(&self) -> u32 {
         self.height.div_ceil(16)
     }
 
@@ -1483,7 +1483,7 @@ impl H264Encoder {
 
 /// Coded block pattern ME (mapped Exp-Golomb) encoding table for Intra 4x4.
 /// Maps CBP value to codeNum for ue(v) encoding (ITU-T H.264 Table 9-4).
-fn me_code_intra_4x4(cbp: u32) -> u32 {
+const fn me_code_intra_4x4(cbp: u32) -> u32 {
     // Full table from spec (intra mapping)
     const TABLE: [u32; 48] = [
         // cbp -> codeNum (intra)

@@ -50,7 +50,7 @@ pub enum Microarch {
 
 impl Microarch {
     /// In-order cores where hand-baked instruction scheduling pays most.
-    pub fn is_in_order(self) -> bool {
+    pub const fn is_in_order(self) -> bool {
         matches!(
             self,
             Microarch::CortexA53 | Microarch::CortexA55 | Microarch::CortexA7
@@ -58,7 +58,7 @@ impl Microarch {
     }
 
     /// True for fallback identities with no microarch specialisation.
-    pub fn is_generic(self) -> bool {
+    pub const fn is_generic(self) -> bool {
         matches!(
             self,
             Microarch::GenericAarch64
@@ -96,47 +96,47 @@ pub struct CpuFeatures {
 
 impl CpuFeatures {
     #[inline]
-    pub fn x86_avx_fma(self) -> bool {
+    pub const fn x86_avx_fma(self) -> bool {
         self.avx && self.fma
     }
 
     #[inline]
-    pub fn x86_avx2_fma(self) -> bool {
+    pub const fn x86_avx2_fma(self) -> bool {
         self.avx2 && self.fma
     }
 
     #[inline]
-    pub fn x86_avx2_sse41(self) -> bool {
+    pub const fn x86_avx2_sse41(self) -> bool {
         self.avx2 && self.sse41
     }
 
     #[inline]
-    pub fn x86_avx2_ssse3(self) -> bool {
+    pub const fn x86_avx2_ssse3(self) -> bool {
         self.avx2 && self.ssse3
     }
 
     #[inline]
-    pub fn x86_avx_vnni(self) -> bool {
+    pub const fn x86_avx_vnni(self) -> bool {
         self.avx2 && self.avxvnni
     }
 
     #[inline]
-    pub fn x86_avx512_bw(self) -> bool {
+    pub const fn x86_avx512_bw(self) -> bool {
         self.avx512f && self.avx512bw
     }
 
     #[inline]
-    pub fn x86_avx512_vnni(self) -> bool {
+    pub const fn x86_avx512_vnni(self) -> bool {
         self.x86_avx512_bw() && self.avx512vnni
     }
 
     #[inline]
-    pub fn aarch64_neon_dotprod(self) -> bool {
+    pub const fn aarch64_neon_dotprod(self) -> bool {
         self.neon && self.dotprod
     }
 
     #[inline]
-    pub fn aarch64_neon_i8mm(self) -> bool {
+    pub const fn aarch64_neon_i8mm(self) -> bool {
         self.neon && self.i8mm
     }
 }

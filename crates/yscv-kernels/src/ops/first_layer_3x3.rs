@@ -59,7 +59,7 @@ use rayon::prelude::*;
 
 /// Compute output spatial dim from input + kernel + stride + padding.
 #[inline]
-fn out_dim(in_dim: usize, pad_lo: usize, pad_hi: usize, k: usize, stride: usize) -> usize {
+const fn out_dim(in_dim: usize, pad_lo: usize, pad_hi: usize, k: usize, stride: usize) -> usize {
     (in_dim + pad_lo + pad_hi - k) / stride + 1
 }
 

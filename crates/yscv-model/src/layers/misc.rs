@@ -22,11 +22,11 @@ impl DropoutLayer {
         })
     }
 
-    pub fn rate(&self) -> f32 {
+    pub const fn rate(&self) -> f32 {
         self.rate
     }
 
-    pub fn set_training(&mut self, training: bool) {
+    pub const fn set_training(&mut self, training: bool) {
         self.training = training;
     }
 
@@ -48,7 +48,7 @@ impl DropoutLayer {
 pub struct FlattenLayer;
 
 impl FlattenLayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -74,7 +74,7 @@ impl FlattenLayer {
 pub struct SoftmaxLayer;
 
 impl SoftmaxLayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -94,11 +94,11 @@ pub struct PixelShuffleLayer {
 }
 
 impl PixelShuffleLayer {
-    pub fn new(upscale_factor: usize) -> Self {
+    pub const fn new(upscale_factor: usize) -> Self {
         Self { upscale_factor }
     }
 
-    pub fn upscale_factor(&self) -> usize {
+    pub const fn upscale_factor(&self) -> usize {
         self.upscale_factor
     }
 
@@ -153,17 +153,17 @@ pub struct UpsampleLayer {
 }
 
 impl UpsampleLayer {
-    pub fn new(scale_factor: usize, bilinear: bool) -> Self {
+    pub const fn new(scale_factor: usize, bilinear: bool) -> Self {
         Self {
             scale_factor,
             bilinear,
         }
     }
 
-    pub fn scale_factor(&self) -> usize {
+    pub const fn scale_factor(&self) -> usize {
         self.scale_factor
     }
-    pub fn is_bilinear(&self) -> bool {
+    pub const fn is_bilinear(&self) -> bool {
         self.bilinear
     }
 
@@ -246,7 +246,7 @@ pub struct ResidualBlock {
 
 impl ResidualBlock {
     /// Creates a new residual block wrapping the given layers.
-    pub fn new(layers: Vec<ModelLayer>) -> Self {
+    pub const fn new(layers: Vec<ModelLayer>) -> Self {
         Self { layers }
     }
 
@@ -314,13 +314,13 @@ impl MaskHead {
         })
     }
 
-    pub fn num_classes(&self) -> usize {
+    pub const fn num_classes(&self) -> usize {
         self.num_classes
     }
-    pub fn mask_size(&self) -> usize {
+    pub const fn mask_size(&self) -> usize {
         self.mask_size
     }
-    pub fn channels(&self) -> usize {
+    pub const fn channels(&self) -> usize {
         self.channels
     }
 

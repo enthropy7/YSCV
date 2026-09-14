@@ -49,7 +49,7 @@ pub struct Normalize {
 }
 
 impl Normalize {
-    pub fn new(mean: Vec<f32>, std: Vec<f32>) -> Self {
+    pub const fn new(mean: Vec<f32>, std: Vec<f32>) -> Self {
         Self { mean, std }
     }
 }
@@ -74,7 +74,7 @@ pub struct ScaleValues {
 }
 
 impl ScaleValues {
-    pub fn new(factor: f32) -> Self {
+    pub const fn new(factor: f32) -> Self {
         Self { factor }
     }
 }
@@ -91,7 +91,7 @@ pub struct PermuteDims {
 }
 
 impl PermuteDims {
-    pub fn new(order: Vec<usize>) -> Self {
+    pub const fn new(order: Vec<usize>) -> Self {
         Self { order }
     }
 }
@@ -110,7 +110,7 @@ pub struct Resize {
 }
 
 impl Resize {
-    pub fn new(height: usize, width: usize) -> Self {
+    pub const fn new(height: usize, width: usize) -> Self {
         Self { height, width }
     }
 }
@@ -175,7 +175,7 @@ pub struct CenterCrop {
 }
 
 impl CenterCrop {
-    pub fn new(size: usize) -> Self {
+    pub const fn new(size: usize) -> Self {
         Self { size }
     }
 }
@@ -207,7 +207,7 @@ pub struct RandomHorizontalFlip {
 }
 
 impl RandomHorizontalFlip {
-    pub fn new(p: f32, seed: u64) -> Self {
+    pub const fn new(p: f32, seed: u64) -> Self {
         Self {
             p,
             seed: AtomicU64::new(seed),
@@ -259,7 +259,7 @@ pub struct GaussianBlur {
 }
 
 impl GaussianBlur {
-    pub fn new(kernel_size: usize, sigma: f32) -> Self {
+    pub const fn new(kernel_size: usize, sigma: f32) -> Self {
         Self { kernel_size, sigma }
     }
 

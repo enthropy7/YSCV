@@ -65,7 +65,7 @@ fn nchwc_dims(shape: &[usize]) -> Result<(usize, usize, usize, usize, usize), Ke
 /// Number of channel blocks needed for `channels` with chunk size `block`,
 /// rounded up (the trailing partial block is zero-padded on convert).
 #[inline]
-fn channel_blocks(channels: usize, block: usize) -> usize {
+const fn channel_blocks(channels: usize, block: usize) -> usize {
     channels.div_ceil(block)
 }
 

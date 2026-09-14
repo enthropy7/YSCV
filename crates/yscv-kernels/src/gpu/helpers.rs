@@ -1,6 +1,6 @@
 use yscv_tensor::Tensor;
 
-pub(crate) fn div_ceil(a: u32, b: u32) -> u32 {
+pub(crate) const fn div_ceil(a: u32, b: u32) -> u32 {
     a.div_ceil(b)
 }
 
@@ -13,7 +13,7 @@ pub(crate) fn same_shape_data(lhs: &Tensor, rhs: &Tensor) -> Option<usize> {
 }
 
 // ── Backend trait implementation ───────────────────────────────────
-pub(crate) fn f32_to_f16_bits(val: f32) -> u16 {
+pub(crate) const fn f32_to_f16_bits(val: f32) -> u16 {
     let bits = val.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
     let exponent = ((bits >> 23) & 0xFF) as i32;
@@ -39,7 +39,7 @@ pub(crate) fn f32_to_f16_bits(val: f32) -> u16 {
     sign | fp16_exp | fp16_man
 }
 
-pub(crate) fn f16_bits_to_f32(half: u16) -> f32 {
+pub(crate) const fn f16_bits_to_f32(half: u16) -> f32 {
     let sign = ((half & 0x8000) as u32) << 16;
     let exponent = (half >> 10) & 0x1F;
     let mantissa = (half & 0x03FF) as u32;

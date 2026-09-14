@@ -50,7 +50,7 @@ unsafe impl Sync for MvFieldView {}
 
 impl MvFieldView {
     #[inline]
-    pub(crate) fn from_slice(slice: &[HevcMvField]) -> Self {
+    pub(crate) const fn from_slice(slice: &[HevcMvField]) -> Self {
         Self {
             ptr: slice.as_ptr(),
             len: slice.len(),
@@ -60,18 +60,18 @@ impl MvFieldView {
     /// # Safety
     /// `ptr` must be valid for `len` `HevcMvField` values for all reads.
     #[allow(unsafe_code)]
-    pub(crate) unsafe fn from_raw_parts(ptr: *const HevcMvField, len: usize) -> Self {
+    pub(crate) const unsafe fn from_raw_parts(ptr: *const HevcMvField, len: usize) -> Self {
         Self { ptr, len }
     }
 
     #[inline]
-    pub(crate) fn len(self) -> usize {
+    pub(crate) const fn len(self) -> usize {
         self.len
     }
 
     #[inline]
     #[allow(unsafe_code)]
-    pub(crate) fn get(self, index: usize) -> Option<HevcMvField> {
+    pub(crate) const fn get(self, index: usize) -> Option<HevcMvField> {
         if index >= self.len {
             return None;
         }
@@ -96,7 +96,7 @@ impl<T> SendMutPtr<T> {
     /// not the non-Send `*mut T` field.
     #[inline(always)]
     #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn as_ptr(self) -> *mut T {
+    pub(crate) const fn as_ptr(self) -> *mut T {
         self.0
     }
 }
@@ -205,17 +205,17 @@ impl HevcDpb {
     }
 
     /// Number of pictures currently in the buffer.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.pictures.len()
     }
 
     /// Returns `true` when the buffer is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.pictures.is_empty()
     }
 
     /// Maximum capacity.
-    pub fn max_size(&self) -> usize {
+    pub const fn max_size(&self) -> usize {
         self.max_size
     }
 }
@@ -236,12 +236,12 @@ pub struct HevcMv {
 impl HevcMv {
     /// Create a motion vector from integer-pel coordinates (internally scaled
     /// to quarter-pel).
-    pub fn from_fullpel(x: i16, y: i16) -> Self {
+    pub const fn from_fullpel(x: i16, y: i16) -> Self {
         Self { x: x * 4, y: y * 4 }
     }
 
     /// Add two motion vectors (e.g. predictor + difference).
-    pub fn add(self, other: HevcMv) -> HevcMv {
+    pub const fn add(self, other: HevcMv) -> HevcMv {
         HevcMv {
             x: self.x.saturating_add(other.x),
             y: self.y.saturating_add(other.y),
@@ -249,7 +249,7 @@ impl HevcMv {
     }
 
     /// Negate both components.
-    pub fn negate(self) -> HevcMv {
+    pub const fn negate(self) -> HevcMv {
         HevcMv {
             x: self.x.saturating_neg(),
             y: self.y.saturating_neg(),
@@ -279,7 +279,7 @@ impl HevcMvField {
     }
 
     /// Returns `true` when at least one list is active.
-    pub fn is_available(&self) -> bool {
+    pub const fn is_available(&self) -> bool {
         self.pred_flag[0] || self.pred_flag[1]
     }
 }
@@ -313,7 +313,13 @@ fn ref_sample(pic: &HevcReferencePicture, x: i32, y: i32) -> i16 {
 
 /// Check if a block (with 3-pixel border for 8-tap filter) is fully in-bounds.
 #[inline(always)]
-fn mc_in_bounds(pic: &HevcReferencePicture, int_x: i32, int_y: i32, bw: usize, bh: usize) -> bool {
+const fn mc_in_bounds(
+    pic: &HevcReferencePicture,
+    int_x: i32,
+    int_y: i32,
+    bw: usize,
+    bh: usize,
+) -> bool {
     int_x - 3 >= 0
         && int_y - 3 >= 0
         && (int_x + bw as i32 + 4) <= pic.width as i32
@@ -1189,7 +1195,7 @@ pub(crate) fn build_merge_candidates_view(
 /// Parse `merge_idx` from the CABAC bitstream (truncated unary, bypass coded).
 ///
 /// Returns a value in `0 ..= max_merge_cand - 1`.
-pub fn parse_merge_idx(cabac: &mut CabacDecoder<'_>, max_merge_cand: u32) -> u32 {
+pub const fn parse_merge_idx(cabac: &mut CabacDecoder<'_>, max_merge_cand: u32) -> u32 {
     if max_merge_cand <= 1 {
         return 0;
     }

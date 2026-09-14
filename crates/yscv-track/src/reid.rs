@@ -22,7 +22,7 @@ pub struct ColorHistogramReId {
 }
 
 impl ColorHistogramReId {
-    pub fn new(bins: usize) -> Self {
+    pub const fn new(bins: usize) -> Self {
         Self { bins }
     }
 }

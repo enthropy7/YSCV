@@ -699,7 +699,7 @@ pub struct CannyScratch {
 
 impl CannyScratch {
     /// Creates empty scratch (buffers grow on first use).
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             magnitude: Vec::new(),
             direction: Vec::new(),
@@ -1071,7 +1071,7 @@ pub fn connected_components_4(input: &Tensor) -> Result<(Tensor, usize), ImgProc
     Ok((Tensor::from_vec(vec![h, w, 1], out)?, label_count as usize))
 }
 
-pub(crate) fn find_root(equiv: &[u32], mut label: u32) -> u32 {
+pub(crate) const fn find_root(equiv: &[u32], mut label: u32) -> u32 {
     while equiv[label as usize] != label {
         label = equiv[label as usize];
     }

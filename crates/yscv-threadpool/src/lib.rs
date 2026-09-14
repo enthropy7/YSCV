@@ -174,15 +174,15 @@ const JOBS_EVENT_SLEEPING_INC: u64 = 1u64 << JOBS_EVENT_SLEEPING_SHIFT;
 const JOBS_EVENT_SLEEPING_MASK: u64 = 0xFFFF_0000_0000_0000;
 
 #[inline]
-fn unpack_counter(event: u64) -> u32 {
+const fn unpack_counter(event: u64) -> u32 {
     (event & JOBS_EVENT_COUNTER_MASK) as u32
 }
 #[inline]
-fn unpack_sleepy(event: u64) -> u32 {
+const fn unpack_sleepy(event: u64) -> u32 {
     ((event & JOBS_EVENT_SLEEPY_MASK) >> JOBS_EVENT_SLEEPY_SHIFT) as u32
 }
 #[inline]
-fn unpack_sleeping(event: u64) -> u32 {
+const fn unpack_sleeping(event: u64) -> u32 {
     ((event & JOBS_EVENT_SLEEPING_MASK) >> JOBS_EVENT_SLEEPING_SHIFT) as u32
 }
 
@@ -198,7 +198,7 @@ struct WorkerSleepState {
 }
 
 impl WorkerSleepState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             state: AtomicU8::new(WORKER_ACTIVE),
             captured_counter: AtomicU32::new(0),
@@ -298,7 +298,7 @@ impl YscvPool {
     }
 
     /// Number of worker threads in this pool.
-    pub fn num_threads(&self) -> usize {
+    pub const fn num_threads(&self) -> usize {
         self.nthreads
     }
 
@@ -574,11 +574,11 @@ impl YscvPool {
         // bare raw pointers, which would fail Send.
         impl Ptrs {
             #[inline]
-            fn next(&self) -> *const AtomicUsize {
+            const fn next(&self) -> *const AtomicUsize {
                 self.next
             }
             #[inline]
-            fn latch(&self) -> *const AtomicUsize {
+            const fn latch(&self) -> *const AtomicUsize {
                 self.latch
             }
             #[inline]

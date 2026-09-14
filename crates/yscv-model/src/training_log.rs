@@ -33,7 +33,7 @@ impl TrainingLog {
     }
 
     /// Number of epochs logged so far.
-    pub fn num_epochs(&self) -> usize {
+    pub const fn num_epochs(&self) -> usize {
         self.entries.len()
     }
 

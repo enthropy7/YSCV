@@ -42,7 +42,7 @@ fn pseudo_i32(seed: u64, n: usize, range: i32) -> Vec<i32> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn make_params(
+const fn make_params(
     in_h: usize,
     in_w: usize,
     c_in: usize,

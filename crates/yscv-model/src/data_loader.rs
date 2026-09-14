@@ -112,7 +112,7 @@ impl DataLoader {
     }
 
     /// Returns the number of batches per epoch.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         let n = self.inputs.len();
         if n == 0 || self.config.batch_size == 0 {
             return 0;
@@ -125,17 +125,17 @@ impl DataLoader {
     }
 
     /// Returns `true` if the loader has no batches.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Returns the underlying configuration.
-    pub fn config(&self) -> &DataLoaderConfig {
+    pub const fn config(&self) -> &DataLoaderConfig {
         &self.config
     }
 
     /// Returns the total number of samples.
-    pub fn sample_count(&self) -> usize {
+    pub const fn sample_count(&self) -> usize {
         self.inputs.len()
     }
 
@@ -323,7 +323,7 @@ fn build_batch(
 }
 
 /// Simple LCG-based Fisher-Yates shuffle, deterministic for a given seed.
-fn lcg_shuffle(indices: &mut [usize], seed: u64) {
+const fn lcg_shuffle(indices: &mut [usize], seed: u64) {
     let mut state = seed ^ 0x6C62_272E_07BB_0142;
     let mut index = indices.len();
     while index > 1 {
@@ -347,7 +347,7 @@ pub struct SequentialSampler {
 }
 
 impl SequentialSampler {
-    pub fn new(len: usize) -> Self {
+    pub const fn new(len: usize) -> Self {
         Self { len }
     }
 
@@ -365,7 +365,7 @@ pub struct RandomSampler {
 }
 
 impl RandomSampler {
-    pub fn new(len: usize, seed: u64) -> Self {
+    pub const fn new(len: usize, seed: u64) -> Self {
         Self { len, seed }
     }
 
@@ -441,7 +441,7 @@ impl WeightedRandomSampler {
     }
 
     /// Number of samples drawn per epoch.
-    pub fn num_samples(&self) -> usize {
+    pub const fn num_samples(&self) -> usize {
         self.num_samples
     }
 }
@@ -530,17 +530,17 @@ impl StreamingDataLoader {
     }
 
     /// Returns the total number of batch files available.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.file_paths.len()
     }
 
     /// Returns `true` if there are no batch files.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.file_paths.is_empty()
     }
 
     /// Returns the configured batch size.
-    pub fn batch_size(&self) -> usize {
+    pub const fn batch_size(&self) -> usize {
         self.batch_size
     }
 

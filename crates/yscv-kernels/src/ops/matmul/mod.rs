@@ -73,7 +73,7 @@ pub struct GemmEpilogue {
 impl GemmEpilogue {
     /// Convenience: bias + activation with no residual (the common case).
     #[inline]
-    pub fn new(bias: Option<*const f32>, activation: Activation) -> Self {
+    pub const fn new(bias: Option<*const f32>, activation: Activation) -> Self {
         Self {
             bias,
             activation,
@@ -172,7 +172,7 @@ fn matmul_blas_status() -> &'static str {
 }
 
 #[cfg(not(yscv_blas))]
-fn matmul_blas_status() -> &'static str {
+const fn matmul_blas_status() -> &'static str {
     "not-compiled"
 }
 
@@ -246,7 +246,7 @@ fn matmul_mr8_enabled() -> bool {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-fn matmul_mr8_enabled() -> bool {
+const fn matmul_mr8_enabled() -> bool {
     false
 }
 
@@ -307,7 +307,7 @@ pub(super) const MC: usize = 128;
 pub(super) const NC: usize = 128;
 
 /// Round `a` up to the next multiple of `b`.
-pub(super) fn div_ceil(a: usize, b: usize) -> usize {
+pub(super) const fn div_ceil(a: usize, b: usize) -> usize {
     a.div_ceil(b)
 }
 
@@ -775,19 +775,19 @@ pub(super) fn row_gemm_set_parallel_fused(
     }
     impl RawPtrs {
         #[inline]
-        fn left(&self) -> *const f32 {
+        const fn left(&self) -> *const f32 {
             self.left
         }
         #[inline]
-        fn right(&self) -> *const f32 {
+        const fn right(&self) -> *const f32 {
             self.right
         }
         #[inline]
-        fn bias(&self) -> Option<*const f32> {
+        const fn bias(&self) -> Option<*const f32> {
             self.bias
         }
         #[inline]
-        fn residual(&self) -> Option<*const f32> {
+        const fn residual(&self) -> Option<*const f32> {
             self.residual
         }
     }
@@ -950,7 +950,7 @@ fn should_parallelize(
 }
 
 /// Returns true if blocked matmul should be used for these dimensions.
-fn use_blocked(m: usize, k: usize, n: usize) -> bool {
+const fn use_blocked(m: usize, k: usize, n: usize) -> bool {
     !cfg!(miri) && m >= BLOCKED_THRESHOLD && k >= BLOCKED_THRESHOLD && n >= 2 * NR
 }
 
@@ -1041,7 +1041,7 @@ fn aarch64_residual_blocked_enabled() -> bool {
 /// Current state: scalar tail kernels now fold residual correctly, so there
 /// are no known tail-shape correctness blockers in the generic blocked path.
 #[inline]
-fn blocked_residual_has_unsupported_tail(_nc: usize) -> bool {
+const fn blocked_residual_has_unsupported_tail(_nc: usize) -> bool {
     false
 }
 

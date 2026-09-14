@@ -79,28 +79,28 @@ pub struct CustomOpContext<'a> {
 
 impl<'a> CustomOpContext<'a> {
     /// Backend target the SDK selected for this op (CPU or GPU).
-    pub fn target(&self) -> u32 {
+    pub const fn target(&self) -> u32 {
         self.raw.target
     }
 
     /// OpenCL context handle (only valid when `target() == GPU == 2`).
-    pub fn cl_context(&self) -> *mut c_void {
+    pub const fn cl_context(&self) -> *mut c_void {
         self.raw.gpu_ctx.cl_context
     }
 
     /// OpenCL command-queue handle (only valid when target is GPU).
-    pub fn cl_command_queue(&self) -> *mut c_void {
+    pub const fn cl_command_queue(&self) -> *mut c_void {
         self.raw.gpu_ctx.cl_command_queue
     }
 
     /// OpenCL kernel handle (only valid when target is GPU).
-    pub fn cl_kernel(&self) -> *mut c_void {
+    pub const fn cl_kernel(&self) -> *mut c_void {
         self.raw.gpu_ctx.cl_kernel
     }
 
     /// User-managed scratch pointer. Set in `init`, read in
     /// `prepare`/`compute`, freed in `destroy`. SDK does not interpret it.
-    pub fn priv_data(&self) -> *mut c_void {
+    pub const fn priv_data(&self) -> *mut c_void {
         self.raw.priv_data
     }
 
@@ -109,7 +109,7 @@ impl<'a> CustomOpContext<'a> {
     /// # Safety
     /// Caller is responsible for ownership: typically a `Box::into_raw` in
     /// `init` paired with `Box::from_raw` in `destroy`.
-    pub unsafe fn set_priv_data(&mut self, ptr: *mut c_void) {
+    pub const unsafe fn set_priv_data(&mut self, ptr: *mut c_void) {
         self.raw.priv_data = ptr;
     }
 
@@ -163,22 +163,22 @@ pub struct CustomOpTensor<'a> {
 
 impl<'a> CustomOpTensor<'a> {
     /// Tensor descriptor (shape, dtype, strides — see `RknnTensorAttr`).
-    pub fn attr(&self) -> &RknnTensorAttr {
+    pub const fn attr(&self) -> &RknnTensorAttr {
         &self.raw.attr
     }
 
     /// Pointer to the tensor buffer. Layout determined by `attr().fmt`.
-    pub fn virt_addr(&self) -> *mut c_void {
+    pub const fn virt_addr(&self) -> *mut c_void {
         self.raw.mem.virt_addr
     }
 
     /// DMA-BUF file descriptor backing the buffer (`-1` if not exported).
-    pub fn fd(&self) -> i32 {
+    pub const fn fd(&self) -> i32 {
         self.raw.mem.fd
     }
 
     /// Buffer size in bytes.
-    pub fn size(&self) -> u32 {
+    pub const fn size(&self) -> u32 {
         self.raw.mem.size
     }
 
@@ -187,7 +187,7 @@ impl<'a> CustomOpTensor<'a> {
     /// # Safety
     /// Caller must ensure buffer is CPU-mapped (default for `alloc_mem`,
     /// not guaranteed for some `wrap_phys` configurations).
-    pub unsafe fn as_bytes(&self) -> &[u8] {
+    pub const unsafe fn as_bytes(&self) -> &[u8] {
         // SAFETY: caller guarantees the buffer is CPU-mapped and the
         // backing memory remains valid for the slice lifetime (bounded by
         // the SDK callback duration).
@@ -203,7 +203,7 @@ impl<'a> CustomOpTensor<'a> {
     ///
     /// # Safety
     /// Caller must guarantee no concurrent reader exists on this tensor.
-    pub unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
+    pub const unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
         // SAFETY: same as as_bytes; caller guarantees exclusive access.
         unsafe {
             std::slice::from_raw_parts_mut(

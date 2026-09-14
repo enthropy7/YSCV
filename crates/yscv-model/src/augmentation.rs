@@ -948,11 +948,11 @@ impl LcgRng {
     const MULTIPLIER: u64 = 6364136223846793005;
     const INCREMENT: u64 = 1;
 
-    fn new(seed: u64) -> Self {
+    const fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
-    fn next_u32(&mut self) -> u32 {
+    const fn next_u32(&mut self) -> u32 {
         self.state = self
             .state
             .wrapping_mul(Self::MULTIPLIER)
@@ -976,11 +976,11 @@ impl LcgRng {
         magnitude * angle.cos()
     }
 
-    fn next_usize_inclusive(&mut self, upper_inclusive: usize) -> usize {
+    const fn next_usize_inclusive(&mut self, upper_inclusive: usize) -> usize {
         self.next_usize(upper_inclusive.saturating_add(1))
     }
 
-    fn next_usize(&mut self, upper_exclusive: usize) -> usize {
+    const fn next_usize(&mut self, upper_exclusive: usize) -> usize {
         if upper_exclusive == 0 {
             return 0;
         }

@@ -87,7 +87,7 @@ impl RmsProp {
     }
 
     /// Enables/disables centered RMSProp variant.
-    pub fn with_centered(mut self, centered: bool) -> Self {
+    pub const fn with_centered(mut self, centered: bool) -> Self {
         self.centered = centered;
         self
     }
@@ -98,7 +98,7 @@ impl RmsProp {
     }
 
     /// Returns current learning rate.
-    pub fn learning_rate(&self) -> f32 {
+    pub const fn learning_rate(&self) -> f32 {
         self.lr
     }
 

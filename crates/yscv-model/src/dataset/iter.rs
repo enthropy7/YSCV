@@ -40,11 +40,11 @@ impl MixUpConfig {
         Ok(self)
     }
 
-    pub fn probability(&self) -> f32 {
+    pub const fn probability(&self) -> f32 {
         self.probability
     }
 
-    pub fn lambda_min(&self) -> f32 {
+    pub const fn lambda_min(&self) -> f32 {
         self.lambda_min
     }
 }
@@ -110,15 +110,15 @@ impl CutMixConfig {
         Ok(self)
     }
 
-    pub fn probability(&self) -> f32 {
+    pub const fn probability(&self) -> f32 {
         self.probability
     }
 
-    pub fn min_patch_fraction(&self) -> f32 {
+    pub const fn min_patch_fraction(&self) -> f32 {
         self.min_patch_fraction
     }
 
-    pub fn max_patch_fraction(&self) -> f32 {
+    pub const fn max_patch_fraction(&self) -> f32 {
         self.max_patch_fraction
     }
 }

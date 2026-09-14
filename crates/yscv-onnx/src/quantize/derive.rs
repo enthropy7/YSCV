@@ -59,14 +59,14 @@ pub enum QuantTarget {
 }
 
 impl QuantTarget {
-    fn qmin(self) -> i32 {
+    const fn qmin(self) -> i32 {
         match self {
             QuantTarget::Uint8 => 0,
             QuantTarget::Int8 => -128,
             QuantTarget::Int4 => -8,
         }
     }
-    fn qmax(self) -> i32 {
+    const fn qmax(self) -> i32 {
         match self {
             QuantTarget::Uint8 => 255,
             QuantTarget::Int8 => 127,
@@ -76,7 +76,7 @@ impl QuantTarget {
     /// Symmetric range half-span (used as the denominator when deriving
     /// a symmetric scale). For `[-128, 127]` we use 127 to avoid
     /// wasting representational range on the asymmetric -128 corner.
-    fn sym_denom(self) -> f32 {
+    const fn sym_denom(self) -> f32 {
         match self {
             QuantTarget::Uint8 => 127.5, // unusual but defined
             QuantTarget::Int8 => 127.0,

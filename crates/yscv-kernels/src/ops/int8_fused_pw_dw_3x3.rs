@@ -87,17 +87,17 @@ pub struct Int8FusedPwDwParams {
 
 impl Int8FusedPwDwParams {
     #[inline]
-    pub fn input_len(&self) -> usize {
+    pub const fn input_len(&self) -> usize {
         self.batch * self.in_h * self.in_w * self.c_in
     }
 
     #[inline]
-    pub fn output_len(&self) -> usize {
+    pub const fn output_len(&self) -> usize {
         self.batch * self.c_exp * self.out_h * self.out_w
     }
 
     #[inline]
-    pub fn dw_weight_len(&self) -> usize {
+    pub const fn dw_weight_len(&self) -> usize {
         self.kh * self.kh * self.c_exp
     }
 }

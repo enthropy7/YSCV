@@ -8,7 +8,7 @@ use crate::ModelError;
 pub struct ReLULayer;
 
 impl ReLULayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -31,7 +31,7 @@ impl LeakyReLULayer {
         Ok(Self { negative_slope })
     }
 
-    pub fn negative_slope(&self) -> f32 {
+    pub const fn negative_slope(&self) -> f32 {
         self.negative_slope
     }
 
@@ -51,7 +51,7 @@ impl LeakyReLULayer {
 pub struct SigmoidLayer;
 
 impl SigmoidLayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -65,7 +65,7 @@ impl SigmoidLayer {
 pub struct TanhLayer;
 
 impl TanhLayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -85,7 +85,7 @@ impl Default for GELULayer {
 }
 
 impl GELULayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -109,7 +109,7 @@ impl Default for SiLULayer {
 }
 
 impl SiLULayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -133,7 +133,7 @@ impl Default for MishLayer {
 }
 
 impl MishLayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -155,7 +155,7 @@ pub struct PReLULayer {
 }
 
 impl PReLULayer {
-    pub fn new(alpha: Vec<f32>) -> Self {
+    pub const fn new(alpha: Vec<f32>) -> Self {
         Self {
             alpha,
             alpha_node: None,
@@ -166,7 +166,7 @@ impl PReLULayer {
         &self.alpha
     }
 
-    pub fn alpha_node(&self) -> Option<NodeId> {
+    pub const fn alpha_node(&self) -> Option<NodeId> {
         self.alpha_node
     }
 

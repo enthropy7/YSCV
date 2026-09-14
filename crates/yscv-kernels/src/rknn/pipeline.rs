@@ -82,7 +82,7 @@ pub struct RknnInferenceHandle {
 
 impl RknnInferenceHandle {
     /// Which pipeline slot this handle refers to.
-    pub fn slot_idx(&self) -> usize {
+    pub const fn slot_idx(&self) -> usize {
         self.slot_idx
     }
 }
@@ -216,12 +216,12 @@ impl RknnPipelinedPool {
     }
 
     /// Number of pipeline slots (= NPU cores the pool was built for).
-    pub fn slot_count(&self) -> usize {
+    pub const fn slot_count(&self) -> usize {
         self.slots.len()
     }
 
     /// Alias for `slot_count` — matches the `ContextPool::size` name.
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         self.slots.len()
     }
 

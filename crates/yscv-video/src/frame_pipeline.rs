@@ -80,22 +80,22 @@ impl SlotRef<'_> {
     }
 
     /// Frame width in pixels.
-    pub fn width(&self) -> u32 {
+    pub const fn width(&self) -> u32 {
         self.payload.width
     }
 
     /// Frame height in pixels.
-    pub fn height(&self) -> u32 {
+    pub const fn height(&self) -> u32 {
         self.payload.height
     }
 
     /// Pixel format tag (YUV420 = 0, NV12 = 1, RGB8 = 2).
-    pub fn pixel_format(&self) -> u8 {
+    pub const fn pixel_format(&self) -> u8 {
         self.payload.pixel_format
     }
 
     /// Capture timestamp in microseconds.
-    pub fn timestamp_us(&self) -> u64 {
+    pub const fn timestamp_us(&self) -> u64 {
         self.payload.timestamp_us
     }
 
@@ -116,7 +116,7 @@ impl SlotMut<'_> {
     ///
     /// The buffer is pre-allocated to `max_frame_bytes`; use
     /// `data_mut()[..len].copy_from_slice(...)` to fill it.
-    pub fn data_mut(&mut self) -> &mut Vec<u8> {
+    pub const fn data_mut(&mut self) -> &mut Vec<u8> {
         &mut self.payload.data
     }
 
@@ -126,27 +126,27 @@ impl SlotMut<'_> {
     }
 
     /// Set the frame width.
-    pub fn set_width(&mut self, w: u32) {
+    pub const fn set_width(&mut self, w: u32) {
         self.payload.width = w;
     }
 
     /// Set the frame height.
-    pub fn set_height(&mut self, h: u32) {
+    pub const fn set_height(&mut self, h: u32) {
         self.payload.height = h;
     }
 
     /// Set the pixel format tag.
-    pub fn set_pixel_format(&mut self, fmt: u8) {
+    pub const fn set_pixel_format(&mut self, fmt: u8) {
         self.payload.pixel_format = fmt;
     }
 
     /// Set the capture timestamp (microseconds).
-    pub fn set_timestamp_us(&mut self, ts: u64) {
+    pub const fn set_timestamp_us(&mut self, ts: u64) {
         self.payload.timestamp_us = ts;
     }
 
     /// Mutable reference to the detection results vector.
-    pub fn detections_mut(&mut self) -> &mut Vec<PipelineDetection> {
+    pub const fn detections_mut(&mut self) -> &mut Vec<PipelineDetection> {
         &mut self.payload.detections
     }
 
@@ -156,22 +156,22 @@ impl SlotMut<'_> {
     }
 
     /// Frame width.
-    pub fn width(&self) -> u32 {
+    pub const fn width(&self) -> u32 {
         self.payload.width
     }
 
     /// Frame height.
-    pub fn height(&self) -> u32 {
+    pub const fn height(&self) -> u32 {
         self.payload.height
     }
 
     /// Pixel format tag.
-    pub fn pixel_format(&self) -> u8 {
+    pub const fn pixel_format(&self) -> u8 {
         self.payload.pixel_format
     }
 
     /// Capture timestamp in microseconds.
-    pub fn timestamp_us(&self) -> u64 {
+    pub const fn timestamp_us(&self) -> u64 {
         self.payload.timestamp_us
     }
 }
@@ -383,7 +383,7 @@ impl FramePipeline {
     }
 
     /// Number of slots in the ring.
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.capacity
     }
 }

@@ -34,7 +34,7 @@ pub struct LinearKalman<const NX: usize, const NZ: usize> {
 
 impl<const NX: usize, const NZ: usize> LinearKalman<NX, NZ> {
     /// Create a filter from an initial state and covariance.
-    pub fn new(x: [f32; NX], p: [[f32; NX]; NX]) -> Self {
+    pub const fn new(x: [f32; NX], p: [[f32; NX]; NX]) -> Self {
         Self { x, p }
     }
 
@@ -240,12 +240,12 @@ impl ConstantVelocity2d {
     }
 
     /// Current position estimate.
-    pub fn position(&self) -> (f32, f32) {
+    pub const fn position(&self) -> (f32, f32) {
         (self.filter.x[0], self.filter.x[1])
     }
 
     /// Current velocity estimate.
-    pub fn velocity(&self) -> (f32, f32) {
+    pub const fn velocity(&self) -> (f32, f32) {
         (self.filter.x[2], self.filter.x[3])
     }
 }

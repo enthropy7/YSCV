@@ -97,40 +97,40 @@ impl BatchNorm2dLayer {
         Ok(())
     }
 
-    pub fn num_features(&self) -> usize {
+    pub const fn num_features(&self) -> usize {
         self.num_features
     }
-    pub fn epsilon(&self) -> f32 {
+    pub const fn epsilon(&self) -> f32 {
         self.epsilon
     }
-    pub fn gamma(&self) -> &Tensor {
+    pub const fn gamma(&self) -> &Tensor {
         &self.gamma
     }
-    pub fn beta(&self) -> &Tensor {
+    pub const fn beta(&self) -> &Tensor {
         &self.beta
     }
-    pub fn running_mean(&self) -> &Tensor {
+    pub const fn running_mean(&self) -> &Tensor {
         &self.running_mean
     }
-    pub fn running_var(&self) -> &Tensor {
+    pub const fn running_var(&self) -> &Tensor {
         &self.running_var
     }
-    pub fn gamma_mut(&mut self) -> &mut Tensor {
+    pub const fn gamma_mut(&mut self) -> &mut Tensor {
         &mut self.gamma
     }
-    pub fn beta_mut(&mut self) -> &mut Tensor {
+    pub const fn beta_mut(&mut self) -> &mut Tensor {
         &mut self.beta
     }
-    pub fn running_mean_mut(&mut self) -> &mut Tensor {
+    pub const fn running_mean_mut(&mut self) -> &mut Tensor {
         &mut self.running_mean
     }
-    pub fn running_var_mut(&mut self) -> &mut Tensor {
+    pub const fn running_var_mut(&mut self) -> &mut Tensor {
         &mut self.running_var
     }
-    pub fn gamma_node(&self) -> Option<NodeId> {
+    pub const fn gamma_node(&self) -> Option<NodeId> {
         self.gamma_node
     }
-    pub fn beta_node(&self) -> Option<NodeId> {
+    pub const fn beta_node(&self) -> Option<NodeId> {
         self.beta_node
     }
 
@@ -188,13 +188,13 @@ impl LayerNormLayer {
         })
     }
 
-    pub fn normalized_shape(&self) -> usize {
+    pub const fn normalized_shape(&self) -> usize {
         self.normalized_shape
     }
-    pub fn gamma_node(&self) -> NodeId {
+    pub const fn gamma_node(&self) -> NodeId {
         self.gamma
     }
-    pub fn beta_node(&self) -> NodeId {
+    pub const fn beta_node(&self) -> NodeId {
         self.beta
     }
 
@@ -269,16 +269,16 @@ impl GroupNormLayer {
         })
     }
 
-    pub fn num_groups(&self) -> usize {
+    pub const fn num_groups(&self) -> usize {
         self.num_groups
     }
-    pub fn num_channels(&self) -> usize {
+    pub const fn num_channels(&self) -> usize {
         self.num_channels
     }
-    pub fn gamma_node(&self) -> NodeId {
+    pub const fn gamma_node(&self) -> NodeId {
         self.gamma
     }
-    pub fn beta_node(&self) -> NodeId {
+    pub const fn beta_node(&self) -> NodeId {
         self.beta
     }
 
@@ -387,10 +387,10 @@ impl InstanceNormLayer {
         Ok(())
     }
 
-    pub fn gamma_node(&self) -> Option<NodeId> {
+    pub const fn gamma_node(&self) -> Option<NodeId> {
         self.gamma_node
     }
-    pub fn beta_node(&self) -> Option<NodeId> {
+    pub const fn beta_node(&self) -> Option<NodeId> {
         self.beta_node
     }
 

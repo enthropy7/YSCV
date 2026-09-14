@@ -34,7 +34,7 @@ impl SupervisedCsvConfig {
         Ok(self)
     }
 
-    pub fn with_header(mut self, has_header: bool) -> Self {
+    pub const fn with_header(mut self, has_header: bool) -> Self {
         self.has_header = has_header;
         self
     }
@@ -47,11 +47,11 @@ impl SupervisedCsvConfig {
         &self.target_shape
     }
 
-    pub fn delimiter(&self) -> char {
+    pub const fn delimiter(&self) -> char {
         self.delimiter
     }
 
-    pub fn has_header(&self) -> bool {
+    pub const fn has_header(&self) -> bool {
         self.has_header
     }
 }

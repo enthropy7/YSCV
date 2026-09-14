@@ -492,6 +492,6 @@ pub(crate) fn skip_scaling_list_data(reader: &mut BitstreamReader) -> Result<(),
 // ---------------------------------------------------------------------------
 
 /// Extract frame dimensions from HEVC SPS.
-pub fn hevc_frame_dimensions(sps: &HevcSps) -> (u32, u32) {
+pub const fn hevc_frame_dimensions(sps: &HevcSps) -> (u32, u32) {
     (sps.pic_width, sps.pic_height)
 }

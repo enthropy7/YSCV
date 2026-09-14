@@ -171,7 +171,7 @@ pub fn derive_beta(qp: u8) -> i32 {
 /// - `bs = 2`: at least one side is intra-coded.
 /// - `bs = 1`: different reference indices or motion-vector difference >= 1 integer pel.
 /// - `bs = 0`: no filtering.
-pub fn hevc_boundary_strength(
+pub const fn hevc_boundary_strength(
     is_intra_p: bool,
     is_intra_q: bool,
     ref_idx_p: i8,
@@ -1148,7 +1148,7 @@ fn apply_sao_edge_offset(
 /// Returns 0 (no offset), 1 (local min), 2 (partial min), 3 (partial max),
 /// 4 (local max).
 #[inline(always)]
-fn edge_category(c: i32, a: i32, b: i32) -> u8 {
+const fn edge_category(c: i32, a: i32, b: i32) -> u8 {
     let sign_a = (c - a).signum(); // -1, 0, +1
     let sign_b = (c - b).signum();
     match (sign_a, sign_b) {

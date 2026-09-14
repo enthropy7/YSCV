@@ -207,7 +207,7 @@ impl TensorBoardCallback {
     }
 
     /// Returns the current global step counter.
-    pub fn global_step(&self) -> i64 {
+    pub const fn global_step(&self) -> i64 {
         self.global_step
     }
 }

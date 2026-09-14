@@ -62,7 +62,7 @@ impl std::fmt::Display for HwBackend {
 
 /// Detect the best available hardware decode backend.
 #[allow(unreachable_code)]
-pub fn detect_hw_backend() -> HwBackend {
+pub const fn detect_hw_backend() -> HwBackend {
     #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
     {
         return HwBackend::VideoToolbox;
@@ -2510,7 +2510,7 @@ impl HwVideoDecoder {
         }
     }
 
-    pub fn backend(&self) -> HwBackend {
+    pub const fn backend(&self) -> HwBackend {
         self.backend
     }
     pub fn is_hardware(&self) -> bool {

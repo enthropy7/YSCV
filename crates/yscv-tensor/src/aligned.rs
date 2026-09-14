@@ -73,7 +73,7 @@ impl<T> Default for AlignedVec<T> {
 impl<T> AlignedVec<T> {
     /// Creates a new empty `AlignedVec` with no allocation.
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             ptr: std::ptr::NonNull::dangling().as_ptr(),
             len: 0,
@@ -116,32 +116,32 @@ impl<T> AlignedVec<T> {
 
     /// Returns the number of elements.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Returns `true` if the vec is empty.
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns a raw pointer to the aligned data.
     #[inline]
-    pub fn as_ptr(&self) -> *const T {
+    pub const fn as_ptr(&self) -> *const T {
         self.ptr
     }
 
     /// Returns a mutable raw pointer to the aligned data.
     #[inline]
-    pub fn as_mut_ptr(&mut self) -> *mut T {
+    pub const fn as_mut_ptr(&mut self) -> *mut T {
         self.ptr
     }
 
     /// Returns an immutable slice over the contained elements.
     #[inline]
     #[allow(unsafe_code)]
-    pub fn as_slice(&self) -> &[T] {
+    pub const fn as_slice(&self) -> &[T] {
         if self.len == 0 {
             return &[];
         }
@@ -152,7 +152,7 @@ impl<T> AlignedVec<T> {
     /// Returns a mutable slice over the contained elements.
     #[inline]
     #[allow(unsafe_code)]
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
+    pub const fn as_mut_slice(&mut self) -> &mut [T] {
         if self.len == 0 {
             return &mut [];
         }

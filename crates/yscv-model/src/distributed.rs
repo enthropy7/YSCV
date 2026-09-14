@@ -419,7 +419,7 @@ pub struct TopKCompressor {
 }
 
 impl TopKCompressor {
-    pub fn new(ratio: f32) -> Self {
+    pub const fn new(ratio: f32) -> Self {
         Self {
             ratio: ratio.clamp(0.0, 1.0),
         }
@@ -585,7 +585,7 @@ pub struct PipelineParallelConfig {
 }
 
 impl PipelineParallelConfig {
-    pub fn new(num_stages: usize, num_micro_batches: usize) -> Self {
+    pub const fn new(num_stages: usize, num_micro_batches: usize) -> Self {
         Self {
             num_stages,
             num_micro_batches,

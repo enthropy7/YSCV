@@ -60,19 +60,19 @@ impl Rgb8Frame {
         })
     }
 
-    pub fn index(&self) -> u64 {
+    pub const fn index(&self) -> u64 {
         self.index
     }
 
-    pub fn timestamp_us(&self) -> u64 {
+    pub const fn timestamp_us(&self) -> u64 {
         self.timestamp_us
     }
 
-    pub fn width(&self) -> usize {
+    pub const fn width(&self) -> usize {
         self.width
     }
 
-    pub fn height(&self) -> usize {
+    pub const fn height(&self) -> usize {
         self.height
     }
 
@@ -119,19 +119,19 @@ impl Frame {
         })
     }
 
-    pub fn index(&self) -> u64 {
+    pub const fn index(&self) -> u64 {
         self.index
     }
 
-    pub fn timestamp_us(&self) -> u64 {
+    pub const fn timestamp_us(&self) -> u64 {
         self.timestamp_us
     }
 
-    pub fn pixel_format(&self) -> PixelFormat {
+    pub const fn pixel_format(&self) -> PixelFormat {
         self.pixel_format
     }
 
-    pub fn image(&self) -> &Tensor {
+    pub const fn image(&self) -> &Tensor {
         &self.image
     }
 }

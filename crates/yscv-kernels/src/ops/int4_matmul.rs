@@ -27,7 +27,7 @@
 #![allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 
 #[inline]
-fn unpack_low(byte: u8) -> i8 {
+const fn unpack_low(byte: u8) -> i8 {
     // sign-extend low 4 bits: cast to i8 then arithmetic shift left 4
     // and right 4 to fill the upper bits with the sign.
     let v = (byte as i8) << 4;
@@ -35,7 +35,7 @@ fn unpack_low(byte: u8) -> i8 {
 }
 
 #[inline]
-fn unpack_high(byte: u8) -> i8 {
+const fn unpack_high(byte: u8) -> i8 {
     (byte as i8) >> 4
 }
 

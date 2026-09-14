@@ -623,7 +623,7 @@ pub(super) fn fast_atan2_scalar(y: f32, x: f32) -> f32 {
 // ── FP16 conversion utilities ──────────────────────────────────────
 
 /// Convert f32 to IEEE 754 half-precision (FP16) bit pattern.
-fn f32_to_fp16(val: f32) -> u16 {
+const fn f32_to_fp16(val: f32) -> u16 {
     let bits = val.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
     let exponent = ((bits >> 23) & 0xFF) as i32;
@@ -663,7 +663,7 @@ mod shape;
 mod advanced;
 
 /// Convert IEEE 754 half-precision (FP16) bit pattern to f32.
-fn fp16_to_f32(half: u16) -> f32 {
+const fn fp16_to_f32(half: u16) -> f32 {
     let sign = ((half & 0x8000) as u32) << 16;
     let exponent = (half >> 10) & 0x1F;
     let mantissa = (half & 0x03FF) as u32;

@@ -120,7 +120,7 @@ struct BitReader<'a> {
 }
 
 impl<'a> BitReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    const fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             pos: 0,
@@ -232,7 +232,7 @@ struct FrameHeader {
 /// Loeffler/Ligtenberg/Moschytz 8-point IDCT, fixed-point Q12.
 /// Operates in-place on a row/column of 8 i32 values.
 #[inline]
-fn idct_1d(data: &mut [i32; 8]) {
+const fn idct_1d(data: &mut [i32; 8]) {
     // Constants scaled to Q12 (multiply by 4096):
     // cos(pi/16)*sqrt(2) ≈ 1.3870 → 5681
     // cos(3pi/16)*sqrt(2) ≈ 1.1759 → 4816

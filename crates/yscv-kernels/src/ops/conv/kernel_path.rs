@@ -59,7 +59,7 @@ pub enum ConvKernelPath {
 
 impl ConvKernelPath {
     /// Stable short label for profiler output.
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             ConvKernelPath::FirstLayerRgb3x3 => "first-layer-rgb",
             ConvKernelPath::Winograd3x3 => "winograd-3x3",

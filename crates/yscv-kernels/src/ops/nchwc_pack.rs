@@ -67,27 +67,27 @@ impl PackedNChwBc {
     /// Kernel-column stride in floats (distance from `weight[ky][kx][b]` to
     /// `weight[ky][kx+1][b]`) = block.
     #[inline]
-    pub fn kernel_c_stride(&self) -> usize {
+    pub const fn kernel_c_stride(&self) -> usize {
         self.block
     }
 
     /// Kernel-row stride in floats (distance from `weight[ky][kx][b]` to
     /// `weight[ky+1][kx][b]`) = KW * block.
     #[inline]
-    pub fn kernel_row_stride(&self) -> usize {
+    pub const fn kernel_row_stride(&self) -> usize {
         self.kw * self.block
     }
 
     /// Whether dimensions match (guard against stale prepack).
     #[inline]
-    pub fn matches(&self, channels: usize, kh: usize, kw: usize) -> bool {
+    pub const fn matches(&self, channels: usize, kh: usize, kw: usize) -> bool {
         self.channels == channels && self.kh == kh && self.kw == kw
     }
 
     /// Raw packed weight data.  Layout: `[c_blocks * kh * kw * block]`.
     /// Offset of channel block `cb`: `cb * kh * kw * block`.
     #[inline]
-    pub fn raw_data(&self) -> &[f32] {
+    pub const fn raw_data(&self) -> &[f32] {
         self.data.as_slice()
     }
 }

@@ -102,7 +102,7 @@ const PREPACK_GROUPED: bool = !cfg!(any(feature = "metal-backend", feature = "gp
 /// Total, and the reason layout does not have to be selected separately from
 /// the kernel: every entry point falls into one of three families, and each
 /// family reads exactly one layout.
-fn layout_read_by(kernel: ConvKernel) -> Option<ConvWeightLayout> {
+const fn layout_read_by(kernel: ConvKernel) -> Option<ConvWeightLayout> {
     Some(match kernel {
         #[cfg(target_arch = "aarch64")]
         ConvKernel::IndirectNhwc3x3 => ConvWeightLayout::Khwc,

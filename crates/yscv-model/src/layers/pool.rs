@@ -13,7 +13,7 @@ pub struct MaxPool2dLayer {
 }
 
 impl MaxPool2dLayer {
-    pub fn new(
+    pub const fn new(
         kernel_h: usize,
         kernel_w: usize,
         stride_h: usize,
@@ -33,16 +33,16 @@ impl MaxPool2dLayer {
         })
     }
 
-    pub fn kernel_h(&self) -> usize {
+    pub const fn kernel_h(&self) -> usize {
         self.kernel_h
     }
-    pub fn kernel_w(&self) -> usize {
+    pub const fn kernel_w(&self) -> usize {
         self.kernel_w
     }
-    pub fn stride_h(&self) -> usize {
+    pub const fn stride_h(&self) -> usize {
         self.stride_h
     }
-    pub fn stride_w(&self) -> usize {
+    pub const fn stride_w(&self) -> usize {
         self.stride_w
     }
 
@@ -80,7 +80,7 @@ pub struct AvgPool2dLayer {
 }
 
 impl AvgPool2dLayer {
-    pub fn new(
+    pub const fn new(
         kernel_h: usize,
         kernel_w: usize,
         stride_h: usize,
@@ -100,16 +100,16 @@ impl AvgPool2dLayer {
         })
     }
 
-    pub fn kernel_h(&self) -> usize {
+    pub const fn kernel_h(&self) -> usize {
         self.kernel_h
     }
-    pub fn kernel_w(&self) -> usize {
+    pub const fn kernel_w(&self) -> usize {
         self.kernel_w
     }
-    pub fn stride_h(&self) -> usize {
+    pub const fn stride_h(&self) -> usize {
         self.stride_h
     }
-    pub fn stride_w(&self) -> usize {
+    pub const fn stride_w(&self) -> usize {
         self.stride_w
     }
 
@@ -142,7 +142,7 @@ impl AvgPool2dLayer {
 pub struct GlobalAvgPool2dLayer;
 
 impl GlobalAvgPool2dLayer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -191,14 +191,14 @@ pub struct AdaptiveAvgPool2dLayer {
 }
 
 impl AdaptiveAvgPool2dLayer {
-    pub fn new(out_h: usize, out_w: usize) -> Self {
+    pub const fn new(out_h: usize, out_w: usize) -> Self {
         Self { out_h, out_w }
     }
 
-    pub fn output_h(&self) -> usize {
+    pub const fn output_h(&self) -> usize {
         self.out_h
     }
-    pub fn output_w(&self) -> usize {
+    pub const fn output_w(&self) -> usize {
         self.out_w
     }
 
@@ -256,14 +256,14 @@ pub struct AdaptiveMaxPool2dLayer {
 }
 
 impl AdaptiveMaxPool2dLayer {
-    pub fn new(out_h: usize, out_w: usize) -> Self {
+    pub const fn new(out_h: usize, out_w: usize) -> Self {
         Self { out_h, out_w }
     }
 
-    pub fn output_h(&self) -> usize {
+    pub const fn output_h(&self) -> usize {
         self.out_h
     }
-    pub fn output_w(&self) -> usize {
+    pub const fn output_w(&self) -> usize {
         self.out_w
     }
 

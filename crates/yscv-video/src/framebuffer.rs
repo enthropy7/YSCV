@@ -234,7 +234,7 @@ mod linux_impl {
             Ok(())
         }
 
-        pub fn stride(&self) -> u32 {
+        pub const fn stride(&self) -> u32 {
             self.stride
         }
 
@@ -248,24 +248,24 @@ mod linux_impl {
         /// both at once by writing here directly. The layout is [`Self::stride`]
         /// bytes per row at [`Self::bpp`] bits per pixel; `&mut self` is what
         /// makes handing out the mapping safe.
-        pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+        pub const fn as_mut_bytes(&mut self) -> &mut [u8] {
             // SAFETY: the mapping is valid for the lifetime of `self`, and `&mut
             // self` guarantees no other reference to it exists.
             unsafe { std::slice::from_raw_parts_mut(self.mmap_ptr, self.mmap_len) }
         }
 
         /// Framebuffer display width in pixels.
-        pub fn width(&self) -> u32 {
+        pub const fn width(&self) -> u32 {
             self.width
         }
 
         /// Framebuffer display height in pixels.
-        pub fn height(&self) -> u32 {
+        pub const fn height(&self) -> u32 {
             self.height
         }
 
         /// Bits per pixel (16, 24, or 32).
-        pub fn bpp(&self) -> u8 {
+        pub const fn bpp(&self) -> u8 {
             self.bpp
         }
 

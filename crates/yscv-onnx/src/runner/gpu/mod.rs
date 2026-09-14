@@ -664,12 +664,12 @@ pub struct CompiledGpuPlan {
 
 impl CompiledGpuPlan {
     /// Number of recorded GPU operations.
-    pub fn ops_count(&self) -> usize {
+    pub const fn ops_count(&self) -> usize {
         self.ops.len()
     }
 
     /// Input buffer handle (for manual timing breakdown).
-    pub fn input_buf(&self) -> &GpuBuffer {
+    pub const fn input_buf(&self) -> &GpuBuffer {
         &self.input_buf
     }
 

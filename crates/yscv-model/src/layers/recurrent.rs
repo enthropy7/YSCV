@@ -56,7 +56,7 @@ impl RnnLayer {
         Tensor::from_vec(shape, data).expect("valid tensor")
     }
 
-    pub fn w_ih_node(&self) -> Option<NodeId> {
+    pub const fn w_ih_node(&self) -> Option<NodeId> {
         self.w_ih_node
     }
 
@@ -144,7 +144,7 @@ impl LstmLayer {
         }
     }
 
-    pub fn w_ih_node(&self) -> Option<NodeId> {
+    pub const fn w_ih_node(&self) -> Option<NodeId> {
         self.w_ih_node
     }
 
@@ -227,7 +227,7 @@ impl GruLayer {
         }
     }
 
-    pub fn w_ih_node(&self) -> Option<NodeId> {
+    pub const fn w_ih_node(&self) -> Option<NodeId> {
         self.w_ih_node
     }
 

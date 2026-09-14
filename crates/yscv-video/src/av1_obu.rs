@@ -45,7 +45,7 @@ pub enum Av1ObuType {
 
 impl Av1ObuType {
     /// Map a raw 4-bit type field to the enum.
-    pub fn from_raw(raw: u8) -> Self {
+    pub const fn from_raw(raw: u8) -> Self {
         match raw {
             0 => Self::Reserved,
             1 => Self::SequenceHeader,
@@ -62,7 +62,7 @@ impl Av1ObuType {
     }
 
     /// Convert back to the raw 4-bit type field.
-    pub fn to_raw(self) -> u8 {
+    pub const fn to_raw(self) -> u8 {
         match self {
             Self::Reserved => 0,
             Self::SequenceHeader => 1,
@@ -238,7 +238,7 @@ pub enum Av1ColorPrimaries {
 }
 
 impl Av1ColorPrimaries {
-    fn from_raw(v: u8) -> Self {
+    const fn from_raw(v: u8) -> Self {
         match v {
             1 => Self::Bt709,
             2 => Self::Unspecified,
@@ -268,7 +268,7 @@ pub enum Av1ChromaSamplePosition {
 }
 
 impl Av1ChromaSamplePosition {
-    fn from_raw(v: u8) -> Self {
+    const fn from_raw(v: u8) -> Self {
         match v {
             0 => Self::Unknown,
             1 => Self::Vertical,
@@ -359,17 +359,17 @@ pub struct Av1SequenceHeader {
 
 impl Av1SequenceHeader {
     /// Superblock size in pixels (64 or 128).
-    pub fn sb_size(&self) -> usize {
+    pub const fn sb_size(&self) -> usize {
         if self.use_128x128_superblock { 128 } else { 64 }
     }
 
     /// Number of planes (1 for monochrome, 3 otherwise).
-    pub fn num_planes(&self) -> usize {
+    pub const fn num_planes(&self) -> usize {
         if self.monochrome { 1 } else { 3 }
     }
 
     /// Maximum sample value for the configured bit depth.
-    pub fn max_sample_value(&self) -> i32 {
+    pub const fn max_sample_value(&self) -> i32 {
         (1i32 << self.bit_depth) - 1
     }
 }
@@ -670,7 +670,7 @@ impl Av1FrameType {
     }
 
     /// Whether this frame type uses only intra prediction.
-    pub fn is_intra(self) -> bool {
+    pub const fn is_intra(self) -> bool {
         matches!(self, Self::KeyFrame | Self::IntraOnlyFrame)
     }
 }
@@ -1472,7 +1472,7 @@ fn read_ns(r: &mut BitstreamReader<'_>, n: u32) -> Result<u32, VideoError> {
 // ---------------------------------------------------------------------------
 
 /// Compute the minimum number of bits needed so that `(1 << result) >= target`.
-fn tile_log2(blk_size: u32, target: u32) -> u32 {
+const fn tile_log2(blk_size: u32, target: u32) -> u32 {
     let mut k = 0u32;
     let mut val = blk_size;
     while val < target {

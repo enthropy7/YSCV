@@ -87,7 +87,7 @@ pub enum NalUnitType {
 }
 
 impl NalUnitType {
-    pub fn from_byte(b: u8) -> Self {
+    pub const fn from_byte(b: u8) -> Self {
         match b & 0x1F {
             1 => NalUnitType::Slice,
             2 => NalUnitType::SliceA,
@@ -102,7 +102,7 @@ impl NalUnitType {
         }
     }
 
-    pub fn is_vcl(&self) -> bool {
+    pub const fn is_vcl(&self) -> bool {
         matches!(
             self,
             NalUnitType::Slice

@@ -103,7 +103,7 @@ pub fn graph_cost(model: &OnnxModel, shapes: &ShapeInference) -> GraphCost {
     }
 }
 
-pub fn graph_cost_diff(before: &GraphCost, after: &GraphCost) -> GraphCostDiff {
+pub const fn graph_cost_diff(before: &GraphCost, after: &GraphCost) -> GraphCostDiff {
     GraphCostDiff {
         before_score: before.score,
         after_score: after.score,
@@ -468,7 +468,7 @@ fn stable_node_key(node: &NodeCost) -> String {
     )
 }
 
-fn printable_field(s: &str) -> &str {
+const fn printable_field(s: &str) -> &str {
     if s.is_empty() { "-" } else { s }
 }
 

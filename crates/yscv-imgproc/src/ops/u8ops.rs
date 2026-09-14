@@ -101,19 +101,19 @@ impl ImageU8 {
     pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.data
     }
-    pub fn height(&self) -> usize {
+    pub const fn height(&self) -> usize {
         self.height
     }
-    pub fn width(&self) -> usize {
+    pub const fn width(&self) -> usize {
         self.width
     }
-    pub fn channels(&self) -> usize {
+    pub const fn channels(&self) -> usize {
         self.channels
     }
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
@@ -189,19 +189,19 @@ impl ImageF32 {
     pub fn data_mut(&mut self) -> &mut [f32] {
         &mut self.data
     }
-    pub fn height(&self) -> usize {
+    pub const fn height(&self) -> usize {
         self.height
     }
-    pub fn width(&self) -> usize {
+    pub const fn width(&self) -> usize {
         self.width
     }
-    pub fn channels(&self) -> usize {
+    pub const fn channels(&self) -> usize {
         self.channels
     }
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 

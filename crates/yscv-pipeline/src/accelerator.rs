@@ -125,7 +125,7 @@ impl Accelerator {
 
     /// Cargo feature flag the user would have to enable to make this
     /// accelerator buildable. CPU is always available.
-    pub fn feature_hint(&self) -> &'static str {
+    pub const fn feature_hint(&self) -> &'static str {
         match self {
             Accelerator::Cpu => "(none — CPU is always available)",
             Accelerator::Gpu => "gpu",
@@ -178,7 +178,7 @@ fn probe_rknn() -> bool {
 
 impl AcceleratorAvailability {
     /// Check whether the given accelerator is usable on this host.
-    pub fn supports(&self, acc: &Accelerator) -> bool {
+    pub const fn supports(&self, acc: &Accelerator) -> bool {
         match acc {
             Accelerator::Cpu => self.cpu,
             Accelerator::Gpu => self.gpu,

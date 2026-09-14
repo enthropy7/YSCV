@@ -321,7 +321,7 @@ pub(super) fn class_balanced_sampling_weights(targets: &Tensor) -> Result<Vec<f3
     Ok(weights)
 }
 
-pub(super) fn shuffle_indices(indices: &mut [usize], seed: u64) {
+pub(super) const fn shuffle_indices(indices: &mut [usize], seed: u64) {
     let mut rng = LcgRng::new(seed);
     let mut index = indices.len();
     while index > 1 {
@@ -350,11 +350,11 @@ impl LcgRng {
     const MULTIPLIER: u64 = 6364136223846793005;
     const INCREMENT: u64 = 1;
 
-    pub(super) fn new(seed: u64) -> Self {
+    pub(super) const fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
-    pub(super) fn next_u64(&mut self) -> u64 {
+    pub(super) const fn next_u64(&mut self) -> u64 {
         self.state = self
             .state
             .wrapping_mul(Self::MULTIPLIER)
@@ -370,7 +370,7 @@ impl LcgRng {
         (self.next_u64() as f64 + 1.0) / (u64::MAX as f64 + 2.0)
     }
 
-    pub(super) fn next_usize(&mut self, upper_exclusive: usize) -> usize {
+    pub(super) const fn next_usize(&mut self, upper_exclusive: usize) -> usize {
         if upper_exclusive == 0 {
             return 0;
         }

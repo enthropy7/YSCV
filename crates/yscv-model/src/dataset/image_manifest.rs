@@ -65,7 +65,7 @@ impl SupervisedImageManifestConfig {
         Ok(self)
     }
 
-    pub fn with_header(mut self, has_header: bool) -> Self {
+    pub const fn with_header(mut self, has_header: bool) -> Self {
         self.has_header = has_header;
         self
     }
@@ -74,11 +74,11 @@ impl SupervisedImageManifestConfig {
         &self.target_shape
     }
 
-    pub fn output_height(&self) -> usize {
+    pub const fn output_height(&self) -> usize {
         self.output_height
     }
 
-    pub fn output_width(&self) -> usize {
+    pub const fn output_width(&self) -> usize {
         self.output_width
     }
 
@@ -86,11 +86,11 @@ impl SupervisedImageManifestConfig {
         &self.image_root
     }
 
-    pub fn delimiter(&self) -> char {
+    pub const fn delimiter(&self) -> char {
         self.delimiter
     }
 
-    pub fn has_header(&self) -> bool {
+    pub const fn has_header(&self) -> bool {
         self.has_header
     }
 }

@@ -29,7 +29,7 @@ impl Recognizer {
         })
     }
 
-    pub fn threshold(&self) -> f32 {
+    pub const fn threshold(&self) -> f32 {
         self.threshold
     }
 
@@ -269,7 +269,7 @@ impl Recognizer {
         }
     }
 
-    fn enforce_dim(&mut self, dim: usize) -> Result<(), RecognizeError> {
+    const fn enforce_dim(&mut self, dim: usize) -> Result<(), RecognizeError> {
         if let Some(expected_dim) = self.embedding_dim {
             if expected_dim != dim {
                 return Err(RecognizeError::EmbeddingDimMismatch {

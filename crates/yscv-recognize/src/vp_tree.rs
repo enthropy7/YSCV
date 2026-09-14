@@ -25,7 +25,7 @@ pub struct KnnResult {
 
 impl VpTree {
     /// Create an empty VP-tree.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             nodes: Vec::new(),
             embeddings: Vec::new(),
@@ -177,12 +177,12 @@ impl VpTree {
     }
 
     /// Number of embeddings in the tree.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.embeddings.len()
     }
 
     /// Whether the tree is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.embeddings.is_empty()
     }
 }

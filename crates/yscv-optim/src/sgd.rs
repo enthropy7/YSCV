@@ -69,7 +69,7 @@ impl Sgd {
     }
 
     /// Returns current learning rate.
-    pub fn learning_rate(&self) -> f32 {
+    pub const fn learning_rate(&self) -> f32 {
         self.lr
     }
 

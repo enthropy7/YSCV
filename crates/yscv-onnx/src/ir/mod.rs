@@ -53,13 +53,13 @@ pub(crate) struct NodeId(pub(crate) u32);
 pub(crate) struct ValueId(pub(crate) u32);
 
 impl NodeId {
-    fn idx(self) -> usize {
+    const fn idx(self) -> usize {
         self.0 as usize
     }
 }
 
 impl ValueId {
-    fn idx(self) -> usize {
+    const fn idx(self) -> usize {
         self.0 as usize
     }
 }
@@ -160,7 +160,7 @@ impl Graph {
 
     /// Total number of values, live or orphaned. Lowering walks this range to
     /// collect constants.
-    pub(crate) fn value_count(&self) -> usize {
+    pub(crate) const fn value_count(&self) -> usize {
         self.values.len()
     }
 

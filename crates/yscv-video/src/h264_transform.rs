@@ -286,7 +286,7 @@ pub fn inverse_dct_8x8(coeffs: &mut [i32; 64]) {
     // One 1D inverse transform (clause 8.5.13.2), three butterfly stages; the
     // middle stage's `>> 2` refinements are what distinguish it from the 4x4.
     #[inline]
-    fn idct8_1d(e: [i32; 8]) -> [i32; 8] {
+    const fn idct8_1d(e: [i32; 8]) -> [i32; 8] {
         let a0 = e[0] + e[4];
         let a4 = e[0] - e[4];
         let a2 = (e[2] >> 1) - e[6];

@@ -60,7 +60,7 @@ pub enum LossKind {
 }
 
 impl LossKind {
-    fn to_supervised_loss(self) -> SupervisedLoss {
+    const fn to_supervised_loss(self) -> SupervisedLoss {
         match self {
             LossKind::Mse => SupervisedLoss::Mse,
             LossKind::CrossEntropy => SupervisedLoss::CrossEntropy,

@@ -23,7 +23,7 @@ pub struct SequentialModel {
 
 impl SequentialModel {
     /// Creates an empty model and records current graph prefix as persistent base.
-    pub fn new(graph: &Graph) -> Self {
+    pub const fn new(graph: &Graph) -> Self {
         Self {
             layers: Vec::new(),
             frozen: Vec::new(),
@@ -507,7 +507,7 @@ impl SequentialModel {
     }
 
     /// Returns whether the model is in training mode.
-    pub fn is_training(&self) -> bool {
+    pub const fn is_training(&self) -> bool {
         self.training
     }
 
@@ -1355,7 +1355,7 @@ impl SequentialModel {
         out
     }
 
-    pub fn persistent_node_count(&self) -> usize {
+    pub const fn persistent_node_count(&self) -> usize {
         self.persistent_node_count
     }
 

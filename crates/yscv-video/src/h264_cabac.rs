@@ -302,7 +302,7 @@ impl<'a> CabacDecoder<'a> {
     /// arithmetic engine has read the 9-bit `codIOffset` window ahead of the
     /// logical position, so the aligned PCM start is 7 bits back, rounded up
     /// to the next byte boundary.
-    pub fn align_to_byte(&mut self) {
+    pub const fn align_to_byte(&mut self) {
         // `offset` has read ahead into the reservoir; `bit_cnt` bits remain
         // unconsumed, so the logical bit position is `offset*8 - bit_cnt`.
         let logical = self.offset * 8 - self.bit_cnt as usize;
@@ -820,7 +820,7 @@ pub enum EntropyCodingMode {
 
 impl EntropyCodingMode {
     /// Determine entropy coding mode from `entropy_coding_mode_flag`.
-    pub fn from_flag(flag: bool) -> Self {
+    pub const fn from_flag(flag: bool) -> Self {
         if flag {
             EntropyCodingMode::Cabac
         } else {

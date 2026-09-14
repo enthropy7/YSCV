@@ -106,7 +106,7 @@ pub struct OsdSpec {
     pub glyph_size: u32,
 }
 
-fn default_glyph_size() -> u32 {
+const fn default_glyph_size() -> u32 {
     12
 }
 

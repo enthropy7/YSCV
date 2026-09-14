@@ -92,12 +92,12 @@ impl RawVideoReader {
     }
 
     /// Resets to the beginning.
-    pub fn seek_start(&mut self) {
+    pub const fn seek_start(&mut self) {
         self.current_frame = 0;
     }
 
     /// Returns the frame count.
-    pub fn frame_count(&self) -> u32 {
+    pub const fn frame_count(&self) -> u32 {
         self.meta.frame_count
     }
 }
@@ -111,7 +111,7 @@ pub struct RawVideoWriter {
 }
 
 impl RawVideoWriter {
-    pub fn new(width: u32, height: u32, fps: f32) -> Self {
+    pub const fn new(width: u32, height: u32, fps: f32) -> Self {
         Self {
             width,
             height,
@@ -155,7 +155,7 @@ impl RawVideoWriter {
         Ok(())
     }
 
-    pub fn frame_count(&self) -> usize {
+    pub const fn frame_count(&self) -> usize {
         self.frames.len()
     }
 }
@@ -172,7 +172,7 @@ pub struct ImageSequenceReader {
 
 impl ImageSequenceReader {
     /// Creates a reader from a sorted list of image file paths.
-    pub fn from_paths(paths: Vec<std::path::PathBuf>) -> Self {
+    pub const fn from_paths(paths: Vec<std::path::PathBuf>) -> Self {
         Self {
             width: 0,
             height: 0,
@@ -182,12 +182,12 @@ impl ImageSequenceReader {
     }
 
     /// Returns the total number of frames.
-    pub fn frame_count(&self) -> usize {
+    pub const fn frame_count(&self) -> usize {
         self.paths.len()
     }
 
     /// Resets to the beginning.
-    pub fn seek_start(&mut self) {
+    pub const fn seek_start(&mut self) {
         self.current = 0;
     }
 
@@ -422,7 +422,7 @@ impl Mp4VideoReader {
     }
 
     /// Which hardware backend is being used (Software if no HW).
-    pub fn hw_backend(&self) -> super::hw_decode::HwBackend {
+    pub const fn hw_backend(&self) -> super::hw_decode::HwBackend {
         match &self.decoder {
             Mp4Decoder::Hw(hw) => hw.backend(),
             _ => super::hw_decode::HwBackend::Software,
@@ -604,12 +604,12 @@ impl Mp4VideoReader {
     }
 
     /// Total number of video samples (approximately = frame count).
-    pub fn nal_count(&self) -> usize {
+    pub const fn nal_count(&self) -> usize {
         self.sample_table.len()
     }
 
     /// Returns the detected video codec.
-    pub fn codec(&self) -> super::codec::VideoCodec {
+    pub const fn codec(&self) -> super::codec::VideoCodec {
         match self.codec {
             Mp4Codec::H264 => super::codec::VideoCodec::H264,
             Mp4Codec::Hevc => super::codec::VideoCodec::H265,
@@ -618,7 +618,7 @@ impl Mp4VideoReader {
     }
 
     /// Audio track info, if the MP4 contains an audio track.
-    pub fn audio_info(&self) -> Option<&super::audio::AudioTrackInfo> {
+    pub const fn audio_info(&self) -> Option<&super::audio::AudioTrackInfo> {
         self.audio.as_ref()
     }
 }

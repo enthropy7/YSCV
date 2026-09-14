@@ -64,7 +64,7 @@ pub(crate) fn validate_nms_args(
     Ok(())
 }
 
-fn is_finite_detection(detection: &Detection) -> bool {
+const fn is_finite_detection(detection: &Detection) -> bool {
     detection.score.is_finite()
         && detection.bbox.x1.is_finite()
         && detection.bbox.y1.is_finite()

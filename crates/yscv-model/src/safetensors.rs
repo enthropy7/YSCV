@@ -28,7 +28,7 @@ pub enum SafeTensorDType {
 
 impl SafeTensorDType {
     /// Number of bytes per element.
-    fn element_size(self) -> usize {
+    const fn element_size(self) -> usize {
         match self {
             Self::F32 | Self::I32 => 4,
             Self::F16 | Self::BF16 => 2,

@@ -1368,7 +1368,7 @@ pub(crate) fn build_runtime_index(
         t.data().iter().map(|&v| v.round() as i8).collect()
     }
 
-    fn should_prepack_i8_b(k: usize, n: usize) -> bool {
+    const fn should_prepack_i8_b(k: usize, n: usize) -> bool {
         // Load-time packing now carries the AVX-512 VNNI 4x16 layout in
         // addition to transposed-B, so tracker pointwise Conv (small K/N,
         // huge M) can skip per-inference RHS packing. Keep the previous

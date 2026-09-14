@@ -84,13 +84,13 @@ pub enum HevcNalUnitType {
 }
 
 impl HevcNalUnitType {
-    pub fn from_header(header: &[u8]) -> Self {
+    pub const fn from_header(header: &[u8]) -> Self {
         if header.is_empty() {
             return Self::Other(0);
         }
         Self::from_type_byte((header[0] >> 1) & 0x3F)
     }
-    fn from_type_byte(t: u8) -> Self {
+    const fn from_type_byte(t: u8) -> Self {
         match t {
             0 => Self::TrailN,
             1 => Self::TrailR,
@@ -120,7 +120,7 @@ impl HevcNalUnitType {
             other => Self::Other(other),
         }
     }
-    pub fn is_vcl(&self) -> bool {
+    pub const fn is_vcl(&self) -> bool {
         matches!(
             self,
             Self::TrailN
@@ -141,7 +141,7 @@ impl HevcNalUnitType {
                 | Self::CraNut
         )
     }
-    pub fn is_idr(&self) -> bool {
+    pub const fn is_idr(&self) -> bool {
         matches!(self, Self::IdrWRadl | Self::IdrNLp)
     }
 }
@@ -194,7 +194,7 @@ pub struct HevcSps {
 
 impl HevcSps {
     /// Chroma horizontal subsampling factor (2 for 4:2:0/4:2:2, 1 for 4:4:4/mono).
-    pub fn sub_width_c(&self) -> usize {
+    pub const fn sub_width_c(&self) -> usize {
         match self.chroma_format_idc {
             1 | 2 => 2,
             _ => 1,
@@ -202,7 +202,7 @@ impl HevcSps {
     }
 
     /// Chroma vertical subsampling factor (2 for 4:2:0, 1 for 4:2:2/4:4:4/mono).
-    pub fn sub_height_c(&self) -> usize {
+    pub const fn sub_height_c(&self) -> usize {
         match self.chroma_format_idc {
             1 => 2,
             _ => 1,
@@ -211,7 +211,7 @@ impl HevcSps {
 
     /// Effective chroma array type: 0 when separate colour planes are used,
     /// otherwise equal to `chroma_format_idc`.
-    pub fn chroma_array_type(&self) -> u8 {
+    pub const fn chroma_array_type(&self) -> u8 {
         if self.separate_colour_plane_flag {
             0
         } else {
@@ -851,7 +851,7 @@ fn skip_scaling_list_data(reader: &mut BitstreamReader) -> Result<(), VideoError
 // ---------------------------------------------------------------------------
 
 /// Extract frame dimensions from HEVC SPS.
-pub fn hevc_frame_dimensions(sps: &HevcSps) -> (u32, u32) {
+pub const fn hevc_frame_dimensions(sps: &HevcSps) -> (u32, u32) {
     (sps.pic_width, sps.pic_height)
 }
 
@@ -902,7 +902,7 @@ pub enum HevcIntraMode {
 
 impl HevcIntraMode {
     /// Convert from a raw mode index (0..=34).
-    pub fn from_index(idx: u8) -> Option<Self> {
+    pub const fn from_index(idx: u8) -> Option<Self> {
         match idx {
             0 => Some(Self::Planar),
             1 => Some(Self::Dc),
@@ -1749,12 +1749,12 @@ impl HevcDecoder {
     }
 
     /// Current SPS, if any.
-    pub fn sps(&self) -> Option<&HevcSps> {
+    pub const fn sps(&self) -> Option<&HevcSps> {
         self.sps.as_ref()
     }
 
     /// Current PPS, if any.
-    pub fn pps(&self) -> Option<&HevcPps> {
+    pub const fn pps(&self) -> Option<&HevcPps> {
         self.pps.as_ref()
     }
 

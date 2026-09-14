@@ -21,7 +21,7 @@ pub struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     /// Creates a new `BitReader` over the given byte slice.
-    pub fn new(data: &'a [u8]) -> Self {
+    pub const fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             byte_pos: 0,
@@ -31,7 +31,7 @@ impl<'a> BitReader<'a> {
 
     /// Creates a `BitReader` positioned mid-stream (continuing after a
     /// header parsed by another reader).
-    pub fn new_at(data: &'a [u8], byte_pos: usize, bit_pos: u8) -> Self {
+    pub const fn new_at(data: &'a [u8], byte_pos: usize, bit_pos: u8) -> Self {
         Self {
             data,
             byte_pos,
@@ -40,7 +40,7 @@ impl<'a> BitReader<'a> {
     }
 
     /// Skips to the next byte boundary (I_PCM alignment).
-    pub fn align_byte(&mut self) {
+    pub const fn align_byte(&mut self) {
         if self.bit_pos != 0 {
             self.consume(8 - self.bit_pos);
         }
@@ -60,7 +60,7 @@ impl<'a> BitReader<'a> {
     }
 
     /// Returns the number of unconsumed bits remaining.
-    pub fn bits_remaining(&self) -> usize {
+    pub const fn bits_remaining(&self) -> usize {
         if self.byte_pos >= self.data.len() {
             return 0;
         }
@@ -110,7 +110,7 @@ impl<'a> BitReader<'a> {
     }
 
     /// Consume (skip) `n` bits.
-    pub fn consume(&mut self, n: u8) {
+    pub const fn consume(&mut self, n: u8) {
         let total = self.byte_pos * 8 + self.bit_pos as usize + n as usize;
         self.byte_pos = total / 8;
         self.bit_pos = (total % 8) as u8;

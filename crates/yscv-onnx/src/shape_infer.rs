@@ -30,7 +30,7 @@ impl TensorShape {
         }
     }
 
-    pub fn rank(&self) -> usize {
+    pub const fn rank(&self) -> usize {
         self.dims.len()
     }
 
@@ -284,7 +284,7 @@ fn infer_conv(
     }])
 }
 
-fn conv_output_dim(
+const fn conv_output_dim(
     input: Dim,
     kernel: usize,
     stride: usize,
@@ -764,7 +764,7 @@ fn node_axes(model: &OnnxModel, node: &OnnxNode) -> Result<Vec<i64>, ShapeError>
     Ok(Vec::new())
 }
 
-fn normalize_axis(axis: i64, rank: usize) -> Result<usize, ShapeError> {
+const fn normalize_axis(axis: i64, rank: usize) -> Result<usize, ShapeError> {
     let normalized = if axis < 0 { rank as i64 + axis } else { axis };
     if normalized < 0 || normalized >= rank as i64 {
         return Err(ShapeError::AxisOutOfRange { axis, rank });

@@ -119,7 +119,7 @@ impl ParallelScope for YscvPool {
         struct PtrWrap(*mut f32);
         impl PtrWrap {
             #[inline]
-            fn as_ptr(&self) -> *mut f32 {
+            const fn as_ptr(&self) -> *mut f32 {
                 self.0
             }
         }

@@ -73,13 +73,13 @@ impl MinMax {
     }
 
     /// True if no values have been recorded yet.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Symmetric absolute bound `max(|min|, |max|)`. Useful for symmetric
     /// quantization where `scale = abs_max / 127.0`. Returns 0.0 if empty.
-    pub fn abs_max(&self) -> f32 {
+    pub const fn abs_max(&self) -> f32 {
         if self.is_empty() {
             return 0.0;
         }
@@ -166,7 +166,7 @@ impl Histogram {
     }
 
     /// True if no values have been recorded yet.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 }

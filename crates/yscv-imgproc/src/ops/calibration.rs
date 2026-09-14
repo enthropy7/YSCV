@@ -21,7 +21,7 @@ pub struct CameraIntrinsics {
 
 impl CameraIntrinsics {
     /// Create intrinsics with zero distortion.
-    pub fn new(fx: f32, fy: f32, cx: f32, cy: f32) -> Self {
+    pub const fn new(fx: f32, fy: f32, cx: f32, cy: f32) -> Self {
         Self {
             fx,
             fy,

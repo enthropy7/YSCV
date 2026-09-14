@@ -14,7 +14,7 @@ pub struct ExponentialMovingAverage {
 
 impl ExponentialMovingAverage {
     /// Creates a new EMA tracker with the given decay factor (e.g. 0.999).
-    pub fn new(decay: f32) -> Self {
+    pub const fn new(decay: f32) -> Self {
         Self {
             decay,
             shadow_params: Vec::new(),
@@ -77,7 +77,7 @@ impl ExponentialMovingAverage {
     }
 
     /// Returns the number of update steps performed so far.
-    pub fn num_updates(&self) -> usize {
+    pub const fn num_updates(&self) -> usize {
         self.num_updates
     }
 }

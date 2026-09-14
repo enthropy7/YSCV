@@ -203,13 +203,13 @@ impl ContextModel {
 
     /// Pack state and mps into a single u8: `state | (mps << 6)`.
     #[inline(always)]
-    pub fn packed(&self) -> u8 {
+    pub const fn packed(&self) -> u8 {
         self.state | (self.mps << 6)
     }
 
     /// Unpack from a packed u8.
     #[inline(always)]
-    pub fn unpack(packed: u8) -> Self {
+    pub const fn unpack(packed: u8) -> Self {
         ContextModel {
             state: packed & 63,
             mps: (packed >> 6) & 1,
@@ -263,7 +263,7 @@ impl<'a> CabacDecoder<'a> {
     /// Refill bit buffer — load up to 4 bytes using unchecked access.
     #[inline(always)]
     #[allow(unsafe_code)]
-    fn refill(&mut self) {
+    const fn refill(&mut self) {
         unsafe {
             let len = self.data.len();
             let ptr = self.data.as_ptr();
@@ -277,7 +277,7 @@ impl<'a> CabacDecoder<'a> {
 
     /// Read a single bit from the buffered bitstream.
     #[inline(always)]
-    fn read_bit(&mut self) -> u32 {
+    const fn read_bit(&mut self) -> u32 {
         if self.bits_left == 0 {
             self.refill();
             if self.bits_left == 0 {
@@ -373,7 +373,7 @@ impl<'a> CabacDecoder<'a> {
     /// Decode one bin in bypass mode — branchless, unchecked.
     #[inline(always)]
     #[allow(unsafe_code)]
-    pub fn decode_bypass(&mut self) -> bool {
+    pub const fn decode_bypass(&mut self) -> bool {
         self.value = (self.value << 1) | self.read_bit();
         let is_one = (self.value >= self.range) as u32;
         self.value -= self.range & 0u32.wrapping_sub(is_one);
@@ -393,7 +393,7 @@ impl<'a> CabacDecoder<'a> {
     }
 
     /// Returns the number of unconsumed bytes remaining in the input.
-    pub fn bytes_remaining(&self) -> usize {
+    pub const fn bytes_remaining(&self) -> usize {
         let consumed = self.offset;
         let partial = if self.bits_left > 0 { 1 } else { 0 };
         self.data.len().saturating_sub(consumed) + partial
@@ -412,7 +412,7 @@ impl<'a> CabacDecoder<'a> {
     }
 
     /// Return the current byte offset into the underlying data slice.
-    pub fn current_byte_offset(&self) -> usize {
+    pub const fn current_byte_offset(&self) -> usize {
         // Subtract any bytes still buffered but not yet consumed.
         let buffered_bytes = (self.bits_left / 8) as usize;
         self.offset.saturating_sub(buffered_bytes)
@@ -421,7 +421,7 @@ impl<'a> CabacDecoder<'a> {
     /// Byte-align the decoder by discarding any partial bits remaining
     /// in the bit buffer. After this call, the next read starts at a
     /// byte-aligned position.
-    pub fn byte_align(&mut self) {
+    pub const fn byte_align(&mut self) {
         let discard = self.bits_left % 8;
         if discard > 0 {
             self.bits_left -= discard;

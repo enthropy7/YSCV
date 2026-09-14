@@ -199,7 +199,7 @@ impl ModelHub {
     }
 
     /// Returns a reference to the internal registry.
-    pub fn registry(&self) -> &FxHashMap<String, HubEntry> {
+    pub const fn registry(&self) -> &FxHashMap<String, HubEntry> {
         &self.registry
     }
 

@@ -38,7 +38,7 @@ pub struct DynamicLossScaler {
 }
 
 impl DynamicLossScaler {
-    pub fn new(initial_scale: f32) -> Self {
+    pub const fn new(initial_scale: f32) -> Self {
         Self {
             current_scale: initial_scale,
             growth_factor: 2.0,
@@ -48,7 +48,7 @@ impl DynamicLossScaler {
         }
     }
 
-    pub fn scale(&self) -> f32 {
+    pub const fn scale(&self) -> f32 {
         self.current_scale
     }
 

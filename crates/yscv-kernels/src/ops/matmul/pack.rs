@@ -339,14 +339,14 @@ impl PackedB {
     }
 
     #[inline]
-    pub(crate) fn matches(&self, k: usize, n: usize) -> bool {
+    pub(crate) const fn matches(&self, k: usize, n: usize) -> bool {
         self.k == k && self.n == n
     }
 
     /// Dimensions of the source B matrix (for dispatch shape checks at the
     /// callsite before handing the pre-pack to the GEMM layer).
     #[inline]
-    pub fn dims(&self) -> (usize, usize) {
+    pub const fn dims(&self) -> (usize, usize) {
         (self.k, self.n)
     }
 }

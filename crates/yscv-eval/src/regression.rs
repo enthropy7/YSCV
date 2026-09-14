@@ -1,6 +1,6 @@
 use crate::error::EvalError;
 
-fn check_lengths(predictions: &[f32], targets: &[f32]) -> Result<(), EvalError> {
+const fn check_lengths(predictions: &[f32], targets: &[f32]) -> Result<(), EvalError> {
     if predictions.len() != targets.len() {
         return Err(EvalError::CountLengthMismatch {
             ground_truth: targets.len(),

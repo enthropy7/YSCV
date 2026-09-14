@@ -143,7 +143,7 @@ impl MbCtx {
     /// chroma) — is available for prediction: inside the frame and in the
     /// current slice.
     #[inline]
-    fn sample_mb_avail(&self, x: i32, y: i32, mb_shift: u32) -> bool {
+    const fn sample_mb_avail(&self, x: i32, y: i32, mb_shift: u32) -> bool {
         if x < 0 || y < 0 {
             return false;
         }
@@ -154,7 +154,7 @@ impl MbCtx {
     /// Availability of the 4x4-grid block at (`bx`, `by`) with `1 << sub_shift`
     /// blocks per macroblock side (2 = luma grid, 1 = chroma grid).
     #[inline]
-    fn block_avail(&self, bx: i32, by: i32, sub_shift: u32) -> bool {
+    const fn block_avail(&self, bx: i32, by: i32, sub_shift: u32) -> bool {
         if bx < 0 || by < 0 {
             return false;
         }
@@ -165,7 +165,7 @@ impl MbCtx {
 
 /// Predicted nC (clause 9.2.1) from the left/top block nnz. `left`/`top` give
 /// the neighbour-block availability (frame edge + same-slice, clause 6.4.9).
-fn nc_pred(nnz: &[u8], grid_w: usize, bx: usize, by: usize, left: bool, top: bool) -> i32 {
+const fn nc_pred(nnz: &[u8], grid_w: usize, bx: usize, by: usize, left: bool, top: bool) -> i32 {
     let a = if left {
         nnz[by * grid_w + bx - 1] as i32
     } else {
@@ -927,7 +927,7 @@ fn dequant_4x4_ac(coeffs: &mut [i32; 16], qp: i32) {
 
 /// Whether the top-right reference samples of a luma 4x4 block are available
 /// (already reconstructed), given the block's position within the MB.
-fn top_right_available(
+const fn top_right_available(
     bx0: usize,
     by0: usize,
     bc: usize,
@@ -1196,7 +1196,7 @@ struct InterMv {
 const MV_AVAIL: u64 = 1 << 40;
 
 #[inline]
-fn mv_pack(dx: i16, dy: i16, refi: i8, pic_id: i8, avail: bool) -> u64 {
+const fn mv_pack(dx: i16, dy: i16, refi: i8, pic_id: i8, avail: bool) -> u64 {
     (dx as u16 as u64)
         | ((dy as u16 as u64) << 16)
         | ((refi as u8 as u64) << 32)
@@ -1208,7 +1208,7 @@ fn mv_pack(dx: i16, dy: i16, refi: i8, pic_id: i8, avail: bool) -> u64 {
 /// Used for MV prediction, where the spec compares reference *indices*
 /// (clause 8.4.1.3.2).
 #[inline]
-fn mv_refi(cell: u64) -> i8 {
+const fn mv_refi(cell: u64) -> i8 {
     (cell >> 32) as u8 as i8
 }
 
@@ -1217,7 +1217,7 @@ fn mv_refi(cell: u64) -> i8 {
 /// reference pictures, not indices (clause 8.7.2.1, Note 2) — weighted-P
 /// duplicates one picture across several ref_idx, all sharing this id.
 #[inline]
-fn mv_pic_id(cell: u64) -> i8 {
+const fn mv_pic_id(cell: u64) -> i8 {
     (cell >> 41) as u8 as i8
 }
 
@@ -2053,7 +2053,7 @@ fn cabac_neighbor_cbp(ctx: &MbCtx, mb_x: i32, mb_y: i32, cur_intra: bool) -> u32
 /// coded_block_flag ctxIdxInc for an AC/4x4 block from the neighbour 4x4 nnz,
 /// with the unavailable-neighbour default (coded when the current MB is intra,
 /// clause 9.3.3.1.1.9).
-fn cbf_ac_inc(
+const fn cbf_ac_inc(
     nnz: &[u8],
     grid_w: usize,
     gx: i32,
@@ -3154,11 +3154,11 @@ enum BDir {
 }
 
 #[inline]
-fn uses_l0(d: BDir) -> bool {
+const fn uses_l0(d: BDir) -> bool {
     matches!(d, BDir::L0 | BDir::Bi)
 }
 #[inline]
-fn uses_l1(d: BDir) -> bool {
+const fn uses_l1(d: BDir) -> bool {
     matches!(d, BDir::L1 | BDir::Bi)
 }
 
@@ -3936,7 +3936,7 @@ fn decode_b_parts_cabac(
 }
 
 /// Sub-partition layout (relative to the 8x8) of a B sub_mb_type value.
-fn b_sub_shapes(sub: u32) -> &'static [(usize, usize, usize, usize)] {
+const fn b_sub_shapes(sub: u32) -> &'static [(usize, usize, usize, usize)] {
     match sub {
         4 | 6 | 8 => &[(0, 0, 8, 4), (0, 4, 8, 4)],
         5 | 7 | 9 => &[(0, 0, 4, 8), (4, 0, 4, 8)],
@@ -3946,7 +3946,7 @@ fn b_sub_shapes(sub: u32) -> &'static [(usize, usize, usize, usize)] {
 }
 
 /// Prediction direction of a non-direct B sub_mb_type.
-fn b_sub_dir(sub: u32) -> BDir {
+const fn b_sub_dir(sub: u32) -> BDir {
     match sub {
         2 | 6 | 7 | 11 => BDir::L1,
         3 | 8 | 9 | 12 => BDir::Bi,
@@ -4980,7 +4980,7 @@ struct PendingField {
 }
 
 impl H264Decoder {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             sps: None,
             pps: None,

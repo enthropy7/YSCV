@@ -3,7 +3,7 @@
 
 use super::*;
 
-pub(crate) fn should_use_prepacked_i8_b(m: usize, k: usize, n: usize) -> bool {
+pub(crate) const fn should_use_prepacked_i8_b(m: usize, k: usize, n: usize) -> bool {
     // For VNNI-friendly tracker pointwise Conv shapes the load-time packed
     // 4x16 RHS avoids per-inference B packing. The large MatMul gate keeps
     // the previous prepacked path for LLM/head-like regimes.
@@ -44,7 +44,7 @@ pub(crate) fn ensure_nchw(env: &mut TensorEnv, name: &str) -> Result<(), OnnxErr
 }
 
 /// Map an axis from NCHW to NHWC for 4D tensors.
-pub(crate) fn nchw_axis_to_nhwc(axis: usize) -> usize {
+pub(crate) const fn nchw_axis_to_nhwc(axis: usize) -> usize {
     const MAP: [usize; 4] = [0, 3, 1, 2];
     if axis < 4 { MAP[axis] } else { axis }
 }

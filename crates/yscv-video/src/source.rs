@@ -19,7 +19,7 @@ pub struct InMemoryFrameSource {
 }
 
 impl InMemoryFrameSource {
-    pub fn new(frames: Vec<Frame>) -> Self {
+    pub const fn new(frames: Vec<Frame>) -> Self {
         Self { frames, cursor: 0 }
     }
 }

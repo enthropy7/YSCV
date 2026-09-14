@@ -122,7 +122,7 @@ fn mavlink_crc(data: &[u8], crc_extra: u8) -> u16 {
 /// crc = (crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4);
 /// ```
 #[inline]
-fn crc_accumulate(crc: u16, byte: u8) -> u16 {
+const fn crc_accumulate(crc: u16, byte: u8) -> u16 {
     let mut tmp = byte ^ (crc as u8);
     tmp ^= tmp.wrapping_shl(4);
     let t16 = tmp as u16;
@@ -134,7 +134,7 @@ fn crc_accumulate(crc: u16, byte: u8) -> u16 {
 // ---------------------------------------------------------------------------
 
 /// Returns the `CRC_EXTRA` seed for a known message ID, or `None`.
-fn crc_extra_for(msgid: u32) -> Option<u8> {
+const fn crc_extra_for(msgid: u32) -> Option<u8> {
     match msgid {
         MSG_ID_HEARTBEAT => Some(CRC_EXTRA_HEARTBEAT),
         MSG_ID_SYS_STATUS => Some(CRC_EXTRA_SYS_STATUS),
@@ -150,22 +150,22 @@ fn crc_extra_for(msgid: u32) -> Option<u8> {
 // ---------------------------------------------------------------------------
 
 #[inline]
-fn le_u16(buf: &[u8], off: usize) -> u16 {
+const fn le_u16(buf: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([buf[off], buf[off + 1]])
 }
 
 #[inline]
-fn le_i16(buf: &[u8], off: usize) -> i16 {
+const fn le_i16(buf: &[u8], off: usize) -> i16 {
     i16::from_le_bytes([buf[off], buf[off + 1]])
 }
 
 #[inline]
-fn le_i32(buf: &[u8], off: usize) -> i32 {
+const fn le_i32(buf: &[u8], off: usize) -> i32 {
     i32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
 
 #[inline]
-fn le_f32(buf: &[u8], off: usize) -> f32 {
+const fn le_f32(buf: &[u8], off: usize) -> f32 {
     f32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
 
@@ -173,7 +173,7 @@ fn le_f32(buf: &[u8], off: usize) -> f32 {
 // Payload deserialization
 // ---------------------------------------------------------------------------
 
-fn decode_heartbeat(payload: &[u8]) -> MavlinkMessage {
+const fn decode_heartbeat(payload: &[u8]) -> MavlinkMessage {
     // MAVLink HEARTBEAT wire order (le):
     //   custom_mode  u32  [0..4]
     //   type         u8   [4]
@@ -191,7 +191,7 @@ fn decode_heartbeat(payload: &[u8]) -> MavlinkMessage {
     }
 }
 
-fn decode_sys_status(payload: &[u8]) -> MavlinkMessage {
+const fn decode_sys_status(payload: &[u8]) -> MavlinkMessage {
     // Interesting fields (le):
     //   sensors_present  u32 [0..4]
     //   sensors_enabled  u32 [4..8]
@@ -222,7 +222,7 @@ fn decode_sys_status(payload: &[u8]) -> MavlinkMessage {
     }
 }
 
-fn decode_attitude(payload: &[u8]) -> MavlinkMessage {
+const fn decode_attitude(payload: &[u8]) -> MavlinkMessage {
     // Wire order (le):
     //   time_boot_ms u32 [0..4]
     //   roll         f32 [4..8]
@@ -251,7 +251,7 @@ fn decode_attitude(payload: &[u8]) -> MavlinkMessage {
     }
 }
 
-fn decode_global_position_int(payload: &[u8]) -> MavlinkMessage {
+const fn decode_global_position_int(payload: &[u8]) -> MavlinkMessage {
     // Wire order (le):
     //   time_boot_ms  u32 [0..4]
     //   lat           i32 [4..8]   (degE7)
@@ -286,7 +286,7 @@ fn decode_global_position_int(payload: &[u8]) -> MavlinkMessage {
     }
 }
 
-fn decode_rc_channels_raw(payload: &[u8]) -> MavlinkMessage {
+const fn decode_rc_channels_raw(payload: &[u8]) -> MavlinkMessage {
     // Wire order (le):
     //   time_boot_ms  u32 [0..4]
     //   chan1_raw      u16 [4..6]
@@ -505,7 +505,7 @@ pub fn telemetry_from_mavlink(msg: &MavlinkMessage) -> Option<TelemetryUpdate> {
 }
 
 /// Apply a [`TelemetryUpdate`] to a mutable [`TelemetryData`] struct.
-pub fn apply_telemetry_update(td: &mut TelemetryData, update: &TelemetryUpdate) {
+pub const fn apply_telemetry_update(td: &mut TelemetryData, update: &TelemetryUpdate) {
     match update {
         TelemetryUpdate::Battery { voltage, current } => {
             td.battery_voltage = *voltage;
@@ -578,7 +578,7 @@ mod serial {
     }
 
     impl Termios2 {
-        fn zeroed() -> Self {
+        const fn zeroed() -> Self {
             Self {
                 c_iflag: 0,
                 c_oflag: 0,

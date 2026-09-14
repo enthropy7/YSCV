@@ -167,12 +167,12 @@ impl KvCache {
     }
 
     /// Active storage dtype.
-    pub fn dtype(&self) -> KvDtype {
+    pub const fn dtype(&self) -> KvDtype {
         self.dtype
     }
 
     /// Current cached sequence length.
-    pub fn seq_len(&self) -> usize {
+    pub const fn seq_len(&self) -> usize {
         self.seq_len
     }
 

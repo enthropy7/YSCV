@@ -158,7 +158,11 @@ pub fn validate_pipeline_benchmark_thresholds(
     violations
 }
 
-fn validate_series_len(expected: usize, got: usize, series: &'static str) -> Result<(), EvalError> {
+const fn validate_series_len(
+    expected: usize,
+    got: usize,
+    series: &'static str,
+) -> Result<(), EvalError> {
     if expected != got {
         return Err(EvalError::DurationSeriesLengthMismatch {
             expected,

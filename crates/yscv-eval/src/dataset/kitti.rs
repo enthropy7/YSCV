@@ -183,6 +183,6 @@ fn resolve_kitti_class_id(class_name: &str, class_map: &mut FxHashMap<String, us
     class_id
 }
 
-fn is_kitti_dont_care(class_name: &str) -> bool {
+const fn is_kitti_dont_care(class_name: &str) -> bool {
     class_name.eq_ignore_ascii_case("DontCare")
 }

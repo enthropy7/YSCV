@@ -109,11 +109,11 @@ impl LinearLayer {
         projected.add(&self.bias_tensor).map_err(ModelError::Tensor)
     }
 
-    pub fn in_features(&self) -> usize {
+    pub const fn in_features(&self) -> usize {
         self.in_features
     }
 
-    pub fn out_features(&self) -> usize {
+    pub const fn out_features(&self) -> usize {
         self.out_features
     }
 
@@ -128,19 +128,19 @@ impl LinearLayer {
         nodes
     }
 
-    pub fn weight_node(&self) -> Option<NodeId> {
+    pub const fn weight_node(&self) -> Option<NodeId> {
         self.weight_node
     }
 
-    pub fn bias_node(&self) -> Option<NodeId> {
+    pub const fn bias_node(&self) -> Option<NodeId> {
         self.bias_node
     }
 
-    pub fn weight(&self) -> &Tensor {
+    pub const fn weight(&self) -> &Tensor {
         &self.weight_tensor
     }
 
-    pub fn bias(&self) -> &Tensor {
+    pub const fn bias(&self) -> &Tensor {
         &self.bias_tensor
     }
 }

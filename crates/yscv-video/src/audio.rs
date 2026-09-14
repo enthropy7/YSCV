@@ -51,7 +51,7 @@ pub struct AudioFrame {
 }
 
 /// Detect audio codec from an MP4 codec box type.
-pub fn audio_codec_from_mp4(box_type: &[u8; 4]) -> AudioCodec {
+pub const fn audio_codec_from_mp4(box_type: &[u8; 4]) -> AudioCodec {
     match box_type {
         b"mp4a" => AudioCodec::Aac,
         b"alac" => AudioCodec::Alac,

@@ -13,7 +13,7 @@ pub struct Recognition {
 }
 
 impl Recognition {
-    pub fn is_known(&self) -> bool {
+    pub const fn is_known(&self) -> bool {
         self.identity.is_some()
     }
 }

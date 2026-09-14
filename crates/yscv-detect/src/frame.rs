@@ -417,6 +417,6 @@ fn triangular_score(value: f32, min: f32, max: f32, center: f32) -> f32 {
     (max - value) / (max - center)
 }
 
-fn clamp01(value: f32) -> f32 {
+const fn clamp01(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }

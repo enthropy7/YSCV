@@ -41,17 +41,17 @@ impl StepLr {
     }
 
     /// Returns configured step size.
-    pub fn step_size(&self) -> usize {
+    pub const fn step_size(&self) -> usize {
         self.step_size
     }
 
     /// Returns configured decay factor.
-    pub fn gamma(&self) -> f32 {
+    pub const fn gamma(&self) -> f32 {
         self.gamma
     }
 
     /// Returns number of already-processed step calls.
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -124,19 +124,19 @@ impl CosineAnnealingLr {
         Ok(self)
     }
 
-    pub fn t_max(&self) -> usize {
+    pub const fn t_max(&self) -> usize {
         self.t_max
     }
 
-    pub fn min_lr(&self) -> f32 {
+    pub const fn min_lr(&self) -> f32 {
         self.min_lr
     }
 
-    pub fn base_lr(&self) -> Option<f32> {
+    pub const fn base_lr(&self) -> Option<f32> {
         self.base_lr
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -233,19 +233,19 @@ impl LinearWarmupLr {
         Ok(self)
     }
 
-    pub fn warmup_steps(&self) -> usize {
+    pub const fn warmup_steps(&self) -> usize {
         self.warmup_steps
     }
 
-    pub fn start_lr(&self) -> Option<f32> {
+    pub const fn start_lr(&self) -> Option<f32> {
         self.start_lr
     }
 
-    pub fn base_lr(&self) -> Option<f32> {
+    pub const fn base_lr(&self) -> Option<f32> {
         self.base_lr
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -346,27 +346,27 @@ impl OneCycleLr {
         Ok(self)
     }
 
-    pub fn total_steps(&self) -> usize {
+    pub const fn total_steps(&self) -> usize {
         self.total_steps
     }
 
-    pub fn max_lr(&self) -> f32 {
+    pub const fn max_lr(&self) -> f32 {
         self.max_lr
     }
 
-    pub fn pct_start(&self) -> f32 {
+    pub const fn pct_start(&self) -> f32 {
         self.pct_start
     }
 
-    pub fn final_div_factor(&self) -> f32 {
+    pub const fn final_div_factor(&self) -> f32 {
         self.final_div_factor
     }
 
-    pub fn initial_lr(&self) -> Option<f32> {
+    pub const fn initial_lr(&self) -> Option<f32> {
         self.initial_lr
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -445,12 +445,12 @@ impl ExponentialLr {
     }
 
     /// Returns configured decay factor.
-    pub fn gamma(&self) -> f32 {
+    pub const fn gamma(&self) -> f32 {
         self.gamma
     }
 
     /// Returns number of already-processed step calls.
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -528,23 +528,23 @@ impl PolynomialDecayLr {
         Ok(self)
     }
 
-    pub fn total_steps(&self) -> usize {
+    pub const fn total_steps(&self) -> usize {
         self.total_steps
     }
 
-    pub fn power(&self) -> f32 {
+    pub const fn power(&self) -> f32 {
         self.power
     }
 
-    pub fn end_lr(&self) -> f32 {
+    pub const fn end_lr(&self) -> f32 {
         self.end_lr
     }
 
-    pub fn base_lr(&self) -> Option<f32> {
+    pub const fn base_lr(&self) -> Option<f32> {
         self.base_lr
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -624,27 +624,27 @@ impl ReduceLrOnPlateau {
         })
     }
 
-    pub fn factor(&self) -> f32 {
+    pub const fn factor(&self) -> f32 {
         self.factor
     }
 
-    pub fn patience(&self) -> usize {
+    pub const fn patience(&self) -> usize {
         self.patience
     }
 
-    pub fn min_lr(&self) -> f32 {
+    pub const fn min_lr(&self) -> f32 {
         self.min_lr
     }
 
-    pub fn best_metric(&self) -> f32 {
+    pub const fn best_metric(&self) -> f32 {
         self.best_metric
     }
 
-    pub fn wait(&self) -> usize {
+    pub const fn wait(&self) -> usize {
         self.wait
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -749,23 +749,23 @@ impl CyclicLr {
         })
     }
 
-    pub fn base_lr(&self) -> f32 {
+    pub const fn base_lr(&self) -> f32 {
         self.base_lr
     }
 
-    pub fn max_lr(&self) -> f32 {
+    pub const fn max_lr(&self) -> f32 {
         self.max_lr
     }
 
-    pub fn step_size_up(&self) -> usize {
+    pub const fn step_size_up(&self) -> usize {
         self.step_size_up
     }
 
-    pub fn step_size_down(&self) -> usize {
+    pub const fn step_size_down(&self) -> usize {
         self.step_size_down
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -835,22 +835,22 @@ impl LambdaLr {
     }
 
     /// Returns the base learning rate.
-    pub fn base_lr(&self) -> f32 {
+    pub const fn base_lr(&self) -> f32 {
         self.base_lr
     }
 
     /// Returns the current learning rate.
-    pub fn current_lr(&self) -> f32 {
+    pub const fn current_lr(&self) -> f32 {
         self.current_lr
     }
 
     /// Returns the current step count.
-    pub fn step_count(&self) -> usize {
+    pub const fn step_count(&self) -> usize {
         self.step_count
     }
 
     /// Returns number of already-processed step calls.
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.step_count
     }
 
@@ -912,15 +912,15 @@ impl MultiStepLr {
         &self.milestones
     }
 
-    pub fn gamma(&self) -> f32 {
+    pub const fn gamma(&self) -> f32 {
         self.gamma
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.epoch = 0;
         self.base_lr = None;
     }
@@ -1010,23 +1010,23 @@ impl CosineAnnealingWarmRestarts {
         Ok(self)
     }
 
-    pub fn t_0(&self) -> usize {
+    pub const fn t_0(&self) -> usize {
         self.t_0
     }
 
-    pub fn t_mult(&self) -> usize {
+    pub const fn t_mult(&self) -> usize {
         self.t_mult
     }
 
-    pub fn eta_min(&self) -> f32 {
+    pub const fn eta_min(&self) -> f32 {
         self.eta_min
     }
 
-    pub fn base_lr(&self) -> Option<f32> {
+    pub const fn base_lr(&self) -> Option<f32> {
         self.base_lr
     }
 
-    pub fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 
@@ -1078,7 +1078,7 @@ impl LrScheduler for CosineAnnealingWarmRestarts {
 
 /// Returns `(t_cur, t_i)` where `t_cur` is the position within the current
 /// period and `t_i` is the current period length.
-fn cosine_warm_restarts_position(epoch: usize, t_0: usize, t_mult: usize) -> (usize, usize) {
+const fn cosine_warm_restarts_position(epoch: usize, t_0: usize, t_mult: usize) -> (usize, usize) {
     if t_mult == 1 {
         // All periods have the same length t_0
         let t_cur = ((epoch - 1) % t_0) + 1;

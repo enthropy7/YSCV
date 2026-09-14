@@ -28,14 +28,14 @@ pub(crate) struct FoldConvConstBinary {
 }
 
 impl FoldConvConstBinary {
-    pub(crate) fn mul() -> Self {
+    pub(crate) const fn mul() -> Self {
         Self {
             name: "fold_conv_mul",
             op: Op::Mul,
         }
     }
 
-    pub(crate) fn add() -> Self {
+    pub(crate) const fn add() -> Self {
         Self {
             name: "fold_conv_add_const",
             op: Op::Add,

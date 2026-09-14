@@ -23,7 +23,7 @@ use super::*;
 /// where rayon dispatch dominates).
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
-pub(super) fn use_low_k_tile_avx_fma(m: usize, k: usize, n: usize) -> bool {
+pub(super) const fn use_low_k_tile_avx_fma(m: usize, k: usize, n: usize) -> bool {
     const MIN_WORK_FMAS: usize = 1_048_576;
     (k == 16 || k == 24)
         && m != 0

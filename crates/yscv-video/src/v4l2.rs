@@ -770,22 +770,22 @@ impl V4l2Camera {
     }
 
     /// Number of mmap'd buffers currently allocated.
-    pub fn buffer_count(&self) -> usize {
+    pub const fn buffer_count(&self) -> usize {
         self.buffers.len()
     }
 
     /// Frame width in pixels.
-    pub fn width(&self) -> u32 {
+    pub const fn width(&self) -> u32 {
         self.width
     }
 
     /// Frame height in pixels.
-    pub fn height(&self) -> u32 {
+    pub const fn height(&self) -> u32 {
         self.height
     }
 
     /// Active pixel format FourCC code.
-    pub fn pixel_format_fourcc(&self) -> u32 {
+    pub const fn pixel_format_fourcc(&self) -> u32 {
         self.pixel_format
     }
 
@@ -830,13 +830,13 @@ pub struct V4l2DmaBufGuard {
 
 impl V4l2DmaBufGuard {
     /// Read the underlying file descriptor without taking ownership.
-    pub fn fd(&self) -> i32 {
+    pub const fn fd(&self) -> i32 {
         self.fd
     }
 
     /// Consume the guard and return the raw fd. Caller is now responsible
     /// for closing it (e.g. via `libc::close`).
-    pub fn into_raw(self) -> i32 {
+    pub const fn into_raw(self) -> i32 {
         let fd = self.fd;
         std::mem::forget(self);
         fd

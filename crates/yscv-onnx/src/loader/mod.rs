@@ -61,7 +61,7 @@ impl OnnxModel {
     }
 
     /// Returns the number of operator nodes in the graph.
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.nodes.len()
     }
 

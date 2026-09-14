@@ -40,7 +40,7 @@ impl ByteTracker {
     /// - `low_threshold`: minimum score to be considered at all (e.g. 0.1).
     /// - `iou_threshold`: minimum IoU for a detection-track match (e.g. 0.3).
     /// - `max_age`: frames a track survives without a match before deletion.
-    pub fn new(
+    pub const fn new(
         high_threshold: f32,
         low_threshold: f32,
         iou_threshold: f32,
@@ -156,7 +156,7 @@ impl ByteTracker {
     }
 
     /// Return the number of currently active tracks.
-    pub fn active_track_count(&self) -> usize {
+    pub const fn active_track_count(&self) -> usize {
         self.tracks.len()
     }
 }

@@ -41,7 +41,7 @@ pub enum MatmulKernel {
 
 impl MatmulKernel {
     /// Stable short label for profiler output.
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             #[cfg(yscv_blas)]
             MatmulKernel::BlasSgemm => "blas-sgemm",

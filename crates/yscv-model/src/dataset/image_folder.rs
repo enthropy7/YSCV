@@ -52,20 +52,20 @@ impl SupervisedImageFolderConfig {
         })
     }
 
-    pub fn output_height(&self) -> usize {
+    pub const fn output_height(&self) -> usize {
         self.output_height
     }
 
-    pub fn output_width(&self) -> usize {
+    pub const fn output_width(&self) -> usize {
         self.output_width
     }
 
-    pub fn with_target_mode(mut self, target_mode: ImageFolderTargetMode) -> Self {
+    pub const fn with_target_mode(mut self, target_mode: ImageFolderTargetMode) -> Self {
         self.target_mode = target_mode;
         self
     }
 
-    pub fn target_mode(&self) -> ImageFolderTargetMode {
+    pub const fn target_mode(&self) -> ImageFolderTargetMode {
         self.target_mode
     }
 
