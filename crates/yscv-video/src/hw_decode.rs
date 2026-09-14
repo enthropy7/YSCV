@@ -1400,8 +1400,10 @@ pub mod vaapi {
     }
 
     unsafe extern "C" {
+        // Variadic to match POSIX `open(path, flags, ...)`, the same signature
+        // `framebuffer.rs` and `mavlink.rs` declare for this symbol.
         #[link_name = "open"]
-        fn libc_open(path: *const c_char, flags: i32) -> i32;
+        fn libc_open(path: *const c_char, flags: i32, ...) -> i32;
     }
 
     impl VideoDecoder for VaapiDecoder {
