@@ -39,6 +39,8 @@ pub use ops::FarnebackConfig;
 pub use ops::HarrisKeypoint;
 /// Hough line in (rho, theta) form.
 pub use ops::HoughLine;
+/// Summed-area table in `f64` with clipped window sums.
+pub use ops::IntegralImage;
 /// Detected keypoint with location, response, and scale.
 pub use ops::Keypoint;
 /// Configuration for ORB feature detector.

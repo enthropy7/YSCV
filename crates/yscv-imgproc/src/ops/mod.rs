@@ -45,6 +45,7 @@ mod flow;
 mod geometry;
 mod histogram;
 mod inpaint;
+mod integral;
 mod intensity;
 mod io;
 mod morphology;
@@ -114,6 +115,7 @@ pub use geometry::{
 };
 pub use histogram::{clahe, histogram_256, histogram_equalize, integral_image};
 pub use inpaint::inpaint_telea;
+pub use integral::IntegralImage;
 pub use intensity::{adjust_gamma, adjust_log, rescale_intensity};
 pub use io::{imread, imread_gray, imwrite};
 pub use morphology::{

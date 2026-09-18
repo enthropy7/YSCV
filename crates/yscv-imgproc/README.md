@@ -25,6 +25,7 @@ let resized = resize_bilinear(&img, 224, 224)?;
 | **Contour** | find_contours, contour_area, bounding_rect, convex_hull, approx_poly |
 | **Drawing** | draw_rect, draw_circle, draw_line, draw_text, fill_poly |
 | **Histogram** | equalize_hist, clahe, calc_hist |
+| **Integral** | integral_image (f32, SIMD), IntegralImage (f64 table, clipped window sums for variance and correlation windows) |
 | **Stereo** | disparity_map, optical_flow (Farneback) |
 | **I/O** | imread, imwrite (PNG, JPEG, BMP) |
 
@@ -34,4 +35,4 @@ All hot paths have NEON (aarch64) and SSE2/AVX (x86_64) SIMD. GCD parallel dispa
 
 ## Tests
 
-225 tests. Criterion benchmarks for grayscale, resize, blur, morphology, sobel.
+248 tests. Criterion benchmarks for grayscale, resize, blur, morphology, sobel.
