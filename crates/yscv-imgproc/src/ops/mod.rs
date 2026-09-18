@@ -77,10 +77,10 @@ pub use color::{
     yuv_to_rgb,
 };
 pub use contours::{
-    ComponentStats, Contour, RegionProp, approx_poly_dp, arc_length, bounding_rect,
+    ComponentStats, Contour, PixelPolygon, RegionProp, approx_poly_dp, arc_length, bounding_rect,
     connected_components_with_stats, connected_components_with_stats_8, contour_area, convex_hull,
     find_contours, fit_circle, fit_ellipse, homography_4pt, hu_moments, min_area_rect,
-    min_enclosing_circle, ransac_homography, region_props,
+    min_enclosing_circle, ransac_homography, region_props, trace_pixel_polygons,
 };
 pub use crop_resize::{
     crop_resize_bilinear, crop_resize_bilinear_border, crop_resize_bilinear_border_raw,

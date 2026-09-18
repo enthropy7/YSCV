@@ -2,7 +2,7 @@ use yscv_tensor::Tensor;
 
 use super::super::{
     arc_length, bounding_rect, connected_components_4, connected_components_with_stats,
-    contour_area, find_contours, hu_moments, region_props,
+    contour_area, find_contours, hu_moments, region_props, trace_pixel_polygons,
 };
 
 #[test]
@@ -523,4 +523,36 @@ fn connected_components_match_a_pixel_flood_fill() {
             }
         }
     }
+}
+
+#[test]
+fn pixel_polygons_keep_pixel_area_and_holes() {
+    let (w, h) = (5, 5);
+    let mut m = vec![0.0f32; w * h];
+    for y in 1..4 {
+        for x in 1..4 {
+            m[y * w + x] = 1.0;
+        }
+    }
+    m[2 * w + 2] = 0.0; // a hole in the 3x3 block
+    m[0] = 1.0; // a lone pixel touching nothing
+    let img = Tensor::from_vec(vec![h, w, 1], m).unwrap();
+    let polys = trace_pixel_polygons(&img).unwrap();
+    assert_eq!(polys.len(), 2);
+    let ring = polys.iter().find(|p| p.pixels == 8).unwrap();
+    assert_eq!(ring.holes.len(), 1);
+    assert_eq!(ring.exterior.len(), 4, "collinear corners are dropped");
+    assert_eq!(contour_area(&ring.exterior), 9.0);
+    assert_eq!(contour_area(&ring.holes[0]), 1.0);
+    let dot = polys.iter().find(|p| p.pixels == 1).unwrap();
+    assert_eq!(dot.exterior, vec![(0, 0), (1, 0), (1, 1), (0, 1)]);
+    assert!(dot.holes.is_empty());
+}
+
+#[test]
+fn pixel_polygons_split_corner_touching_pixels() {
+    let img = Tensor::from_vec(vec![2, 2, 1], vec![1.0, 0.0, 0.0, 1.0]).unwrap();
+    let polys = trace_pixel_polygons(&img).unwrap();
+    assert_eq!(polys.len(), 2);
+    assert!(polys.iter().all(|p| p.pixels == 1 && p.holes.is_empty()));
 }

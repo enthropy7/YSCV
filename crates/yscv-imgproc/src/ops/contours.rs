@@ -1,3 +1,4 @@
+use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
 use super::super::ImgProcError;
@@ -1083,4 +1084,152 @@ pub fn bounding_rect(contour: &[(usize, usize)]) -> (usize, usize, usize, usize)
         max_y = max_y.max(y);
     }
     (min_x, min_y, max_x - min_x, max_y - min_y)
+}
+
+/// A region of a binary mask as a polygon along pixel edges, with its holes.
+///
+/// Vertices are pixel corners: `(x, y)` is the top-left corner of pixel `(x, y)`, so the ring of
+/// a single pixel at the origin is `(0,0) (1,0) (1,1) (0,1)`. Polygon area therefore equals
+/// `pixels` exactly, which is what a map layer or an area measurement needs from a mask, and
+/// which a pixel-centre contour from [`find_contours`] cannot give.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PixelPolygon {
+    pub exterior: Vec<(usize, usize)>,
+    pub holes: Vec<Vec<(usize, usize)>>,
+    pub pixels: usize,
+}
+
+/// Traces every 4-connected region of a binary `[H, W, 1]` image (pixels > 0.5 are foreground)
+/// as a [`PixelPolygon`].
+///
+/// Each ring keeps its region on the right-hand side in image coordinates (y down) and drops
+/// collinear vertices. Regions are 4-connected because two pixels touching only at a corner would
+/// make one ring touch itself; such pixels become two polygons.
+pub fn trace_pixel_polygons(input: &Tensor) -> Result<Vec<PixelPolygon>, ImgProcError> {
+    let (h, w, c) = hwc_shape(input)?;
+    if c != 1 {
+        return Err(ImgProcError::InvalidChannelCount {
+            expected: 1,
+            got: c,
+        });
+    }
+    let data = input.data();
+    let mut labels = vec![0u32; w * h];
+    let mut out = Vec::new();
+    let mut stack = Vec::new();
+    for start in 0..w * h {
+        if data[start] <= 0.5 || labels[start] != 0 {
+            continue;
+        }
+        let label = out.len() as u32 + 1;
+        let mut cells = Vec::new();
+        labels[start] = label;
+        stack.push(start);
+        while let Some(p) = stack.pop() {
+            cells.push(p);
+            let (x, y) = (p % w, p / w);
+            let mut visit = |q: usize| {
+                if data[q] > 0.5 && labels[q] == 0 {
+                    labels[q] = label;
+                    stack.push(q);
+                }
+            };
+            if x > 0 {
+                visit(p - 1);
+            }
+            if x + 1 < w {
+                visit(p + 1);
+            }
+            if y > 0 {
+                visit(p - w);
+            }
+            if y + 1 < h {
+                visit(p + w);
+            }
+        }
+
+        // Directed boundary edges with the region on the right-hand side.
+        let inside = |x: isize, y: isize| {
+            x >= 0
+                && y >= 0
+                && (x as usize) < w
+                && (y as usize) < h
+                && labels[y as usize * w + x as usize] == label
+        };
+        let mut next: FxHashMap<(usize, usize), Vec<(usize, usize)>> = FxHashMap::default();
+        for &p in &cells {
+            let (x, y) = (p % w, p / w);
+            let (xi, yi) = (x as isize, y as isize);
+            if !inside(xi, yi - 1) {
+                next.entry((x, y)).or_default().push((x + 1, y));
+            }
+            if !inside(xi + 1, yi) {
+                next.entry((x + 1, y)).or_default().push((x + 1, y + 1));
+            }
+            if !inside(xi, yi + 1) {
+                next.entry((x + 1, y + 1)).or_default().push((x, y + 1));
+            }
+            if !inside(xi - 1, yi) {
+                next.entry((x, y + 1)).or_default().push((x, y));
+            }
+        }
+        let mut starts: Vec<(usize, usize)> = next.keys().copied().collect();
+        starts.sort_unstable();
+        let mut rings: Vec<Vec<(usize, usize)>> = Vec::new();
+        for s in starts {
+            while next.get(&s).is_some_and(|v| !v.is_empty()) {
+                let mut ring = vec![s];
+                let mut prev = s;
+                let mut cur = next.get_mut(&s).and_then(Vec::pop).unwrap_or(s);
+                while cur != s {
+                    ring.push(cur);
+                    let Some(options) = next.get_mut(&cur).filter(|v| !v.is_empty()) else {
+                        break;
+                    };
+                    // At a saddle vertex take the right turn so the ring stays with its own cell.
+                    let dir = (
+                        cur.0 as isize - prev.0 as isize,
+                        cur.1 as isize - prev.1 as isize,
+                    );
+                    let right = (cur.0 as isize - dir.1, cur.1 as isize + dir.0);
+                    let pick = options
+                        .iter()
+                        .position(|&o| (o.0 as isize, o.1 as isize) == right)
+                        .unwrap_or(options.len() - 1);
+                    prev = cur;
+                    cur = options.swap_remove(pick);
+                }
+                rings.push(drop_collinear(ring));
+            }
+        }
+        let outer = (0..rings.len())
+            .max_by_key(|&i| ring_area2(&rings[i]).abs())
+            .unwrap_or(0);
+        let exterior = rings.swap_remove(outer);
+        out.push(PixelPolygon {
+            exterior,
+            holes: rings,
+            pixels: cells.len(),
+        });
+    }
+    Ok(out)
+}
+
+fn ring_area2(ring: &[(usize, usize)]) -> i64 {
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .map(|(a, b)| a.0 as i64 * b.1 as i64 - b.0 as i64 * a.1 as i64)
+        .sum()
+}
+
+fn drop_collinear(ring: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    let n = ring.len();
+    (0..n)
+        .filter(|&i| {
+            let (a, b, c) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+            (b.0 as i64 - a.0 as i64) * (c.1 as i64 - b.1 as i64)
+                != (b.1 as i64 - a.1 as i64) * (c.0 as i64 - b.0 as i64)
+        })
+        .map(|i| ring[i])
+        .collect()
 }

@@ -21,7 +21,7 @@ yscv (umbrella re-export)
 ├── yscv-autograd        ← Reverse-mode autodiff, BackwardOps routing
 ├── yscv-optim           ← 8 optimizers + Lookahead, 11 LR schedulers
 ├── yscv-model           ← 39 layers, 17 architectures, LoRA, trainer
-├── yscv-imgproc         ← 160 image ops, u8/f32 SIMD
+├── yscv-imgproc         ← 183 image ops, u8/f32 SIMD
 ├── yscv-video           ← H.264/HEVC/AV1 decode, V4L2, MJPEG, H.264 encode, MAVLink, overlay, framebuffer
 ├── yscv-video-mpp       ← Rockchip MPP hardware video encoder
 ├── yscv-detect          ← YOLOv8/v11, NMS, heatmap, RoI align
@@ -40,7 +40,7 @@ yscv (umbrella re-export)
 | Tests | **2,249** |
 | ONNX operators | **122** |
 | Tensor methods | **159** |
-| Imgproc ops | **160** |
+| Imgproc ops | **183** |
 | Model architectures | **17** |
 | WGSL + Metal shaders | **61 + 4** |
 | SAFETY-commented unsafe blocks | **220** |

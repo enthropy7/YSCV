@@ -1,6 +1,6 @@
 # yscv-imgproc
 
-182 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images.
+183 SIMD-accelerated image processing functions (free `pub fn` items in `src/ops/`) for f32 and u8 images.
 
 ```rust,ignore
 use yscv_imgproc::*;
@@ -22,7 +22,7 @@ let resized = resize_bilinear(&img, 224, 224)?;
 | **Features** | fast9, harris_corners, sift, surf, orb, brief, template_match |
 | **Geometry** | resize (nearest/bilinear), crop_resize (fused crop+resize, replicate or constant border), flip, rotate90, warp_affine, warp_perspective |
 | **Threshold** | binary, binary_inv, truncate, adaptive, otsu |
-| **Contour** | find_contours, contour_area, bounding_rect, convex_hull, approx_poly |
+| **Contour** | find_contours, contour_area, bounding_rect, convex_hull, approx_poly, trace_pixel_polygons (pixel-edge polygons with holes, area = pixel count) |
 | **Drawing** | draw_rect, draw_circle, draw_line, draw_text, fill_poly |
 | **Histogram** | equalize_hist, clahe, calc_hist |
 | **Integral** | integral_image (f32, SIMD), IntegralImage (f64 table, clipped window sums for variance and correlation windows) |
@@ -35,4 +35,4 @@ All hot paths have NEON (aarch64) and SSE2/AVX (x86_64) SIMD. GCD parallel dispa
 
 ## Tests
 
-248 tests. Criterion benchmarks for grayscale, resize, blur, morphology, sobel.
+253 tests. Criterion benchmarks for grayscale, resize, blur, morphology, sobel.

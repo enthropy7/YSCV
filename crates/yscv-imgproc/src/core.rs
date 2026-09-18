@@ -49,6 +49,8 @@ pub use ops::OrbConfig;
 pub use ops::OrbDescriptor;
 /// Combined ORB keypoint + descriptor.
 pub use ops::OrbFeature;
+/// Region of a binary mask as a polygon along pixel edges, with holes.
+pub use ops::PixelPolygon;
 /// Properties of a labeled image region.
 pub use ops::RegionProp;
 /// Configuration for stereo block matching.
@@ -304,6 +306,8 @@ pub use ops::threshold_binary_inv;
 pub use ops::threshold_otsu;
 /// Truncate threshold: clamp values above thresh. Input: `[H, W]`.
 pub use ops::threshold_truncate;
+/// Trace every 4-connected region of a binary `[H, W, 1]` image as a pixel-edge polygon with holes.
+pub use ops::trace_pixel_polygons;
 /// Triangulate 3D points from two camera views.
 pub use ops::triangulate_points;
 /// Undistort 2D points using camera intrinsics.
