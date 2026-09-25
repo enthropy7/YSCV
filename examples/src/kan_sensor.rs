@@ -30,8 +30,10 @@ fn read_u32(b: &[u8], at: &mut usize) -> u32 {
 
 fn read_f32s(b: &[u8], at: &mut usize, n: usize) -> Vec<f32> {
     let v = b[*at..*at + 4 * n]
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     *at += 4 * n;
     v

@@ -533,7 +533,12 @@ unsafe fn accumulate_neon_regs<const Q: usize>(
 #[inline]
 unsafe fn add_row_neon(acc: &mut [f32], row: &[f32], v: f32) {
     let vv = vdupq_n_f32(v);
-    for (a, c) in acc.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
+    for (a, c) in acc
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(row.as_chunks::<4>().0)
+    {
         // SAFETY: both chunks hold exactly 4 floats.
         unsafe {
             vst1q_f32(
@@ -569,7 +574,12 @@ unsafe fn accumulate_avx(
 #[inline]
 unsafe fn add_row_avx(acc: &mut [f32], row: &[f32], v: f32) {
     let vv = _mm256_set1_ps(v);
-    for (a, c) in acc.chunks_exact_mut(8).zip(row.chunks_exact(8)) {
+    for (a, c) in acc
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .zip(row.as_chunks::<8>().0)
+    {
         // SAFETY: both chunks hold exactly 8 floats.
         unsafe {
             _mm256_storeu_ps(
@@ -608,7 +618,12 @@ unsafe fn accumulate_sse(
 #[inline]
 unsafe fn add_row_sse(acc: &mut [f32], row: &[f32], v: f32) {
     let vv = _mm_set1_ps(v);
-    for (a, c) in acc.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
+    for (a, c) in acc
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(row.as_chunks::<4>().0)
+    {
         // SAFETY: both chunks hold exactly 4 floats.
         unsafe {
             _mm_storeu_ps(
