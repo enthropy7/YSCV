@@ -66,6 +66,10 @@ name = "kernels_cpu_ops"
 harness = false
 
 [[bench]]
+name = "kan"
+harness = false
+
+[[bench]]
 name = "int8_fused_pw_dw_3x3"
 harness = false
 

@@ -25,6 +25,10 @@ paths.
 - **Normalization**: batch norm, layer norm, group norm, RMS norm
 - **Attention**: multi-head scaled dot-product
 - **Softmax**: fused max+exp+sum+div in one pass
+- **KAN**: `KanLinear`, a B-spline Kolmogorov–Arnold layer (efficient-kan parameters, cubic
+  splines on a uniform grid). Evaluates only the four active bases per input in closed form and
+  reads only their coefficients, stored input-major with the outputs padded to 8; NEON / AVX /
+  SSE4.1 / scalar paths are bitwise identical. Inference only.
 
 ### Blocked GEMM (custom, no-BLAS path)
 
@@ -420,4 +424,4 @@ memory access, COM-style vtable dispatch.
 
 170+ tests under `--features rknn`, 139 under `--features gpu`, 139 under
 `--features metal-backend`, 165+ default. Criterion benchmarks for matmul,
-conv, relu, sigmoid, pool.
+conv, relu, sigmoid, pool, and KAN vs a parameter-matched MLP (`benches/kan.rs`).

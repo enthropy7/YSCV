@@ -174,6 +174,7 @@ pub mod int8_fused_dw_pw_3x3;
 pub mod int8_fused_pw_dw_3x3;
 pub mod int8_matmul;
 mod int8_requant;
+pub mod kan;
 mod layout;
 mod matmul;
 mod nchwc_dw3x3;
@@ -200,6 +201,7 @@ pub use elementwise::{
     sigmoid_with_config, silu_inplace, silu_with_config, sub_out, sub_out_with_config,
     sub_with_config, tanh_act, tanh_act_with_config,
 };
+pub use kan::KanLinear;
 #[cfg(target_arch = "aarch64")]
 pub use matmul::hgemm_6x16_neon;
 pub use matmul::{

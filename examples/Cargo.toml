@@ -37,6 +37,10 @@ name = "train_linear"
 path = "src/train_linear.rs"
 
 [[example]]
+name = "kan_sensor"
+path = "src/kan_sensor.rs"
+
+[[example]]
 name = "detect_objects"
 path = "src/detect_objects.rs"
 

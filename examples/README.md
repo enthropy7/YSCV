@@ -42,10 +42,12 @@ cargo run --release --example yolo_vis    -- yolov8n.onnx photo.jpg out.png
 |---|---|
 | **[train_linear.rs](src/train_linear.rs)** | Linear regression on synthetic data — autograd + SGD end-to-end in 50 lines. |
 | **[train_cnn.rs](src/train_cnn.rs)** | Train a small CNN with the `Trainer` API: optimizer, loss, validation split, epochs. |
+| **[kan_sensor.rs](src/kan_sensor.rs)** | Run a Kolmogorov–Arnold network exported from efficient-kan on one sensor window with `KanLinear`, and time the single-window forward pass. |
 
 ```bash
 cargo run --release --example train_linear
 cargo run --release --example train_cnn
+cargo run --release --example kan_sensor              # or: -- model.kan window.f32
 ```
 
 ## ONNX inference (CPU + GPU)

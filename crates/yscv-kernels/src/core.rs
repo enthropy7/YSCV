@@ -164,6 +164,7 @@ pub use multi_device::{
     enumerate_gpu_devices,
 };
 pub use ops::Activation;
+pub use ops::KanLinear;
 #[cfg(all(target_os = "macos", yscv_blas))]
 pub use ops::bnns_conv;
 pub use ops::conv2d_nhwc_indirect_padded;

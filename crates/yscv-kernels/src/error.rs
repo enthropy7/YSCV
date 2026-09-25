@@ -212,6 +212,14 @@ pub enum KernelError {
     },
     #[error("GPU backend error: {message}")]
     Gpu { message: String },
+    #[error("kan layer {name} has {got} values, expected {expected}")]
+    KanShapeMismatch {
+        name: &'static str,
+        expected: usize,
+        got: usize,
+    },
+    #[error("kan grid needs grid_size > 0 and lo < hi, got grid_size={grid_size}, range={range}")]
+    InvalidKanGrid { grid_size: usize, range: String },
     #[cfg(feature = "rknn")]
     #[error("RKNN backend error: {message}")]
     Rknn { message: String },
