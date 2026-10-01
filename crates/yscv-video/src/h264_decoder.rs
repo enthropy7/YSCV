@@ -6379,6 +6379,26 @@ mod tests {
     }
 
     #[test]
+    fn bitstream_reader_rejects_a_mid_byte_zero_run_past_31() {
+        // One flag bit, then 7 + 24 + 1 = 32 zeros before the terminating 1.
+        let data = [
+            0b1000_0000,
+            0,
+            0,
+            0,
+            0b0100_0000,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+        ];
+        let mut r = BitstreamReader::new(&data);
+        assert_eq!(r.read_bit().unwrap(), 1);
+        assert!(r.read_ue().is_err());
+    }
+
+    #[test]
     fn emulation_prevention_removal() {
         let input = [0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x01];
         let result = remove_emulation_prevention(&input);
