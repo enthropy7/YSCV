@@ -531,7 +531,7 @@ pub const fn apply_telemetry_update(td: &mut TelemetryData, update: &TelemetryUp
 mod serial {
     use super::{MavlinkMessage, MavlinkParser};
     use crate::VideoError;
-    use std::ffi::{CString, c_char};
+    use std::ffi::{CString, c_char, c_void};
 
     // termios constants (Linux aarch64 / x86_64)
     const TCGETS2: usize = 0x802C_542A;
@@ -596,7 +596,7 @@ mod serial {
         // `unsigned long`: pointer-width, so 32-bit on armhf. Must agree with the
         // same symbol declared in `v4l2.rs` and `framebuffer.rs`.
         fn ioctl(fd: i32, request: usize, ...) -> i32;
-        fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+        fn read(fd: i32, buf: *mut c_void, count: usize) -> isize;
         // Variadic to match POSIX `open(path, flags, ...)` — the optional `mode`
         // arg. A non-variadic redeclaration shadows the libc symbol the std
         // runtime uses and newer rustc rejects it (suspicious_runtime_symbol_*).
@@ -686,7 +686,7 @@ mod serial {
         pub fn read_messages(&mut self) -> Result<Vec<MavlinkMessage>, VideoError> {
             let mut tmp = [0u8; 1024];
             // SAFETY: tmp is a valid stack buffer, fd was opened by Self::open.
-            let n = unsafe { read(self.fd, tmp.as_mut_ptr(), tmp.len()) };
+            let n = unsafe { read(self.fd, tmp.as_mut_ptr().cast(), tmp.len()) };
             if n < 0 {
                 // EAGAIN / EWOULDBLOCK is expected for non-blocking fd
                 return Ok(Vec::new());
