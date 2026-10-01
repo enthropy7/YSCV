@@ -197,6 +197,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--features rknn` did not build for 32-bit ARM. `rknn_api.h` declares
+  `rknn_context` — and with it `rknn_matmul_ctx` and the custom-op internal
+  context — as `uint32_t` under `__arm__`; the FFI passed it as 64 bits, which
+  on 32-bit ARM takes a register pair and shifts every argument after it, and
+  the struct-layout assertions were written for LP64 only. The handles follow
+  the header now, the layout assertions cover all 24 FFI structs for both LP64
+  and 32-bit ARM, and the runtime loader falls back to `librknnmrt.so`, the
+  mini runtime RV1103/RV1106 ship in place of `librknnrt.so`.
 - `load_onnx_model` accepted a graph that defines a value twice — two nodes
   writing the same output, or a node output reusing a graph-input or
   initializer name — and the optimizer then ran over an inconsistent def-use

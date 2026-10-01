@@ -134,6 +134,34 @@ frames round-robin across them. On RK3588 this gives near-linear scaling
 across 3 NPU cores; on RV1106 the single-core pool still exposes the same
 API.
 
+### RV1103 / RV1106 (32-bit ARM, uClibc-ng)
+
+These parts run a single Cortex-A7 on Buildroot with uClibc-ng 1.0.31 and
+ship the mini runtime `librknnmrt.so` in `/oem/usr/lib`, which `dlopen` falls
+back to when `librknnrt.so` is absent. It exports the core and zero-copy API
+but not matmul, custom ops or core masks; those calls return an error instead
+of failing the load.
+
+The binary has to link against the board's uClibc. Rust has that as the
+tier-3 target `armv7-unknown-linux-uclibceabihf`, with no prebuilt std, so
+std is rebuilt with the LuckFox crosstool-NG linker:
+
+```bash
+# arm-rockchip830-linux-uclibcgnueabihf-gcc on PATH (LuckFox SDK toolchain)
+CARGO_TARGET_ARMV7_UNKNOWN_LINUX_UCLIBCEABIHF_LINKER=arm-rockchip830-linux-uclibcgnueabihf-gcc \
+RUSTFLAGS="-C target-feature=+neon -C target-cpu=cortex-a7 -C relocation-model=static" \
+  cargo +nightly build -Z build-std=std,panic_abort --release \
+  --target armv7-unknown-linux-uclibceabihf
+
+# on the board
+LD_LIBRARY_PATH=/oem/usr/lib ./your-binary
+```
+
+The toolchain ships no PIE start files, hence the static relocation model.
+uClibc folds `librt` and `libutil` into libc while std still passes
+`-lrt -lutil`; if the link stops there, add `-L` to a directory holding empty
+`librt.a` / `libutil.a` stubs.
+
 ### Pipelined submit/wait (overlap CPU marshaling with NPU compute)
 
 `dispatch_roundrobin` picks a free core but then *blocks* until that core

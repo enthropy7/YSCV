@@ -248,9 +248,12 @@ Runtime flags:
 
 ### `rknn` — Rockchip NPU (edge deployment)
 
-Links `librknnrt.so` at runtime via `dlopen`. Builds on any platform;
-runs only on Rockchip SoCs with the runtime lib installed. Covers
-RK3588 / RK3576 / RV1106.
+Loads the RKNN runtime via `dlopen`: `librknnrt.so` on the RK35xx parts,
+or the mini runtime `librknnmrt.so` on RV1103 / RV1106, which has no
+matmul, custom-op or multi-core entry points. Builds on any platform; runs
+only on Rockchip SoCs with the runtime lib installed. The RV1106 is 32-bit
+ARM with uClibc-ng — see [`edge-deployment.md`](edge-deployment.md#rv1103--rv1106-32-bit-arm-uclibc-ng)
+for that build.
 
 **Full guide**: [`edge-deployment.md`](edge-deployment.md) — DMA-BUF
 zero-copy, SRAM, MPP zero-copy from hardware decoder, dynamic-shape
@@ -268,6 +271,8 @@ Host setup on the Rockchip board:
 # librknnrt.so from rockchip-linux/rknn-toolkit2 release
 sudo cp librknnrt.so /usr/lib/aarch64-linux-gnu/
 sudo ldconfig
+# RV1106: librknnmrt.so ships in /oem/usr/lib, outside the default path
+export LD_LIBRARY_PATH=/oem/usr/lib
 ```
 
 ### `rknn-validate` — dry-run model load at startup

@@ -14,7 +14,7 @@ paths.
 | CPU (BLAS) | All | MKL, Arm PL, or fallback |
 | GPU (wgpu) | All | Vulkan, Metal, DX12 via wgpu |
 | GPU (Metal) | macOS | Native MPSGraph for Apple Silicon |
-| NPU (RKNN) | Rockchip | Native librknnrt.so via dlopen, full SDK 2.4.3a0 |
+| NPU (RKNN) | Rockchip | Native librknnrt.so (librknnmrt.so on RV1103/RV1106) via dlopen, full SDK 2.4.3a0 |
 
 ## Key Operations
 
@@ -236,9 +236,12 @@ rknn = []            # Rockchip NPU (RK3588 / RK3576 / RV1106 / etc.)
 
 ## RKNN backend (Rockchip NPU)
 
-Enable with `--features rknn`. Loads `librknnrt.so` at runtime via `dlopen`
-— the binary compiles on any platform; the NPU path activates only on
-Rockchip devices where the runtime library is present.
+Enable with `--features rknn`. Loads `librknnrt.so` at runtime via `dlopen`,
+falling back to the mini runtime `librknnmrt.so` that RV1103/RV1106 ship —
+the binary compiles on any platform; the NPU path activates only on
+Rockchip devices where the runtime library is present. FFI types and struct
+layouts follow the SDK headers on both LP64 and 32-bit ARM, where
+`rknn_context` is 32 bits wide.
 
 ### Module layout (`src/rknn/`)
 

@@ -12,8 +12,8 @@ use yscv_tensor::Tensor;
 /// Safe wrapper around the RKNN NPU runtime.
 ///
 /// Loads an `.rknn` model and runs inference on Rockchip NPU hardware.
-/// The runtime library (`librknnrt.so`) is loaded dynamically, so this
-/// crate compiles on any target.
+/// The runtime library (`librknnrt.so`, or `librknnmrt.so` on RV1103/RV1106)
+/// is loaded dynamically, so this crate compiles on any target.
 pub struct RknnBackend {
     ctx: RknnContext,
     funcs: Arc<RknnFunctions>,
@@ -279,8 +279,13 @@ impl RknnBackend {
 
         let mut new_ctx: RknnContext = 0;
         // SAFETY: self.ctx is valid from a successful load; dup_fn is a
-        // valid function pointer; new_ctx is a writable u64.
-        let ret = unsafe { dup_fn(&self.ctx as *const u64 as *mut u64, &mut new_ctx) };
+        // valid function pointer; new_ctx is a writable handle.
+        let ret = unsafe {
+            dup_fn(
+                &self.ctx as *const RknnContext as *mut RknnContext,
+                &mut new_ctx,
+            )
+        };
         if ret != RKNN_SUCC {
             return Err(KernelError::Rknn {
                 message: format!("rknn_dup_context failed: {} ({ret})", rknn_error_name(ret)),
@@ -2383,12 +2388,12 @@ fn c_str_to_string(bytes: &[u8]) -> String {
 // Runtime detection
 // ══════════════════════════════════════════════════════════════════════
 
-/// Check whether `librknnrt.so` is loadable on this system.
+/// Check whether the RKNN runtime (`librknnrt.so`, or `librknnmrt.so` on
+/// RV1103/RV1106) is loadable on this system.
 pub fn rknn_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: dlopen with RTLD_LAZY only probes for the library.
-        let handle = unsafe { libc::dlopen(c"librknnrt.so".as_ptr(), libc::RTLD_LAZY) };
+        let handle = super::ffi::dlopen_runtime();
         if handle.is_null() {
             return false;
         }
@@ -2424,42 +2429,43 @@ pub fn detect_backend(model_data: Option<&[u8]>) -> InferenceBackend {
 // Compile-time ABI assertions
 // ══════════════════════════════════════════════════════════════════════
 
+// Sizes of the C structs as gcc lays them out from the SDK headers
+// (`rknn_api.h`, `rknn_matmul_api.h`, `rknn_custom_op.h`; RV1106's
+// `rknn_api.h` agrees on every struct it declares). The first figure is LP64
+// (aarch64, x86_64), the second 32-bit ARM, where pointers and context handles
+// are four bytes. No other 32-bit target has an RKNN runtime.
+#[cfg(any(target_pointer_width = "64", target_arch = "arm"))]
 const _: () = {
-    // All sizes verified against SDK 2.4.3a0 by compiling the C struct
-    // equivalents on aarch64-darwin (matches LP64 ABI used on Rockchip Linux):
-    //
-    //   rknn_tensor_attr        376  (376-byte struct after pass_through+h_stride extension)
-    //   rknn_init_extend        136
-    //   rknn_run_extend         24
-    //   rknn_output_extend      8
-    //   rknn_mem_size           64
-    //   rknn_custom_string      1024
-    //   rknn_tensor_mem         40
-    //   rknn_gpu_op_context     24   (3 × 8-byte ptrs)
-    //   rknn_custom_op_context  48   (u32+pad+u64+24+8)
-    //   rknn_custom_op_tensor   416  (376 attr + 40 mem)
-    //   rknn_custom_op_attr     272  (256 name + 4 dtype + 4 n_elems + 8 ptr)
-    //   rknn_matmul_info        64
-    //   rknn_input_output_num   8
-    //   rknn_matmul_shape       12
-    //   rknn_sdk_version        512
-    //   rknn_perf_run           8
-    assert!(std::mem::size_of::<RknnTensorAttr>() == 376);
-    assert!(std::mem::size_of::<RknnInitExtend>() == 136);
-    assert!(std::mem::size_of::<RknnRunExtend>() == 24);
-    assert!(std::mem::size_of::<RknnOutputExtend>() == 8);
-    assert!(std::mem::size_of::<RknnMemSizeRaw>() == 64);
-    assert!(std::mem::size_of::<RknnCustomStringRaw>() == 1024);
-    assert!(std::mem::size_of::<RknnTensorMemRaw>() == 40);
-    assert!(std::mem::size_of::<RknnGpuOpContext>() == 24);
-    assert!(std::mem::size_of::<RknnCustomOpContextRaw>() == 48);
-    assert!(std::mem::size_of::<RknnCustomOpTensorRaw>() == 416);
-    assert!(std::mem::size_of::<RknnCustomOpAttrRaw>() == 272);
-    assert!(std::mem::size_of::<RknnMatmulInfo>() == 64);
-    assert!(std::mem::size_of::<RknnInOutNum>() == 8);
-    assert!(std::mem::size_of::<RknnMatmulShape>() == 12);
-    assert!(std::mem::size_of::<RknnSdkVersionRaw>() == 512);
-    assert!(std::mem::size_of::<RknnPerfRun>() == 8);
+    use std::mem::size_of;
+
+    const fn lp64_or_arm(lp64: usize, arm: usize) -> usize {
+        if cfg!(target_arch = "arm") { arm } else { lp64 }
+    }
+
+    assert!(size_of::<RknnInput>() == lp64_or_arm(32, 24));
+    assert!(size_of::<RknnOutput>() == lp64_or_arm(24, 16));
+    assert!(size_of::<RknnInOutNum>() == 8);
+    assert!(size_of::<RknnTensorAttr>() == 376);
+    assert!(size_of::<RknnInputRange>() == 33040);
+    assert!(size_of::<RknnPerfDetailRaw>() == 16);
+    assert!(size_of::<RknnPerfRun>() == 8);
+    assert!(size_of::<RknnSdkVersionRaw>() == 512);
+    assert!(size_of::<RknnMemSizeRaw>() == 64);
+    assert!(size_of::<RknnCustomStringRaw>() == 1024);
+    assert!(size_of::<RknnInitExtend>() == lp64_or_arm(136, 132));
+    assert!(size_of::<RknnRunExtend>() == 24);
+    assert!(size_of::<RknnOutputExtend>() == 8);
+    assert!(size_of::<RknnTensorMemRaw>() == 40);
+    assert!(size_of::<RknnQuantParamsRaw>() == lp64_or_arm(288, 272));
+    assert!(size_of::<RknnMatmulTensorAttr>() == 332);
+    assert!(size_of::<RknnMatmulIoAttr>() == 996);
+    assert!(size_of::<RknnMatmulShape>() == 12);
+    assert!(size_of::<RknnMatmulInfo>() == 64);
+    assert!(size_of::<RknnGpuOpContext>() == lp64_or_arm(24, 12));
+    assert!(size_of::<RknnCustomOpContextRaw>() == lp64_or_arm(48, 24));
+    assert!(size_of::<RknnCustomOpTensorRaw>() == 416);
+    assert!(size_of::<RknnCustomOpAttrRaw>() == lp64_or_arm(272, 268));
+    assert!(size_of::<RknnCustomOpRaw>() == lp64_or_arm(832, 816));
 };
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2517,83 +2523,8 @@ mod tests {
         assert_eq!(MemSyncMode::Bidirectional.as_raw(), 0x3);
     }
 
-    #[test]
-    fn rknn_input_struct_layout() {
-        let size = std::mem::size_of::<RknnInput>();
-        let align = std::mem::align_of::<RknnInput>();
-
-        #[cfg(target_pointer_width = "64")]
-        {
-            assert_eq!(size, 32);
-            assert_eq!(align, 8);
-        }
-        #[cfg(target_pointer_width = "32")]
-        {
-            assert_eq!(align, 4);
-        }
-    }
-
-    #[test]
-    fn rknn_output_struct_layout() {
-        let align = std::mem::align_of::<RknnOutput>();
-        #[cfg(target_pointer_width = "64")]
-        {
-            assert_eq!(std::mem::size_of::<RknnOutput>(), 24);
-            assert_eq!(align, 8);
-        }
-        #[cfg(target_pointer_width = "32")]
-        {
-            assert_eq!(align, 4);
-        }
-    }
-
-    // RknnTensorAttr struct size is now asserted at compile time
-    // (see `const _: () = { assert!(...) };` block above).
-
-    #[test]
-    fn rknn_in_out_num_size() {
-        assert_eq!(std::mem::size_of::<RknnInOutNum>(), 8);
-    }
-
-    #[test]
-    fn rknn_init_extend_size() {
-        assert_eq!(std::mem::size_of::<RknnInitExtend>(), 136);
-    }
-
-    #[test]
-    fn rknn_run_extend_size() {
-        assert_eq!(std::mem::size_of::<RknnRunExtend>(), 24);
-    }
-
-    #[test]
-    fn rknn_output_extend_size() {
-        assert_eq!(std::mem::size_of::<RknnOutputExtend>(), 8);
-    }
-
-    #[test]
-    fn rknn_sdk_version_size() {
-        assert_eq!(std::mem::size_of::<RknnSdkVersionRaw>(), 512);
-    }
-
-    #[test]
-    fn rknn_mem_size_size() {
-        assert_eq!(std::mem::size_of::<RknnMemSizeRaw>(), 64);
-    }
-
-    #[test]
-    fn rknn_custom_string_size() {
-        assert_eq!(std::mem::size_of::<RknnCustomStringRaw>(), 1024);
-    }
-
-    #[test]
-    fn rknn_perf_run_size() {
-        assert_eq!(std::mem::size_of::<RknnPerfRun>(), 8);
-    }
-
-    #[test]
-    fn rknn_matmul_shape_size() {
-        assert_eq!(std::mem::size_of::<RknnMatmulShape>(), 12);
-    }
+    // FFI struct sizes are asserted at compile time, for both ABIs, by the
+    // `const _` block above.
 
     #[test]
     fn tensor_attr_name_str() {

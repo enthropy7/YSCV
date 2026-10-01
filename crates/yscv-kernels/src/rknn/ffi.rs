@@ -10,9 +10,14 @@ use std::ffi::c_void;
 // ══════════════════════════════════════════════════════════════════════
 
 /// Opaque context handle for both inference (`rknn_context`) and matmul
-/// (`rknn_matmul_ctx`) APIs. Both are `uint64_t` in the SDK.
+/// (`rknn_matmul_ctx`) APIs. `rknn_api.h` declares it `uint32_t` under
+/// `__arm__` and `uint64_t` everywhere else; passing a 64-bit handle by value
+/// on 32-bit ARM takes a register pair and shifts every argument after it.
+#[cfg(target_arch = "arm")]
+pub(crate) type RknnContext = u32;
+#[cfg(not(target_arch = "arm"))]
 pub(crate) type RknnContext = u64;
-pub(crate) type RknnMatmulCtx = u64;
+pub(crate) type RknnMatmulCtx = RknnContext;
 
 /// `rknn_input` — per-input tensor descriptor for `rknn_inputs_set`.
 #[repr(C)]
@@ -361,7 +366,8 @@ pub(crate) struct RknnGpuOpContext {
 #[repr(C)]
 pub(crate) struct RknnCustomOpContextRaw {
     pub(crate) target: u32,
-    pub(crate) internal_ctx: u64,
+    /// `rknn_custom_op_interal_context`, sized like `rknn_context`.
+    pub(crate) internal_ctx: RknnContext,
     pub(crate) gpu_ctx: RknnGpuOpContext,
     pub(crate) priv_data: *mut c_void,
 }
@@ -500,7 +506,7 @@ pub(crate) type FnRknnCustomOpDestroy = unsafe extern "C" fn(*mut RknnCustomOpCo
 // Dynamic library loading
 // ══════════════════════════════════════════════════════════════════════
 
-/// Resolved function pointers from `librknnrt.so`.
+/// Resolved function pointers from the RKNN runtime library.
 ///
 /// Optional fields are symbols that may not exist on older runtimes —
 /// absence does not fail the library load; features that depend on
@@ -588,7 +594,7 @@ unsafe fn resolve_required<T: Copy>(handle: *mut c_void, name: &[u8]) -> Result<
         let sym_name =
             std::str::from_utf8(&name[..name.len().saturating_sub(1)]).unwrap_or("<invalid>");
         return Err(KernelError::Rknn {
-            message: format!("required symbol `{sym_name}` not found in librknnrt.so"),
+            message: format!("required symbol `{sym_name}` not found in the RKNN runtime"),
         });
     }
     // SAFETY: sym is non-null; caller guarantees `T` matches.
@@ -610,14 +616,34 @@ pub(crate) unsafe fn resolve_optional<T: Copy>(handle: *mut c_void, name: &[u8])
     }
 }
 
+/// Opens the RKNN runtime, or returns null when neither library is present.
+///
+/// The RK35xx parts ship the full runtime as `librknnrt.so`; RV1103/RV1106
+/// ship the mini runtime `librknnmrt.so` instead, which exports the same core
+/// and zero-copy API without the matmul, custom-op or multi-core entry points.
+pub(crate) fn dlopen_runtime() -> *mut c_void {
+    [c"librknnrt.so", c"librknnmrt.so"]
+        .into_iter()
+        .map(|name| {
+            // SAFETY: dlopen with RTLD_LAZY only loads the library; a null
+            // handle means it is not present.
+            unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY) }
+        })
+        .find(|handle| !handle.is_null())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 pub(crate) fn load_rknn_library() -> Result<(DlHandle, RknnFunctions), KernelError> {
-    // SAFETY: dlopen with RTLD_LAZY; handle is checked non-null.
-    let handle = unsafe { libc::dlopen(c"librknnrt.so".as_ptr(), libc::RTLD_LAZY) };
+    let handle = dlopen_runtime();
     if handle.is_null() {
         return Err(KernelError::Rknn {
-            message: "failed to load librknnrt.so — RKNN runtime not available".into(),
+            message: "failed to load librknnrt.so or librknnmrt.so — RKNN runtime not available"
+                .into(),
         });
     }
+    // Owned before any symbol is resolved, so a missing required symbol
+    // closes the library on the way out.
+    let lib = DlHandle { handle };
 
     // SAFETY: handle is valid; each symbol name matches its declared function type.
     let funcs = unsafe {
@@ -670,7 +696,7 @@ pub(crate) fn load_rknn_library() -> Result<(DlHandle, RknnFunctions), KernelErr
         }
     };
 
-    Ok((DlHandle { handle }, funcs))
+    Ok((lib, funcs))
 }
 
 /// Helper to call `rknn_query` and parse the error code.

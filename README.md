@@ -196,7 +196,7 @@ Quick summary of the big ones:
 |------|-------------|-----------|
 | `gpu` | GPU acceleration via wgpu (Vulkan / Metal / DX12) | All |
 | `metal-backend` | Metal-native GPU pipeline (yscv's fastest backend on Apple Silicon) | macOS only |
-| `rknn` | Rockchip NPU via `librknnrt.so` (RK3588 / RK3576 / RV1106) — `dlopen` at runtime, full SDK 2.4.3a0 | Linux ARM64 (Rockchip device) |
+| `rknn` | Rockchip NPU via `librknnrt.so` (RK3588 / RK3576) or `librknnmrt.so` (RV1103 / RV1106) — `dlopen` at runtime, full SDK 2.4.3a0 | Linux ARM64 / ARMv7 (Rockchip device) |
 | `native-camera` | Real camera capture (V4L2 / AVFoundation / MediaFoundation) | All |
 | `blas` | OpenBLAS matmul on Linux/Windows (opt-in; default is yscv's hand-tuned kernels). macOS always uses Accelerate/AMX — no flag needed | Linux / Windows |
 

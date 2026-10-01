@@ -86,7 +86,7 @@ rm -rf target/release/incremental                          # incremental only
 
 ## Runtime errors
 
-### `librknnrt.so not found — RKNN runtime not available`
+### `failed to load librknnrt.so or librknnmrt.so — RKNN runtime not available`
 
 The `rknn` feature was compiled in but the host doesn't have the
 Rockchip runtime library. Two scenarios:
@@ -106,6 +106,9 @@ sudo cp librknnrt.so /usr/lib/aarch64-linux-gnu/
 sudo ldconfig
 ldconfig -p | grep librknnrt    # verify
 ```
+
+RV1103 / RV1106 ship the mini runtime `librknnmrt.so` in `/oem/usr/lib`,
+which is not on the default search path: `export LD_LIBRARY_PATH=/oem/usr/lib`.
 
 Or use the Rockchip `rknn-toolkit2-lite` Debian package if available
 for your distro.
