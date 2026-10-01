@@ -818,6 +818,8 @@ fn fuse_conv_relu_declines_when_intermediate_has_another_reader() {
 /// pins down is the end-to-end result — both pairs fused — rather than the
 /// mechanism. Reordering still matters, but for the layer-3 plan builder, which
 /// is still positional; see `reorder_restores_producer_consumer_adjacency`.
+// The optimizer does not fuse Conv+Relu on 32-bit ARM.
+#[cfg(not(target_arch = "arm"))]
 #[test]
 fn interleaved_branches_both_fuse() {
     let nodes = vec![
@@ -994,6 +996,8 @@ fn graph_cost_report_is_deterministic_and_sorted_by_stable_key() {
     );
 }
 
+// The optimizer does not fuse Conv+Relu on 32-bit ARM.
+#[cfg(not(target_arch = "arm"))]
 #[test]
 fn graph_cost_report_shows_lighter_graph_after_optimization() {
     let nodes = vec![

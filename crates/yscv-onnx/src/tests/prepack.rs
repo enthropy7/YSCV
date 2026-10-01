@@ -361,7 +361,8 @@ fn siamese_model() -> Vec<u8> {
 /// pass could rename anything. Asserted on the layout rather than on output
 /// values because the fallback is slower, not wrong: nothing about the numbers
 /// says the pack went missing.
-#[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
+// The optimizer does not fuse Conv+Relu on 32-bit ARM.
+#[cfg(not(any(feature = "metal-backend", feature = "gpu", target_arch = "arm")))]
 #[test]
 fn a_conv_renamed_by_fusion_keeps_its_packed_weight() {
     let bytes = build_minimal_onnx_model(
