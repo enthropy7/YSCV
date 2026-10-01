@@ -51,7 +51,7 @@ const ACTIVE: usize = 4;
 /// stored input-major (`[in, grid_size + 3, out]`, outputs padded to a multiple of 8), so each
 /// active basis adds one contiguous row to all outputs. The NEON / AVX / SSE paths add in the
 /// same order as the scalar path and give bitwise-identical results; `silu` is
-/// [`silu_slice_dispatch`].
+/// `silu_slice_dispatch`.
 #[derive(Debug, Clone)]
 pub struct KanLinear {
     in_features: usize,
