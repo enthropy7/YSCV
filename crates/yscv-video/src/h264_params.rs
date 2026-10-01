@@ -117,8 +117,15 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
         if chroma_format_idc == 3 {
             let _separate_colour_plane_flag = r.read_bit()?;
         }
-        bit_depth_luma = r.read_ue()? + 8;
-        bit_depth_chroma = r.read_ue()? + 8;
+        let bit_depth_luma_minus8 = r.read_ue()?;
+        let bit_depth_chroma_minus8 = r.read_ue()?;
+        if bit_depth_luma_minus8 > 6 || bit_depth_chroma_minus8 > 6 {
+            return Err(VideoError::Codec(format!(
+                "SPS bit_depth_minus8 out of range: luma {bit_depth_luma_minus8} chroma {bit_depth_chroma_minus8}"
+            )));
+        }
+        bit_depth_luma = bit_depth_luma_minus8 + 8;
+        bit_depth_chroma = bit_depth_chroma_minus8 + 8;
         let _qpprime_y_zero_transform_bypass = r.read_bit()?;
         let seq_scaling_matrix_present = r.read_bit()?;
         if seq_scaling_matrix_present == 1 {
@@ -138,13 +145,25 @@ pub fn parse_sps(nal_data: &[u8]) -> Result<Sps, VideoError> {
         }
     }
 
-    let log2_max_frame_num = r.read_ue()? + 4;
+    let log2_max_frame_num_minus4 = r.read_ue()?;
+    if log2_max_frame_num_minus4 > 12 {
+        return Err(VideoError::Codec(format!(
+            "SPS log2_max_frame_num_minus4 out of range: {log2_max_frame_num_minus4}"
+        )));
+    }
+    let log2_max_frame_num = log2_max_frame_num_minus4 + 4;
     let pic_order_cnt_type = r.read_ue()?;
 
     let mut log2_max_pic_order_cnt_lsb = 0u32;
     let mut delta_pic_order_always_zero = false;
     if pic_order_cnt_type == 0 {
-        log2_max_pic_order_cnt_lsb = r.read_ue()? + 4;
+        let log2_max_pic_order_cnt_lsb_minus4 = r.read_ue()?;
+        if log2_max_pic_order_cnt_lsb_minus4 > 12 {
+            return Err(VideoError::Codec(format!(
+                "SPS log2_max_pic_order_cnt_lsb_minus4 out of range: {log2_max_pic_order_cnt_lsb_minus4}"
+            )));
+        }
+        log2_max_pic_order_cnt_lsb = log2_max_pic_order_cnt_lsb_minus4 + 4;
     } else if pic_order_cnt_type == 1 {
         delta_pic_order_always_zero = r.read_bit()? == 1;
         let _offset_for_non_ref_pic = r.read_se()?;

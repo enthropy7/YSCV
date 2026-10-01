@@ -397,9 +397,22 @@ pub fn parse_hevc_sps(data: &[u8]) -> Result<HevcSps, VideoError> {
         reader.read_ue()?; // conf_win_bottom_offset
     }
 
-    let bit_depth_luma = reader.read_ue()? as u8 + 8;
-    let bit_depth_chroma = reader.read_ue()? as u8 + 8;
-    let log2_max_pic_order_cnt = reader.read_ue()? as u8 + 4;
+    let bit_depth_luma_minus8 = reader.read_ue()?;
+    let bit_depth_chroma_minus8 = reader.read_ue()?;
+    let log2_max_pic_order_cnt_lsb_minus4 = reader.read_ue()?;
+    if bit_depth_luma_minus8 > 8 || bit_depth_chroma_minus8 > 8 {
+        return Err(VideoError::Codec(format!(
+            "HEVC SPS bit_depth_minus8 out of range: luma {bit_depth_luma_minus8} chroma {bit_depth_chroma_minus8}"
+        )));
+    }
+    if log2_max_pic_order_cnt_lsb_minus4 > 12 {
+        return Err(VideoError::Codec(format!(
+            "HEVC SPS log2_max_pic_order_cnt_lsb_minus4 out of range: {log2_max_pic_order_cnt_lsb_minus4}"
+        )));
+    }
+    let bit_depth_luma = bit_depth_luma_minus8 as u8 + 8;
+    let bit_depth_chroma = bit_depth_chroma_minus8 as u8 + 8;
+    let log2_max_pic_order_cnt = log2_max_pic_order_cnt_lsb_minus4 as u8 + 4;
 
     // sub_layer_ordering_info_present_flag
     let sub_layer_ordering_info_present = reader.read_bit()? != 0;
@@ -493,8 +506,15 @@ pub fn parse_hevc_pps(data: &[u8]) -> Result<HevcPps, VideoError> {
     let num_extra_slice_header_bits = reader.read_bits(3)? as u8;
     let sign_data_hiding_enabled = reader.read_bit()? != 0;
     let cabac_init_present = reader.read_bit()? != 0;
-    let num_ref_idx_l0_default = reader.read_ue()? as u8 + 1;
-    let num_ref_idx_l1_default = reader.read_ue()? as u8 + 1;
+    let num_ref_idx_l0_default_minus1 = reader.read_ue()?;
+    let num_ref_idx_l1_default_minus1 = reader.read_ue()?;
+    if num_ref_idx_l0_default_minus1 > 14 || num_ref_idx_l1_default_minus1 > 14 {
+        return Err(VideoError::Codec(format!(
+            "HEVC PPS num_ref_idx_default_active_minus1 out of range: l0 {num_ref_idx_l0_default_minus1} l1 {num_ref_idx_l1_default_minus1}"
+        )));
+    }
+    let num_ref_idx_l0_default = num_ref_idx_l0_default_minus1 as u8 + 1;
+    let num_ref_idx_l1_default = num_ref_idx_l1_default_minus1 as u8 + 1;
     let init_qp_minus26 = reader.read_se()?;
     let init_qp = (26 + init_qp_minus26) as i8;
     let constrained_intra_pred = reader.read_bit()? != 0;
@@ -2409,6 +2429,57 @@ mod tests {
         assert_eq!(sps.bit_depth_chroma, 8);
         assert_eq!(sps.vps_id, 0);
         assert_eq!(sps.sps_id, 0);
+    }
+
+    #[test]
+    fn hevc_parameter_sets_reject_out_of_range_fields() {
+        let mut sps = Vec::new();
+        // vps_id, max_sub_layers_minus1, temporal_id_nesting_flag
+        push_bits(&mut sps, 0b0000_0001, 8);
+        // profile_tier_level for a single sub-layer
+        for _ in 0..3 {
+            push_bits(&mut sps, 0, 32);
+        }
+        // sps_id, chroma_format_idc, pic_width, pic_height
+        for v in [0, 1, 16, 16] {
+            push_exp_golomb(&mut sps, v);
+        }
+        // conformance_window_flag, then bit_depth_luma_minus8 past its range of 8
+        push_bits(&mut sps, 0, 1);
+        push_exp_golomb(&mut sps, 9);
+        push_exp_golomb(&mut sps, 0);
+        push_exp_golomb(&mut sps, 0);
+        let sps = bits_to_bytes(&sps);
+
+        let mut pps = Vec::new();
+        // pps_id, sps_id
+        push_exp_golomb(&mut pps, 0);
+        push_exp_golomb(&mut pps, 0);
+        // dependent_slice, output_flag, num_extra_slice_header_bits(3), sign_hiding, cabac_init
+        push_bits(&mut pps, 0, 7);
+        // num_ref_idx_l0_default_active_minus1 past its range of 14
+        push_exp_golomb(&mut pps, 15);
+        push_exp_golomb(&mut pps, 0);
+        let pps = bits_to_bytes(&pps);
+
+        for err in [
+            parse_hevc_sps(&sps).err().map(|e| e.to_string()),
+            crate::hevc_params::parse_hevc_sps(&sps)
+                .err()
+                .map(|e| e.to_string()),
+        ] {
+            let err = err.unwrap_or_default();
+            assert!(err.contains("bit_depth_minus8"), "{err}");
+        }
+        for err in [
+            parse_hevc_pps(&pps).err().map(|e| e.to_string()),
+            crate::hevc_params::parse_hevc_pps(&pps)
+                .err()
+                .map(|e| e.to_string()),
+        ] {
+            let err = err.unwrap_or_default();
+            assert!(err.contains("num_ref_idx_default_active_minus1"), "{err}");
+        }
     }
 
     #[test]

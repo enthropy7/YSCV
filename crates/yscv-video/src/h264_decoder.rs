@@ -6399,6 +6399,31 @@ mod tests {
     }
 
     #[test]
+    fn sps_rejects_out_of_range_fields() {
+        let sps_error = |profile_idc: u32, ue: &[u32]| {
+            let mut bits = Vec::new();
+            push_bits(&mut bits, profile_idc, 8);
+            push_bits(&mut bits, 0, 8);
+            push_bits(&mut bits, 30, 8);
+            for &v in ue {
+                push_exp_golomb(&mut bits, v);
+            }
+            parse_sps(&bits_to_bytes(&bits))
+                .err()
+                .map(|e| e.to_string())
+        };
+        // sps_id, log2_max_frame_num_minus4
+        let err = sps_error(66, &[0, 13]).unwrap_or_default();
+        assert!(err.contains("log2_max_frame_num_minus4"), "{err}");
+        // ..., pic_order_cnt_type, log2_max_pic_order_cnt_lsb_minus4
+        let err = sps_error(66, &[0, 0, 0, 13]).unwrap_or_default();
+        assert!(err.contains("log2_max_pic_order_cnt_lsb_minus4"), "{err}");
+        // High profile: sps_id, chroma_format_idc, bit_depth_luma_minus8
+        let err = sps_error(100, &[0, 1, 7, 0]).unwrap_or_default();
+        assert!(err.contains("bit_depth_minus8"), "{err}");
+    }
+
+    #[test]
     fn emulation_prevention_removal() {
         let input = [0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x01];
         let result = remove_emulation_prevention(&input);
