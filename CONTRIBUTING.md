@@ -10,7 +10,7 @@ The framework covers the full pipeline: tensors and autograd, neural network lay
 
 ## Project shape
 
-The workspace has 19 library crates, 3 application binaries (`apps/bench`, `apps/camera-face-tool`, `apps/llm-bench`), and an examples crate (26 examples in `examples/src/`). There are 2,404 tests across the 19 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.1.12`.
+The workspace has 19 library crates, 3 application binaries (`apps/bench`, `apps/camera-face-tool`, `apps/llm-bench`), and an examples crate (26 examples in `examples/src/`). There are 2,409 tests across the 19 crates, criterion microbenchmarks, and CI with regression gates on GitHub Actions (macOS + Linux + Windows + ARM64). All crates share workspace version `0.2.0`.
 
 Key crates and what they do:
 

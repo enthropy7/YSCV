@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.12] — 2026-10-01
+## [0.2.0] — 2026-10-01
 
 ### Added
 
@@ -196,6 +196,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `load_onnx_model` accepted a graph that defines a value twice — two nodes
+  writing the same output, or a node output reusing a graph-input or
+  initializer name — and the optimizer then ran over an inconsistent def-use
+  graph. ONNX graphs are SSA and onnxruntime rejects these; the loader now
+  returns the new `OnnxError::DuplicateDefinition`. An initializer sharing its
+  name with a graph input is still accepted, as older IR versions use it.
+- The H.264 and HEVC parameter-set parsers added a fixed offset to raw
+  Exp-Golomb values without a range check, so a malformed SPS or PPS
+  overflowed in the parser or later in `1 << log2_max_*`. `bit_depth_*_minus8`,
+  `log2_max_frame_num_minus4`, `log2_max_pic_order_cnt_lsb_minus4` and HEVC
+  `num_ref_idx_l{0,1}_default_active_minus1` are now checked against their
+  spec ranges and the parameter set is rejected. `BitstreamReader::read_ue`
+  also let a 32-zero prefix through when the run started mid-byte, overflowing
+  `1 << 32`.
 - QLinearConv applied `w_scale[0]` to every output channel, which is silently
   wrong for any per-channel-quantized model — the common PTQ default. Every fast
   path now applies the composite scale per channel. Asymmetric activations

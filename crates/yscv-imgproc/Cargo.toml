@@ -17,8 +17,8 @@ default = ["neon-v7"]
 neon-v7 = []
 
 [dependencies]
-yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
-yscv-cpu = { version = "0.1", path = "../yscv-cpu" }
+yscv-tensor = { version = "0.2", path = "../yscv-tensor" }
+yscv-cpu = { version = "0.2", path = "../yscv-cpu" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
 thiserror.workspace = true
 rustc-hash.workspace = true

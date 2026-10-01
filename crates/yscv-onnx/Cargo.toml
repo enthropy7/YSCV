@@ -21,10 +21,10 @@ profile = []
 [dependencies]
 prost = "0.13"
 rayon = "1.11"
-yscv-cpu = { version = "0.1", path = "../yscv-cpu" }
-yscv-kernels = { version = "0.1", path = "../yscv-kernels", default-features = false }
-yscv-tensor = { version = "0.1", path = "../yscv-tensor" }
-yscv-threadpool = { version = "0.1", path = "../yscv-threadpool" }
+yscv-cpu = { version = "0.2", path = "../yscv-cpu" }
+yscv-kernels = { version = "0.2", path = "../yscv-kernels", default-features = false }
+yscv-tensor = { version = "0.2", path = "../yscv-tensor" }
+yscv-threadpool = { version = "0.2", path = "../yscv-threadpool" }
 thiserror.workspace = true
 rustc-hash.workspace = true
 
