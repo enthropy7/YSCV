@@ -37,7 +37,7 @@ yscv (umbrella re-export)
 
 | Metric | Value |
 |--------|-------|
-| Tests | **2,409** |
+| Tests | **2,413** |
 | ONNX operators | **122** |
 | Tensor methods | **159** |
 | Imgproc ops | **183** |

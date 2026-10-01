@@ -12,7 +12,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/enthropy7/yscv?style=flat&logo=github)](https://github.com/enthropy7/yscv/stargazers)
 [![CI](https://github.com/enthropy7/yscv/actions/workflows/ci.yml/badge.svg)](https://github.com/enthropy7/yscv/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-2409%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-2413%20passing-brightgreen.svg)
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (182 ops), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
@@ -121,7 +121,7 @@ per-hardware performance is in
 > hardware and dates and are marked *pending re-measurement* — treat those as
 > provisional.
 
-2,409 tests across 19 crates.
+2,413 tests across 19 crates.
 
 ## What's inside
 
@@ -151,7 +151,7 @@ The framework is split into 19 crates:
 
 ```bash
 cargo build --workspace --release
-cargo test --workspace --release      # 2,409 tests
+cargo test --workspace --release      # 2,413 tests
 cargo run --example train_cnn         # train a CNN on synthetic data
 cargo run --example train_linear      # linear regression
 cargo run --example image_processing  # image pipeline demo
