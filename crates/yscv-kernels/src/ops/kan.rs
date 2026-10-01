@@ -166,6 +166,11 @@ impl KanLinear {
                 got: output.len(),
             });
         }
+        // With no inputs every output is an empty sum.
+        if n_in == 0 || n_out == 0 {
+            output.fill(0.0);
+            return Ok(());
+        }
         // one f32 scratch (silu, basis values, accumulators) and one for block offsets per call
         let mut scratch = vec![0.0; n_in * (1 + ACTIVE) + self.out_padded];
         let (silu, rest) = scratch.split_at_mut(n_in);
@@ -738,5 +743,15 @@ mod tests {
         assert!(KanLinear::new(2, 3, 5, (-1.0, 1.0), &[0.0; 6], &[0.0; 47], &[0.0; 6]).is_err());
         let (l, ..) = layer(4, 2, 5, 3);
         assert!(l.forward(&[0.0; 5], 1, &mut [0.0; 2]).is_err());
+    }
+
+    #[test]
+    fn a_layer_without_inputs_or_outputs_is_well_defined() {
+        let no_inputs = KanLinear::new(0, 3, 5, (-1.0, 1.0), &[], &[], &[]).unwrap();
+        let mut y = [1.0; 6];
+        no_inputs.forward(&[], 2, &mut y).unwrap();
+        assert_eq!(y, [0.0; 6]);
+        let no_outputs = KanLinear::new(3, 0, 5, (-1.0, 1.0), &[], &[], &[]).unwrap();
+        no_outputs.forward(&[0.5; 6], 2, &mut []).unwrap();
     }
 }
