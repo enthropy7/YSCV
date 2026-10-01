@@ -205,6 +205,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the header now, the layout assertions cover all 24 FFI structs for both LP64
   and 32-bit ARM, and the runtime loader falls back to `librknnmrt.so`, the
   mini runtime RV1103/RV1106 ship in place of `librknnrt.so`.
+- The H.264 decoder ran corrupt residual data through unchecked `i32`
+  arithmetic: coefficient levels far past anything a conforming stream codes
+  overflowed the dequantization, the DC Hadamard and the inverse transforms —
+  a panic in debug builds, wrapped values in release. Dequantized
+  coefficients are now clamped to ±2^15 and DC levels to ±2^17, the bounds
+  clauses 8.5.10–8.5.13 imply for 8-bit video, so a valid stream decodes
+  bit-identically and a corrupt one stays in range. The 4x4 dequantization,
+  where the clamp lands per block, moves from an SSE2 path that rebuilt each
+  vector from scalars to AVX-512 / AVX2 / NEON (aarch64 and armv7) paths.
 - `load_onnx_model` accepted a graph that defines a value twice — two nodes
   writing the same output, or a node output reusing a graph-input or
   initializer name — and the optimizer then ran over an inconsistent def-use

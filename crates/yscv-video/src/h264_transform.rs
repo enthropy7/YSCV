@@ -189,65 +189,121 @@ const DEQUANT_SCALE: [[i32; 16]; 6] = [
     ],
 ];
 
+/// Largest coefficient level a conforming 8-bit stream can code.
+///
+/// The spec bounds dequantized coefficients rather than levels (clauses
+/// 8.5.10, 8.5.11.2, 8.5.12.1 and 8.5.13.1 keep them within
+/// `±2^(7 + bitDepth)`), but that bounds the levels too: a DC level can be no
+/// larger than the Hadamard output it inverts, and the smallest scale an AC
+/// level meets, a weight of 1 against normAdjust8x8's 18 below qP 6, divides
+/// by at most 64/18. Clamping to this is a no-op on every valid stream and
+/// keeps the DC transforms of a corrupt one inside `i32`.
+pub(crate) const MAX_LEVEL: i32 = 1 << 17;
+
+/// Largest dequantized coefficient a conforming 8-bit stream produces, which
+/// keeps both inverse transforms inside `i32` whatever the input.
+pub(crate) const MAX_COEFF: i32 = 1 << 15;
+
+pub(crate) fn clamp_coeffs(coeffs: &mut [i32], bound: i32) {
+    for c in coeffs {
+        *c = (*c).clamp(-bound, bound);
+    }
+}
+
 /// Dequantizes a 4x4 block of transform coefficients in-place.
 ///
 /// Applies H.264 inverse quantization: `level * scale[qp%6][pos] << (qp/6)`.
-/// Clamps QP to the valid range [0, 51].
+/// Clamps QP to the valid range [0, 51] and results to ±2^15, the most a
+/// conforming 8-bit stream produces. The product of a corrupt level wraps the
+/// same way on every path, and the clamp keeps whatever comes out inside the
+/// range the inverse transform can take.
 #[allow(unsafe_code)]
 pub fn dequant_4x4(coeffs: &mut [i32; 16], qp: i32) {
     let qp = qp.clamp(0, 51);
-    let qp_div6 = (qp / 6) as u32;
-    let qp_mod6 = (qp % 6) as usize;
-    let scale = &DEQUANT_SCALE[qp_mod6];
+    let shift = (qp / 6) as u32;
+    let scale = &DEQUANT_SCALE[(qp % 6) as usize];
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        unsafe {
-            use std::arch::aarch64::*;
-            let shift = qp_div6 as i32;
-            let shift_v = vdupq_n_s32(shift);
-            let ptr = coeffs.as_mut_ptr();
-            let sptr = scale.as_ptr();
-            for i in (0..16).step_by(4) {
-                let c = vld1q_s32(ptr.add(i));
-                let s = vld1q_s32(sptr.add(i));
-                let mul = vmulq_s32(c, s);
-                let shifted = vshlq_s32(mul, shift_v);
-                vst1q_s32(ptr.add(i), shifted);
-            }
-        }
+    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+    if yscv_cpu::host_cpu().features.neon {
+        // SAFETY: NEON detected at runtime.
+        unsafe { dequant_4x4_neon(coeffs, scale, shift) };
         return;
     }
 
     #[cfg(target_arch = "x86_64")]
-    if yscv_cpu::host_cpu().features.sse2 {
-        unsafe {
-            use std::arch::x86_64::*;
-            let ptr = coeffs.as_mut_ptr();
-            let sptr = scale.as_ptr();
-            for i in (0..16).step_by(4) {
-                let c = _mm_loadu_si128(ptr.add(i) as *const __m128i);
-                let s = _mm_loadu_si128(sptr.add(i) as *const __m128i);
-                // SSE2 doesn't have _mm_mullo_epi32 (needs SSE4.1), use manual multiply
-                let mul_02 = _mm_mul_epu32(c, s);
-                let mul_13 = _mm_mul_epu32(_mm_srli_si128(c, 4), _mm_srli_si128(s, 4));
-                // Pack low 32 bits of each 64-bit product
-                let r0 = _mm_cvtsi128_si32(mul_02);
-                let r1 = _mm_cvtsi128_si32(mul_13);
-                let r2 = _mm_cvtsi128_si32(_mm_srli_si128(mul_02, 8));
-                let r3 = _mm_cvtsi128_si32(_mm_srli_si128(mul_13, 8));
-                let result =
-                    _mm_set_epi32(r3 << qp_div6, r2 << qp_div6, r1 << qp_div6, r0 << qp_div6);
-                _mm_storeu_si128(ptr.add(i) as *mut __m128i, result);
-            }
+    {
+        let features = yscv_cpu::host_cpu().features;
+        if features.avx512f {
+            // SAFETY: AVX-512F detected at runtime.
+            unsafe { dequant_4x4_avx512(coeffs, scale, shift) };
+            return;
         }
-        return;
+        if features.avx2 {
+            // SAFETY: AVX2 detected at runtime.
+            unsafe { dequant_4x4_avx2(coeffs, scale, shift) };
+            return;
+        }
     }
 
-    #[allow(unreachable_code)]
-    for i in 0..16 {
-        coeffs[i] = (coeffs[i] * scale[i]) << qp_div6;
+    dequant_4x4_scalar(coeffs, scale, shift);
+}
+
+fn dequant_4x4_scalar(coeffs: &mut [i32; 16], scale: &[i32; 16], shift: u32) {
+    for (c, &s) in coeffs.iter_mut().zip(scale) {
+        *c = (c.wrapping_mul(s) << shift).clamp(-MAX_COEFF, MAX_COEFF);
     }
+}
+
+#[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn dequant_4x4_neon(coeffs: &mut [i32; 16], scale: &[i32; 16], shift: u32) {
+    #[cfg(target_arch = "aarch64")]
+    use std::arch::aarch64::*;
+    #[cfg(target_arch = "arm")]
+    use std::arch::arm::*;
+
+    let shift = vdupq_n_s32(shift as i32);
+    let (hi, lo) = (vdupq_n_s32(MAX_COEFF), vdupq_n_s32(-MAX_COEFF));
+    for i in (0..16).step_by(4) {
+        let c = vld1q_s32(coeffs.as_ptr().add(i));
+        let d = vshlq_s32(vmulq_s32(c, vld1q_s32(scale.as_ptr().add(i))), shift);
+        vst1q_s32(coeffs.as_mut_ptr().add(i), vmaxq_s32(vminq_s32(d, hi), lo));
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn dequant_4x4_avx2(coeffs: &mut [i32; 16], scale: &[i32; 16], shift: u32) {
+    use std::arch::x86_64::*;
+
+    let count = _mm_cvtsi32_si128(shift as i32);
+    let (hi, lo) = (_mm256_set1_epi32(MAX_COEFF), _mm256_set1_epi32(-MAX_COEFF));
+    for i in [0, 8] {
+        let c = _mm256_loadu_si256(coeffs.as_ptr().add(i).cast());
+        let s = _mm256_loadu_si256(scale.as_ptr().add(i).cast());
+        let d = _mm256_sll_epi32(_mm256_mullo_epi32(c, s), count);
+        let d = _mm256_max_epi32(_mm256_min_epi32(d, hi), lo);
+        _mm256_storeu_si256(coeffs.as_mut_ptr().add(i).cast(), d);
+    }
+}
+
+/// The whole block is one 512-bit register.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn dequant_4x4_avx512(coeffs: &mut [i32; 16], scale: &[i32; 16], shift: u32) {
+    use std::arch::x86_64::*;
+
+    let c = _mm512_loadu_si512(coeffs.as_ptr().cast());
+    let s = _mm512_loadu_si512(scale.as_ptr().cast());
+    let d = _mm512_sll_epi32(_mm512_mullo_epi32(c, s), _mm_cvtsi32_si128(shift as i32));
+    let d = _mm512_max_epi32(
+        _mm512_min_epi32(d, _mm512_set1_epi32(MAX_COEFF)),
+        _mm512_set1_epi32(-MAX_COEFF),
+    );
+    _mm512_storeu_si512(coeffs.as_mut_ptr().cast(), d);
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +459,9 @@ const DEQUANT_SCALE_8X8: [[i32; 64]; 6] = [
 /// `DEQUANT_SCALE_8X8` holds `normAdjust8x8`, so each product is scaled by 16:
 /// `level * 16 * normAdjust[pos] << (qp/6 - 6)` when qp/6 >= 6,
 /// `(level * 16 * normAdjust[pos] + (1 << (5-qp/6))) >> (6 - qp/6)` otherwise.
-/// Clamps QP to the valid range [0, 51].
+/// Clamps QP to the valid range [0, 51] and results to ±2^15, the most a
+/// conforming 8-bit stream produces; the product is formed in `i64`, so any
+/// `i32` level is safe.
 pub fn dequant_8x8(coeffs: &mut [i32; 64], qp: i32) {
     let qp = qp.clamp(0, 51);
     let shift = (qp / 6) as u32;
@@ -413,7 +471,8 @@ pub fn dequant_8x8(coeffs: &mut [i32; 64], qp: i32) {
         // normAdjust and the qP/6 shift; a single (level * qmul + 32) >> 6 then
         // yields the same value the inverse transform expects.
         let qmul = (16i64 * scale[i] as i64) << shift;
-        coeffs[i] = ((coeffs[i] as i64 * qmul + 32) >> 6) as i32;
+        let d = (coeffs[i] as i64 * qmul + 32) >> 6;
+        coeffs[i] = d.clamp(-MAX_COEFF as i64, MAX_COEFF as i64) as i32;
     }
 }
 
@@ -443,5 +502,63 @@ pub(crate) fn unscan_4x4(scan_coeffs: &[i32], out: &mut [i32; 16]) {
     for (scan_idx, &val) in scan_coeffs.iter().enumerate().take(16) {
         let (r, c) = ZIGZAG_4X4[scan_idx];
         out[r * 4 + c] = val;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn dequant_4x4_paths_match_the_scalar_reference() {
+        let levels = [
+            0,
+            1,
+            -1,
+            3276,
+            -2048,
+            1 << 17,
+            -(1 << 20),
+            i32::MAX,
+            i32::MIN,
+            0x5555_5555,
+        ];
+        for qp in 0..=51 {
+            let (shift, scale) = ((qp / 6) as u32, &DEQUANT_SCALE[(qp % 6) as usize]);
+            for k in 0..levels.len() {
+                let input: [i32; 16] = std::array::from_fn(|i| levels[(k + i) % levels.len()]);
+                let mut expected = input;
+                dequant_4x4_scalar(&mut expected, scale, shift);
+                assert!(expected.iter().all(|v| v.abs() <= MAX_COEFF));
+
+                let mut got = input;
+                dequant_4x4(&mut got, qp);
+                assert_eq!(got, expected, "dispatch, qp {qp}");
+
+                #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", feature = "neon-v7")))]
+                if yscv_cpu::host_cpu().features.neon {
+                    let mut got = input;
+                    // SAFETY: NEON detected at runtime.
+                    unsafe { dequant_4x4_neon(&mut got, scale, shift) };
+                    assert_eq!(got, expected, "neon, qp {qp}");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    if yscv_cpu::host_cpu().features.avx2 {
+                        let mut got = input;
+                        // SAFETY: AVX2 detected at runtime.
+                        unsafe { dequant_4x4_avx2(&mut got, scale, shift) };
+                        assert_eq!(got, expected, "avx2, qp {qp}");
+                    }
+                    if yscv_cpu::host_cpu().features.avx512f {
+                        let mut got = input;
+                        // SAFETY: AVX-512F detected at runtime.
+                        unsafe { dequant_4x4_avx512(&mut got, scale, shift) };
+                        assert_eq!(got, expected, "avx512, qp {qp}");
+                    }
+                }
+            }
+        }
     }
 }

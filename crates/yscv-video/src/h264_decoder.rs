@@ -36,7 +36,8 @@ use super::h264_params::{
     Pps, SliceHeader, Sps, parse_pps, parse_slice_header, parse_sps, remove_emulation_prevention,
 };
 use super::h264_transform::{
-    dequant_4x4, dequant_8x8, inverse_dct_4x4, inverse_dct_8x8, unscan_4x4, unscan_8x8,
+    MAX_COEFF, MAX_LEVEL, clamp_coeffs, dequant_4x4, dequant_8x8, inverse_dct_4x4, inverse_dct_8x8,
+    unscan_4x4, unscan_8x8,
 };
 use super::h264_yuv::{
     chroma_dimensions, deinterlace_fields, generate_slice_group_map, yuv_to_rgb8_by_format,
@@ -882,8 +883,10 @@ fn write_pred_luma(y: &mut [u8], stride: usize, bx: usize, by: usize, pred: &[i3
 /// Inverse 4x4 Hadamard transform + dequant for the Intra_16x16 luma DC block
 /// (clause 8.5.10), producing the 16 per-block DC coefficients.
 fn hadamard4x4_dc(scan: &[i32; 16], out: &mut [i32; 16], qp: i32) {
-    // Column then row 4x4 Hadamard.
+    // Column then row 4x4 Hadamard, on levels clamped to what a conforming
+    // stream can code so the sums stay inside `i32`.
     let mut f = *scan;
+    clamp_coeffs(&mut f, MAX_LEVEL);
     for i in 0..4 {
         let (a, b, c, d) = (f[i], f[4 + i], f[8 + i], f[12 + i]);
         let (s0, s1, s2, s3) = (a + c, a - c, b - d, b + d);
@@ -906,11 +909,13 @@ fn hadamard4x4_dc(scan: &[i32; 16], out: &mut [i32; 16], qp: i32) {
     let qpm = (qp % 6) as usize;
     let v = DEQUANT_DC[qpm];
     for i in 0..16 {
-        out[i] = if qp >= 36 {
-            (f[i] * v) << (qp6 - 6)
+        let scaled = i64::from(f[i]) * i64::from(v);
+        let dc = if qp >= 36 {
+            scaled << (qp6 - 6)
         } else {
-            (f[i] * v + (1 << (5 - qp6))) >> (6 - qp6)
+            (scaled + (1 << (5 - qp6))) >> (6 - qp6)
         };
+        out[i] = dc.clamp(-i64::from(MAX_COEFF), i64::from(MAX_COEFF)) as i32;
     }
 }
 
@@ -958,6 +963,8 @@ fn read_chroma_dc(reader: &mut super::cavlc::BitReader<'_>) -> Option<[i32; 4]> 
 /// Inverse 2x2 Hadamard + dequant for a chroma DC block (clause 8.5.11),
 /// returning the four per-4x4-block DC coefficients in raster order.
 fn chroma_dc_transform(c: &[i32; 4], qpc: i32) -> [i32; 4] {
+    let mut c = *c;
+    clamp_coeffs(&mut c, MAX_LEVEL);
     let f = [
         c[0] + c[1] + c[2] + c[3],
         c[0] - c[1] + c[2] - c[3],
@@ -968,7 +975,8 @@ fn chroma_dc_transform(c: &[i32; 4], qpc: i32) -> [i32; 4] {
     let shift = qpc / 6;
     let mut out = [0i32; 4];
     for i in 0..4 {
-        out[i] = ((f[i] * scale) << shift) >> 5;
+        let dc = ((i64::from(f[i]) * i64::from(scale)) << shift) >> 5;
+        out[i] = dc.clamp(-i64::from(MAX_COEFF), i64::from(MAX_COEFF)) as i32;
     }
     out
 }
@@ -6839,5 +6847,82 @@ mod tests {
             // This is acceptable for CBP=0 with neutral initialization,
             // but we should note the pipeline was still exercised.
         }
+    }
+
+    fn decode_annex_b(data: &[u8]) {
+        let mut decoder = H264Decoder::new();
+        for nal in &crate::parse_annex_b(data) {
+            let _ = decoder.process_nal(nal);
+        }
+    }
+
+    /// Streams a mutation fuzzer reduced to an overflow in the residual path:
+    /// coefficient levels far past anything a conforming stream codes, fed to
+    /// the dequantization, the DC Hadamard and the inverse transform.
+    const RESIDUAL_OVERFLOW: [&[u8]; 4] = [
+        &[
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a, 0xe9, 0x40, 0x40, 0xff, 0x00, 0x00,
+            0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0x00, 0x01, 0x68,
+            0xce, 0x38, 0x80, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x40, 0x00, 0xc2, 0x00,
+            0x7f, 0x00, 0x00, 0x03, 0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0x80, 0x01, 0x68, 0xce,
+            0x38, 0x80, 0x00, 0x00, 0x7f, 0x01, 0x65, 0x88, 0x80, 0x40, 0x00, 0x00, 0x03, 0x00,
+            0x00, 0x2c, 0x00, 0x00, 0x03, 0x00,
+        ],
+        &[
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a, 0xe9, 0x40, 0x7f, 0x04, 0x00, 0x00,
+            0x00, 0x04, 0x00, 0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38,
+            0x80, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x01, 0x00, 0x00, 0x03, 0x7f, 0x00,
+            0x00, 0x03, 0x00, 0x00, 0x0a, 0xe9, 0x40, 0x40, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00,
+            0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0xc9, 0x00, 0x03, 0x00,
+        ],
+        &[
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x98, 0xe9, 0x40, 0x40, 0x04, 0x00, 0x00,
+            0x00, 0x04, 0x00, 0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38,
+            0x80, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x40, 0x00, 0x00, 0x03, 0x00, 0x10,
+            0x03, 0x00, 0x67, 0x42, 0x00, 0x0a, 0xe9, 0x40, 0x40, 0x04, 0x00, 0x00, 0x00, 0x04,
+            0x00, 0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80, 0x00,
+            0x00, 0x00, 0x03, 0x00,
+        ],
+        &[
+            0xf9, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a, 0xe9, 0x40, 0x40, 0x04, 0x00, 0x00,
+            0x00, 0x04, 0x00, 0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38,
+            0x80, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x40, 0x01, 0x67, 0x42, 0x00, 0x0a,
+            0xe9, 0x40, 0x40, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xc8, 0x40, 0x26,
+            0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+            0x00, 0x00, 0xc8, 0x40, 0x00, 0x00, 0x00,
+        ],
+    ];
+
+    #[test]
+    fn residual_overflow_streams_decode_without_panicking() {
+        for data in RESIDUAL_OVERFLOW {
+            decode_annex_b(data);
+        }
+    }
+
+    #[test]
+    fn dequantization_keeps_conforming_values_and_bounds_the_rest() {
+        // The clamps are no-ops up to the conformance limit of ±2^15.
+        let mut c = [0i32; 16];
+        c[0] = 3276;
+        c[5] = -2048;
+        dequant_4x4(&mut c, 0);
+        assert_eq!((c[0], c[5]), (32760, -32768));
+
+        let mut c = [i32::MAX; 16];
+        dequant_4x4(&mut c, 51);
+        assert!(c.iter().all(|v| v.abs() <= MAX_COEFF));
+        inverse_dct_4x4(&mut c);
+
+        let mut c = [i32::MIN; 64];
+        dequant_8x8(&mut c, 51);
+        assert!(c.iter().all(|&v| v == -MAX_COEFF));
+        inverse_dct_8x8(&mut c);
+
+        let mut dc = [0i32; 16];
+        hadamard4x4_dc(&[i32::MAX; 16], &mut dc, 51);
+        assert!(dc.iter().all(|v| v.abs() <= MAX_COEFF));
+        let dc = chroma_dc_transform(&[i32::MIN, i32::MAX, i32::MIN, i32::MAX], 39);
+        assert!(dc.iter().all(|v| v.abs() <= MAX_COEFF));
     }
 }
