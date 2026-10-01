@@ -214,6 +214,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bit-identically and a corrupt one stays in range. The 4x4 dequantization,
   where the clamp lands per block, moves from an SSE2 path that rebuilt each
   vector from scalars to AVX-512 / AVX2 / NEON (aarch64 and armv7) paths.
+- H.264 slice headers took `luma/chroma_log2_weight_denom` and the
+  deblocking `slice_*_offset_div2` without range checks, and the decoder's
+  16384×16384 limit applied to the cropped frame while the planes are
+  allocated at the coded size, so an SPS that crops a huge coded frame down to
+  a small one asked for gigabytes. Out-of-range fields are rejected, crop
+  arithmetic saturates, and the limit applies to the coded size.
 - `load_onnx_model` accepted a graph that defines a value twice — two nodes
   writing the same output, or a node output reusing a graph-input or
   initializer name — and the optimizer then ran over an inconsistent def-use

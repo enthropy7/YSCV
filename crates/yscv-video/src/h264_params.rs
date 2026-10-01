@@ -66,7 +66,9 @@ impl Sps {
     /// Returns the full width if cropping would underflow (malformed SPS).
     pub fn cropped_width(&self) -> usize {
         let sub_width_c = if self.chroma_format_idc == 1 { 2 } else { 1 };
-        let crop = (self.frame_crop_left + self.frame_crop_right) as usize * sub_width_c;
+        let crop = (self.frame_crop_left as usize)
+            .saturating_add(self.frame_crop_right as usize)
+            .saturating_mul(sub_width_c);
         self.width().saturating_sub(crop).max(1)
     }
 
@@ -76,7 +78,9 @@ impl Sps {
     pub fn cropped_height(&self) -> usize {
         let sub_height_c = if self.chroma_format_idc == 1 { 2 } else { 1 };
         let factor = if self.frame_mbs_only_flag { 1 } else { 2 };
-        let crop = (self.frame_crop_top + self.frame_crop_bottom) as usize * sub_height_c * factor;
+        let crop = (self.frame_crop_top as usize)
+            .saturating_add(self.frame_crop_bottom as usize)
+            .saturating_mul(sub_height_c * factor);
         self.height().saturating_sub(crop).max(1)
     }
 }
@@ -539,6 +543,11 @@ fn parse_weight_table(
     } else {
         0
     };
+    if luma_log2_denom > 7 || chroma_log2_denom > 7 {
+        return Err(VideoError::Codec(format!(
+            "pred_weight_table log2 weight denominator out of range: luma {luma_log2_denom} chroma {chroma_log2_denom}"
+        )));
+    }
 
     let luma_default = 1i32 << luma_log2_denom;
     let chroma_default = 1i32 << chroma_log2_denom;
@@ -842,8 +851,15 @@ pub(crate) fn parse_slice_header(
     if pps.deblocking_filter_control_present_flag {
         disable_deblocking_filter_idc = r.read_ue()?;
         if disable_deblocking_filter_idc != 1 {
-            alpha_c0_offset = r.read_se()? * 2;
-            beta_offset = r.read_se()? * 2;
+            let alpha_div2 = r.read_se()?;
+            let beta_div2 = r.read_se()?;
+            if !(-6..=6).contains(&alpha_div2) || !(-6..=6).contains(&beta_div2) {
+                return Err(VideoError::Codec(format!(
+                    "slice deblocking offset out of range: alpha {alpha_div2} beta {beta_div2}"
+                )));
+            }
+            alpha_c0_offset = alpha_div2 * 2;
+            beta_offset = beta_div2 * 2;
         }
     }
 
