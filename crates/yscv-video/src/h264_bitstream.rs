@@ -141,6 +141,11 @@ impl<'a> BitstreamReader<'a> {
                 return Err(VideoError::Codec("exp-golomb overflow".into()));
             }
         }
+        // A run that starts mid-byte can pass the check above at 31 and then
+        // add up to seven more zeros in the byte holding the terminating 1.
+        if leading_zeros > 31 {
+            return Err(VideoError::Codec("exp-golomb overflow".into()));
+        }
         if leading_zeros == 0 {
             return Ok(0);
         }
