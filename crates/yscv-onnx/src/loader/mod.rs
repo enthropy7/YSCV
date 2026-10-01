@@ -1,5 +1,5 @@
 use prost::Message;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use yscv_tensor::Tensor;
 
 use crate::attr::Attr;
@@ -175,6 +175,18 @@ fn parse_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
             outputs: node_proto.output.clone(),
             attributes,
         });
+    }
+
+    // ONNX graphs are in SSA form: a node output may not redefine a graph
+    // input, an initializer, or another node's output. An initializer may
+    // share its name with a graph input, which is how older IR versions give
+    // an input a default.
+    let mut defined: FxHashSet<&str> = inputs.iter().map(String::as_str).collect();
+    defined.extend(initializers.keys().map(String::as_str));
+    for name in nodes.iter().flat_map(|n| &n.outputs) {
+        if !name.is_empty() && !defined.insert(name) {
+            return Err(OnnxError::DuplicateDefinition { name: name.clone() });
+        }
     }
 
     Ok(OnnxModel {

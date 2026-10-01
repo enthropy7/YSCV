@@ -22,6 +22,8 @@ pub enum OnnxError {
     UnsupportedOpType { op_type: String },
     #[error("missing input '{input}' for node '{node}'")]
     MissingInput { node: String, input: String },
+    #[error("value '{name}' is defined more than once")]
+    DuplicateDefinition { name: String },
     #[error("I/O error: {message}")]
     Io { message: String },
     #[error("shape mismatch: {detail}")]

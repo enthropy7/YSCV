@@ -14,6 +14,39 @@ fn load_empty_graph() {
 }
 
 #[test]
+fn load_rejects_a_value_defined_twice() {
+    let relu = |input: &str, output: &str| onnx::NodeProto {
+        op_type: Some("Relu".into()),
+        input: vec![input.into()],
+        output: vec![output.into()],
+        ..Default::default()
+    };
+    let bias = onnx::TensorProto {
+        name: Some("b".into()),
+        dims: vec![1],
+        data_type: Some(1),
+        float_data: vec![0.0],
+        ..Default::default()
+    };
+    for (nodes, inits) in [
+        (vec![relu("x", "y"), relu("x", "y")], vec![]),
+        (vec![relu("x", "x")], vec![]),
+        (vec![relu("x", "b")], vec![bias.clone()]),
+    ] {
+        let bytes = build_minimal_onnx_model(nodes, inits, vec!["x"], vec!["y"]);
+        assert!(matches!(
+            load_onnx_model(&bytes),
+            Err(crate::OnnxError::DuplicateDefinition { .. })
+        ));
+    }
+
+    // An initializer that shares its name with a graph input is the older IR's
+    // way of giving that input a default, not a second definition.
+    let bytes = build_minimal_onnx_model(vec![relu("b", "y")], vec![bias], vec!["b"], vec!["y"]);
+    assert!(load_onnx_model(&bytes).is_ok());
+}
+
+#[test]
 fn load_float_initializer_via_float_data() {
     let init = onnx::TensorProto {
         name: Some("weight".into()),
