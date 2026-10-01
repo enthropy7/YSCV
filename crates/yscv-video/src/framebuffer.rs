@@ -217,7 +217,6 @@ mod linux_impl {
             })
         }
 
-        /// Bytes per row. Not `width * bpp/8` in general — the driver may pad.
         /// Power the panel back on.
         ///
         /// A framebuffer can be left blanked (`FB_BLANK_POWERDOWN`) with the CRTC
@@ -234,6 +233,7 @@ mod linux_impl {
             Ok(())
         }
 
+        /// Bytes per row. Not `width * bpp/8` in general — the driver may pad.
         pub const fn stride(&self) -> u32 {
             self.stride
         }
