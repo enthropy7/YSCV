@@ -20,7 +20,7 @@ const AT_HWCAP: core::ffi::c_ulong = 16;
 const HWCAP_NEON: core::ffi::c_ulong = 1 << 12;
 const HWCAP_VFPV4: core::ffi::c_ulong = 1 << 16;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "uclibc")))]
 #[allow(unsafe_code)]
 fn hwcap() -> core::ffi::c_ulong {
     unsafe extern "C" {
@@ -30,6 +30,26 @@ fn hwcap() -> core::ffi::c_ulong {
     // process's own auxiliary vector, and answers 0 for a type it does not
     // know. There is no pointer or lifetime involved.
     unsafe { getauxval(AT_HWCAP) }
+}
+
+/// uClibc-ng has no `getauxval` (the RV1106 ships 1.0.31), so the same vector
+/// is read from `/proc/self/auxv` instead.
+#[cfg(all(target_os = "linux", target_env = "uclibc"))]
+fn hwcap() -> core::ffi::c_ulong {
+    std::fs::read("/proc/self/auxv").map_or(0, |auxv| hwcap_from_auxv(&auxv))
+}
+
+/// `AT_HWCAP` from a 32-bit auxiliary vector: native-endian `(type, value)`
+/// word pairs, terminated by `AT_NULL`.
+#[cfg(any(target_env = "uclibc", test))]
+fn hwcap_from_auxv(auxv: &[u8]) -> core::ffi::c_ulong {
+    let (words, _) = auxv.as_chunks::<4>();
+    let (entries, _) = words.as_chunks::<2>();
+    entries
+        .iter()
+        .map(|[key, value]| (u32::from_ne_bytes(*key), u32::from_ne_bytes(*value)))
+        .find(|&(key, _)| key == AT_HWCAP)
+        .map_or(0, |(_, value)| value)
 }
 
 /// Every other 32-bit ARM target: no auxiliary vector, so no features claimed.
@@ -70,6 +90,23 @@ mod tests {
     #[test]
     fn reads_an_orange_pi_zero() {
         assert_eq!(detect_uarch(OPI_ZERO), Microarch::CortexA7);
+    }
+
+    #[test]
+    fn reads_hwcap_from_a_raw_auxiliary_vector() {
+        let auxv: Vec<u8> = [(6, 4096), (16, (1 << 12) | (1 << 16)), (0, 0)]
+            .into_iter()
+            .flat_map(|(key, value): (u32, u32)| [key.to_ne_bytes(), value.to_ne_bytes()])
+            .flatten()
+            .collect();
+        let features = features_from_hwcap(hwcap_from_auxv(&auxv));
+        assert!(features.neon && features.vfpv4);
+        assert_eq!(hwcap_from_auxv(&auxv[..8]), 0, "no AT_HWCAP entry");
+        assert_eq!(
+            hwcap_from_auxv(&auxv[..12]),
+            0,
+            "a partial entry is ignored"
+        );
     }
 
     #[test]

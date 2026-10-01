@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **32-bit ARM (armv7) NEON.** `yscv-cpu` now detects 32-bit ARM hosts at
-  runtime — features from `AT_HWCAP`, the core from `/proc/cpuinfo` — where it
-  used to answer `Scalar` with every feature off. The NEON paths in
+  runtime — features from `AT_HWCAP` (through `getauxval`, or
+  `/proc/self/auxv` on uClibc-ng, which has no `getauxval`), the core from
+  `/proc/cpuinfo` — where it used to answer `Scalar` with every feature off. The NEON paths in
   `yscv-kernels`, `yscv-imgproc` and `yscv-video` run there instead of the
   scalar fallback: the 4×8 GEMM microkernel (hand-scheduled, since ARMv7 has no
   lane-indexed FMA), depthwise and fused PW-DW convolution, the first-layer stem,
