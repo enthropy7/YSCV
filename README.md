@@ -12,7 +12,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/enthropy7/yscv?style=flat&logo=github)](https://github.com/enthropy7/yscv/stargazers)
 [![CI](https://github.com/enthropy7/yscv/actions/workflows/ci.yml/badge.svg)](https://github.com/enthropy7/yscv/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-![Tests](https://img.shields.io/badge/tests-2249%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-2404%20passing-brightgreen.svg)
 [![Crates.io](https://img.shields.io/crates/v/yscv)](https://crates.io/crates/yscv)
 
 A complete computer vision and deep learning framework in pure Rust. One `cargo add yscv` gives you image processing (182 ops), neural network training (39 layer types, 8 optimizers), ONNX inference (122 operators, INT4/INT8 quantization), LLM generation (KV-cache, RoPE, GQA), real-time detection + tracking + recognition, H.264/HEVC/AV1 video decoding, hardware decode (VideoToolbox/VAAPI/NVDEC/MediaFoundation), and GPU compute via Vulkan/Metal/DX12 — all in a single statically-linked binary with zero Python or C++ dependencies.
@@ -23,13 +23,13 @@ A complete computer vision and deep learning framework in pure Rust. One `cargo 
 
 > **First time here?** → **[QUICKSTART](QUICKSTART.md)** (5 minutes to a running program) · **[Tutorial](docs/getting-started.md)** (full walkthrough) · **[Cookbook](docs/cookbook.md)** (recipes by task) · **[Feature flags](docs/feature-flags.md)** (what to enable for your target) · **[Edge / Rockchip](docs/edge-deployment.md)** (NPU deployment) · **[Examples](examples/README.md)** (worked code) · **[Troubleshooting](docs/troubleshooting.md)** (when things break) · **[Docs hub](docs/README.md)** (everything else)
 
-We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 570 `#[target_feature]`-gated functions selected by runtime CPU detection, so one binary picks the best path for the host it lands on.
+We built this because deploying ML in production shouldn't require Docker containers with PyTorch, CUDA drivers, and a prayer. YSCV compiles to one binary that runs on a Raspberry Pi, a cloud VM, or a factory floor computer. Every hot path has hand-tuned SIMD for ARM and x86 — 603 `#[target_feature]`-gated functions selected by runtime CPU detection, so one binary picks the best path for the host it lands on.
 
 ## Quick Start
 
 ```toml
 [dependencies]
-yscv = "0.1.11"
+yscv = "0.1.12"
 ```
 
 Load an image, process it, save the result — three lines:
@@ -121,7 +121,7 @@ per-hardware performance is in
 > hardware and dates and are marked *pending re-measurement* — treat those as
 > provisional.
 
-2,249 tests across 19 crates.
+2,404 tests across 19 crates.
 
 ## What's inside
 
@@ -151,7 +151,7 @@ The framework is split into 19 crates:
 
 ```bash
 cargo build --workspace --release
-cargo test --workspace --release      # 2,249 tests
+cargo test --workspace --release      # 2,404 tests
 cargo run --example train_cnn         # train a CNN on synthetic data
 cargo run --example train_linear      # linear regression
 cargo run --example image_processing  # image pipeline demo
@@ -216,7 +216,7 @@ All hot paths have hand-tuned SIMD for three architectures with runtime CPU dete
 | **Softmax** | Fused NEON | Fused AVX/SSE | Fused NEON |
 | **Bench-harness allocator** | mimalloc | mimalloc | mimalloc |
 
-SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. `yscv_kernels::runtime_dispatch_report()` exposes the typed CPU/kernel selection snapshot, while `runtime_config_report()` records active `YSCV_*` A/B overrides for reproducible benchmark logs. 570 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
+SIMD dispatch is automatic at runtime — no need for `-C target-cpu` flags (though they help: `-C target-cpu=apple-m1` or `-C target-cpu=native` for best codegen). The framework detects CPU features once through `yscv-cpu` and routes kernels through cached `host_cpu().features` gates. `yscv_kernels::runtime_dispatch_report()` exposes the typed CPU/kernel selection snapshot, while `runtime_config_report()` records active `YSCV_*` A/B overrides for reproducible benchmark logs. 603 `#[target_feature]`-gated functions total, all with scalar fallback for WASM/RISC-V/Miri.
 
 The allocator row applies to the benchmark and latency harnesses, which all
 install mimalloc so their numbers stay comparable. The library crates set no

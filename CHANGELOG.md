@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] — 2026-10-01
+
+### Added
+
+- **32-bit ARM (armv7) NEON.** `yscv-cpu` now detects 32-bit ARM hosts at
+  runtime — features from `AT_HWCAP`, the core from `/proc/cpuinfo` — where it
+  used to answer `Scalar` with every feature off. The NEON paths in
+  `yscv-kernels`, `yscv-imgproc` and `yscv-video` run there instead of the
+  scalar fallback: the 4×8 GEMM microkernel (hand-scheduled, since ARMv7 has no
+  lane-indexed FMA), depthwise and fused PW-DW convolution, the first-layer stem,
+  transpose+matmul, elementwise and reduce kernels, pooling, layout conversion,
+  crop-resize, u8 filters, feature extractors and the YUYV / NV12 / YUV420
+  colour converters. Tiles are sized for the 16-register file. The intrinsics are
+  still nightly-only on 32-bit ARM (rust#111800), so they sit behind a `neon-v7`
+  feature, default-on in all three crates; stable x86 and aarch64 builds are
+  unaffected. Build instructions are in `docs/edge-deployment.md`. On a
+  Cortex-A7 the tracker went from 1375 to 293 ms per detect.
+- **yscv-imgproc**: fused crop + bilinear resize — `getRectSubPix` followed by
+  `resize(INTER_LINEAR)` in one pass that touches only the output pixels.
+  `crop_resize_bilinear{,_raw}` replicate the border,
+  `crop_resize_bilinear_border{,_raw}` pad with a constant colour, and the
+  `_raw_u8` variants of both sample a u8 frame directly, widening in the load.
+  Scalar, NEON (aarch64 and armv7), SSE4.1, AVX2 and AVX-512F paths, all
+  bit-identical to the scalar reference; the u8 variants are bit-identical to
+  widening the frame first. The gather-based AVX2 / AVX-512F paths are
+  f32-only, so u8 takes SSE4.1 on x86.
+- **yscv-imgproc**: `IntegralImage`, a summed-area table with f64
+  accumulation and a zero border. `from_fn` evaluates the per-pixel value on the
+  fly, so squares and products are never materialised as images; `rect_sum`,
+  `window_sum` and `window_area` clip to the image, so a mean at the border
+  divides by the pixels that are actually there.
+- **yscv-imgproc**: `trace_pixel_polygons` traces the 4-connected regions of a
+  binary mask into pixel-edge polygons with holes. Exterior area minus the holes
+  equals the pixel count exactly, which the pixel-centre chains of
+  `find_contours` cannot give — this is the path to vector export and per-region
+  area.
+- **yscv-imgproc**: `ops::hog` — central-difference gradients with reflect-101
+  borders (`central_diff`), soft orientation binning (`orient_pass`) and
+  Colour-Name features over a caller-supplied lookup table (`cn`), with NEON
+  paths and on-target self-checks against scalar.
+- **yscv-kernels**: `KanLinear` evaluates B-spline Kolmogorov–Arnold layers
+  from efficient-kan parameters as exported. Only four bases are non-zero at any
+  input, so it evaluates those in closed form instead of running the full
+  Cox–de Boor recursion against the whole coefficient tensor. NEON, SSE4.1, AVX
+  and scalar paths, bitwise identical to each other. Example `kan_sensor`, bench
+  `kan`. On a Cortex-A53 a 561-7-6 HAR KAN takes 62 µs against 113 µs for a
+  parameter-matched MLP.
+- **yscv-kernels**: vectorised HardSwish — `hardswish`,
+  `hardswish_slice_dispatch` and in-place `hardswish_slice_inplace` on NEON /
+  AVX-512 / AVX / SSE / scalar. ONNX `HardSwish` runs on it instead of a
+  per-element scalar map that reallocated its output every call.
+- **yscv-kernels**: `SimdDispatchPath::Avx2`, so the runtime dispatch report
+  tells AVX2 hosts from AVX-only ones.
+- **yscv-onnx**: `fuse_conv_hardswish` folds a following HardSwish into the
+  Conv (`Conv_HardSwish`), applied in place on the still-warm output.
+- **yscv-onnx**: `OnnxRunner::run_nhwc` accepts inputs that are already
+  interleaved — a tracker crop, a camera buffer — so the first conv no longer
+  transposes a frame the caller just transposed for it. Bit-identical.
+- **yscv-onnx**: `YSCV_CONV_PHASE` turns on per-phase QLinearConv timers
+  (im2col, GEMM, requant, depthwise, setup), dumped by `dump_conv_phases`.
+- **yscv-video**: `V4l2Camera::set_frame_rate`, `set_control` and
+  `get_control`. UVC auto-exposure stretches the exposure time under low light
+  and drops the capture rate; reading the settled value and asserting it as a
+  manual control is how a caller holds the rate. `LinuxFramebuffer` gains
+  `stride()` and `as_mut_bytes()` for composing straight into the mapping, and
+  `unblank()` for a panel left at `FB_BLANK_POWERDOWN`.
+- `docs/env-vars.md`, a canonical reference for every environment variable the
+  workspace reads, with defaults taken from the call sites.
+- Benchmarks for the two kernels that had none: `trans_a_m64_k256_n256` (the
+  tracker's `FusedTransposeMatMul` shape, the only caller of the transposed-A
+  tiles) and raw-slice `binary_same_shape_dispatch` add/mul.
+
 ### Changed
 
 - **Breaking:** `load_onnx_model` and `load_onnx_model_from_file` now run the
@@ -20,16 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `load_onnx_model_unoptimized` returns the graph as the file spells it, for
   inspection tools and for tests asserting against a fixture. The runtime index
   is still built exactly once per load either way.
-- `OnnxModel::rebuild_runtime_index` no longer asserts one plan action per node.
-  The `FusedPwDwPwReduce` merge deliberately drops the actions it absorbs, so a
-  merged plan is legitimately shorter than the node list — `nchwc_handoff` is
-  documented as indexed by plan position for that reason, and every action
-  carries its own `node_idx`, so nothing reads a node through its plan position.
-  The assertion only escaped notice because the load path did not go through
-  this function; routing loads through it made a merged plan trip it. The
-  correspondence that does have to hold is checked where it is established, in
-  `plan/build.rs`, before the merge runs.
-
 - **Breaking:** operator attributes are keyed by the new `Attr` enum instead of
   `String`. `OnnxNode.attributes` is now `FxHashMap<Attr, OnnxAttribute>` and the
   `get_attr_*` helpers take an `Attr`. ONNX attribute names are a closed
@@ -37,12 +99,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typo silently produced a missing attribute and a default value rather than a
   compile error. Names outside the table live on in `Attr::Other`, so decoding
   and re-exporting a model the runtime does not fully interpret stays lossless.
-
 - **Breaking:** `optimize_onnx_graph` now returns `Result<(), OnnxError>`.
   Constant folding evaluates operators, so the pipeline can genuinely fail, and
   the previous signature left no way to say so — failures were printed to stderr
   and the model silently came back unoptimized. A node the evaluator declines is
   still not an error: it is simply not folded.
+- **Breaking:** `AlignedVec::uninitialized`, `RknnBackend::wrap_fd` /
+  `wrap_phys`, `RknnMem::as_slice` / `as_mut_slice` and `RgaBlender::blit` /
+  `copy_at` are now `unsafe fn`. Each hands out memory whose initialisation or
+  lifetime the type cannot check; the contract is stated in a `# Safety`
+  section instead of being implied.
+- **Breaking:** the low-k blocked GEMM route covers 32-bit ARM as well as
+  aarch64, and its switches are renamed to match:
+  `YSCV_NO_AARCH64_LOW_K_BLOCKED` → `YSCV_NO_ARM_LOW_K_BLOCKED`,
+  `YSCV_AARCH64_LOW_K_BLOCKED_MIN_WORK_FMAS` →
+  `YSCV_ARM_LOW_K_BLOCKED_MIN_WORK_FMAS`. The route no longer demands a
+  prepacked B or a megaFMA of work: B is packed on the spot when `4 * k <= m`,
+  and the floor is 64K FMAs. Small-m k=16 GEMMs run 4× faster on an A53.
+- Two default-path changes are not bit-identical to 0.1.11, so both were
+  measured on tracking accuracy rather than argued. A QLinearConv whose output
+  feeds only a `DequantizeLinear → [Relu | Clip] → QuantizeLinear` boundary now
+  rounds once, straight to the next layer's scale, instead of twice (DTB70
+  pooled AO 0.6140 → 0.6156). And the aarch64 8×12 GEMM microkernel computes
+  column tails of any width rather than only 8-wide ones, so those columns
+  accumulate in the asm kernel's order (DTB70 pooled AO 0.6588 → 0.6593).
 - The ONNX graph optimizer now runs over a def-use IR (`yscv-onnx/src/ir/`)
   driven to a fixed point by a pass manager, instead of a hard-coded sequence of
   functions mutating the model's string-keyed node list. Passes match through a
@@ -55,18 +135,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rescanning from the start each time, refuses results that balloon far beyond
   their inputs, and refuses the non-deterministic `Random*`/`Multinomial` family,
   which would otherwise freeze a single draw into the weights.
-- `fuse_conv_relu`, `fuse_bn_relu`, `fold_conv_bn`, `fold_constants` and
-  `rewrite_convtranspose_dts` are no longer public. They were only ever reachable
-  through `optimize_onnx_graph` outside the crate.
 - Optimizer passes no longer rebuild the runtime index individually. Nine of
   the twelve passes called `rebuild_runtime_index()` on exit, so a single
   `optimize_onnx_graph` re-ran execution-plan construction and weight
   prepacking about ten times. The driver now rebuilds once after the whole
   pipeline; the public per-pass entry points still rebuild for standalone
   callers.
+- `fuse_conv_relu`, `fuse_bn_relu`, `fold_conv_bn`, `fold_constants` and
+  `rewrite_convtranspose_dts` are no longer public. They were only ever reachable
+  through `optimize_onnx_graph` outside the crate.
+- The execution plan moved out of `loader/` into `plan/`, and every fusion in
+  it — DW+PW, PW+DW, the Conv+Add residual, the PW-expand → DW → PW-reduce merge
+  and the six INT8 chains — now finds its partner by dataflow through a consumer
+  index rather than at the next node position, so a pair the schedule separates
+  still fuses. The Conv kernel entry point and the NCHWc handoff are resolved
+  once at load instead of per inference.
+- Conv weights are permuted for the kernels during plan construction
+  (`plan::prepack`) instead of being overwritten in place by the loader.
+  `OnnxModel::initializers` holds ONNX-native OIHW throughout, so passes, the
+  exporter and the quantizer read what the model wrote, and the name-keyed
+  layout tables that had to follow every renamed weight are gone.
+- INT8 inference, mostly for ARMv8.0 cores without dotprod: activations stay
+  NHWC end to end and in true int8 storage from the first `QuantizeLinear`;
+  `DQ → [Relu | Clip] → Q`, `DQ → HardSwish → Q`, f32 `HardSwish → Q` and the
+  Squeeze-Excite `Mul → Q` boundaries each fold into one i8 pass; a NEON
+  widening GEMM plus hand-scheduled 4×4, 4×8 and 4×16 asm microkernels replace
+  the scalar fallback; depthwise SIMD covers any kernel up to 7×7, including
+  filters the graph produces at run time; the GEMM + requant is blocked and runs
+  on the rayon pool; and quantizing multiplies by a correctly-rounded reciprocal
+  instead of dividing on aarch64. Bit-identical apart from the rescale noted
+  above and the rounding fix under Fixed; each step is measured in its commit.
+- The per-channel `[1, C, H, W] * [1, C, 1, 1]` broadcast multiply (the
+  Squeeze-Excite scale) takes a SIMD block path instead of the strided
+  per-element fallback. On aarch64, stride-1 NHWC depthwise with at least 64
+  channels runs as whole-row 4×8 tiles, and the crop-resize NEON path handles
+  four pixels per group with whole-vector taps.
+- A single-row `Gemm` with `transB=1` computes against B directly instead of
+  materialising Bᵀ on every inference.
+- Multi-threaded runs reuse a rayon pool cached per thread instead of building
+  one per inference, and the hot-path tuning switches are read once rather than
+  per node.
+- Conv+Relu fusion is skipped on 32-bit ARM, which has no fused kernel; the
+  fused node measured slower there than a Conv plus a vectorised Relu.
+- `Tensor` constructors build strides inline instead of allocating a `Vec` per
+  tensor (reshape −8 %, `from_vec` −6 %).
+- Every benchmark and latency harness installs mimalloc as its global
+  allocator. Before, only two did, so the CI regression gates and most of the
+  published harnesses ran on the system allocator. Library crates still set
+  none. Tables in
+  `docs/performance-benchmarks.md` that predate this are flagged for a re-run.
+- 658 accessors and constructors across the workspace are now `const fn`.
+- The `prfm pldl1keep` helper lived in three copies across `conv/pointwise.rs`,
+  and is now a single `ops::prefetch::prefetch_l1_keep` documenting when a hint
+  is worth adding: hoist the gate out of the K-loop, and only hint operands
+  whose stride actually defeats the hardware prefetcher.
+- Dropped the software prefetch from the AVX `binary_same_shape` loops. The
+  access is unit-stride over three streams, which every hardware prefetcher
+  tracks; measured on Zen 4 the hint is within run-to-run drift (the A/B flips
+  sign depending on run order), so it only added uops to a bandwidth-bound loop.
 
 ### Fixed
 
+- QLinearConv applied `w_scale[0]` to every output channel, which is silently
+  wrong for any per-channel-quantized model — the common PTQ default. Every fast
+  path now applies the composite scale per channel. Asymmetric activations
+  (`x_zp != 0`) no longer force the ~100× dequantize fallback, and that fallback
+  dequantizes the int32 bias instead of adding it raw. `QuantizeLinear`, requant
+  and int4 quantization round half to even, as the ONNX spec and onnxruntime do,
+  rather than half away from zero. Bit-exact against onnxruntime on a symmetric
+  per-channel MobileNetV3-small backbone.
+- The INT8 PW/DW fusions requantize with one scalar, so they now decline
+  per-channel weights instead of producing wrong output. `QuantizedPwDw` with an
+  expansion width that misses the `c_out % 16` gate (72, 88 and 120 in
+  MobileNetV3) panicked with "PW weight not prepacked".
+- `QuantizedForkPair` and `QuantizedResidualChain` could absorb an intermediate
+  value that had a second reader or was a graph output, dropping it.
+- The runner profiler divided every node's time by the count of the shared
+  empty name, so a graph with unnamed nodes read several times too fast.
+  Inferences are counted directly now, and unnamed nodes are keyed
+  `{op}@{index}`.
+- `bilateral_u8_parallel_scalar`, the fallback for targets without a SIMD
+  bilateral path, indexed each row slice with the whole-image offset and
+  panicked past the first row.
+- `yscv-video` on 32-bit targets: the V4L2 ioctl numbers were hard-coded for
+  LP64 and are now derived from the struct sizes; `mmap`'s `off_t` was declared
+  `i64`, so capture buffers never mapped; and `fb_fix_screeninfo` declared its
+  `unsigned long` fields as 8 bytes, so the framebuffer could not be opened.
+  `open` is declared variadic in every raw-FFI block, which recent rustc
+  requires and without which `clippy --all-features` failed with `vaapi` on.
 - `use_avx512_mr12` documented itself as "DEFAULT ON" with a
   `YSCV_AVX512_SGEMM=0` kill switch. The gate it calls is opt-in on the exact
   value `1`, so the AVX-512 MR=12×NR=32 GEMM is off unless asked for — the
@@ -108,35 +264,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Squeeze`. The reverse-removal loop then deleted already-shifted indices,
   taking unrelated nodes with them. Overlapping matches are now skipped.
 
-### Changed
-
-- The `prfm pldl1keep` helper lived in three copies across `conv/pointwise.rs`,
-  and is now a single `ops::prefetch::prefetch_l1_keep` documenting when a hint
-  is worth adding: hoist the gate out of the K-loop, and only hint operands
-  whose stride actually defeats the hardware prefetcher.
-- Dropped the software prefetch from the AVX `binary_same_shape` loops. The
-  access is unit-stride over three streams, which every hardware prefetcher
-  tracks; measured on Zen 4 the hint is within run-to-run drift (the A/B flips
-  sign depending on run order), so it only added uops to a bandwidth-bound loop.
-
-### Added
-
-- `rebuild_runtime_index` now debug-asserts one execution-plan action per node.
-  With the sequential fallback gone the runner walks the plan and nothing else,
-  so a short plan would silently skip trailing nodes.
-- Benchmarks for the two kernels that had none: `trans_a_m64_k256_n256` (the
-  tracker's `FusedTransposeMatMul` shape, the only caller of the transposed-A
-  tiles) and raw-slice `binary_same_shape_dispatch` add/mul.
-
-### Changed
-
-- Optimizer passes no longer rebuild the runtime index individually. Nine of
-  the twelve passes called `rebuild_runtime_index()` on exit, so a single
-  `optimize_onnx_graph` re-ran execution-plan construction and weight
-  prepacking about ten times. The driver now rebuilds once after the whole
-  pipeline; the public per-pass entry points still rebuild for standalone
-  callers.
-
 ### Removed
 
 - `run_onnx_model_sequential`, the ~600-line per-inference fusion scanner in
@@ -148,6 +275,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `exec_reshape_zerocopy`, and the `use_counts`-taking
   `try_reshape_nhwc_passthrough` (the plan path's `_inner` variant, and the
   NHWC-passthrough optimization itself, are unaffected).
+- The loader's unconditional fold of a constant `Transpose` into a `MatMul`
+  right-hand side. `FoldConstants` covers that case and every other constant
+  `Transpose`.
 
 ## [0.1.11] — 2026-07-26
 

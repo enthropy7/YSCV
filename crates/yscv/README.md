@@ -4,7 +4,7 @@ Umbrella crate re-exporting the whole framework behind one dependency.
 
 ```toml
 [dependencies]
-yscv = "0.1.11"
+yscv = "0.1.12"
 ```
 
 ```rust,ignore

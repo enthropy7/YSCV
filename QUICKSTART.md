@@ -23,7 +23,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-yscv = "0.1.11"
+yscv = "0.1.12"
 
 [profile.release]
 lto = "thin"
@@ -117,7 +117,7 @@ cargo new my-drone-app && cd my-drone-app
 
 ```toml
 [dependencies]
-yscv-pipeline = { version = "0.1.11", features = ["rknn", "realtime"] }
+yscv-pipeline = { version = "0.1.12", features = ["rknn", "realtime"] }
 
 [profile.release]
 lto = "thin"
