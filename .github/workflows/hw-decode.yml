@@ -24,9 +24,6 @@ jobs:
           - os: windows-latest
             features: ""
             name: Windows (SW fallback)
-          - os: [self-hosted, linux, nvidia]
-            features: nvdec
-            name: Linux + NVDEC (self-hosted)
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -37,15 +34,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Skipped on the self-hosted NVIDIA runner: it keeps its own target/
-      # between jobs, so round-tripping a cache there is pure overhead.
-      # `key` separates the matrix legs, which rust-cache's automatic key
-      # (job id + runner OS + arch) would otherwise merge for a same-OS pair.
       - name: Cache Cargo
-        if: ${{ !contains(matrix.os, 'self-hosted') }}
         uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.features }}
 
       - name: Build (default features)
         run: cargo build -p yscv-video
