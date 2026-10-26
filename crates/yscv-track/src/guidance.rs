@@ -23,8 +23,9 @@ impl Default for GuidanceConfig {
     fn default() -> Self {
         Self {
             kf_p0: 1.0,
-            kf_q_pos: 0.001,
-            kf_q_vel: 0.01,
+            // variance rates per second (≈ the old per-frame values at 30 fps)
+            kf_q_pos: 0.03,
+            kf_q_vel: 0.3,
             kf_r: 0.05,
             rng_q_z: 0.1,
             rng_q_vz: 1.0,
@@ -113,7 +114,14 @@ impl LosKf {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        let q = diag4(self.q_pos, self.q_pos, self.q_vel, self.q_vel);
+        // q_pos/q_vel are variance RATES per second; scaling by dt keeps the
+        // tuning meaningful when the frame rate drops
+        let q = diag4(
+            self.q_pos * dt,
+            self.q_pos * dt,
+            self.q_vel * dt,
+            self.q_vel * dt,
+        );
         self.kf.predict(&f, &q);
     }
 
@@ -344,9 +352,12 @@ impl Nav3d {
     }
 }
 
+/// Derotate the pixel error by the body roll. Right roll (+φ, FRD) rotates the
+/// scene CCW in the image, so the measured error is R(−φ)·e_level in image
+/// axes (y down); the level-frame error is R(+φ)·measured.
 pub fn compensate_tilt(err_x: f32, err_y: f32, roll: f32, _pitch: f32) -> (f32, f32) {
     let (cr, sr) = (roll.cos(), roll.sin());
-    (cr * err_x + sr * err_y, -sr * err_x + cr * err_y)
+    (cr * err_x - sr * err_y, sr * err_x + cr * err_y)
 }
 
 pub fn pn_sticks(kp: f32, n: f32, err_x: f32, err_y: f32, rate_x: f32, rate_y: f32) -> (f32, f32) {
@@ -385,6 +396,10 @@ const VC_NOMINAL: f32 = 2.0;
 const MAX_LAT_ACC: f32 = 5.0;
 const MAX_UP_ACC: f32 = -3.0;
 const MAX_DOWN_ACC: f32 = 6.0;
+/// LOS measurement variance for the NED filter: the unit-vector domain, not
+/// pixel error — ~0.5° per frame covers tracker jitter plus mount/calibration
+/// slop. The pixel-domain `kf_r` tunes the sticks filters only.
+const LOS_R: f32 = 1e-4;
 /// closer than this the terminal PID replaces PN
 const INTERCEPT_RANGE_M: f32 = 4.0;
 const INTERCEPT_KP: f32 = 40.0;
@@ -526,7 +541,6 @@ pub struct NedGuidance {
     p0: f32,
     q_pos: f32,
     q_vel: f32,
-    r: f32,
     cam: Cam,
     fl: NedFlight,
     /// current navigation constant, floats in [fl.n_min, fl.n_max]
@@ -545,7 +559,6 @@ impl NedGuidance {
             p0: cfg.kf_p0,
             q_pos: cfg.kf_q_pos,
             q_vel: cfg.kf_q_vel,
-            r: cfg.kf_r,
             cam,
             fl: flight,
             n: flight.n_max,
@@ -600,7 +613,7 @@ impl NedGuidance {
             [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
         ];
-        let r = [[self.r, 0.0, 0.0], [0.0, self.r, 0.0], [0.0, 0.0, self.r]];
+        let r = [[LOS_R, 0.0, 0.0], [0.0, LOS_R, 0.0], [0.0, 0.0, LOS_R]];
         self.kf.update(&los_meas, &h, &r);
         let los = self.renorm_los();
 
@@ -682,7 +695,8 @@ impl NedGuidance {
             [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         ];
-        let q = diag6(self.q_pos, self.q_vel);
+        // variance rates per second, scaled by dt (see LosKf::predict)
+        let q = diag6(self.q_pos * dt, self.q_vel * dt);
         self.kf.predict(&f, &q);
     }
 
@@ -849,6 +863,29 @@ mod tests {
         let (x, y) = compensate_tilt(0.5, 0.3, 0.0, 0.0);
         assert!((x - 0.5).abs() < 1e-6);
         assert!((y - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compensate_tilt_removes_the_roll_artifact() {
+        // right roll 30°, level error (0.5, 0): the image sees the target
+        // ride up — (cos·a, -sin·a) — and the derotation must give (a, 0) back
+        let phi = 0.5f32;
+        let a = 0.5f32;
+        let (xm, ym) = (a * phi.cos(), -a * phi.sin());
+        let (x, y) = compensate_tilt(xm, ym, phi, 0.0);
+        assert!((x - a).abs() < 1e-6, "x {x} vs {a}");
+        assert!(y.abs() < 1e-6, "y {y}");
+    }
+
+    #[test]
+    fn compensate_tilt_direction_survives_a_left_roll_too() {
+        // left roll: the target rides down, derotation pulls it back up
+        let phi = -0.5f32;
+        let a = 0.5f32;
+        let (xm, ym) = (a * phi.cos(), -a * phi.sin());
+        let (x, y) = compensate_tilt(xm, ym, phi, 0.0);
+        assert!((x - a).abs() < 1e-6, "x {x} vs {a}");
+        assert!(y.abs() < 1e-6, "y {y}");
     }
 
     #[test]
