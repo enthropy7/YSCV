@@ -1,6 +1,6 @@
 > **Status: work in progress.** Report any bugs, unsoundness etc.
 > The self-contained crates — `yscv-tensor`, `yscv-kernels`,
-> `yscv-imgproc` — stand on their own already. Dropping the WIP label is the
+> `yscv-imgproc`, `yscv-video` — stand on their own already. Dropping the WIP label is the
 > 0.2.0 milestone. Found a problem? Open an issue/PR
 
 # yscv
