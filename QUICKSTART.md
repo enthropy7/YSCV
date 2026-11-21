@@ -1,9 +1,5 @@
 # Quickstart
 
-Five minutes from `cargo new` to a working program. Three flavours — pick
-the one that matches what you're trying to do, run the commands, copy the
-code, you're done.
-
 > Need help choosing? **Want to process images and detect objects** →
 > [§1](#1-image-processing--detection-cv-user). **Want to train a model
 > from scratch** → [§2](#2-train-a-neural-network-ml-user). **Want to
@@ -13,7 +9,7 @@ code, you're done.
 
 ## 1. Image processing + detection (CV user)
 
-You have an image, you want to do something with it. 3 minutes.
+You have an image, you want to do something with it.
 
 ```bash
 cargo new my-cv-app && cd my-cv-app
@@ -59,9 +55,11 @@ detection with bbox decode + NMS, see
 
 ## 2. Train a neural network (ML user)
 
-You have data, you want a model. 5 minutes.
+You have data, you want a model.
 
-`Cargo.toml` — same as above. `src/main.rs`:
+Edit `Cargo.toml` the same as above.
+
+`src/main.rs`:
 
 ```rust
 use yscv::prelude::*;
@@ -107,7 +105,7 @@ weights (ResNet, ViT, MobileNet — 17 architectures), see
 
 ## 3. Edge deployment (Rockchip NPU)
 
-You have a Rock4D / RV1106 / RK3576 board and a `.rknn` model. 5 minutes.
+You have a Rock4D / RV1106 / RK3576 board and a `.rknn` model.
 
 ```bash
 cargo new my-drone-app && cd my-drone-app
