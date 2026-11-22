@@ -339,7 +339,6 @@ impl Tensor {
 
     /// SIMD-accelerated binary op for same-shape tensors (add/sub/mul/div).
     #[allow(unsafe_code)]
-    #[allow(unsafe_code)]
     fn binary_same_shape_simd(
         &self,
         rhs: &Self,
