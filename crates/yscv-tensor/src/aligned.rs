@@ -35,17 +35,19 @@ impl_zeroable!(
     u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64
 );
 
-/// Pick the alignment for a given byte size. Returns the cacheline constant
-/// unconditionally (size-tiered page-alignment for large allocations was
-/// tried and regressed). The size parameter stays in the API for forward
-/// compatibility.
-#[inline]
-const fn align_for_size(_size: usize) -> usize {
-    ALIGN
+fn layout_for<T>(count: usize) -> std::alloc::Layout {
+    let size = count
+        .checked_mul(std::mem::size_of::<T>())
+        .expect("allocation size overflow")
+        .max(1);
+
+    let align = ALIGN.max(std::mem::align_of::<T>());
+
+    std::alloc::Layout::from_size_align(size, align).expect("invalid allocation layout")
 }
 
-/// A Vec-like container that guarantees 64-byte (cacheline) alignment for the
-/// data pointer.
+/// A Vec-like container that guarantees at least 64-byte (cacheline) alignment
+/// for the data pointer, or `T`'s alignment when it is greater.
 ///
 /// 64 bytes is one cacheline on Zen 4 / modern Intel; aligned to this avoids
 /// any cacheline-split load at the first element. Strict superset of AVX-512
@@ -81,7 +83,7 @@ impl<T> AlignedVec<T> {
         }
     }
 
-    /// Creates an `AlignedVec` with the given capacity (aligned to 32 bytes).
+    /// Creates an `AlignedVec` with the given capacity (aligned to at least 64 bytes).
     #[allow(unsafe_code)]
     pub fn with_capacity(cap: usize) -> Self {
         if cap == 0 {
@@ -251,13 +253,7 @@ impl<T: Zeroable> AlignedVec<T> {
         if len == 0 {
             return Self::new();
         }
-        let size = len
-            .checked_mul(std::mem::size_of::<T>())
-            .expect("allocation size overflow");
-        let size = size.max(1);
-        let align = align_for_size(size);
-        let layout =
-            std::alloc::Layout::from_size_align(size, align).expect("invalid allocation layout");
+        let layout = layout_for::<T>(len);
         // SAFETY: layout has non-zero size. alloc_zeroed returns zeroed memory.
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
         if ptr.is_null() {
@@ -443,20 +439,13 @@ mod alloc_cache {
 #[allow(unsafe_code)]
 fn alloc_aligned<T>(count: usize) -> *mut T {
     assert!(count > 0, "cannot allocate zero-sized aligned buffer");
-    let size = count
-        .checked_mul(std::mem::size_of::<T>())
-        .expect("allocation size overflow");
-    let size = size.max(1);
-    let align = align_for_size(size);
+    let layout = layout_for::<T>(count);
 
     // Try thread-local cache first — cache is keyed by (size, align) so we
     // only return a pointer that matches BOTH the requested size and align.
-    if let Some(ptr) = alloc_cache::try_alloc(size, align) {
+    if let Some(ptr) = alloc_cache::try_alloc(layout.size(), layout.align()) {
         return ptr as *mut T;
     }
-
-    let layout =
-        std::alloc::Layout::from_size_align(size, align).expect("invalid allocation layout");
     // SAFETY: layout has non-zero size.
     let ptr = unsafe { std::alloc::alloc(layout) };
     if ptr.is_null() {
@@ -468,22 +457,16 @@ fn alloc_aligned<T>(count: usize) -> *mut T {
 /// Deallocates aligned memory previously allocated with `alloc_aligned`.
 #[allow(unsafe_code)]
 fn dealloc_aligned<T>(ptr: *mut T, cap: usize) {
-    let size = match cap.checked_mul(std::mem::size_of::<T>()) {
-        Some(s) => s.max(1),
-        None => return, // overflow — cannot reconstruct layout, leak rather than panic in Drop
-    };
-    let align = align_for_size(size);
+    let layout = layout_for::<T>(cap);
 
     // Try to cache instead of freeing
-    if alloc_cache::try_dealloc(ptr as *mut u8, size, align) {
+    if alloc_cache::try_dealloc(ptr as *mut u8, layout.size(), layout.align()) {
         return;
     }
 
-    if let Ok(layout) = std::alloc::Layout::from_size_align(size, align) {
-        // SAFETY: ptr was allocated with this layout via alloc_aligned.
-        unsafe {
-            std::alloc::dealloc(ptr as *mut u8, layout);
-        }
+    // SAFETY: ptr was allocated with this layout via alloc_aligned.
+    unsafe {
+        std::alloc::dealloc(ptr as *mut u8, layout);
     }
 }
 
@@ -495,6 +478,16 @@ mod tests {
     fn alignment_is_32_bytes() {
         let v = AlignedVec::<f32>::with_capacity(64);
         assert_eq!(v.as_ptr() as usize % 32, 0);
+    }
+
+    #[allow(unused)]
+    #[test]
+    fn non_standart_alignment() {
+        #[repr(align(128))]
+        struct Wide([u8; 128]);
+
+        let mut v = AlignedVec::<Wide>::with_capacity(1);
+        v.push(Wide([0; 128]));
     }
 
     #[test]
