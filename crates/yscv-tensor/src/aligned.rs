@@ -497,6 +497,16 @@ mod tests {
         assert_eq!(v.as_ptr() as usize % 32, 0);
     }
 
+    #[allow(unused)]
+    #[test]
+    fn non_standart_alignment() {
+        #[repr(align(128))]
+        struct Wide([u8; 128]);
+
+        let mut v = AlignedVec::<Wide>::with_capacity(1);
+        v.push(Wide([0; 128]));
+    }
+
     #[test]
     fn filled_and_len() {
         let v = AlignedVec::filled(100, 1.0f32);
