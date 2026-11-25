@@ -406,6 +406,10 @@ const INTERCEPT_KP: f32 = 40.0;
 const INTERCEPT_KI: f32 = 0.1;
 const INTERCEPT_KD: f32 = 0.01;
 const INTERCEPT_INT_LIMIT: f32 = 2.0;
+/// standoff pointing-error gain, m/s² per unit of lateral LOS offset: PN
+/// reacts to LOS rotation only, so a held offset at a small closing rate
+/// commands next to nothing; this closes it at any range
+const STANDOFF_KP: f32 = 2.5;
 const EPS: f32 = 1e-6;
 
 /// Flight envelope the caller owns; `Default` is the reference tuning.
@@ -636,7 +640,7 @@ impl NedGuidance {
         let (accel, intercept) = if self.rng_ready && range < INTERCEPT_RANGE_M {
             (self.intercept_accel(los, dt), true)
         } else {
-            (pn_accel(los, self.rate(), self.n, vc), false)
+            (self.standoff_accel(los, vc), false)
         };
 
         NedOut {
@@ -675,7 +679,7 @@ impl NedGuidance {
         };
         let vc = self.closing_velocity(z_dot);
 
-        let accel = pn_accel(los, self.rate(), self.n, vc);
+        let accel = self.standoff_accel(los, vc);
         NedOut {
             accel_ned: self.clamp_accel(accel),
             los_ned: los,
@@ -725,6 +729,14 @@ impl NedGuidance {
         } else {
             VC_NOMINAL
         }
+    }
+
+    /// PN plus the standoff term on the lateral LOS
+    fn standoff_accel(&self, los: [f32; 3], vc: f32) -> [f32; 3] {
+        let mut a = pn_accel(los, self.rate(), self.n, vc);
+        a[1] += STANDOFF_KP * los[1];
+        a[2] += STANDOFF_KP * los[2];
+        a
     }
 
     /// Terminal law: PID on the lateral LOS error (y/z of the unit LOS, with
