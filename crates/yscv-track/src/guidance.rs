@@ -406,13 +406,14 @@ const INTERCEPT_KP: f32 = 40.0;
 const INTERCEPT_KI: f32 = 0.1;
 const INTERCEPT_KD: f32 = 0.01;
 const INTERCEPT_INT_LIMIT: f32 = 2.0;
-/// standoff pointing-error gain, m/s² per unit of lateral LOS offset: PN
-/// reacts to LOS rotation only, so a held offset at a small closing rate
-/// commands next to nothing; this closes it at any range
+/// reference standoff pointing-error gain, m/s² per rad of lateral LOS
+/// offset: PN reacts to LOS rotation only, so a held offset at a small
+/// closing rate commands next to nothing
 const STANDOFF_KP: f32 = 2.5;
 const EPS: f32 = 1e-6;
 
-/// Flight envelope the caller owns; `Default` is the reference tuning.
+/// Flight envelope and knobs the caller owns; `Default` is the reference
+/// tuning.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NedFlight {
     /// adaptive navigation constant bounds
@@ -422,6 +423,9 @@ pub struct NedFlight {
     pub max_lat_acc: f32,
     pub max_up_acc: f32,
     pub max_down_acc: f32,
+    /// standoff pointing-error gain: PN reacts to LOS rotation only, so a
+    /// held offset at a small closing rate commands next to nothing
+    pub standoff_kp: f32,
 }
 
 impl Default for NedFlight {
@@ -432,6 +436,7 @@ impl Default for NedFlight {
             max_lat_acc: MAX_LAT_ACC,
             max_up_acc: MAX_UP_ACC,
             max_down_acc: MAX_DOWN_ACC,
+            standoff_kp: STANDOFF_KP,
         }
     }
 }
@@ -734,8 +739,8 @@ impl NedGuidance {
     /// PN plus the standoff term on the lateral LOS
     fn standoff_accel(&self, los: [f32; 3], vc: f32) -> [f32; 3] {
         let mut a = pn_accel(los, self.rate(), self.n, vc);
-        a[1] += STANDOFF_KP * los[1];
-        a[2] += STANDOFF_KP * los[2];
+        a[1] += self.fl.standoff_kp * los[1];
+        a[2] += self.fl.standoff_kp * los[2];
         a
     }
 
@@ -1217,6 +1222,7 @@ mod tests {
             max_down_acc: 0.8,
             n_min: 4.0,
             n_max: 4.0,
+            ..Default::default()
         };
         let mut g = NedGuidance::new(&GuidanceConfig::default(), ned_cam(), fl);
         for _ in 0..25 {
