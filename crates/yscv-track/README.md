@@ -42,15 +42,17 @@ and PN produces a pair of stick signals in [-1, 1].
 **NED (`NedGuidance`)** — world-space: the pixel is deprojected through
 camera intrinsics into a ray, rotated into NED by the mount pitch and the
 body attitude, and filtered by a 6-state KF `[los, los_rate]`. The law is
-pure proportional navigation `a = N·Vc·(Ω × los)` — an acceleration in m/s²,
+proportional navigation `a = N·Vc·(Ω × los)` — an acceleration in m/s²,
 perpendicular to the LOS, with the navigation constant adaptive in [2, 5] and
-the closing velocity from the range EKF. No intercept point is computed: PN
-nulls the LOS rotation, which is itself the lead. Closer than 4 m a terminal
-PID takes over; acceleration clamps are asymmetric vertically (NED z is
-down). The flight envelope — navigation-constant bounds and the acceleration
-clamps — is caller-owned via `NedFlight` (`Default` is the reference tuning);
-the law's own gains stay module constants, and the per-deployment input is the
-camera calibration (`Cam`) beside `GuidanceConfig`.
+the closing velocity from the range EKF, plus a standoff term
+`standoff_kp·(los_y, los_z)`: PN reacts to LOS rotation only, so a held
+pointing offset at a small closing rate would command nothing. No intercept
+point is computed: PN nulls the LOS rotation, which is itself the lead.
+Closer than 4 m a terminal PID takes over; acceleration clamps are
+asymmetric vertically (NED z is down). The flight envelope and the standoff
+gain are caller-owned via `NedFlight` (`Default` is the reference tuning);
+the per-deployment input is the camera calibration (`Cam`) beside
+`GuidanceConfig`.
 
 ## Tests
 

@@ -375,11 +375,12 @@ pub fn pn3d_sticks(kp: f32, n: f32, vc_scale: f32, out: &Nav3dOut) -> (f32, f32)
 
 // ── NED guidance ────────────────────────────────────────────────────
 //
-// Pixel → unit LOS in NED → 6-state KF → PN acceleration. No explicit
-// intercept point: PN nulls the LOS rotation and leads a moving target
-// implicitly; near the target a terminal PID takes over. The flight
-// envelope (N bounds, acceleration clamps) is caller-owned via `NedFlight`;
-// everything the law can own itself is a const here. The per-deployment
+// Pixel → unit LOS in NED → 6-state KF → PN acceleration plus a standoff
+// term on the lateral LOS. No explicit intercept point: PN nulls the LOS
+// rotation and leads a moving target implicitly; near the target a terminal
+// PID takes over. The flight envelope (N bounds, acceleration clamps) and
+// the standoff gain are caller-owned via `NedFlight`; everything the law
+// can own itself is a const here. The per-deployment
 // input is the camera calibration (`Cam`) next to `GuidanceConfig`.
 
 /// adaptive navigation constant bounds
