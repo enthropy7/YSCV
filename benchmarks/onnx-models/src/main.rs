@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use serde_json::json;
 use yscv_onnx::{
-    OnnxExportAttr, OnnxExportGraph, OnnxExportNode, OnnxExportValueInfo, OnnxRunner,
-    export_onnx_model_to_file, graph_cost, graph_cost_report, infer_shapes_from_tensors,
-    load_onnx_model_from_file, optimize_onnx_graph,
+    OnnxExportAttr, OnnxExportGraph, OnnxExportNode, OnnxExportValueInfo, OnnxLoader, OnnxRunner,
+    OptimizationLevel, export_onnx_model_to_file, graph_cost, graph_cost_report,
+    infer_shapes_from_tensors, optimize_onnx_graph,
 };
 use yscv_onnx_model_bench::{FillMode, load_image_tensor, make_tensor};
 use yscv_tensor::Tensor;
@@ -573,15 +573,22 @@ fn run_case(
     unsafe {
         std::env::set_var("YSCV_RUNNER_PROFILE", &profile_path);
     }
-    let mut model = load_onnx_model_from_file(model_path)
+    let mut model = OnnxLoader::load(model_path)
+        .decode()
         .map_err(|e| format!("load {}: {e}", model_path.display()))?;
     let nodes_before = model.node_count();
     optimize_onnx_graph(&mut model).map_err(|e| format!("optimize: {e}"))?;
     let nodes_after = model.node_count();
+    // The model is already optimized above, so the build must not run the IR
+    // passes a second time.
+    let executable = OnnxLoader::from_model(&model)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .map_err(|e| format!("build executable: {e}"))?;
     let runner = if threads == 0 {
-        OnnxRunner::new(&model).map_err(|e| format!("runner init: {e}"))?
+        OnnxRunner::new(&executable).map_err(|e| format!("runner init: {e}"))?
     } else {
-        OnnxRunner::with_threads(&model, threads).map_err(|e| format!("runner init: {e}"))?
+        OnnxRunner::with_threads(&executable, threads).map_err(|e| format!("runner init: {e}"))?
     };
 
     let image_name = if image.is_some() {

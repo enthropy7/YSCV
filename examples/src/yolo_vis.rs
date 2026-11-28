@@ -18,7 +18,7 @@ use yscv_detect::{
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_imgproc::{DrawDetection, draw_detections, draw_text_scaled, imread, imwrite};
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use yscv_onnx::load_onnx_model_from_file;
+use yscv_onnx::OnnxLoader;
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn decode(
@@ -85,7 +85,9 @@ fn main() {
 
     // Load model
     println!("Loading model: {model_path}");
-    let model = load_onnx_model_from_file(model_path).expect("Failed to load model");
+    let model = OnnxLoader::load(model_path)
+        .build()
+        .expect("Failed to load model");
 
     // Load image
     println!("Loading image: {image_path}");

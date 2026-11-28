@@ -5,6 +5,30 @@ use thiserror::Error;
 use yscv_tensor::Tensor;
 
 use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
+use crate::plan::OnnxExecutable;
+
+pub(crate) struct GraphParts<'a> {
+    nodes: &'a [OnnxNode],
+    initializers: &'a FxHashMap<String, Tensor>,
+}
+
+impl<'a> From<&'a OnnxModel> for GraphParts<'a> {
+    fn from(model: &'a OnnxModel) -> Self {
+        Self {
+            nodes: &model.nodes,
+            initializers: &model.initializers,
+        }
+    }
+}
+
+impl<'a> From<&'a OnnxExecutable> for GraphParts<'a> {
+    fn from(model: &'a OnnxExecutable) -> Self {
+        Self {
+            nodes: &model.nodes,
+            initializers: &model.initializers,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dim {
@@ -125,10 +149,22 @@ pub struct ShapeInference {
 }
 
 pub fn infer_shapes(model: &OnnxModel, input_shapes: &ShapeMap) -> ShapeInference {
+    infer_shapes_parts(GraphParts::from(model), input_shapes)
+}
+
+pub(crate) fn infer_executable_shapes(
+    model: &OnnxExecutable,
+    input_shapes: &ShapeMap,
+) -> ShapeInference {
+    infer_shapes_parts(GraphParts::from(model), input_shapes)
+}
+
+fn infer_shapes_parts(model: GraphParts<'_>, input_shapes: &ShapeMap) -> ShapeInference {
+    let model = &model;
     let mut shapes = input_shapes.clone();
     let mut diagnostics = Vec::new();
 
-    for (name, tensor) in &model.initializers {
+    for (name, tensor) in model.initializers {
         shapes.insert(name.clone(), TensorShape::known(tensor.shape().to_vec()));
     }
 
@@ -168,7 +204,7 @@ pub fn infer_shapes_from_tensors(
 }
 
 fn infer_node(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
 ) -> Result<Vec<TensorShape>, ShapeError> {
@@ -222,7 +258,7 @@ fn infer_constant(node: &OnnxNode) -> Result<Vec<TensorShape>, ShapeError> {
 }
 
 fn infer_conv(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
 ) -> Result<Vec<TensorShape>, ShapeError> {
@@ -434,7 +470,7 @@ fn infer_transpose(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape
 }
 
 fn infer_reshape(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
 ) -> Result<Vec<TensorShape>, ShapeError> {
@@ -515,7 +551,7 @@ fn infer_flatten(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>,
 }
 
 fn infer_squeeze(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
 ) -> Result<Vec<TensorShape>, ShapeError> {
@@ -555,7 +591,7 @@ fn infer_squeeze(
 }
 
 fn infer_unsqueeze(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
 ) -> Result<Vec<TensorShape>, ShapeError> {
@@ -629,7 +665,7 @@ fn infer_matmul(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, 
 }
 
 fn infer_gemm(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
 ) -> Result<Vec<TensorShape>, ShapeError> {
@@ -748,7 +784,7 @@ fn product_dims(dims: &[Dim]) -> Dim {
     Dim::Known(product)
 }
 
-fn node_axes(model: &OnnxModel, node: &OnnxNode) -> Result<Vec<i64>, ShapeError> {
+fn node_axes(model: &GraphParts<'_>, node: &OnnxNode) -> Result<Vec<i64>, ShapeError> {
     if node.inputs.len() > 1 && !node.inputs[1].is_empty() {
         let t = model.initializers.get(&node.inputs[1]).ok_or_else(|| {
             ShapeError::NonConstantInput {

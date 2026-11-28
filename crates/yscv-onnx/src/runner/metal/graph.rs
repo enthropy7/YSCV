@@ -15,7 +15,8 @@ use yscv_kernels::metal_backend::mpsgraph::{
 use yscv_tensor::Tensor;
 
 use crate::error::OnnxError;
-use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
+use crate::loader::{OnnxAttribute, OnnxNode};
+use crate::plan::OnnxExecutable;
 use crate::runner::{get_attr_float, get_attr_int, get_attr_ints};
 
 /// Graph-level description of one input: name, f32 placeholder, shape,
@@ -100,7 +101,7 @@ impl MpsGraphPlan {
 /// input. Order is preserved in the returned plan; callers must pass the same
 /// names to `run_mpsgraph_plan` (order-independent — lookup is by name).
 pub fn compile_mpsgraph_plan(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: &[(&str, &Tensor)],
 ) -> Result<MpsGraphPlan, OnnxError> {
     if inputs.is_empty() {
@@ -738,7 +739,7 @@ fn build_graph_node(
     node: &OnnxNode,
     tensors: &FxHashMap<String, MpsGraphTensorRef>,
     shapes: &FxHashMap<String, Vec<usize>>,
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     const_values: &FxHashMap<String, Vec<f32>>,
 ) -> Result<Option<Vec<(String, MpsGraphTensorRef, Vec<usize>)>>, KernelError> {
     // Helper: return Ok(None) when an input tensor is not found (unsupported path)

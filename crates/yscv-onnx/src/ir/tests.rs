@@ -8,7 +8,7 @@
 use super::*;
 // These lower a fixture and drive passes by hand; the load-time optimizer would
 // rewrite the fixture first. See the note in `tests/mod.rs`.
-use crate::loader::load_onnx_model_unoptimized as load_onnx_model;
+use crate::loader::OnnxLoader;
 use crate::proto::onnx;
 use crate::tests::build_minimal_onnx_model;
 
@@ -62,7 +62,10 @@ fn fanout_bytes() -> Vec<u8> {
 }
 
 fn graph_of(bytes: &[u8]) -> Graph {
-    load_onnx_model(bytes).expect("fixture loads").to_ir()
+    OnnxLoader::from_bytes(bytes)
+        .decode()
+        .expect("fixture loads")
+        .to_ir()
 }
 
 #[test]
@@ -402,7 +405,9 @@ fn model_shape(
 #[test]
 fn round_trip_preserves_graph_structure() {
     for bytes in [two_relu_bytes(), fanout_bytes()] {
-        let mut model = load_onnx_model(&bytes).expect("fixture loads");
+        let mut model = OnnxLoader::from_bytes(&bytes)
+            .decode()
+            .expect("fixture loads");
         let before = model_shape(&model);
 
         let graph = model.to_ir();
@@ -432,7 +437,9 @@ fn round_trip_preserves_weights_and_optional_inputs() {
     };
     let bytes = build_minimal_onnx_model(nodes, vec![weight], vec!["x"], vec!["y"]);
 
-    let mut model = load_onnx_model(&bytes).expect("fixture loads");
+    let mut model = OnnxLoader::from_bytes(&bytes)
+        .decode()
+        .expect("fixture loads");
     let before = model_shape(&model);
     let before_weight = model.initializers["w"].data().to_vec();
 
@@ -457,7 +464,9 @@ fn round_trip_preserves_unknown_operators() {
     }];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
 
-    let mut model = load_onnx_model(&bytes).expect("fixture loads");
+    let mut model = OnnxLoader::from_bytes(&bytes)
+        .decode()
+        .expect("fixture loads");
     let graph = model.to_ir();
     model.apply_ir(&graph);
 
@@ -468,7 +477,9 @@ fn round_trip_preserves_unknown_operators() {
 #[test]
 fn apply_ir_drops_removed_nodes() {
     let bytes = two_relu_bytes();
-    let mut model = load_onnx_model(&bytes).expect("fixture loads");
+    let mut model = OnnxLoader::from_bytes(&bytes)
+        .decode()
+        .expect("fixture loads");
     let mut graph = model.to_ir();
 
     let ids: Vec<NodeId> = graph.node_ids().collect();

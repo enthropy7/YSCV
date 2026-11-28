@@ -2,7 +2,7 @@ use super::*;
 use crate::exporter::{
     OnnxExportAttr, OnnxExportGraph, OnnxExportNode, OnnxExportValueInfo, export_onnx_model,
 };
-use crate::loader::{OnnxModel, OnnxNode};
+use crate::loader::{OnnxAttribute, OnnxLoader, OnnxModel, OnnxNode};
 use rustc_hash::FxHashMap;
 
 #[test]
@@ -28,14 +28,15 @@ fn export_roundtrip_relu_graph() {
         int64_initializers: Vec::new(),
     };
     let bytes = export_onnx_model(&graph, "yscv-test", "relu_model").unwrap();
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     assert_eq!(model.node_count(), 1);
     assert_eq!(model.nodes[0].op_type, "Relu");
 
     let input = Tensor::from_vec(vec![1, 4], vec![-1.0, 2.0, -3.0, 4.0]).unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
-    let result = run_onnx_model(&model, feed).unwrap();
+    let executable = OnnxLoader::from_bytes(&bytes).build().unwrap();
+    let result = run_onnx_model(&executable, feed).unwrap();
     assert_eq!(result["y"].data(), &[0.0, 2.0, 0.0, 4.0]);
 }
 
@@ -65,12 +66,12 @@ fn export_roundtrip_gemm_with_weights() {
         int64_initializers: Vec::new(),
     };
     let bytes = export_onnx_model(&graph, "yscv", "gemm_model").unwrap();
-    let model = load_onnx_model(&bytes).unwrap();
+    let executable = OnnxLoader::from_bytes(&bytes).build().unwrap();
 
     let input = Tensor::from_vec(vec![1, 3], vec![1.0, 2.0, 3.0]).unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
-    let result = run_onnx_model(&model, feed).unwrap();
+    let result = run_onnx_model(&executable, feed).unwrap();
     let out = &result["y"];
     assert_eq!(out.shape(), &[1, 2]);
     assert!((out.data()[0] - 1.5).abs() < 1e-5); // 1*1 + 0.5
@@ -104,17 +105,17 @@ fn export_to_file_roundtrip() {
     };
 
     crate::exporter::export_onnx_model_to_file(&graph, "test", "test", &path).unwrap();
-    let model = crate::loader::load_onnx_model_from_file(&path).unwrap();
+    let model = OnnxLoader::load(&path).decode().unwrap();
     assert_eq!(model.node_count(), 1);
 }
 
 /// Loading and exporting a model returns its Conv weights unchanged, byte for
 /// byte.
 ///
-/// The export used to have to undo three internal permutations, because
-/// `load_onnx_model` rewrote the initializers in place. Now the permuted copies
-/// belong to the plan and the initializers stay as ONNX wrote them, so this is
-/// a pass-through — and a round trip is the direct way to say so. It fails the
+/// The export used to have to undo three internal permutations, because the
+/// loader rewrote the initializers in place. Now the permuted copies belong to
+/// the plan and the initializers stay as ONNX wrote them, so this is a
+/// pass-through — and a round trip is the direct way to say so. It fails the
 /// moment anything starts writing packed bytes back into `initializers`, which
 /// is what made the export need an inverse in the first place.
 #[test]
@@ -155,7 +156,7 @@ fn onnx_model_export_round_trips_conv_weights_unchanged() {
         vec!["plain_out"],
     );
 
-    let model = load_onnx_model(&bytes).expect("load");
+    let model = OnnxLoader::from_bytes(&bytes).decode().expect("load");
     let graph = crate::exporter::onnx_model_to_export_graph(&model);
 
     for name in ["w_plain", "w_dw", "w_group"] {
@@ -207,7 +208,6 @@ fn export_graph_defuses_relu_annotations_and_loads_int8_initializers() {
             attributes: FxHashMap::default(),
         }],
         packed_int4_weights: Default::default(),
-        runtime_index: Default::default(),
     };
 
     let graph = crate::exporter::onnx_model_to_export_graph(&model);
@@ -216,10 +216,118 @@ fn export_graph_defuses_relu_annotations_and_loads_int8_initializers() {
     assert_eq!(graph.nodes[1].outputs, vec!["y".to_string()]);
 
     let bytes = crate::exporter::export_onnx_model(&graph, "yscv", "q").unwrap();
-    let loaded = crate::loader::load_onnx_model(&bytes).unwrap();
+    let loaded = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     assert_eq!(
         loaded.initializers["w_q"].data(),
         &[-128.0, -2.0, 3.0, 127.0]
     );
     assert_eq!(loaded.initializers["w_zp"].data(), &[0.0]);
+}
+
+/// `Conv_HardSwish` is a load-time fusion, not an ONNX operator: exporting it
+/// must defuse to `Conv` + `HardSwish`, keep the Conv inputs/attributes, and
+/// leave the fused output name on the trailing `HardSwish` node.
+#[test]
+fn export_graph_defuses_conv_hardswish() {
+    let model = fused_conv_model("Conv_HardSwish", 14);
+
+    let graph = crate::exporter::onnx_model_to_export_graph(&model);
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .map(|n| n.op_type.as_str())
+            .collect::<Vec<_>>(),
+        ["Conv", "HardSwish"]
+    );
+    assert_eq!(graph.nodes[0].inputs, ["x", "w"]);
+    assert!(matches!(
+        &graph.nodes[0].attributes[..],
+        [OnnxExportAttr::Ints(name, v)] if name == "kernel_shape" && v == &[1, 1]
+    ));
+    assert_eq!(graph.nodes[1].inputs, graph.nodes[0].outputs);
+    assert_eq!(graph.nodes[1].outputs, ["y"]);
+
+    assert_defused_matches_fused(&model, &graph);
+}
+
+/// `Conv_SiLU` defuses to `Conv` + `Sigmoid` + `Mul`: SiLU is
+/// `x * sigmoid(x)`, so the Conv output feeds both the Sigmoid and the Mul,
+/// and the Mul carries the fused output name.
+#[test]
+fn export_graph_defuses_conv_silu_into_sigmoid_mul() {
+    let model = fused_conv_model("Conv_SiLU", 13);
+
+    let graph = crate::exporter::onnx_model_to_export_graph(&model);
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .map(|n| n.op_type.as_str())
+            .collect::<Vec<_>>(),
+        ["Conv", "Sigmoid", "Mul"]
+    );
+    let conv_out = &graph.nodes[0].outputs[0];
+    assert_eq!(
+        graph.nodes[1].inputs.as_slice(),
+        std::slice::from_ref(conv_out)
+    );
+    assert_eq!(
+        graph.nodes[2].inputs,
+        [conv_out.clone(), graph.nodes[1].outputs[0].clone()]
+    );
+    assert_eq!(graph.nodes[2].outputs, ["y"]);
+
+    assert_defused_matches_fused(&model, &graph);
+}
+
+/// A 1×1 single-channel Conv node with the given fused op type, ready to run:
+/// identity weight, so the activation is the only nonlinearity.
+fn fused_conv_model(op_type: &str, opset_version: i64) -> OnnxModel {
+    let mut conv_attrs = FxHashMap::default();
+    conv_attrs.insert(Attr::KernelShape, OnnxAttribute::Ints(vec![1, 1]));
+    let mut initializers = FxHashMap::default();
+    initializers.insert(
+        "w".to_string(),
+        Tensor::from_vec(vec![1, 1, 1, 1], vec![1.0]).unwrap(),
+    );
+    OnnxModel {
+        ir_version: 7,
+        opset_version,
+        producer_name: "test".to_string(),
+        graph_name: "g".to_string(),
+        inputs: vec!["x".to_string()],
+        outputs: vec!["y".to_string()],
+        initializers,
+        nodes: vec![OnnxNode {
+            op_type: op_type.to_string(),
+            name: "conv_act".to_string(),
+            inputs: vec!["x".to_string(), "w".to_string()],
+            outputs: vec!["y".to_string()],
+            attributes: conv_attrs,
+        }],
+        packed_int4_weights: Default::default(),
+    }
+}
+
+/// The exported, defused graph must compute the same values as running the
+/// fused model directly.
+fn assert_defused_matches_fused(model: &OnnxModel, graph: &OnnxExportGraph) {
+    let run = |executable: &crate::plan::OnnxExecutable| {
+        let input = Tensor::from_vec(vec![1, 1, 1, 4], vec![-3.0, -1.0, 2.0, 5.0]).unwrap();
+        let mut feed = FxHashMap::default();
+        feed.insert("x".to_string(), input);
+        run_onnx_model(executable, feed).unwrap()["y"]
+            .data()
+            .to_vec()
+    };
+
+    let fused = run(&OnnxLoader::from_model(model).build().unwrap());
+    let bytes = crate::exporter::export_onnx_model(graph, "yscv", "defused").unwrap();
+    let defused = run(&OnnxLoader::from_bytes(&bytes).build().unwrap());
+
+    assert_eq!(fused.len(), defused.len());
+    for (f, d) in fused.iter().zip(&defused) {
+        assert!((f - d).abs() < 1e-6, "fused {f} != defused {d}");
+    }
 }

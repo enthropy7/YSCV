@@ -39,9 +39,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use yscv_onnx::quantize::quantize_matmul_weights_int4_packed;
-use yscv_onnx::{
-    GenerateConfig, OnnxRunner, dump_runner_profile, generate, load_onnx_model_from_file,
-};
+use yscv_onnx::{GenerateConfig, OnnxLoader, OnnxRunner, dump_runner_profile, generate};
 use yscv_tensor::Tensor;
 
 #[derive(Debug, thiserror::Error)]
@@ -316,7 +314,7 @@ struct BenchSummary {
 
 fn run(args: Args) -> Result<(), CliError> {
     eprintln!("loading model {}…", args.model.display());
-    let mut model = load_onnx_model_from_file(&args.model)?;
+    let mut model = OnnxLoader::load(&args.model).decode()?;
     if let Some(group_size) = args.int4_group_size {
         eprintln!("packing MatMul/Gemm weights to symmetric INT4 (group_size={group_size})…");
         let packed = quantize_matmul_weights_int4_packed(&mut model, group_size)?;
@@ -326,10 +324,11 @@ fn run(args: Args) -> Result<(), CliError> {
             model.initializers.len()
         );
     }
+    let executable = OnnxLoader::from_model(&model).build()?;
     let runner = if args.threads == 0 {
-        OnnxRunner::new(&model)?
+        OnnxRunner::new(&executable)?
     } else {
-        OnnxRunner::with_threads(&model, args.threads)?
+        OnnxRunner::with_threads(&executable, args.threads)?
     };
     eprintln!("threads: {}", runner.num_threads());
 

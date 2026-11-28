@@ -216,8 +216,9 @@ API, pipelining, troubleshooting, performance numbers.
 
 Quick example:
 ```rust
-use yscv_onnx::{compile_mpsgraph_plan, run_mpsgraph_plan};
-let plan = compile_mpsgraph_plan(&model, &[("images", &sample)])?;
+use yscv_onnx::{OnnxLoader, compile_mpsgraph_plan, run_mpsgraph_plan};
+let executable = OnnxLoader::load("model.onnx").build()?;
+let plan = compile_mpsgraph_plan(&executable, &[("images", &sample)])?;
 let outputs = run_mpsgraph_plan(&plan, &[("images", bytes)])?;
 ```
 
@@ -232,8 +233,9 @@ toggle, troubleshooting.
 
 Quick example:
 ```rust
-use yscv_onnx::run_onnx_model_gpu;
-let outputs = run_onnx_model_gpu(&model, inputs)?;
+use yscv_onnx::{OnnxLoader, run_onnx_model_gpu};
+let executable = OnnxLoader::load("model.onnx").build()?;
+let outputs = run_onnx_model_gpu(&executable, inputs)?;
 ```
 
 Runtime flags:
@@ -505,7 +507,7 @@ use yscv_onnx::profile_onnx_model_cpu;
 //   0.42ms  [1,3,128,128] → [1,16,64,64]  k=[3,3] s=[2,2] via nhwc-padded/first-layer-rgb at stem
 //   0.10ms  [1,64,40,40]  → [1,64,40,40]  k=[3,3] s=[1,1] via dw-nhwc-padded/dw-avx512 at neck.dw
 //   0.31ms  [64,128]      → [64,96]                       via blocked-mr4 at head.proj   (MatMul)
-profile_onnx_model_cpu(&model, inputs)?;
+profile_onnx_model_cpu(&executable, inputs)?;
 ```
 
 Overhead is small (~1% per op) but leave it off in production — the

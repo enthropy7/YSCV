@@ -108,7 +108,7 @@ pub struct GpuExecPlan {
 /// Build a `GpuExecPlan` from a model graph.  This performs the exact same
 /// fusion pattern-matching as the inline loop, but stores the results so
 /// they don't need to be recomputed on every inference call.
-pub fn plan_gpu_execution(model: &OnnxModel) -> GpuExecPlan {
+pub fn plan_gpu_execution(model: &OnnxExecutable) -> GpuExecPlan {
     let nodes = &model.nodes;
 
     // ── Precompute tensor last-use index ────────────────────────────
@@ -383,7 +383,7 @@ fn gc_insert(gpu: &GpuBackend, gc: &mut GpuCache, name: String, gt: GpuTensor) {
 /// tensor chaining.  Intermediate results stay on GPU between operations,
 /// eliminating the per-op device sync that dominates naive GPU dispatch.
 pub fn run_onnx_model_gpu(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: FxHashMap<String, Tensor>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let gpu = GpuBackend::new()?;
@@ -395,7 +395,7 @@ pub fn run_onnx_model_gpu(
 /// pipeline compilation overhead (~20-40ms per run).
 pub fn run_onnx_model_gpu_with(
     gpu: &GpuBackend,
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: FxHashMap<String, Tensor>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     run_onnx_model_gpu_cached(gpu, model, inputs, &mut GpuWeightCache::new(), None)
@@ -410,7 +410,7 @@ pub fn run_onnx_model_gpu_with(
 /// Build a plan once with [`plan_gpu_execution`] and reuse it.
 pub fn run_onnx_model_gpu_cached(
     gpu: &GpuBackend,
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: FxHashMap<String, Tensor>,
     weight_cache: &mut GpuWeightCache,
     plan: Option<&GpuExecPlan>,
@@ -687,7 +687,7 @@ impl CompiledGpuPlan {
 /// - `plan` must be the precomputed execution plan for this model.
 pub fn compile_gpu_plan(
     gpu: &GpuBackend,
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     plan: &GpuExecPlan,
     weight_cache: &mut GpuWeightCache,
     input_name: &str,
@@ -1236,7 +1236,7 @@ fn dispatch(
 /// Uses cached weights and execution plan for realistic timings.
 /// Returns map of action_label → (total_ms, count).
 pub fn profile_onnx_model_gpu(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: FxHashMap<String, Tensor>,
 ) -> Result<FxHashMap<String, (f64, usize)>, OnnxError> {
     let gpu = GpuBackend::new()?;

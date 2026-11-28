@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** ONNX loading and execution now use an explicit builder and compiled artifact. `OnnxLoader::{load,from_bytes,from_model}` plus `.decode()` returns the canonical source `OnnxModel`; `.build()` returns the `OnnxExecutable` required by every CPU, GPU, and Metal execution API. The old `load_onnx_model*` functions and implicit model rebuilding are removed. IR optimization is enabled by default and can be disabled per build with `OptimizationLevel::Disabled`; `YSCV_ONNX_OPTIMIZE_OFF=1` applies only when no explicit level is selected. Internal pseudo-ops and runtime prepacks no longer overwrite decoded ONNX source, and optimized-source export defuses HardSwish and SiLU as well as Relu.
 - **Error enums no longer derive `PartialEq`/`Eq`** — `KernelError`,
   `AutogradError`, `OptimError`, `ModelError`, `ImgProcError`, `VideoError`,
   `DetectError`, `EvalError`, `OnnxError` and `RecognizeError`, so that they can

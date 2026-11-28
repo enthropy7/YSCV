@@ -40,8 +40,8 @@ use std::process::ExitCode;
 
 use serde::Deserialize;
 use yscv_onnx::{
-    CalibrationCollector, OnnxRunner, load_onnx_model_from_file, prune_unused_initializers,
-    rewrite_to_qdq, rewrite_to_qlinear, save_onnx_model_to_file, strip_qdq_within_fusion_chains,
+    CalibrationCollector, OnnxLoader, OnnxRunner, prune_unused_initializers, rewrite_to_qdq,
+    rewrite_to_qlinear, save_onnx_model_to_file, strip_qdq_within_fusion_chains,
 };
 use yscv_tensor::{Tensor, TensorError};
 
@@ -339,7 +339,7 @@ fn read_single_tensor_stream(name: &str, path: &PathBuf) -> Result<Vec<Tensor>, 
 
 fn run(args: Args) -> Result<(), CliError> {
     eprintln!("loading {}…", args.input.display());
-    let mut model = load_onnx_model_from_file(&args.input)?;
+    let mut model = OnnxLoader::load(&args.input).decode()?;
 
     let cal_path = if args.weights_only {
         None
@@ -357,7 +357,8 @@ fn run(args: Args) -> Result<(), CliError> {
             samples.len()
         );
         let collector = CalibrationCollector::new();
-        let runner = OnnxRunner::new(&model)?;
+        let executable = OnnxLoader::from_model(&model).build()?;
+        let runner = OnnxRunner::new(&executable)?;
         {
             let _scope = collector.scope();
             for (idx, sample) in samples.iter().enumerate() {

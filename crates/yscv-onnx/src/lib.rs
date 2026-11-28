@@ -30,14 +30,12 @@ pub use exporter::{
 };
 pub use generate::{GenerateConfig, generate};
 pub use ir::IrError;
-pub use loader::{
-    OnnxAttribute, OnnxModel, OnnxNode, OnnxTensor, load_onnx_model, load_onnx_model_from_file,
-    load_onnx_model_unoptimized,
-};
+pub use loader::{OnnxAttribute, OnnxLoader, OnnxModel, OnnxNode, OnnxTensor};
 pub use optimizer::{
     GraphCost, GraphCostDiff, GraphStats, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
     graph_stats, optimize_onnx_graph, strip_qdq_within_fusion_chains,
 };
+pub use plan::{OnnxExecutable, OptimizationLevel};
 pub use quantize::quantize_weights_int4;
 pub use quantize::{CalibrationCollector, CalibrationScope, MinMax};
 pub use quantize::{

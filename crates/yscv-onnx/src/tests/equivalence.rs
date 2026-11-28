@@ -13,10 +13,10 @@
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
-use super::super::loader::OnnxModel;
+use super::super::loader::{OnnxLoader, OnnxModel};
 // The harness compares a graph against a transform of *the same* graph, so the
 // baseline has to be the file as written — see the note in `tests/mod.rs`.
-use super::super::loader::load_onnx_model_unoptimized as load_onnx_model;
+use super::super::plan::OptimizationLevel;
 use super::super::runner::run_onnx_model;
 
 /// Serializes tests that mutate *or read* the process environment.
@@ -93,9 +93,10 @@ pub(in crate::tests) enum Tolerance {
 /// Runs `model_bytes` before and after `transform`, and asserts the outputs
 /// match within `tolerance`.
 ///
-/// Loads the model twice so the reference run cannot observe any mutation the
-/// transform makes. Rebuilds the runtime index afterwards, because passes
-/// deliberately leave that to their caller.
+/// Decodes the model twice so the reference run cannot observe any mutation the
+/// transform makes. Builds a fresh executable from the transformed source
+/// afterwards, because passes deliberately leave plan construction to their
+/// caller.
 ///
 /// `label` names the transformation in failure messages.
 pub(in crate::tests) fn assert_transform_preserves_numerics(
@@ -105,15 +106,21 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
     tolerance: Tolerance,
     transform: impl FnOnce(&mut OnnxModel),
 ) {
-    let reference_model =
-        load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: reference load: {e}"));
+    let reference_model = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: reference load: {e}"));
     let reference = run_onnx_model(&reference_model, feed.clone())
         .unwrap_or_else(|e| panic!("{label}: reference run: {e}"));
 
-    let mut transformed_model =
-        load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: transformed load: {e}"));
+    let mut transformed_model = OnnxLoader::from_bytes(model_bytes)
+        .decode()
+        .unwrap_or_else(|e| panic!("{label}: transformed load: {e}"));
     transform(&mut transformed_model);
-    transformed_model.rebuild_runtime_index();
+    let transformed_model = OnnxLoader::from_model(&transformed_model)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: transformed build: {e}"));
     let transformed = run_onnx_model(&transformed_model, feed.clone())
         .unwrap_or_else(|e| panic!("{label}: transformed run: {e}"));
 
@@ -125,8 +132,8 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
 ///
 /// The counterpart of [`assert_transform_preserves_numerics`] for changes that
 /// live in plan construction rather than in a graph pass. Those changes are not
-/// expressible as a transform on `OnnxModel` — they happen during
-/// `rebuild_runtime_index`, so the only way to get an unfused reference is to
+/// expressible as a transform on `OnnxModel` — they happen when `build`
+/// constructs the plan, so the only way to get an unfused reference is to
 /// build the plan twice under different switches.
 ///
 /// Worth routing plan tests through even when they already check the plan's
@@ -150,18 +157,23 @@ pub(in crate::tests) fn assert_plan_fusion_preserves_numerics(
     tolerance: Tolerance,
     kill_switch: &str,
 ) {
-    let fused = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: fused load: {e}"));
+    let fused = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: fused load: {e}"));
 
     // SAFETY: `set_var`/`remove_var` are not thread-safe and `cargo test` runs
     // tests concurrently. The `EnvGuard` the caller passed proves this thread
     // has exclusive use of the environment for the whole test, so no other test
     // can observe the variable while it is set. It is cleared before returning,
-    // including on a failed load, since the result is only unwrapped afterwards.
+    // including on a failed build, since the result is only unwrapped afterwards.
     #[allow(unsafe_code)]
     unsafe {
         std::env::set_var(kill_switch, "1");
     }
-    let unfused = load_onnx_model(model_bytes);
+    let unfused = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build();
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var(kill_switch);
@@ -235,12 +247,20 @@ pub(in crate::tests) fn assert_transform_is_noop(
     feed: &FxHashMap<String, Tensor>,
     transform: impl FnOnce(&mut OnnxModel),
 ) {
-    let before = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: load: {e}"));
+    let before = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: load: {e}"));
     let before_ops: Vec<String> = before.nodes.iter().map(|n| n.op_type.clone()).collect();
 
-    let mut after = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: load: {e}"));
+    let mut after = OnnxLoader::from_bytes(model_bytes)
+        .decode()
+        .unwrap_or_else(|e| panic!("{label}: load: {e}"));
     transform(&mut after);
-    after.rebuild_runtime_index();
+    let after = OnnxLoader::from_model(&after)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: build: {e}"));
     let after_ops: Vec<String> = after.nodes.iter().map(|n| n.op_type.clone()).collect();
 
     assert_eq!(

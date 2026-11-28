@@ -1,7 +1,7 @@
 use rustc_hash::FxHashMap;
 pub(crate) use rustc_hash::FxHashSet;
 
-use crate::shape_infer::{ShapeMap, TensorShape, infer_shapes};
+use crate::shape_infer::{ShapeMap, TensorShape, infer_executable_shapes};
 
 pub(crate) use yscv_kernels::{
     BatchNorm2dParams, add as kernel_add, avg_pool2d_nhwc, batch_norm2d_nhwc, matmul_2d,
@@ -12,7 +12,8 @@ pub(crate) use yscv_tensor::{DType, Tensor};
 
 pub(crate) use crate::attr::Attr;
 pub(crate) use crate::error::OnnxError;
-use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
+use crate::loader::{OnnxAttribute, OnnxNode};
+pub(crate) use crate::plan::OnnxExecutable;
 pub(crate) use crate::plan::{ConvWeightLayout, NodeKind};
 
 mod compare;
@@ -71,14 +72,14 @@ pub(crate) struct ShapeSpecialization {
 }
 
 fn shape_specialization(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     input_shapes: Vec<(String, Vec<usize>)>,
 ) -> ShapeSpecialization {
     let shapes: ShapeMap = input_shapes
         .iter()
         .map(|(name, shape)| (name.clone(), TensorShape::known(shape.clone())))
         .collect();
-    let inferred = infer_shapes(model, &shapes);
+    let inferred = infer_executable_shapes(model, &shapes);
     let reshape_shapes = model
         .nodes
         .iter()
@@ -99,7 +100,7 @@ fn shape_specialization(
 }
 
 fn runtime_input_shapes(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     env: &TensorEnv<'_, '_>,
 ) -> Option<Vec<(String, Vec<usize>)>> {
     model
@@ -118,7 +119,7 @@ fn runtime_input_shapes(
 /// By default uses all CPU cores (like ONNX Runtime's `intra_op_num_threads`).
 /// Use `with_threads(1)` for single-threaded execution.
 pub struct OnnxRunner<'m> {
-    model: &'m OnnxModel,
+    model: &'m OnnxExecutable,
     pool: Option<std::sync::Arc<rayon::ThreadPool>>,
     shape_specialization: std::sync::OnceLock<ShapeSpecialization>,
     /// Pool-agnostic scope for kernels migrated to `&dyn ParallelScope`.
@@ -220,7 +221,7 @@ fn build_parallel_scope(
 
 impl<'m> OnnxRunner<'m> {
     /// Create a runner using all CPU cores (default, matches ORT behavior).
-    pub fn new(model: &'m OnnxModel) -> Result<Self, OnnxError> {
+    pub fn new(model: &'m OnnxExecutable) -> Result<Self, OnnxError> {
         let scope = build_parallel_scope(None, rayon::current_num_threads());
         Ok(Self {
             model,
@@ -243,7 +244,7 @@ impl<'m> OnnxRunner<'m> {
     ///   latency regressions from SMT oversubscription on symmetric CPUs,
     ///   explicit values above physical core count are capped unless
     ///   `YSCV_ALLOW_SMT=1` is set.
-    pub fn with_threads(model: &'m OnnxModel, threads: usize) -> Result<Self, OnnxError> {
+    pub fn with_threads(model: &'m OnnxExecutable, threads: usize) -> Result<Self, OnnxError> {
         if threads == 1 {
             let scope = build_parallel_scope(None, 1);
             return Ok(Self {
@@ -433,7 +434,7 @@ impl<'m> OnnxRunner<'m> {
 ///
 /// Returns a map of output-name -> tensor for the graph's declared outputs.
 pub fn run_onnx_model(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: FxHashMap<String, Tensor>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let mut env = TensorEnv::from_model(model);
@@ -452,7 +453,7 @@ pub fn run_onnx_model(
 /// as read-only sources; if an op needs to mutate such tensor internally, the
 /// runtime performs clone-on-write into environment slots.
 pub fn run_onnx_model_borrowed(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: &FxHashMap<String, Tensor>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let env = TensorEnv::from_model_with_inputs(model, Some(RuntimeInputs::Map(inputs)));
@@ -465,7 +466,7 @@ pub fn run_onnx_model_borrowed(
 /// This is zero-copy at the API boundary. Runtime treats inputs as read-only and
 /// clones on write only when mutation is required internally.
 pub fn run_onnx_model_borrowed_slice(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: &[(&str, &Tensor)],
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     let env = TensorEnv::from_model_with_inputs(model, Some(RuntimeInputs::Slice(inputs)));
@@ -485,14 +486,14 @@ fn tensor_use_count(
 }
 
 fn run_onnx_model_inner(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     env: TensorEnv<'_, '_>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
     run_onnx_model_inner_specialized(model, env, None)
 }
 
 fn run_onnx_model_inner_specialized(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     env: TensorEnv<'_, '_>,
     specialization: Option<&ShapeSpecialization>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {
@@ -503,7 +504,11 @@ fn run_onnx_model_inner_specialized(
 }
 
 #[inline]
-fn build_output_id_mask(model: &OnnxModel, env: &TensorEnv<'_, '_>, min_len: usize) -> Vec<bool> {
+fn build_output_id_mask(
+    model: &OnnxExecutable,
+    env: &TensorEnv<'_, '_>,
+    min_len: usize,
+) -> Vec<bool> {
     let mut mask = vec![false; min_len.max(1)];
     for name in &model.outputs {
         if let Some(id) = env.resolve_id(name) {
@@ -517,7 +522,10 @@ fn build_output_id_mask(model: &OnnxModel, env: &TensorEnv<'_, '_>, min_len: usi
 }
 
 #[inline]
-fn prepacked_for_conv_node(model: &OnnxModel, node_idx: usize) -> Option<&yscv_kernels::PackedB> {
+fn prepacked_for_conv_node(
+    model: &OnnxExecutable,
+    node_idx: usize,
+) -> Option<&yscv_kernels::PackedB> {
     use std::sync::OnceLock;
     static DISABLED: OnceLock<bool> = OnceLock::new();
     if *DISABLED.get_or_init(|| std::env::var_os("YSCV_NO_PREPACKED_BY_ID").is_some()) {

@@ -129,13 +129,15 @@ pub fn dispatcher_for(task: &InferenceTask) -> Result<Box<dyn AcceleratorDispatc
     }
 }
 
-/// Load a task's ONNX model, tagging a failure with the task and path.
-fn load_onnx(task: &InferenceTask) -> Result<yscv_onnx::OnnxModel, Error> {
-    yscv_onnx::load_onnx_model_from_file(&task.model_path).map_err(|source| Error::LoadModel {
-        task: task.name.clone(),
-        path: task.model_path.clone(),
-        source: Box::new(source),
-    })
+/// Build a task's ONNX executable, tagging a failure with the task and path.
+fn load_onnx(task: &InferenceTask) -> Result<yscv_onnx::OnnxExecutable, Error> {
+    yscv_onnx::OnnxLoader::load(&task.model_path)
+        .build()
+        .map_err(|source| Error::LoadModel {
+            task: task.name.clone(),
+            path: task.model_path.clone(),
+            source: Box::new(source),
+        })
 }
 
 // ---- CPU dispatcher -------------------------------------------------
@@ -145,7 +147,7 @@ fn load_onnx(task: &InferenceTask) -> Result<yscv_onnx::OnnxModel, Error> {
 /// declared input shape (row-major, matching `Tensor::data()` layout).
 struct CpuDispatcher {
     label: String,
-    model: yscv_onnx::OnnxModel,
+    model: yscv_onnx::OnnxExecutable,
     /// Per-input shape snapshot (from the model's `input_info`), so
     /// `dispatch` can reshape raw bytes into proper tensors.
     input_shapes: FxHashMap<String, Vec<usize>>,
@@ -154,7 +156,7 @@ struct CpuDispatcher {
 impl CpuDispatcher {
     fn new(task: &InferenceTask) -> Result<Self, Error> {
         let model = load_onnx(task)?;
-        // `OnnxModel::inputs` is a `Vec<String>` of declared input
+        // The executable's declared inputs are a `Vec<String>` of input
         // names. Shapes live per-initializer attributes; for a first
         // cut we leave `input_shapes` empty and let `dispatch` require
         // exact input-size match against whatever the caller passes.
@@ -497,7 +499,7 @@ impl AcceleratorDispatcher for RknnMatmulDispatcher {
 #[cfg(all(feature = "metal-backend", target_os = "macos"))]
 struct MetalDispatcher {
     label: String,
-    model: yscv_onnx::OnnxModel,
+    model: yscv_onnx::OnnxExecutable,
     /// Plan is lazily compiled on first `dispatch` (we need a concrete
     /// input shape for the MPSGraph placeholder, and the config doesn't
     /// carry shape hints yet). Subsequent calls reuse the plan.
@@ -620,7 +622,7 @@ impl AcceleratorDispatcher for MetalDispatcher {
 #[cfg(feature = "gpu")]
 struct GpuDispatcher {
     label: String,
-    model: yscv_onnx::OnnxModel,
+    model: yscv_onnx::OnnxExecutable,
 }
 
 #[cfg(feature = "gpu")]

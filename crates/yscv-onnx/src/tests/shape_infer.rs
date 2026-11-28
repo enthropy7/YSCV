@@ -4,7 +4,7 @@ use yscv_tensor::Tensor;
 
 use super::{build_minimal_onnx_model, make_ints_attr};
 use crate::proto::onnx;
-use crate::{Dim, TensorShape, graph_cost, infer_shapes, load_onnx_model};
+use crate::{Dim, OnnxLoader, TensorShape, graph_cost, infer_shapes};
 
 fn tensor_proto(name: &str, shape: Vec<i64>, data: Vec<f32>) -> onnx::TensorProto {
     onnx::TensorProto {
@@ -29,7 +29,7 @@ fn infers_conv_shape_and_cost() {
         ],
         ..Default::default()
     };
-    let model = load_onnx_model(&build_minimal_onnx_model(
+    let model = OnnxLoader::from_bytes(&build_minimal_onnx_model(
         vec![node],
         vec![tensor_proto(
             "w",
@@ -39,6 +39,7 @@ fn infers_conv_shape_and_cost() {
         vec!["x"],
         vec!["y"],
     ))
+    .decode()
     .unwrap();
     let input_shapes =
         FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 32, 32]))]);
@@ -75,7 +76,7 @@ fn infers_reshape_and_matmul_shapes() {
         output: vec!["y".into()],
         ..Default::default()
     };
-    let model = load_onnx_model(&build_minimal_onnx_model(
+    let model = OnnxLoader::from_bytes(&build_minimal_onnx_model(
         vec![reshape, matmul],
         vec![
             tensor_proto("shape", vec![2], vec![1.0, 48.0]),
@@ -84,6 +85,7 @@ fn infers_reshape_and_matmul_shapes() {
         vec!["x"],
         vec!["y"],
     ))
+    .decode()
     .unwrap();
     let input_shapes =
         FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 4, 4]))]);
@@ -111,12 +113,13 @@ fn reports_unknowns_without_guessing() {
         output: vec!["y".into()],
         ..Default::default()
     };
-    let model = load_onnx_model(&build_minimal_onnx_model(
+    let model = OnnxLoader::from_bytes(&build_minimal_onnx_model(
         vec![node],
         vec![],
         vec!["x"],
         vec!["y"],
     ))
+    .decode()
     .unwrap();
     let input_shapes =
         FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 8, 8]))]);
@@ -139,12 +142,13 @@ fn infers_shapes_from_initializer_inputs() {
         ..Default::default()
     };
     let init = Tensor::from_vec(vec![2], vec![1.0, -1.0]).unwrap();
-    let model = load_onnx_model(&build_minimal_onnx_model(
+    let model = OnnxLoader::from_bytes(&build_minimal_onnx_model(
         vec![node],
         vec![tensor_proto("x", vec![2], init.data().to_vec())],
         vec!["x"],
         vec!["y"],
     ))
+    .decode()
     .unwrap();
 
     let inferred = infer_shapes(&model, &FxHashMap::default());
@@ -163,12 +167,13 @@ fn global_average_pool_cost_reads_spatial_from_inferred_shape() {
         output: vec!["y".into()],
         ..Default::default()
     };
-    let model = load_onnx_model(&build_minimal_onnx_model(
+    let model = OnnxLoader::from_bytes(&build_minimal_onnx_model(
         vec![node],
         vec![],
         vec!["x"],
         vec!["y"],
     ))
+    .decode()
     .unwrap();
     let input_shapes =
         FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 8, 4, 4]))]);

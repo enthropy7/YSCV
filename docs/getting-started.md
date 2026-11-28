@@ -110,11 +110,11 @@ wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx
 
 ```rust
 use yscv::prelude::*;
-use yscv_onnx::{load_onnx_model_from_file, run_onnx_model};
+use yscv_onnx::{OnnxLoader, run_onnx_model};
 use std::collections::HashMap;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("yolov8n.onnx")?;
+    let executable = OnnxLoader::load("yolov8n.onnx").build()?;
     let img = imread("photo.jpg")?;
 
     // YOLO expects 1×3×640×640 NCHW f32 normalised to [0,1].
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut inputs = HashMap::new();
     inputs.insert("images".to_string(), nchw);
 
-    let outputs = run_onnx_model(&model, inputs)?;
+    let outputs = run_onnx_model(&executable, inputs)?;
     let detections = &outputs["output0"];
     println!("Output shape: {:?}", detections.shape());
     Ok(())
@@ -151,7 +151,7 @@ yscv = { version = "0.2.0", features = ["metal-backend"] }
 ```rust
 use yscv_onnx::{compile_mpsgraph_plan, run_mpsgraph_plan};
 
-let plan = compile_mpsgraph_plan(&model, &[("images", &nchw)])?;
+let plan = compile_mpsgraph_plan(&executable, &[("images", &nchw)])?;
 let outputs = run_mpsgraph_plan(&plan, &[("images", nchw.data())])?;
 ```
 
@@ -249,7 +249,7 @@ YOLOv8/v11 detection with bounding-box decode + NMS:
 use yscv::detect::{detect_yolov8_from_rgb, yolov8_coco_config, non_max_suppression};
 
 let img = imread("scene.jpg")?;
-let dets = detect_yolov8_from_rgb(&img, &model, &yolov8_coco_config())?;
+let dets = detect_yolov8_from_rgb(&img, &executable, &yolov8_coco_config())?;
 let kept = non_max_suppression(&dets, 0.5);
 for d in &kept {
     println!("{}: {:.2}% at {:?}", d.class_name, d.score * 100.0, d.bbox);

@@ -9,7 +9,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::time::Instant;
 
 use rustc_hash::FxHashMap;
-use yscv_onnx::{load_onnx_model_from_file, profile_onnx_model_cpu, run_onnx_model};
+use yscv_onnx::{OnnxLoader, profile_onnx_model_cpu, run_onnx_model};
 use yscv_tensor::Tensor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,9 +22,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iterations: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
 
     println!("Loading model: {model_path}");
-    let model = load_onnx_model_from_file(model_path)?;
+    let model = OnnxLoader::load(model_path).decode()?;
     let input_name = model.inputs.first().cloned().unwrap();
     let output_name = model.outputs.first().cloned().unwrap();
+    let exe = OnnxLoader::from_model(&model).build()?;
     println!("Input: {input_name}, Output: {output_name}");
 
     // VballNetGridV1b: input [1, 9, 432, 768]
@@ -35,14 +36,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Profiling...");
         let mut pinputs = FxHashMap::default();
         pinputs.insert(input_name.clone(), input.clone());
-        let _ = profile_onnx_model_cpu(&model, pinputs);
+        let _ = profile_onnx_model_cpu(&exe, pinputs);
     }
 
     // Warmup
     println!("Warmup...");
     let mut inputs = FxHashMap::default();
     inputs.insert(input_name.clone(), input.clone());
-    let _ = run_onnx_model(&model, inputs)?;
+    let _ = run_onnx_model(&exe, inputs)?;
 
     // Benchmark
     println!("Running {iterations} iterations...");
@@ -51,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input.clone());
         let t0 = Instant::now();
-        let _ = run_onnx_model(&model, inputs)?;
+        let _ = run_onnx_model(&exe, inputs)?;
         let elapsed = t0.elapsed();
         times.push(elapsed.as_secs_f64() * 1000.0);
         println!("  iter {}: {:.1} ms", i + 1, times[i]);

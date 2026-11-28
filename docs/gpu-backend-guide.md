@@ -21,14 +21,14 @@ yscv-tensor = "0.1"
 ```
 
 ```rust
-use yscv_onnx::{load_onnx_model_from_file, run_onnx_model_gpu};
+use yscv_onnx::{OnnxLoader, run_onnx_model_gpu};
 use std::collections::HashMap;
 
-let model = load_onnx_model_from_file("yolov8n.onnx")?;
+let executable = OnnxLoader::load("yolov8n.onnx").build()?;
 let mut inputs = HashMap::new();
 inputs.insert("images".to_string(), input_tensor);
 
-let outputs = run_onnx_model_gpu(&model, inputs)?;
+let outputs = run_onnx_model_gpu(&executable, inputs)?;
 ```
 
 That's the simplest path — one-shot GPU inference.
@@ -62,7 +62,7 @@ caching — see [Compiled plans](#compiled-plans).
 │   Your ONNX model   │
 └──────────┬──────────┘
            │
-           │ run_onnx_model_gpu(&model, inputs)
+           │ run_onnx_model_gpu(&executable, inputs)
            │   or
            │ compile_gpu_plan_f16 + run_compiled_gpu_f16_fused
            ↓
@@ -98,18 +98,18 @@ caching — see [Compiled plans](#compiled-plans).
 ## Simple inference (one-shot path)
 
 ```rust
-use yscv_onnx::{load_onnx_model_from_file, run_onnx_model_gpu};
+use yscv_onnx::{OnnxLoader, run_onnx_model_gpu};
 use yscv_tensor::Tensor;
 use std::collections::HashMap;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("yolov8n.onnx")?;
+    let executable = OnnxLoader::load("yolov8n.onnx").build()?;
 
     let input = Tensor::zeros(vec![1, 3, 640, 640])?;
     let mut inputs = HashMap::new();
     inputs.insert("images".to_string(), input);
 
-    let outputs = run_onnx_model_gpu(&model, inputs)?;
+    let outputs = run_onnx_model_gpu(&executable, inputs)?;
     let detections = outputs.get("output0").unwrap();
     println!("shape: {:?}", detections.shape());
     Ok(())
@@ -128,16 +128,16 @@ that reuses weights + shader pipelines:
 
 ```rust
 use yscv_onnx::{
-    load_onnx_model_from_file,
+    OnnxLoader,
     compile_gpu_plan_f16, run_compiled_gpu_f16_fused,
     GpuWeightCache,
 };
 
-let model = load_onnx_model_from_file("yolov8n.onnx")?;
+let executable = OnnxLoader::load("yolov8n.onnx").build()?;
 
 // Weights uploaded to GPU once, f16-compressed, cached for the plan's lifetime.
 let mut weight_cache = GpuWeightCache::new();
-let plan = compile_gpu_plan_f16(&model, &input_shapes, &mut weight_cache)?;
+let plan = compile_gpu_plan_f16(&executable, &input_shapes, &mut weight_cache)?;
 
 // Hot loop — weights stay on GPU, only inputs flow in.
 loop {
@@ -347,7 +347,7 @@ op through the CPU runner and pays one GPU↔CPU copy. Check with:
 
 ```rust
 use yscv_onnx::{plan_gpu_execution, GpuExecAction};
-let plan = plan_gpu_execution(&model, &inputs)?;
+let plan = plan_gpu_execution(&executable);
 for action in &plan.actions {
     match action {
         GpuExecAction::Gpu(op) => println!("✓ GPU: {}", op.op_type),
@@ -430,7 +430,7 @@ can often work around driver bugs with alternative shader paths.
 Most common cause: GPU↔CPU copy per frame. Use the compiled f16 plan:
 
 ```rust
-let plan = compile_gpu_plan_f16(&model, &shapes, &mut weight_cache)?;
+let plan = compile_gpu_plan_f16(&executable, &shapes, &mut weight_cache)?;
 // Now weights stay on GPU across calls.
 ```
 

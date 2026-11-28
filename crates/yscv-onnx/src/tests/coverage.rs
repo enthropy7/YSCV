@@ -190,7 +190,7 @@ fn quantize_dequantize_round_trip_is_close_to_identity() {
         vec!["x", "s", "z"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let _ = scale; // explicitly unused: initializer is the source of truth
@@ -222,7 +222,7 @@ fn dynamic_quantize_linear_three_outputs() {
     };
     let bytes =
         build_minimal_onnx_model(vec![node], vec![], vec!["x"], vec!["y", "y_scale", "y_zp"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input.clone());
     let result = run_onnx_model(&model, feed).unwrap();
@@ -291,7 +291,7 @@ fn qlinear_conv_dequant_conv_quant_round_trip() {
         vec!["x", "x_s", "x_zp", "w", "w_s", "w_zp", "y_s", "y_zp"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
@@ -338,7 +338,7 @@ fn qlinear_matmul_dequant_matmul_quant_round_trip() {
         vec!["a", "a_s", "a_zp", "b", "b_s", "b_zp", "y_s", "y_zp"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
@@ -382,7 +382,7 @@ fn matmul_integer_treats_inputs_as_offset_quantized_int_matmul() {
         vec!["a", "b", "a_zp", "b_zp"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     // After zero-point subtraction A becomes [[0,1],[2,3]], B is identity.
     // Result: [[0,1],[2,3]].
@@ -571,7 +571,7 @@ fn resize_nearest_neighbour_doubles_spatial() {
     };
     let bytes =
         build_minimal_onnx_model(vec![node], vec![sizes_init], vec!["x", "sizes"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
@@ -600,7 +600,7 @@ fn upsample_dispatches_through_resize() {
     };
     let bytes =
         build_minimal_onnx_model(vec![node], vec![sizes_init], vec!["x", "sizes"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
@@ -626,7 +626,7 @@ fn conv_transpose_doubles_spatial_with_stride2() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![weight], vec!["x", "w"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
     let result = run_onnx_model(&model, feed).unwrap();
@@ -1553,7 +1553,7 @@ fn conv_integer_treats_inputs_as_offset_quantized_int_conv() {
         vec!["x", "w", "x_zp", "w_zp"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     // After x_zp subtraction the input is [0,1,2,3], 1×1 identity conv yields
     // exactly that.

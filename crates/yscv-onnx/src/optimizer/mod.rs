@@ -24,6 +24,7 @@ use crate::{
 };
 
 pub use analyze_nchwc::analyze_nchwc;
+pub(crate) use analyze_nchwc::analyze_nchwc_nodes;
 /// Re-exported so tests can drive these passes on their own, without the
 /// string-based pipeline reordering the graph first.
 pub(crate) use eliminate_squeeze_unsqueeze_pairs::EliminateSqueezeUnsqueezePairs;
@@ -49,10 +50,9 @@ pub use strip_qdq_within_fusion_chains::strip_qdq_within_fusion_chains;
 /// Note the distinction that draws: a node the evaluator declines is *not
 /// foldable* and is skipped silently. Only a structurally broken graph is an
 /// error.
-fn run_ir_pipeline(model: &mut OnnxModel) -> Result<(), OnnxError> {
-    let mut graph = model.to_ir();
-    PassManager::new(pipeline()).run(&mut graph)?;
-    model.apply_ir(&graph);
+pub(crate) fn optimize_ir(graph: &mut crate::ir::Graph) -> Result<(), OnnxError> {
+    PassManager::new(pipeline()).run(graph)?;
+    retarget_qconv_output_scale::run(graph);
     Ok(())
 }
 
@@ -116,13 +116,12 @@ fn pipeline() -> Vec<Box<dyn Pass>> {
 /// sit rather than needing them adjacent — which is what lets the pipeline run
 /// to a fixpoint instead of depending on a hand-tuned order.
 ///
-/// The runtime index is rebuilt once here, after every pass has run. Individual
-/// passes must not rebuild it themselves — doing so re-runs plan construction
-/// and weight prepacking once per pass.
+/// This transforms only the source model. Executable construction lowers and
+/// plans the resulting graph separately.
 pub fn optimize_onnx_graph(model: &mut OnnxModel) -> Result<(), OnnxError> {
-    run_ir_pipeline(model)?;
-    retarget_qconv_output_scale::run(model);
-    model.rebuild_runtime_index();
+    let mut graph = model.to_ir();
+    optimize_ir(&mut graph)?;
+    model.apply_ir(&graph);
 
     if std::env::var("YSCV_NCHWC").as_deref() == Ok("on") {
         let stats = analyze_nchwc(model);

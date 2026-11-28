@@ -6,21 +6,21 @@ How to run ONNX models with yscv — CPU, Metal per-op, and MPSGraph.
 
 ```rust
 use std::collections::HashMap;
-use yscv_onnx::{load_onnx_model_from_file, run_onnx_model};
+use yscv_onnx::{OnnxLoader, run_onnx_model};
 use yscv_tensor::Tensor;
 
-let model = load_onnx_model_from_file("model.onnx")?;
-let input_name = model.inputs[0].clone();
+let executable = OnnxLoader::load("model.onnx").build()?;
+let input_name = executable.input_names()[0].clone();
 
 let input = Tensor::zeros(vec![1, 3, 640, 640])?;
 let mut inputs = HashMap::new();
 inputs.insert(input_name, input);
 
-let outputs = run_onnx_model(&model, inputs)?;
+let outputs = run_onnx_model(&executable, inputs)?;
 ```
 
 CPU inference is fully optimized by default:
-- **Graph optimizer**: Dropout removal, Conv+BatchNormalization folding, constant folding, Conv+Relu fusion and the rest of the pipeline run as part of `load_onnx_model` — there is no separate optimize step to remember. `YSCV_ONNX_OPTIMIZE_OFF=1` skips it; `load_onnx_model_unoptimized` loads the file's own graph for inspection
+- **Explicit compilation**: `OnnxLoader::build()` lowers the canonical source graph through IR, runs the optimizer by default, then constructs the execution plan and prepacked weights. Use `.optimization_level(OptimizationLevel::Disabled)` to skip IR passes and QConv scale retargeting while retaining plan-level fusion and kernel selection. `YSCV_ONNX_OPTIMIZE_OFF=1` applies only when no explicit level is selected. Use `.decode()` instead when inspecting, mutating, or exporting standard ONNX source.
 - **Multi-threaded**: All ops above 262K elements use rayon parallelism automatically
 - **SIMD**: NEON (aarch64), AVX (x86_64), SSE (x86) — runtime detected, no flags needed
 - **BLAS**: Accelerate (macOS) or OpenBLAS (Linux) for matmul and standard conv
@@ -48,22 +48,22 @@ Zero-allocation hot path: `MPSGraphTensorData` objects and their NSArray wrapper
 ```rust
 use yscv_onnx::{
     compile_mpsgraph_plan, run_mpsgraph_plan,
-    load_onnx_model_from_file,
+    OnnxLoader,
 };
 use yscv_tensor::Tensor;
 
-let model = load_onnx_model_from_file("model.onnx")?;
-let input_name = model.inputs[0].clone();
+let executable = OnnxLoader::load("model.onnx").build()?;
+let input_name = "images";
 let input_tensor = Tensor::zeros(vec![1, 3, 640, 640])?;
 
 // Compile (one-time cost, ~10-80ms). `inputs` is a slice of
 // (name, tensor) pairs — one entry per ONNX graph input.
-let plan = compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input_tensor)])?;
+let plan = compile_mpsgraph_plan(&executable, &[(input_name, &input_tensor)])?;
 
 // Run — each input as a named raw f32 slice. Order doesn't matter;
 // lookup is by name. Outputs come back as a HashMap.
 let input_data = vec![0.5f32; 1 * 3 * 640 * 640];
-let outputs = run_mpsgraph_plan(&plan, &[(input_name.as_str(), input_data.as_slice())])?;
+let outputs = run_mpsgraph_plan(&plan, &[(input_name, input_data.as_slice())])?;
 for (name, tensor) in &outputs {
     println!("{}: {:?}", name, tensor.shape());
 }
@@ -110,14 +110,14 @@ MPSGraph supports: Conv (including depthwise), Relu, Sigmoid, Exp, Identity, Con
 Per-op Metal compiles the ONNX graph into a sequence of `MetalOp`s dispatched via Metal command buffers. Use this when MPSGraph doesn't support all ops in your model (e.g., dynamic reshape chains in attention blocks).
 
 ```rust
-use yscv_onnx::{compile_metal_plan, run_metal_plan, load_onnx_model_from_file};
+use yscv_onnx::{OnnxLoader, compile_metal_plan, run_metal_plan};
 use yscv_tensor::Tensor;
 
-let model = load_onnx_model_from_file("model.onnx")?;
+let executable = OnnxLoader::load("model.onnx").build()?;
 let input_tensor = Tensor::zeros(vec![1, 3, 640, 640])?;
 
 // Compile: builds fused Metal command buffer
-let plan = compile_metal_plan(&model, "images", &input_tensor)?;
+let plan = compile_metal_plan(&executable, "images", &input_tensor)?;
 println!("Compiled: {} ops", plan.ops_count());
 
 // Run: input as raw f32 slice

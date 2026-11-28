@@ -9,10 +9,11 @@ use crate::runner::{TensorEnv, execute_node_cpu_for_metal_compile};
 use yscv_kernels::metal_backend::metal_conv::MetalInference;
 
 use crate::error::OnnxError;
-use crate::loader::{OnnxModel, OnnxNode};
-use crate::shape_infer::{ShapeMap, TensorShape, infer_shapes};
+use crate::loader::OnnxNode;
+use crate::plan::OnnxExecutable;
+use crate::shape_infer::{ShapeMap, TensorShape, infer_executable_shapes};
 
-fn can_skip_cpu_shape_discovery(model: &OnnxModel, shapes: &ShapeMap) -> bool {
+fn can_skip_cpu_shape_discovery(model: &OnnxExecutable, shapes: &ShapeMap) -> bool {
     model.nodes.iter().all(|node| {
         matches!(
             node.op_type.as_str(),
@@ -45,7 +46,7 @@ fn can_skip_cpu_shape_discovery(model: &OnnxModel, shapes: &ShapeMap) -> bool {
 /// and records dispatch operations. Does its own fusion (Conv+SiLU, Op+Relu, etc.)
 /// without depending on the wgpu-based GpuExecPlan.
 pub fn compile_metal_plan(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     input_name: &str,
     input_tensor: &yscv_tensor::Tensor,
 ) -> Result<MetalPlan, OnnxError> {
@@ -62,7 +63,7 @@ pub fn compile_metal_plan(
         input_name.to_string(),
         TensorShape::known(input_tensor.shape().to_vec()),
     )]);
-    let inferred = infer_shapes(model, &input_shapes);
+    let inferred = infer_executable_shapes(model, &input_shapes);
     // A supported, fully-known graph needs shapes but not a CPU execution. Keep
     // the existing CPU walk for every other graph because fallback nodes may
     // need their concrete values, not merely their output dimensions.

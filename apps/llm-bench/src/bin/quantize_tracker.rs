@@ -44,9 +44,8 @@ use yscv_onnx::quantize::{
     rewrite_to_qdq, rewrite_to_qlinear,
 };
 use yscv_onnx::{
-    OnnxRunner, export_onnx_model_to_file, load_onnx_model, load_onnx_model_from_file,
-    load_onnx_model_unoptimized, onnx_model_to_export_graph, quant_runtime_stats,
-    reset_quant_runtime_stats, strip_qdq_within_fusion_chains,
+    OnnxLoader, OnnxRunner, export_onnx_model_to_file, onnx_model_to_export_graph,
+    quant_runtime_stats, reset_quant_runtime_stats, strip_qdq_within_fusion_chains,
 };
 use yscv_tensor::Tensor;
 
@@ -445,9 +444,13 @@ fn run(args: Args) -> Result<(), String> {
     let inputs = parse_shapes(&args.shape_spec)?;
 
     eprintln!("loading {}…", args.model);
-    let model_fp32 =
-        load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load fp32: {e}"))?;
-    let runner_fp32 = OnnxRunner::new(&model_fp32).map_err(|e| format!("runner fp32: {e}"))?;
+    let model_fp32 = OnnxLoader::load(Path::new(&args.model))
+        .decode()
+        .map_err(|e| format!("load fp32: {e}"))?;
+    let exe_fp32 = OnnxLoader::from_model(&model_fp32)
+        .build()
+        .map_err(|e| format!("build fp32: {e}"))?;
+    let runner_fp32 = OnnxRunner::new(&exe_fp32).map_err(|e| format!("runner fp32: {e}"))?;
 
     let calibration_samples = if let Some(spec) = args.calibration_jsonl.as_ref() {
         let mut samples = read_jsonl_samples(spec, &inputs)?;
@@ -509,8 +512,9 @@ fn run(args: Args) -> Result<(), String> {
             QuantFormat::QLinear => "QLinear",
         }
     );
-    let mut model_qdq =
-        load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load q: {e}"))?;
+    let mut model_qdq = OnnxLoader::load(Path::new(&args.model))
+        .decode()
+        .map_err(|e| format!("load q: {e}"))?;
     match args.format {
         QuantFormat::Qdq => rewrite_to_qdq(&mut model_qdq, &stats, &args.keep_fp32)
             .map_err(|e| format!("rewrite_to_qdq: {e}"))?,
@@ -532,6 +536,7 @@ fn run(args: Args) -> Result<(), String> {
         }
     }
 
+    let mut reloaded_exe = None;
     if let Some(output_path) = args.output.as_ref() {
         eprintln!(
             "saving {} model to {output_path}…",
@@ -554,17 +559,22 @@ fn run(args: Args) -> Result<(), String> {
         )
         .map_err(|e| format!("save: {e}"))?;
         eprintln!("reloading quantized model to verify protobuf round-trip…");
-        // Only the QDQ arm optimizes the reloaded model; the QLinear arm is
-        // checking the protobuf round-trip against ORT's reading of it, so it
-        // wants the file's own graph. Hence the unoptimized loader rather than
-        // the optimize-on-load default.
         let reloaded_bytes = std::fs::read(output_path).map_err(|e| format!("reload: {e}"))?;
-        let reloaded = if args.format == QuantFormat::Qdq {
-            load_onnx_model(&reloaded_bytes).map_err(|e| format!("reload: {e}"))?
+        // Only the QDQ arm runs the reloaded model; the QLinear arm is
+        // checking the protobuf round-trip against ORT's reading of it,
+        // so it wants the file's own graph — decode without building.
+        reloaded_exe = if args.format == QuantFormat::Qdq {
+            Some(
+                OnnxLoader::from_bytes(&reloaded_bytes)
+                    .build()
+                    .map_err(|e| format!("reload: {e}"))?,
+            )
         } else {
-            load_onnx_model_unoptimized(&reloaded_bytes).map_err(|e| format!("reload: {e}"))?
+            let _ = OnnxLoader::from_bytes(&reloaded_bytes)
+                .decode()
+                .map_err(|e| format!("reload: {e}"))?;
+            None
         };
-        model_qdq = reloaded;
     }
 
     if args.format == QuantFormat::QLinear {
@@ -574,7 +584,13 @@ fn run(args: Args) -> Result<(), String> {
         return Ok(());
     }
 
-    let runner_qdq = OnnxRunner::new(&model_qdq).map_err(|e| format!("runner qdq: {e}"))?;
+    let exe_qdq = match reloaded_exe {
+        Some(exe) => exe,
+        None => OnnxLoader::from_model(&model_qdq)
+            .build()
+            .map_err(|e| format!("build qdq: {e}"))?,
+    };
+    let runner_qdq = OnnxRunner::new(&exe_qdq).map_err(|e| format!("runner qdq: {e}"))?;
 
     let eval_samples = if let Some(spec) = args.eval_jsonl.as_ref() {
         let mut samples = read_jsonl_samples(spec, &inputs)?;

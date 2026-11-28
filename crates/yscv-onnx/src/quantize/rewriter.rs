@@ -193,7 +193,6 @@ pub fn rewrite_to_qdq(
         combined.push(node);
     }
     model.nodes = combined;
-    model.rebuild_runtime_index();
     Ok(())
 }
 
@@ -255,7 +254,6 @@ pub fn rewrite_to_qlinear(
 
     model.initializers.extend(new_initializers);
     model.nodes = new_nodes;
-    model.rebuild_runtime_index();
     Ok(())
 }
 
@@ -305,7 +303,6 @@ pub fn fold_constant_qdq_weights_for_yscv_fast(model: &mut OnnxModel) -> Result<
         .enumerate()
         .filter_map(|(idx, node)| (!remove[idx]).then_some(node))
         .collect();
-    model.rebuild_runtime_index();
     Ok(folded)
 }
 
@@ -333,11 +330,7 @@ pub fn prune_unused_initializers(model: &mut OnnxModel) -> usize {
     model
         .initializers
         .retain(|name, _| used.contains(name.as_str()));
-    let removed = before - model.initializers.len();
-    if removed != 0 {
-        model.rebuild_runtime_index();
-    }
-    removed
+    before - model.initializers.len()
 }
 
 /// Quantize a single weight tensor per-channel int8 symmetric (axis 0)
@@ -815,7 +808,6 @@ mod tests {
                 attributes: FxHashMap::default(),
             }],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         }
     }
 

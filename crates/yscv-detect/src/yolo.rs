@@ -347,14 +347,14 @@ fn hwc_to_nchw(hwc: &Tensor) -> Vec<f32> {
     nchw
 }
 
-/// Run YOLOv8 inference using an ONNX model.
+/// Run YOLOv8 inference using a built ONNX executable.
 ///
-/// Takes an ONNX model, input image data (RGB, normalised to `[0,1]`) in
-/// `[1, 3, H, W]` NCHW format, original image dimensions, and a
-/// [`YoloConfig`].  Returns detected objects after NMS.
+/// Takes an [`yscv_onnx::OnnxExecutable`], input image data (RGB, normalised
+/// to `[0,1]`) in `[1, 3, H, W]` NCHW format, original image dimensions, and
+/// a [`YoloConfig`].  Returns detected objects after NMS.
 #[cfg(feature = "onnx")]
 pub fn detect_yolov8_onnx(
-    model: &yscv_onnx::OnnxModel,
+    model: &yscv_onnx::OnnxExecutable,
     image_data: &[f32],
     img_height: usize,
     img_width: usize,
@@ -363,7 +363,7 @@ pub fn detect_yolov8_onnx(
     use rustc_hash::FxHashMap;
 
     let input_name = model
-        .inputs
+        .input_names()
         .first()
         .cloned()
         .unwrap_or_else(|| "images".to_string());
@@ -379,7 +379,7 @@ pub fn detect_yolov8_onnx(
     let outputs = yscv_onnx::run_onnx_model(model, inputs)?;
 
     let output_name = model
-        .outputs
+        .output_names()
         .first()
         .cloned()
         .unwrap_or_else(|| "output0".to_string());
@@ -407,7 +407,7 @@ pub fn detect_yolov8_onnx(
 /// and returns the final detections.
 #[cfg(feature = "onnx")]
 pub fn detect_yolov8_from_rgb(
-    model: &yscv_onnx::OnnxModel,
+    model: &yscv_onnx::OnnxExecutable,
     rgb_data: &[f32],
     height: usize,
     width: usize,

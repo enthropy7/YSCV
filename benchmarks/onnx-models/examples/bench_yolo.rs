@@ -7,7 +7,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use rustc_hash::FxHashMap;
-use yscv_onnx::load_onnx_model_from_file;
+use yscv_onnx::{OnnxExecutable, OnnxLoader};
 use yscv_onnx_model_bench::{asset_dir, download_assets, make_inputs, model_cases};
 use yscv_tensor::Tensor;
 
@@ -45,14 +45,13 @@ fn main() {
             "=".repeat(20)
         );
 
-        let model = match load_onnx_model_from_file(&model_path) {
+        let model = match OnnxLoader::load(&model_path).build() {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("  Failed to load: {e}");
                 continue;
             }
         };
-        println!("  Nodes: {}", model.nodes.len());
 
         // ── CPU benchmark ───────────────────────────────────────────
         println!("\n  [CPU]");
@@ -409,11 +408,11 @@ fn main() {
 }
 
 fn bench_run(
-    model: &yscv_onnx::OnnxModel,
+    model: &OnnxExecutable,
     input_name: &str,
     input_tensor: &Tensor,
     run_fn: impl Fn(
-        &yscv_onnx::OnnxModel,
+        &OnnxExecutable,
         FxHashMap<String, Tensor>,
     ) -> Result<FxHashMap<String, Tensor>, yscv_onnx::OnnxError>,
 ) {

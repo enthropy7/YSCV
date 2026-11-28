@@ -12,12 +12,17 @@ use rustc_hash::FxHashMap;
 ///   cargo run --release --no-default-features -p yscv-llm-bench --bin nchwc_coverage \
 ///     -- private/private/model.onnx
 use rustc_hash::FxHashSet;
-use yscv_onnx::{Attr, OnnxAttribute, OnnxModel, OnnxNode, load_onnx_model_from_file};
+use yscv_onnx::{Attr, OnnxAttribute, OnnxLoader, OnnxModel, OnnxNode, optimize_onnx_graph};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).expect("Usage: nchwc_coverage <model.onnx>");
-    let model = load_onnx_model_from_file(path).expect("failed to load model");
+    let mut model = OnnxLoader::load(path)
+        .decode()
+        .expect("failed to load model");
+    // The probe classifies fused ops (`Conv_Relu` etc.), which only exist
+    // after the optimizer has run — decode is node-for-node from the file.
+    optimize_onnx_graph(&mut model).expect("failed to optimize model");
     run_coverage_probe(&model);
 }
 

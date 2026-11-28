@@ -5,16 +5,16 @@ Pure Rust ONNX runtime. 122 CPU operators, graph optimization, multi-thread CPU 
 ```rust,ignore
 use yscv_onnx::*;
 
-let model = load_onnx_model("yolov8n.onnx")?;
+let executable = OnnxLoader::load("yolov8n.onnx").build()?;
 
 // Multi-threaded (default, all CPU cores):
-let runner = OnnxRunner::new(&model)?;
+let runner = OnnxRunner::new(&executable)?;
 
 // Explicit thread count (6 physical cores is optimal for Ryzen):
-let runner = OnnxRunner::with_threads(&model, 6)?;
+let runner = OnnxRunner::with_threads(&executable, 6)?;
 
 // Single-threaded:
-let runner = OnnxRunner::with_threads(&model, 1)?;
+let runner = OnnxRunner::with_threads(&executable, 1)?;
 
 let input = Tensor::from_vec(vec![1, 3, 640, 640], image_data)?;
 let outputs = runner.run(&[("images", &input)])?;
@@ -27,10 +27,11 @@ let outputs = runner.run(&[("images", &input)])?;
   - `run_onnx_model_borrowed` (borrowed `FxHashMap`)
   - `run_onnx_model_borrowed_slice` (borrowed `&[(&str, &Tensor)]`, no `FxHashMap` required)
 - **122 ONNX CPU operators**: Conv, MatMul, Gemm, Relu/LeakyRelu/Sigmoid/Tanh/Gelu/Erf/Mish/HardSwish/Softmax/LogSoftmax, BatchNormalization/LayerNormalization/InstanceNormalization, MaxPool/AveragePool/GlobalAveragePool, Resize/Upsample, Concat/Split/Reshape/Flatten/Transpose/Gather/GatherElements/GatherND/ScatterElements/ScatterND/Slice/Tile/Expand, Cast/Pad/Clip/Where/Identity/CumSum/ArgMax/ArgMin/TopK, DepthToSpace/SpaceToDepth, GridSample/RoiAlign/NonMaxSuppression, full quantized stack (QuantizeLinear/DequantizeLinear/QLinearConv/QLinearMatMul/MatMulInteger/ConvInteger/DynamicQuantizeLinear), trig + hyperbolic, logical, fused `Conv_Relu` / `BatchNormalization_Relu`, … (see the op dispatch in `src/runner/dispatch.rs`)
-- **Graph optimizations**: eleven passes over a def-use IR (`src/ir/`), run to a fixed point by a pass driver at model load — Dropout removal, inverse Squeeze/Unsqueeze elimination, ConvTranspose(k==s) → Conv1x1 + DepthToSpace, Conv+BatchNormalization folding, Conv+Mul / Conv+Add constant absorption, constant folding, Conv+Relu and BN+Relu fusion, dead node elimination, and a topological reorder. Individual passes can be disabled with `YSCV_ONNX_PASSES=-name`; `YSCV_ONNX_PASS_LOG=1` reports what each sweep changed. The whole pipeline runs as part of `load_onnx_model`; `YSCV_ONNX_OPTIMIZE_OFF=1` skips it, and `load_onnx_model_unoptimized` returns the graph exactly as the file spells it.
+- **Source and executable separation**: `OnnxLoader::decode()` returns a canonical `OnnxModel` for inspection, mutation, and export. `OnnxLoader::build()` lowers that source through the def-use IR and returns an immutable `OnnxExecutable`; only executables can be run. Internal fused op names and prepacked weights never leak into the decoded ONNX source.
+- **Graph optimizations**: eleven passes over a def-use IR (`src/ir/`), run to a fixed point by a pass driver during executable construction — Dropout removal, inverse Squeeze/Unsqueeze elimination, ConvTranspose(k==s) → Conv1x1 + DepthToSpace, Conv+BatchNormalization folding, Conv+Mul / Conv+Add constant absorption, constant folding, Conv+Relu and BN+Relu fusion, dead node elimination, and a topological reorder. Individual passes can be disabled with `YSCV_ONNX_PASSES=-name`; `YSCV_ONNX_PASS_LOG=1` reports what each sweep changed. Optimization is enabled by default; select `OptimizationLevel::Disabled` on the builder to skip IR passes and QConv scale retargeting. `YSCV_ONNX_OPTIMIZE_OFF=1` does the same when no explicit level was selected. Plan-level fusion, prepacking, and kernel selection still run in disabled builds.
 - **Runtime fusion**: Conv+SiLU (Conv→Sigmoid→Mul pattern), Conv+Relu, BN+Relu, Gemm+Relu, Add+Relu (in-place with buffer reuse), Conv+Add residual (in-place, buffer reuse), in-place Add (same-shape last-use)
 - **NHWC layout**: Conv outputs stored in NHWC for cache-friendly depthwise/pointwise chains; per-slot layout tracking with automatic NCHW permute when needed. Conv+Add fusion captures NHWC flag before `env.remove()` to prevent layout corruption in residual chains.
-- **Quantized Conv export**: QDQ/QLinear rewrites serialize Conv weights in standard OIHW form even when the loader had normalised them to internal KHWC, grouped-KHWC, or depthwise-KHWC layouts; yscv restores the fast NHWC layouts on reload while exported models stay ONNX/ORT-compatible.
+- **Quantized Conv export**: QDQ/QLinear rewrites serialize source-model Conv weights in standard OIHW form. Runtime KHWC variants live only in `OnnxExecutable` prepacks, so exported models stay ONNX/ORT-compatible and rebuild their fast layouts on the next build.
 - **QLinear depthwise fast path**: symmetric `QLinearConv` depthwise 3×3/5×5 stride-1 and measured-win stride-2 tracker weights are packed once at load and executed through reusable runner scratch buffers. NHWC activations route through the multi-arch INT8 depthwise kernel; large NCHW stride-2 tracker layers route through a direct NCHW/KHWC scalar path when that avoids a measured-losing layout materialisation.
 - **QLinear pointwise/MatMul prepack**: VNNI-friendly INT8 RHS tensors (`K >= 4`, `N % 16 == 0`) are packed once at load into the AVX-512 VNNI 4×16 layout as well as transposed-B, so explicit QLinearConv pointwise layers do not repack weights per inference.
 - **QLinear boundary fast path**: per-tensor `QuantizeLinear` writes internal i8 tensors through scalar/AVX2/AVX-512F/NEON dispatch with packed x86 i8 stores, and matching `DequantizeLinear -> [Relu] -> QuantizeLinear` boundaries stay in the quantized domain at runtime when scale/zero-point match. `QLinearConv` writes i8 outputs into the same side-table, so adjacent quantized ops no longer need f32-coded int8 tensors between them.

@@ -364,7 +364,7 @@ impl ProfileFilter {
 /// `ProfileFilter`. Unset, the profiler shows the Conv detail table and an
 /// unfiltered JSON.
 pub fn profile_onnx_model_cpu(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: FxHashMap<String, Tensor>,
 ) -> Result<(), OnnxError> {
     use std::time::Instant;

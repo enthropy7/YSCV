@@ -119,9 +119,6 @@ pub fn quantize_matmul_weights_int4_packed(
         packed_count += 1;
     }
 
-    if packed_count > 0 {
-        model.rebuild_runtime_index();
-    }
     Ok(packed_count)
 }
 
@@ -204,7 +201,6 @@ mod tests {
                 attributes: attrs,
             }],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         }
     }
 

@@ -17,7 +17,7 @@ use crate::runner::{ConstEvalTables, TensorEnv, execute_node_kind};
 ///
 /// What was wrong before was the machinery around each evaluation, not the
 /// evaluation. The string version built a throwaway `OnnxModel` per foldable
-/// node, called `rebuild_runtime_index()` on it — the entire plan builder:
+/// node, rebuilt its runtime index — the entire plan builder:
 /// fusion scan, slot assignment, weight prepacking — and then `run_onnx_model`,
 /// which sets up thread pools, output masks and tower-parallel probing. All to
 /// run one operator. Here a node is dispatched directly onto a bare

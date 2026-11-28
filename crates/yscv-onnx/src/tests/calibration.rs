@@ -65,7 +65,10 @@ fn collector_captures_runner_activations() {
         vec!["calib_test_input_xyz", "conv0_w", "conv1_w"],
         vec!["calib_test_output_xyz"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     // Input: 4 values [-1, 0, 1, 2] in NCHW [1,1,2,2]. Pre-Relu Conv0 doubles
     // them: [-2, 0, 2, 4]. Relu clips negatives: [0, 0, 2, 4]. Conv1 triples:
@@ -157,7 +160,10 @@ fn no_recording_outside_scope() {
         vec!["calib_test_input_xyz", "conv_w"],
         vec!["calib_test_output_xyz"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let input = Tensor::from_vec(vec![1, 1, 1, 1], vec![1.0_f32]).unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("calib_test_input_xyz".to_string(), input);
@@ -211,7 +217,10 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
         vec![input_name, weight_name],
         vec![output_name],
     );
-    let model_fp32 = load_onnx_model(&bytes).unwrap();
+    let model_fp32 = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     let input_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.25).collect();
     let input = Tensor::from_vec(vec![1, 4, 2, 2], input_data).unwrap();
@@ -239,7 +248,7 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
 
     // 3) Rewrite the model with collected stats. Reload from bytes so we
     //    get a fresh, mutable copy.
-    let mut model_qdq = load_onnx_model(&bytes).unwrap();
+    let mut model_qdq = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     rewrite_to_qdq(&mut model_qdq, &stats, &[]).unwrap();
 
     // Sanity: rewritten model has Q+DQ on x and DQ on w.
@@ -260,6 +269,10 @@ fn rewrite_to_qdq_round_trip_keeps_model_runnable() {
     // 4) Run rewritten model.
     let mut feed_qdq = FxHashMap::default();
     feed_qdq.insert(input_name.to_string(), input);
+    let model_qdq = OnnxLoader::from_model(&model_qdq)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let result_qdq = run_onnx_model(&model_qdq, feed_qdq).unwrap();
     let y_qdq = &result_qdq[output_name];
     assert_eq!(y_qdq.shape(), y_fp32.shape());

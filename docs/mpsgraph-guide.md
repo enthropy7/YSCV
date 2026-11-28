@@ -24,10 +24,10 @@ yscv-tensor = "0.1"
 ```
 
 ```rust
-use yscv_onnx::{compile_mpsgraph_plan, run_mpsgraph_plan, load_onnx_model_from_file};
+use yscv_onnx::{OnnxLoader, compile_mpsgraph_plan, run_mpsgraph_plan};
 
-let model = load_onnx_model_from_file("yolov8n.onnx")?;
-let plan = compile_mpsgraph_plan(&model, &[("images", &input_tensor)])?;
+let executable = OnnxLoader::load("yolov8n.onnx").build()?;
+let plan = compile_mpsgraph_plan(&executable, &[("images", &input_tensor)])?;
 
 // Hot loop: no re-compilation.
 loop {
@@ -66,7 +66,7 @@ Three-stage lifecycle:
 │   Your ONNX model   │
 └──────────┬──────────┘
            │
-           │ compile_mpsgraph_plan(&model, &[(name, shape_tensor), ...])
+           │ compile_mpsgraph_plan(&executable, &[(name, shape_tensor), ...])
            │   • Graph optimizations (constant folding, fusion, dead-op elim)
            │   • Kernel selection per GPU generation (M1 vs M4)
            │   • fp16 promotion where numerically safe
@@ -99,16 +99,16 @@ Use when: single image, batch scoring, or frame rate already satisfies
 your budget.
 
 ```rust
-use yscv_onnx::{compile_mpsgraph_plan, run_mpsgraph_plan, load_onnx_model_from_file};
+use yscv_onnx::{OnnxLoader, compile_mpsgraph_plan, run_mpsgraph_plan};
 use yscv_tensor::Tensor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("yolov8n.onnx")?;
+    let executable = OnnxLoader::load("yolov8n.onnx").build()?;
 
     // Provide a sample tensor with the exact shape your graph expects.
     // Only the shape is used for compile; values can be zeros.
     let sample = Tensor::zeros(vec![1, 3, 640, 640])?;
-    let plan = compile_mpsgraph_plan(&model, &[("images", &sample)])?;
+    let plan = compile_mpsgraph_plan(&executable, &[("images", &sample)])?;
 
     // Real inputs — as f32 little-endian bytes this time.
     let real_input: Vec<f32> = preprocess("photo.jpg")?;
@@ -157,7 +157,7 @@ with GPU compute. Typical gain: **2-3× sustained FPS** over sync.
 use std::collections::VecDeque;
 use yscv_onnx::{compile_mpsgraph_plan, submit_mpsgraph_plan, wait_mpsgraph_plan, InferenceHandle};
 
-let plan = compile_mpsgraph_plan(&model, &[("images", &sample)])?;
+let plan = compile_mpsgraph_plan(&executable, &[("images", &sample)])?;
 const DEPTH: usize = 3;
 
 // Prime the pipeline with DEPTH frames before we start waiting.
@@ -229,7 +229,7 @@ appears with its name:
 let template = Tensor::zeros(vec![1, 3, 128, 128])?;
 let search   = Tensor::zeros(vec![1, 3, 256, 256])?;
 
-let plan = compile_mpsgraph_plan(&model, &[
+let plan = compile_mpsgraph_plan(&executable, &[
     ("template_input", &template),
     ("search_input",   &search),
 ])?;
@@ -264,7 +264,7 @@ compatible:
 ```rust
 use yscv_onnx::{compile_metal_plan, run_metal_plan};
 
-let plan = compile_metal_plan(&model, &[("images", &sample)])?;
+let plan = compile_metal_plan(&executable, "images", &sample)?;
 let outputs = run_metal_plan(&plan, &[("images", &input_f32)])?;
 ```
 
@@ -276,7 +276,7 @@ The universal fallback always works:
 
 ```rust
 use yscv_onnx::run_onnx_model;
-let outputs = run_onnx_model(&model, inputs_hashmap)?;
+let outputs = run_onnx_model(&executable, inputs_hashmap)?;
 ```
 
 ### Recommended pattern
@@ -284,16 +284,16 @@ let outputs = run_onnx_model(&model, inputs_hashmap)?;
 Try MPSGraph, fall back to Metal per-op, fall back to CPU:
 
 ```rust
-fn run_best_available(model: &ModelProto, inputs: &[(&str, &Tensor)]) -> Result<_, _> {
-    if let Ok(plan) = compile_mpsgraph_plan(model, inputs) {
+fn run_best_available(executable: &OnnxExecutable, inputs: &[(&str, &Tensor)]) -> Result<_, _> {
+    if let Ok(plan) = compile_mpsgraph_plan(executable, inputs) {
         return run_mpsgraph_plan(&plan, bytes_feeds)
             .map(wrap_outputs);
     }
-    if let Ok(plan) = compile_metal_plan(model, inputs) {
+    if let Ok(plan) = compile_metal_plan(executable, "images", inputs[0].1) {
         return run_metal_plan(&plan, f32_feeds)
             .map(wrap_outputs);
     }
-    run_onnx_model(model, hashmap_feeds)
+    run_onnx_model(executable, hashmap_feeds)
 }
 ```
 
@@ -308,7 +308,7 @@ be enabled.
 
 ```rust
 pub fn compile_mpsgraph_plan(
-    model: &ModelProto,
+    executable: &OnnxExecutable,
     input_shapes: &[(&str, &Tensor)],
 ) -> Result<MpsGraphPlan, MpsGraphError>
 ```

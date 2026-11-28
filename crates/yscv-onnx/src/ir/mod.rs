@@ -400,6 +400,31 @@ impl Graph {
         debug_assert!(self.validate().is_ok(), "push_input broke an invariant");
     }
 
+    pub(crate) fn set_input(&mut self, node: NodeId, port: usize, value: ValueId) {
+        let old = self.nodes[node.idx()]
+            .as_ref()
+            .and_then(|node| node.inputs.get(port))
+            .copied()
+            .flatten();
+        if old == Some(value) {
+            return;
+        }
+        if let Some(old) = old {
+            self.remove_use(old, node, port as u32);
+        }
+        if let Some(slot) = self.nodes[node.idx()]
+            .as_mut()
+            .and_then(|node| node.inputs.get_mut(port))
+        {
+            *slot = Some(value);
+        }
+        self.values[value.idx()].uses.push(Use {
+            node,
+            port: port as u32,
+        });
+        debug_assert!(self.validate().is_ok(), "set_input broke an invariant");
+    }
+
     /// Redirects every consumer of `old` to `new`, and transfers graph-output
     /// status.
     ///

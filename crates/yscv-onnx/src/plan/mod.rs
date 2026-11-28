@@ -25,6 +25,9 @@ mod slots;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::error::OnnxError;
+use crate::loader::{OnnxModel, OnnxNode};
+
 pub(crate) use build::build_runtime_index;
 use conv_params::resolve_conv_params;
 use kernels::resolve_conv_kernels;
@@ -34,13 +37,90 @@ pub(crate) use prepack::ConvWeightLayout;
 use prepack::{PrepackedConvWeights, debug_assert_layouts_match_kernels, prepack_conv_weights};
 use slots::{SlotIndex, assign_slots};
 
-/// Precomputed runtime metadata built once at model load time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizationLevel {
+    Enabled,
+    Disabled,
+}
+
+/// Immutable executable snapshot built from an [`OnnxModel`].
+#[derive(Debug, Clone)]
+pub struct OnnxExecutable {
+    pub(crate) inputs: Vec<String>,
+    pub(crate) outputs: Vec<String>,
+    pub(crate) initializers: FxHashMap<String, yscv_tensor::Tensor>,
+    pub(crate) nodes: Vec<OnnxNode>,
+    pub(crate) packed_int4_weights: FxHashMap<String, crate::quantize::PackedInt4Weight>,
+    pub(crate) runtime_index: RuntimeModelIndex,
+}
+
+impl OnnxExecutable {
+    /// Declared graph input names, in source order.
+    pub fn input_names(&self) -> &[String] {
+        &self.inputs
+    }
+
+    /// Declared graph output names, in source order.
+    pub fn output_names(&self) -> &[String] {
+        &self.outputs
+    }
+}
+
+pub(crate) fn build_executable(
+    model: &OnnxModel,
+    optimization_level: OptimizationLevel,
+) -> Result<OnnxExecutable, OnnxError> {
+    let mut graph = model.to_ir();
+    if optimization_level == OptimizationLevel::Enabled {
+        crate::optimizer::optimize_ir(&mut graph)?;
+    }
+    let lowered = graph.lower();
+    let runtime_index = build_runtime_index(
+        &lowered.inputs,
+        &lowered.outputs,
+        &lowered.initializers,
+        &lowered.nodes,
+    );
+    let executable = OnnxExecutable {
+        inputs: lowered.inputs,
+        outputs: lowered.outputs,
+        initializers: lowered.initializers,
+        nodes: lowered.nodes,
+        packed_int4_weights: model.packed_int4_weights.clone(),
+        runtime_index,
+    };
+
+    if std::env::var("YSCV_NCHWC").as_deref() == Ok("on") {
+        let stats = crate::optimizer::analyze_nchwc_nodes(&executable.nodes);
+        eprintln!(
+            "[yscv-onnx] NCHWc stats: capable={}/{} chains={} max_chain={} mean_chain={:.2}",
+            stats.capable_nodes,
+            stats.total_nodes,
+            stats.chain_count,
+            stats.max_chain_len,
+            stats.mean_chain_len,
+        );
+        if !stats.op_types_capable.is_empty() {
+            let top: Vec<String> = stats
+                .op_types_capable
+                .iter()
+                .take(5)
+                .map(|(op, n)| format!("{op}:{n}"))
+                .collect();
+            eprintln!("[yscv-onnx] NCHWc top ops: {}", top.join(" "));
+        }
+    }
+
+    Ok(executable)
+}
+
+/// Precomputed runtime metadata built once at executable construction time.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RuntimeModelIndex {
     /// Dense slot id per tensor name for TensorEnv hot-path lookups.
     pub(crate) name_to_id: FxHashMap<String, usize>,
     /// Conv weights permuted at plan time into the layout their kernel reads,
-    /// by slot id. `model.initializers` keeps the ONNX-native OIHW tensor; this
+    /// by slot id. `OnnxExecutable::initializers` keeps the ONNX-native OIHW tensor; this
     /// is what the runtime hands the kernel. See [`prepack`].
     pub(crate) prepacked_conv_weights: Vec<Option<yscv_tensor::Tensor>>,
     /// Which layout each entry above is in, by slot id.
@@ -63,10 +143,10 @@ pub(crate) struct RuntimeModelIndex {
     /// Pre-parsed Conv parameters per node. Only populated for Conv nodes.
     pub(crate) conv_params: Vec<Option<ConvParams>>,
     /// Pre-compiled execution plan. Each entry maps to a node action.
-    /// Built once at model load — eliminates per-inference dispatch overhead.
+    /// Built once at executable construction — eliminates per-inference dispatch overhead.
     pub(crate) execution_plan: Vec<NodeAction>,
     /// Pre-packed B-matrix (blocked-GEMM layout) per constant Conv/MatMul
-    /// weight tensor, keyed by weight tensor name. Built once at model load
+    /// weight tensor, keyed by weight tensor name. Built once at executable construction
     /// via `yscv_kernels::pack_b_for_session`; shared `Arc` handed to every
     /// inference, skipping both the fingerprint cache lookup AND the pack
     /// itself on the hot path. Only populated for weights whose dispatch
@@ -151,7 +231,7 @@ pub(crate) struct ConvParams {
 }
 
 /// Pre-compiled execution action for JIT dispatch.
-/// Built once at model load, eliminates per-inference NodeKind matching + layout checks.
+/// Built once at executable construction, eliminates per-inference NodeKind matching + layout checks.
 #[derive(Debug, Clone)]
 pub(crate) enum NodeAction {
     /// Conv with pre-resolved params + activation.

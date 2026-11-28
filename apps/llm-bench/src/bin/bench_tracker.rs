@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use yscv_onnx::{
-    Attr, OnnxAttribute, OnnxModel, OnnxNode, OnnxRunner, dump_runner_profile,
-    load_onnx_model_from_file, quant_runtime_stats, reset_quant_runtime_stats,
+    Attr, OnnxAttribute, OnnxLoader, OnnxModel, OnnxNode, OnnxRunner, OptimizationLevel,
+    dump_runner_profile, optimize_onnx_graph, quant_runtime_stats, reset_quant_runtime_stats,
 };
 use yscv_tensor::Tensor;
 
@@ -204,11 +204,20 @@ fn quant_chain_candidates(model: &OnnxModel) -> usize {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let model =
-        load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load: {e}"))?;
+    let mut model = OnnxLoader::load(Path::new(&args.model))
+        .decode()
+        .map_err(|e| format!("load: {e}"))?;
+    // Chain candidates are counted against the optimized graph (the QConv
+    // retarget and fusions), so run the model-level optimizer explicitly.
+    optimize_onnx_graph(&mut model).map_err(|e| format!("optimize: {e}"))?;
     let chain_candidates = quant_chain_candidates(&model);
+    // Already optimized above — the build must not run the IR passes twice.
+    let executable = OnnxLoader::from_model(&model)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .map_err(|e| format!("build: {e}"))?;
     let runner =
-        OnnxRunner::with_threads(&model, args.threads).map_err(|e| format!("runner: {e}"))?;
+        OnnxRunner::with_threads(&executable, args.threads).map_err(|e| format!("runner: {e}"))?;
     let tensors: Vec<Tensor> = args
         .inputs
         .iter()

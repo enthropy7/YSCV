@@ -20,8 +20,8 @@ use std::time::Instant;
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_onnx::{
-    compile_metal_plan, compile_mpsgraph_plan, load_onnx_model_from_file, run_metal_plan,
-    run_mpsgraph_plan, run_onnx_model,
+    OnnxLoader, compile_metal_plan, compile_mpsgraph_plan, run_metal_plan, run_mpsgraph_plan,
+    run_onnx_model,
 };
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
@@ -34,9 +34,10 @@ fn bench_model(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("\n{} {} {}", "=".repeat(20), model_path, "=".repeat(20));
 
-    let model = load_onnx_model_from_file(model_path)?;
+    let model = OnnxLoader::load(model_path).decode()?;
     let input_name = model.inputs.first().cloned().unwrap();
     let output_name = model.outputs.first().cloned().unwrap();
+    let exe = OnnxLoader::from_model(&model).build()?;
     println!("Input: {input_name} {:?}", input_shape);
     println!("Nodes: {}", model.nodes.len());
 
@@ -49,7 +50,7 @@ fn bench_model(
     {
         let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
-        let _ = run_onnx_model(&model, inputs)?;
+        let _ = run_onnx_model(&exe, inputs)?;
     }
     let n_cpu = 5;
     let mut cpu_times = Vec::new();
@@ -57,7 +58,7 @@ fn bench_model(
         let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
         let t0 = Instant::now();
-        let _ = run_onnx_model(&model, inputs)?;
+        let _ = run_onnx_model(&exe, inputs)?;
         cpu_times.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     cpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -66,7 +67,7 @@ fn bench_model(
 
     // ── Metal (per-op dispatch) ──
     println!("\n--- Metal (per-op) ---");
-    let metal_plan = compile_metal_plan(&model, &input_name, &input_tensor)?;
+    let metal_plan = compile_metal_plan(&exe, &input_name, &input_tensor)?;
     println!("Compiled: {} ops", metal_plan.ops_count());
     metal_plan.dump_op_stats();
 
@@ -91,7 +92,7 @@ fn bench_model(
     // ── MPSGraph (whole-model) ──
     println!("\n--- MPSGraph (whole-model) ---");
     let compile_start = Instant::now();
-    let mpsg_plan = match compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input_tensor)]) {
+    let mpsg_plan = match compile_mpsgraph_plan(&exe, &[(input_name.as_str(), &input_tensor)]) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("MPSGraph compile FAILED: {e}");
@@ -138,7 +139,7 @@ fn bench_model(
     let mpsg_out = run_mpsgraph_plan(&mpsg_plan, &mpsg_inputs)?;
     let mut cpu_inputs = FxHashMap::default();
     cpu_inputs.insert(input_name.clone(), input_tensor.clone());
-    let cpu_out = run_onnx_model(&model, cpu_inputs)?;
+    let cpu_out = run_onnx_model(&exe, cpu_inputs)?;
 
     if let (Some(cpu_t), Some(mpsg_t)) = (cpu_out.get(&output_name), mpsg_out.get(&output_name)) {
         let cpu_d = cpu_t.data();
@@ -195,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let model_path = &args[0];
         let iterations: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
         // Auto-detect input shape from model
-        let model = load_onnx_model_from_file(model_path)?;
+        let model = OnnxLoader::load(model_path).decode()?;
         let _input_name = model.inputs.first().cloned().unwrap();
         let shape = model
             .initializers

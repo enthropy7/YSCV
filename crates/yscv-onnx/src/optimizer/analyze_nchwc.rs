@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use crate::loader::OnnxModel;
+use crate::loader::{OnnxModel, OnnxNode};
 
 /// Summary statistics describing NCHWc-transformability of a loaded graph.
 ///
@@ -42,13 +42,17 @@ fn is_nchwc_capable_op(op_type: &str) -> bool {
 }
 
 pub fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
-    let total_nodes = model.nodes.len();
+    analyze_nchwc_nodes(&model.nodes)
+}
+
+pub(crate) fn analyze_nchwc_nodes(nodes: &[OnnxNode]) -> NchwcStats {
+    let total_nodes = nodes.len();
     let mut op_counts: FxHashMap<String, usize> = FxHashMap::default();
     let mut capable_nodes = 0usize;
     let mut chain_lengths: Vec<usize> = Vec::new();
     let mut current_chain = 0usize;
 
-    for node in &model.nodes {
+    for node in nodes {
         if is_nchwc_capable_op(&node.op_type) {
             capable_nodes += 1;
             current_chain += 1;
@@ -109,7 +113,6 @@ mod nchwc_stats_tests {
             initializers: FxHashMap::default(),
             nodes: vec![],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         };
         for (i, op) in ops.iter().enumerate() {
             m.nodes.push(node(op, &format!("n{i}")));
