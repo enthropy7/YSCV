@@ -413,7 +413,7 @@ fn run_coverage_probe(model: &OnnxExecutable) {
                 };
                 kh <= 5 && kw <= 5 && sh <= 2 && sw <= 2
             } else {
-                is_passthrough(&node.op_type)
+                is_passthrough(node.op_type.as_str())
             }
         })
         .collect();

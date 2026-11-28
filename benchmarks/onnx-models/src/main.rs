@@ -183,7 +183,7 @@ fn conv3x3_relu_graph(
     Ok(OnnxExportGraph {
         nodes: vec![
             OnnxExportNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "conv".to_string(),
                 inputs: vec![
                     "input".to_string(),
@@ -198,7 +198,7 @@ fn conv3x3_relu_graph(
                 ],
             },
             OnnxExportNode {
-                op_type: "Relu".to_string(),
+                op_type: "Relu".into(),
                 name: "relu".to_string(),
                 inputs: vec!["conv_out".to_string()],
                 outputs: vec!["output".to_string()],
@@ -241,7 +241,7 @@ fn gemm_relu_graph(
     Ok(OnnxExportGraph {
         nodes: vec![
             OnnxExportNode {
-                op_type: "Gemm".to_string(),
+                op_type: "Gemm".into(),
                 name: "gemm".to_string(),
                 inputs: vec![
                     "input".to_string(),
@@ -256,7 +256,7 @@ fn gemm_relu_graph(
                 ],
             },
             OnnxExportNode {
-                op_type: "Relu".to_string(),
+                op_type: "Relu".into(),
                 name: "relu".to_string(),
                 inputs: vec!["gemm_out".to_string()],
                 outputs: vec!["output".to_string()],
@@ -298,7 +298,7 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
     let dw_pw = OnnxExportGraph {
         nodes: vec![
             OnnxExportNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "depthwise".to_string(),
                 inputs: vec![
                     "input".to_string(),
@@ -314,7 +314,7 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
                 ],
             },
             OnnxExportNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "pointwise".to_string(),
                 inputs: vec![
                     "dw_out".to_string(),
@@ -329,7 +329,7 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
                 ],
             },
             OnnxExportNode {
-                op_type: "Relu".to_string(),
+                op_type: "Relu".into(),
                 name: "relu".to_string(),
                 inputs: vec!["pw_out".to_string()],
                 outputs: vec!["output".to_string()],
@@ -376,7 +376,7 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
     let residual = OnnxExportGraph {
         nodes: vec![
             OnnxExportNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "conv".to_string(),
                 inputs: vec![
                     "input".to_string(),
@@ -391,14 +391,14 @@ fn prepare_small(asset_dir: &Path) -> Result<(), String> {
                 ],
             },
             OnnxExportNode {
-                op_type: "Add".to_string(),
+                op_type: "Add".into(),
                 name: "residual_add".to_string(),
                 inputs: vec!["conv_out".to_string(), "input".to_string()],
                 outputs: vec!["add_out".to_string()],
                 attributes: Vec::new(),
             },
             OnnxExportNode {
-                op_type: "Relu".to_string(),
+                op_type: "Relu".into(),
                 name: "relu".to_string(),
                 inputs: vec!["add_out".to_string()],
                 outputs: vec!["output".to_string()],

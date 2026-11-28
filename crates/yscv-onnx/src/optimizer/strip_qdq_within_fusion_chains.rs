@@ -65,7 +65,7 @@ pub(super) fn run(model: &mut OnnxModel) -> usize {
         if consumers.len() != 1 {
             continue;
         }
-        if !conv_like(&consumers[0].op_type) {
+        if !conv_like(consumers[0].op_type.as_str()) {
             continue;
         }
         let q_source = &q.inputs[0];
@@ -77,7 +77,7 @@ pub(super) fn run(model: &mut OnnxModel) -> usize {
             Some(n) => n,
             None => continue,
         };
-        if !conv_like(&upstream.op_type) {
+        if !conv_like(upstream.op_type.as_str()) {
             continue;
         }
         to_remove.push(q_idx);
@@ -113,7 +113,7 @@ mod strip_qdq_tests {
 
     fn node(op: &str, name: &str, ins: &[&str], outs: &[&str]) -> OnnxNode {
         OnnxNode {
-            op_type: op.to_string(),
+            op_type: op.into(),
             name: name.to_string(),
             inputs: ins.iter().map(|s| s.to_string()).collect(),
             outputs: outs.iter().map(|s| s.to_string()).collect(),

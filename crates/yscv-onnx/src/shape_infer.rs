@@ -180,7 +180,7 @@ fn infer_shapes_parts(model: GraphParts<'_>, input_shapes: &ShapeMap) -> ShapeIn
             Err(error) => diagnostics.push(ShapeDiagnostic {
                 node_index: idx,
                 node_name: node.name.clone(),
-                op_type: node.op_type.clone(),
+                op_type: node.op_type.to_string(),
                 error,
             }),
         }
@@ -228,7 +228,7 @@ fn infer_node(
         "MaxPool" | "AveragePool" => infer_pool(shapes, node),
         "GlobalAveragePool" => infer_global_pool(shapes, node),
         _ => Err(ShapeError::UnsupportedOp {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
         }),
     }
 }
@@ -238,7 +238,7 @@ fn unary_same_shape(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShap
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let shape = shapes
@@ -266,11 +266,11 @@ fn infer_conv(
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let weight_name = node.inputs.get(1).ok_or_else(|| ShapeError::MissingInput {
-        op_type: node.op_type.clone(),
+        op_type: node.op_type.to_string(),
         index: 1,
     })?;
     let input = shapes
@@ -288,7 +288,7 @@ fn infer_conv(
     let w_shape = weight.shape();
     if input.rank() != 4 || w_shape.len() != 4 {
         return Err(ShapeError::UnsupportedRank {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             expected: "rank-4 NCHW inputs and rank-4 weights",
         });
     }
@@ -347,7 +347,7 @@ const fn conv_output_dim(
 fn infer_broadcast(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, ShapeError> {
     if node.inputs.len() < 2 {
         return Err(ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 1,
         });
     }
@@ -397,7 +397,7 @@ fn infer_concat(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, 
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let first = shapes
@@ -417,7 +417,7 @@ fn infer_concat(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, 
             .ok_or_else(|| ShapeError::MissingInputShape { name: name.clone() })?;
         if shape.rank() != rank {
             return Err(ShapeError::InputRanksDiffer {
-                op_type: node.op_type.clone(),
+                op_type: node.op_type.to_string(),
             });
         }
         for d in 0..rank {
@@ -445,7 +445,7 @@ fn infer_transpose(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let input = shapes
@@ -478,7 +478,7 @@ fn infer_reshape(
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let input = shapes
@@ -487,7 +487,7 @@ fn infer_reshape(
             name: input_name.clone(),
         })?;
     let shape_name = node.inputs.get(1).ok_or_else(|| ShapeError::MissingInput {
-        op_type: node.op_type.clone(),
+        op_type: node.op_type.to_string(),
         index: 1,
     })?;
     let target =
@@ -495,7 +495,7 @@ fn infer_reshape(
             .initializers
             .get(shape_name)
             .ok_or_else(|| ShapeError::NonConstantInput {
-                op_type: node.op_type.clone(),
+                op_type: node.op_type.to_string(),
                 name: shape_name.clone(),
             })?;
     let raw: Vec<i64> = target.data().iter().map(|v| *v as i64).collect();
@@ -534,7 +534,7 @@ fn infer_flatten(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>,
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let input = shapes
@@ -559,7 +559,7 @@ fn infer_squeeze(
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let input = shapes
@@ -599,7 +599,7 @@ fn infer_unsqueeze(
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let input = shapes
@@ -630,7 +630,7 @@ fn infer_unsqueeze(
 fn infer_matmul(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, ShapeError> {
     if node.inputs.len() < 2 {
         return Err(ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 1,
         });
     }
@@ -646,7 +646,7 @@ fn infer_matmul(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, 
         })?;
     if a.rank() < 2 || b.rank() < 2 {
         return Err(ShapeError::RankTooSmall {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             min: 2,
             actual: a.rank().min(b.rank()),
         });
@@ -671,7 +671,7 @@ fn infer_gemm(
 ) -> Result<Vec<TensorShape>, ShapeError> {
     if node.inputs.len() < 2 {
         return Err(ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 1,
         });
     }
@@ -687,7 +687,7 @@ fn infer_gemm(
         })?;
     if a.rank() != 2 || b.rank() != 2 {
         return Err(ShapeError::UnsupportedRank {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             expected: "rank-2 inputs",
         });
     }
@@ -711,7 +711,7 @@ fn infer_pool(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, Sh
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let input = shapes
@@ -721,12 +721,12 @@ fn infer_pool(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorShape>, Sh
         })?;
     if input.rank() != 4 {
         return Err(ShapeError::UnsupportedRank {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             expected: "rank-4 NCHW inputs",
         });
     }
     let kernels = ints_attr(node, Attr::KernelShape).ok_or(ShapeError::MissingAttribute {
-        op_type: node.op_type.clone(),
+        op_type: node.op_type.to_string(),
         name: "kernel_shape",
     })?;
     let strides = ints_attr(node, Attr::Strides).unwrap_or_else(|| vec![1, 1]);
@@ -754,7 +754,7 @@ fn infer_global_pool(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorSha
         .inputs
         .first()
         .ok_or_else(|| ShapeError::MissingInput {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             index: 0,
         })?;
     let input = shapes
@@ -764,7 +764,7 @@ fn infer_global_pool(shapes: &ShapeMap, node: &OnnxNode) -> Result<Vec<TensorSha
         })?;
     if input.rank() != 4 {
         return Err(ShapeError::UnsupportedRank {
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             expected: "rank-4 NCHW inputs",
         });
     }
@@ -788,7 +788,7 @@ fn node_axes(model: &GraphParts<'_>, node: &OnnxNode) -> Result<Vec<i64>, ShapeE
     if node.inputs.len() > 1 && !node.inputs[1].is_empty() {
         let t = model.initializers.get(&node.inputs[1]).ok_or_else(|| {
             ShapeError::NonConstantInput {
-                op_type: node.op_type.clone(),
+                op_type: node.op_type.to_string(),
                 name: node.inputs[1].clone(),
             }
         })?;

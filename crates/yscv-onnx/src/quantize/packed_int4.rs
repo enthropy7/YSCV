@@ -194,7 +194,7 @@ mod tests {
             outputs: vec!["y".to_string()],
             initializers,
             nodes: vec![OnnxNode {
-                op_type: op.to_string(),
+                op_type: op.into(),
                 name: "n0".to_string(),
                 inputs: vec!["x".to_string(), "w".to_string()],
                 outputs: vec!["y".to_string()],

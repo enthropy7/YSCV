@@ -201,7 +201,7 @@ fn export_graph_defuses_relu_annotations_and_loads_int8_initializers() {
         outputs: vec!["y".to_string()],
         initializers,
         nodes: vec![OnnxNode {
-            op_type: "Conv_Relu".to_string(),
+            op_type: "Conv_Relu".into(),
             name: "conv_relu".to_string(),
             inputs: vec!["x".to_string(), "w_q".to_string()],
             outputs: vec!["y".to_string()],
@@ -300,7 +300,7 @@ fn fused_conv_model(op_type: &str, opset_version: i64) -> OnnxModel {
         outputs: vec!["y".to_string()],
         initializers,
         nodes: vec![OnnxNode {
-            op_type: op_type.to_string(),
+            op_type: op_type.into(),
             name: "conv_act".to_string(),
             inputs: vec!["x".to_string(), "w".to_string()],
             outputs: vec!["y".to_string()],

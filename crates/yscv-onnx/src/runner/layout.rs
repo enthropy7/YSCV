@@ -296,7 +296,7 @@ pub(crate) fn execute_node_with_layout_kind(
                 node.name.as_str()
             }
             .to_string(),
-            op_type: node.op_type.clone(),
+            op_type: node.op_type.to_string(),
             source: Box::new(other),
         },
     })

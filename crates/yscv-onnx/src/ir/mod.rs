@@ -32,7 +32,6 @@
 //! without the index-invalidation dance that `Vec::remove` forces.
 
 mod lower;
-mod op;
 mod pass;
 
 use rustc_hash::FxHashMap;
@@ -41,7 +40,7 @@ use yscv_tensor::Tensor;
 use crate::attr::Attr;
 use crate::loader::OnnxAttribute;
 
-pub(crate) use op::Op;
+pub(crate) use crate::op::OnnxOp as Op;
 pub(crate) use pass::{Changed, Pass, PassManager};
 
 /// Index of a node in [`Graph::nodes`]. Stable across mutations.

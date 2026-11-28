@@ -826,7 +826,7 @@ pub(crate) fn exec_qlinear_conv(node: &OnnxNode, env: &mut TensorEnv) -> Result<
 
     let float_node = OnnxNode {
         name: node.name.clone(),
-        op_type: "Conv".to_string(),
+        op_type: "Conv".into(),
         inputs: vec!["__qx".into(), "__qw".into(), "__qb".into()],
         outputs: vec!["__qconv_out".into()],
         attributes: node.attributes.clone(),
@@ -2008,7 +2008,7 @@ pub(crate) fn exec_conv_integer(node: &OnnxNode, env: &mut TensorEnv) -> Result<
 
     let conv_node = OnnxNode {
         name: node.name.clone(),
-        op_type: "Conv".to_string(),
+        op_type: "Conv".into(),
         inputs: vec!["__ci_x".into(), "__ci_w".into(), "".into()],
         outputs: vec!["__ci_out".into()],
         attributes: node.attributes.clone(),

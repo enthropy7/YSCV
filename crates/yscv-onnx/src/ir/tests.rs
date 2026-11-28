@@ -371,14 +371,15 @@ fn validate_detects_a_stale_def() {
 
 // ── Lowering ─────────────────────────────────────────────────────────────
 
-fn model_shape(
-    model: &crate::loader::OnnxModel,
-) -> (
-    Vec<(String, String, Vec<String>, Vec<String>)>,
+#[derive(Debug, PartialEq, Eq)]
+struct ModelShape(
+    Vec<(crate::OnnxOp, String, Vec<String>, Vec<String>)>,
     Vec<String>,
     Vec<String>,
     Vec<String>,
-) {
+);
+
+fn model_shape(model: &crate::loader::OnnxModel) -> ModelShape {
     let nodes = model
         .nodes
         .iter()
@@ -393,7 +394,7 @@ fn model_shape(
         .collect();
     let mut initializers: Vec<String> = model.initializers.keys().cloned().collect();
     initializers.sort();
-    (
+    ModelShape(
         nodes,
         initializers,
         model.inputs.clone(),
@@ -402,14 +403,7 @@ fn model_shape(
 }
 
 /// Snapshot of everything lowering must reproduce.
-fn lowered_shape(
-    lowered: &super::lower::LoweredGraph,
-) -> (
-    Vec<(String, String, Vec<String>, Vec<String>)>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-) {
+fn lowered_shape(lowered: &super::lower::LoweredGraph) -> ModelShape {
     let nodes = lowered
         .nodes
         .iter()
@@ -424,7 +418,7 @@ fn lowered_shape(
         .collect();
     let mut initializers: Vec<String> = lowered.initializers.keys().cloned().collect();
     initializers.sort();
-    (
+    ModelShape(
         nodes,
         initializers,
         lowered.inputs.clone(),

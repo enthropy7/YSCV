@@ -14,6 +14,7 @@ pub mod generate;
 mod ir;
 #[path = "loader/mod.rs"]
 mod loader;
+mod op;
 mod optimizer;
 mod plan;
 mod proto;
@@ -31,6 +32,7 @@ pub use exporter::{
 pub use generate::{GenerateConfig, generate};
 pub use ir::IrError;
 pub use loader::{OnnxAttribute, OnnxLoader, OnnxModel, OnnxNode, OnnxTensor};
+pub use op::OnnxOp;
 pub use optimizer::{
     GraphCost, GraphCostDiff, GraphStats, NodeCost, graph_cost, graph_cost_diff, graph_cost_report,
     graph_stats, strip_qdq_within_fusion_chains,

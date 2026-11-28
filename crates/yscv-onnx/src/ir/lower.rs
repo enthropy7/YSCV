@@ -13,7 +13,7 @@
 
 use rustc_hash::FxHashMap;
 
-use super::{Graph, Node, Op, ValueKind};
+use super::{Graph, Node, ValueKind};
 use crate::loader::{OnnxModel, OnnxNode};
 
 pub(crate) struct LoweredGraph {
@@ -95,7 +95,7 @@ impl OnnxModel {
                 .map(|name| graph.value_by_name(name))
                 .collect();
             graph.push_node(Node {
-                op: Op::from_op_type(&node.op_type),
+                op: node.op_type.clone(),
                 name: node.name.clone(),
                 inputs,
                 outputs,
@@ -124,7 +124,7 @@ impl Graph {
     pub(crate) fn to_onnx_node(&self, id: super::NodeId) -> Option<OnnxNode> {
         let node = self.node(id)?;
         Some(OnnxNode {
-            op_type: node.op.as_str().to_string(),
+            op_type: node.op.clone(),
             name: node.name.clone(),
             inputs: node
                 .inputs

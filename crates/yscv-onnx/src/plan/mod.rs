@@ -473,23 +473,23 @@ pub(crate) enum NodeKind {
 
 impl NodeKind {
     #[inline]
-    pub(crate) fn from_op_type(op_type: &str) -> Self {
+    pub(crate) fn from_op_type(op_type: &crate::OnnxOp) -> Self {
         match op_type {
-            "Conv" => Self::Conv,
-            "Conv_Relu" => Self::ConvRelu,
-            "Conv_SiLU" => Self::ConvSilu,
-            "Conv_HardSwish" => Self::ConvHardSwish,
-            "BatchNormalization" => Self::BatchNormalization,
-            "Relu" => Self::Relu,
-            "Sigmoid" => Self::Sigmoid,
-            "Mul" => Self::Mul,
-            "Gemm" => Self::Gemm,
-            "Add" => Self::Add,
-            "MatMul" => Self::MatMul,
-            "Reshape" => Self::Reshape,
-            "Constant" => Self::Constant,
-            "Concat" => Self::Concat,
-            "Transpose" => Self::Transpose,
+            crate::OnnxOp::Conv => Self::Conv,
+            crate::OnnxOp::ConvRelu => Self::ConvRelu,
+            crate::OnnxOp::ConvSilu => Self::ConvSilu,
+            crate::OnnxOp::ConvHardSwish => Self::ConvHardSwish,
+            crate::OnnxOp::BatchNormalization => Self::BatchNormalization,
+            crate::OnnxOp::Relu => Self::Relu,
+            crate::OnnxOp::Sigmoid => Self::Sigmoid,
+            crate::OnnxOp::Mul => Self::Mul,
+            crate::OnnxOp::Gemm => Self::Gemm,
+            crate::OnnxOp::Add => Self::Add,
+            crate::OnnxOp::MatMul => Self::MatMul,
+            crate::OnnxOp::Reshape => Self::Reshape,
+            crate::OnnxOp::Constant => Self::Constant,
+            crate::OnnxOp::Concat => Self::Concat,
+            crate::OnnxOp::Transpose => Self::Transpose,
             _ => Self::Other,
         }
     }

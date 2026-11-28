@@ -56,10 +56,10 @@ pub(crate) fn analyze_nchwc_nodes(nodes: &[OnnxNode]) -> NchwcStats {
     let mut current_chain = 0usize;
 
     for node in nodes {
-        if is_nchwc_capable_op(&node.op_type) {
+        if is_nchwc_capable_op(node.op_type.as_str()) {
             capable_nodes += 1;
             current_chain += 1;
-            *op_counts.entry(node.op_type.clone()).or_insert(0) += 1;
+            *op_counts.entry(node.op_type.to_string()).or_insert(0) += 1;
         } else if current_chain > 0 {
             chain_lengths.push(current_chain);
             current_chain = 0;
@@ -97,7 +97,7 @@ mod nchwc_stats_tests {
 
     fn node(op: &str, name: &str) -> OnnxNode {
         OnnxNode {
-            op_type: op.to_string(),
+            op_type: op.into(),
             name: name.to_string(),
             inputs: vec![],
             outputs: vec![],

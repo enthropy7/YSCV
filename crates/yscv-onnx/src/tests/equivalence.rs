@@ -250,7 +250,7 @@ pub(in crate::tests) fn assert_transform_is_noop(
         .optimization_level(OptimizationLevel::Disabled)
         .build()
         .unwrap_or_else(|e| panic!("{label}: load: {e}"));
-    let before_ops: Vec<String> = before.nodes.iter().map(|n| n.op_type.clone()).collect();
+    let before_ops: Vec<crate::OnnxOp> = before.nodes.iter().map(|n| n.op_type.clone()).collect();
 
     let after_source = OnnxLoader::from_bytes(model_bytes)
         .decode()
@@ -259,7 +259,7 @@ pub(in crate::tests) fn assert_transform_is_noop(
     transform(&mut after_graph);
     let after = build_executable_from_graph(after_graph, Default::default())
         .unwrap_or_else(|e| panic!("{label}: build: {e}"));
-    let after_ops: Vec<String> = after.nodes.iter().map(|n| n.op_type.clone()).collect();
+    let after_ops: Vec<crate::OnnxOp> = after.nodes.iter().map(|n| n.op_type.clone()).collect();
 
     assert_eq!(
         before_ops, after_ops,

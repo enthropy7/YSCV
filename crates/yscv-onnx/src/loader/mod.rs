@@ -16,7 +16,7 @@ pub struct OnnxTensor {
 /// An ONNX operator node with its type, inputs, outputs, and attributes.
 #[derive(Debug, Clone)]
 pub struct OnnxNode {
-    pub op_type: String,
+    pub op_type: crate::OnnxOp,
     pub name: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
@@ -183,7 +183,7 @@ fn parse_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
             }
         }
         nodes.push(OnnxNode {
-            op_type: node_proto.op_type.clone().unwrap_or_default(),
+            op_type: crate::OnnxOp::from_op_type(node_proto.op_type.as_deref().unwrap_or_default()),
             name: node_proto.name.clone().unwrap_or_default(),
             inputs: node_proto.input.clone(),
             outputs: node_proto.output.clone(),

@@ -414,9 +414,9 @@ pub fn compile_mpsgraph_plan(
                 }
                 return Err(OnnxError::AtNode {
                     node: node.name.clone(),
-                    op_type: node.op_type.clone(),
+                    op_type: node.op_type.to_string(),
                     source: Box::new(OnnxError::UnsupportedOpType {
-                        op_type: node.op_type.clone(),
+                        op_type: node.op_type.to_string(),
                     }),
                 });
             }

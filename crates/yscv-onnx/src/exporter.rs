@@ -106,7 +106,7 @@ pub fn export_onnx_model(
             }
         }
         node_protos.push(onnx::NodeProto {
-            op_type: Some(node.op_type.clone()),
+            op_type: Some(node.op_type.to_string()),
             name: Some(node.name.clone()),
             input: node.inputs.clone(),
             output: node.outputs.clone(),
@@ -264,7 +264,7 @@ pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExpor
             });
         } else {
             nodes.push(OnnxExportNode {
-                op_type: n.op_type.clone(),
+                op_type: n.op_type.to_string(),
                 name: n.name.clone(),
                 inputs: n.inputs.clone(),
                 outputs: n.outputs.clone(),

@@ -81,7 +81,7 @@ fn graph_cost_parts(model: GraphParts<'_>, shapes: &ShapeInference) -> GraphCost
         let mut cost = cost_node(model, &shapes.shapes, node, output_shape.as_ref());
         cost.index = index;
         cost.name = node.name.clone();
-        cost.op_type = node.op_type.clone();
+        cost.op_type = node.op_type.to_string();
         cost.inputs = node.inputs.clone();
         cost.outputs = node.outputs.clone();
         if cost.reason.is_none() {

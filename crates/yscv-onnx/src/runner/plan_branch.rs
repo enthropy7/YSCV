@@ -1570,7 +1570,7 @@ pub(crate) fn execute_plan_branch(
                         .and_then(|nm| env.get(nm))
                         .map(|t| t.shape().to_vec())
                         .unwrap_or_default();
-                    (n.name.clone(), n.op_type.clone(), in_sh, out_sh)
+                    (n.name.clone(), n.op_type.to_string(), in_sh, out_sh)
                 }
             };
             // Unnamed nodes would otherwise all merge under the empty key.

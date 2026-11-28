@@ -319,7 +319,7 @@ pub fn plan_gpu_execution(model: &OnnxExecutable) -> GpuExecPlan {
                     *fusion_counts.entry("MatMulAdd").or_default() += 1;
                 }
                 GpuExecAction::Normal => {
-                    *op_counts.entry(nodes[i].op_type.clone()).or_default() += 1;
+                    *op_counts.entry(nodes[i].op_type.to_string()).or_default() += 1;
                 }
             }
         }
