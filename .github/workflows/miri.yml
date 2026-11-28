@@ -1,0 +1,41 @@
+name: Miri
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  miri:
+    name: Miri (unsafe soundness)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Nightly + Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Miri — yscv-tensor
+        run: cargo +nightly miri test -p yscv-tensor --lib
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
+
+      # yscv-kernels and yscv-autograd skipped:
+      #   • yscv-kernels: 170+ heavy numerical tests at Miri's 100-1000×
+      #     interpreter slowdown blow past the 6-hour Actions ceiling.
+      #     The actual unsafe surface is SIMD intrinsics + inline asm,
+      #     which Miri can't run anyway (those tests are
+      #     `#[cfg_attr(miri, ignore)]`'d); what's left is safe-Rust
+      #     scalar fallbacks where Miri has no work to do.
+      #   • yscv-autograd: uses rayon (via yscv-kernels), which triggers
+      #     a known crossbeam-epoch Stacked Borrows false positive
+      #     (crossbeam-rs/crossbeam#545).
+      # Race-prone unsafe code (yscv-threadpool/src/section.rs) is
+      # validated separately via ThreadSanitizer (nightly
+      # -Zsanitizer=thread build-std) and Valgrind helgrind in the
+      # section-race-fix work — both more useful here than Miri.
