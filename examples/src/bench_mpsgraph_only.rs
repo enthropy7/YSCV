@@ -15,7 +15,7 @@ fn main() {
 use std::time::Instant;
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use yscv_onnx::{compile_mpsgraph_plan, load_onnx_model_from_file, run_mpsgraph_plan};
+use yscv_onnx::{OnnxLoader, compile_mpsgraph_plan, run_mpsgraph_plan};
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
@@ -27,8 +27,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("usage: bench_mpsgraph_only <model.onnx> [iters]");
     let iters: usize = args.get(2).map(|s| s.parse().unwrap()).unwrap_or(30);
 
-    let model = load_onnx_model_from_file(model_path)?;
+    let model = OnnxLoader::load(model_path).decode()?;
     let input_name = model.inputs.first().cloned().unwrap();
+    let exe = OnnxLoader::from_model(&model).build()?;
 
     let input_shape: Vec<usize> = if model_path.contains("vball") {
         vec![1, 9, 432, 768]
@@ -44,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_data = vec![0.5f32; n];
     let input_tensor = Tensor::from_vec(input_shape, input_data.clone())?;
 
-    let plan = compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input_tensor)])?;
+    let plan = compile_mpsgraph_plan(&exe, &[(input_name.as_str(), &input_tensor)])?;
 
     let inputs: [(&str, &[f32]); 1] = [(input_name.as_str(), input_data.as_slice())];
 

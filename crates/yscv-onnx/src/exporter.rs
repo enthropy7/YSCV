@@ -106,7 +106,7 @@ pub fn export_onnx_model(
             }
         }
         node_protos.push(onnx::NodeProto {
-            op_type: Some(node.op_type.clone()),
+            op_type: Some(node.op_type.to_string()),
             name: Some(node.name.clone()),
             input: node.inputs.clone(),
             output: node.outputs.clone(),
@@ -169,16 +169,14 @@ pub fn export_onnx_model_to_file(
 
 /// Convert a loaded [`crate::loader::OnnxModel`] into an
 /// [`OnnxExportGraph`] that the exporter can serialise. Round-trip with
-/// `load_onnx_model` should preserve nodes, attributes (all 6
-/// [`crate::loader::OnnxAttribute`] variants), and initializer tensor
+/// [`crate::loader::OnnxLoader::decode`] should preserve nodes, attributes
+/// (all 6 [`crate::loader::OnnxAttribute`] variants), and initializer tensor
 /// data; input/output shapes are written as scalar placeholders since
 /// `OnnxModel` only tracks names — downstream tools re-infer shapes.
 ///
-/// Loader/optimizer hot paths store Conv initializers in internal layouts
-/// (KHWC variants) for runtime speed. ONNX files, however, must contain
-/// Conv weights in OIHW. Convert those internal layouts back here so a
-/// saved optimized model can be loaded again without double-packing its
-/// weights.
+/// Source-model Conv initializers remain in ONNX-native OIHW layout. Runtime
+/// prepacks and fused execution nodes belong to `OnnxExecutable`, not this
+/// export path; manually constructed pseudo-ops are defused below.
 pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExportGraph {
     use crate::loader::OnnxAttribute;
     let int64_tensor_names = infer_int64_tensor_names(&model.nodes);
@@ -208,29 +206,65 @@ pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExpor
                 }
             })
             .collect();
-        if matches!(n.op_type.as_str(), "Conv_Relu" | "BatchNormalization_Relu")
+        // Fused `X_Activation` op types are load-time conveniences; ONNX has
+        // no such operators, so defuse them back into the base op plus the
+        // activation. The fused node's output name stays on the trailing
+        // activation node so downstream edges keep their names.
+        let unary_activation = match n.op_type.as_str() {
+            "Conv_Relu" => Some(("Conv", "Relu", "relu")),
+            "BatchNormalization_Relu" => Some(("BatchNormalization", "Relu", "relu")),
+            "Conv_HardSwish" => Some(("Conv", "HardSwish", "hardswish")),
+            _ => None,
+        };
+        if let Some((base_op, act_op, act_tag)) = unary_activation
             && n.outputs.len() == 1
         {
-            let base_op = n.op_type.trim_end_matches("_Relu").to_string();
             let fused_out = n.outputs[0].clone();
-            let inner_out = format!("{}__export_pre_relu", fused_out);
+            let inner_out = format!("{}__export_pre_{}", fused_out, act_tag);
             nodes.push(OnnxExportNode {
-                op_type: base_op,
+                op_type: base_op.to_string(),
                 name: n.name.clone(),
                 inputs: n.inputs.clone(),
                 outputs: vec![inner_out.clone()],
                 attributes,
             });
             nodes.push(OnnxExportNode {
-                op_type: "Relu".to_string(),
-                name: format!("{}__export_relu", n.name),
+                op_type: act_op.to_string(),
+                name: format!("{}__export_{}", n.name, act_tag),
                 inputs: vec![inner_out],
+                outputs: vec![fused_out],
+                attributes: Vec::new(),
+            });
+        } else if n.op_type == "Conv_SiLU" && n.outputs.len() == 1 {
+            // SiLU is `x * sigmoid(x)`: the Conv output feeds both the
+            // Sigmoid and the Mul.
+            let fused_out = n.outputs[0].clone();
+            let conv_out = format!("{}__export_pre_silu", fused_out);
+            let sigmoid_out = format!("{}__export_sigmoid", fused_out);
+            nodes.push(OnnxExportNode {
+                op_type: "Conv".to_string(),
+                name: n.name.clone(),
+                inputs: n.inputs.clone(),
+                outputs: vec![conv_out.clone()],
+                attributes,
+            });
+            nodes.push(OnnxExportNode {
+                op_type: "Sigmoid".to_string(),
+                name: format!("{}__export_sigmoid", n.name),
+                inputs: vec![conv_out.clone()],
+                outputs: vec![sigmoid_out.clone()],
+                attributes: Vec::new(),
+            });
+            nodes.push(OnnxExportNode {
+                op_type: "Mul".to_string(),
+                name: format!("{}__export_mul", n.name),
+                inputs: vec![conv_out, sigmoid_out],
                 outputs: vec![fused_out],
                 attributes: Vec::new(),
             });
         } else {
             nodes.push(OnnxExportNode {
-                op_type: n.op_type.clone(),
+                op_type: n.op_type.to_string(),
                 name: n.name.clone(),
                 inputs: n.inputs.clone(),
                 outputs: n.outputs.clone(),

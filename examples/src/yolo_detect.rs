@@ -33,7 +33,7 @@ use yscv_detect::{
     yolov8_coco_config,
 };
 use yscv_imgproc::imread;
-use yscv_onnx::load_onnx_model_from_file;
+use yscv_onnx::OnnxLoader;
 
 fn decode(
     output: &yscv_tensor::Tensor,
@@ -99,8 +99,13 @@ fn main() {
 
     // Step 1: Load ONNX model
     println!("Loading model: {model_path}");
-    let model = load_onnx_model_from_file(model_path).expect("Failed to load ONNX model");
-    println!("  Nodes: {}", model.nodes.len());
+    let source = OnnxLoader::load(model_path)
+        .decode()
+        .expect("Failed to load ONNX model");
+    println!("  Nodes: {}", source.nodes.len());
+    let model = OnnxLoader::from_model(&source)
+        .build()
+        .expect("Failed to build ONNX executable");
 
     // Step 2: Load and preprocess image
     println!("Loading image: {image_path}");

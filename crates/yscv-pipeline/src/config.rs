@@ -244,8 +244,9 @@ impl PipelineConfig {
     /// before the real-time threads start.
     ///
     /// For ONNX tasks: lightweight magic check (`\x08` — protobuf
-    /// first-field tag for `ModelProto.ir_version`) and full
-    /// `load_onnx_model` parse.
+    /// first-field tag for `ModelProto.ir_version`); the full parse
+    /// happens later in `OnnxLoader` when the dispatcher builds the
+    /// executable.
     ///
     /// Run after `validate_accelerators`.
     pub fn validate_models(&self) -> Result<(), ConfigError> {

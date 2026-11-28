@@ -12,7 +12,7 @@ fn main() {
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use rustc_hash::FxHashMap;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use yscv_onnx::load_onnx_model_from_file;
+use yscv_onnx::OnnxLoader;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
@@ -29,14 +29,17 @@ fn main() {
     for model_path in &models {
         println!("\n{} {} {}", "=".repeat(20), model_path, "=".repeat(20));
 
-        let model = match load_onnx_model_from_file(model_path) {
+        let source = match OnnxLoader::load(model_path).decode() {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("  Failed to load: {e}");
                 continue;
             }
         };
-        println!("  Nodes: {}", model.nodes.len());
+        println!("  Nodes: {}", source.nodes.len());
+        let model = OnnxLoader::from_model(&source)
+            .build()
+            .expect("Failed to build ONNX executable");
 
         // ── CPU baseline ──
         let cpu_out = {

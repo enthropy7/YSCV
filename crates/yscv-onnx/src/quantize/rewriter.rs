@@ -131,14 +131,14 @@ pub fn rewrite_to_qdq(
                     );
                     let nodes_for_consumer = vec![
                         OnnxNode {
-                            op_type: "QuantizeLinear".to_string(),
+                            op_type: "QuantizeLinear".into(),
                             name: q_node_name,
                             inputs: vec![act_name.clone(), scale_init.clone(), zp_init.clone()],
                             outputs: vec![q_out.clone()],
                             attributes: FxHashMap::default(),
                         },
                         OnnxNode {
-                            op_type: "DequantizeLinear".to_string(),
+                            op_type: "DequantizeLinear".into(),
                             name: dq_node_name,
                             inputs: vec![q_out, scale_init, zp_init],
                             outputs: vec![dq_out.clone()],
@@ -193,7 +193,6 @@ pub fn rewrite_to_qdq(
         combined.push(node);
     }
     model.nodes = combined;
-    model.rebuild_runtime_index();
     Ok(())
 }
 
@@ -255,7 +254,6 @@ pub fn rewrite_to_qlinear(
 
     model.initializers.extend(new_initializers);
     model.nodes = new_nodes;
-    model.rebuild_runtime_index();
     Ok(())
 }
 
@@ -305,7 +303,6 @@ pub fn fold_constant_qdq_weights_for_yscv_fast(model: &mut OnnxModel) -> Result<
         .enumerate()
         .filter_map(|(idx, node)| (!remove[idx]).then_some(node))
         .collect();
-    model.rebuild_runtime_index();
     Ok(folded)
 }
 
@@ -333,11 +330,7 @@ pub fn prune_unused_initializers(model: &mut OnnxModel) -> usize {
     model
         .initializers
         .retain(|name, _| used.contains(name.as_str()));
-    let removed = before - model.initializers.len();
-    if removed != 0 {
-        model.rebuild_runtime_index();
-    }
-    removed
+    before - model.initializers.len()
 }
 
 /// Quantize a single weight tensor per-channel int8 symmetric (axis 0)
@@ -418,7 +411,7 @@ fn quantize_weight_into(
     let mut attrs = FxHashMap::default();
     attrs.insert(Attr::Axis, OnnxAttribute::Int(0));
     node_prefix.push(OnnxNode {
-        op_type: "DequantizeLinear".to_string(),
+        op_type: "DequantizeLinear".into(),
         name: dq_node_name,
         inputs: vec![q_name, scale_name, zp_name],
         outputs: vec![dq_name],
@@ -535,7 +528,7 @@ fn rewrite_conv_node_to_qlinear(
 
     let mut out = Vec::new();
     out.push(OnnxNode {
-        op_type: "QuantizeLinear".to_string(),
+        op_type: "QuantizeLinear".into(),
         name: format!("{}__qlinear_x_quant", node.name),
         inputs: vec![x_name.clone(), x_scale, x_zp],
         outputs: vec![x_q_nhwc.clone()],
@@ -543,7 +536,7 @@ fn rewrite_conv_node_to_qlinear(
     });
     if needs_io_transpose {
         out.push(OnnxNode {
-            op_type: "Transpose".to_string(),
+            op_type: "Transpose".into(),
             name: format!("{}__qlinear_x_nhwc_to_nchw", node.name),
             inputs: vec![x_q_nhwc],
             outputs: vec![x_q.clone()],
@@ -552,14 +545,14 @@ fn rewrite_conv_node_to_qlinear(
     }
     out.extend([
         OnnxNode {
-            op_type: "QLinearConv".to_string(),
+            op_type: "QLinearConv".into(),
             name: format!("{}__qlinear", node.name),
             inputs,
             outputs: vec![qconv_out.clone()],
             attributes: node.attributes.clone(),
         },
         OnnxNode {
-            op_type: "DequantizeLinear".to_string(),
+            op_type: "DequantizeLinear".into(),
             name: format!("{}__qlinear_y_dequant", node.name),
             inputs: vec![qconv_out, y_scale, y_zp],
             outputs: vec![if needs_io_transpose {
@@ -572,7 +565,7 @@ fn rewrite_conv_node_to_qlinear(
     ]);
     if needs_io_transpose {
         out.push(OnnxNode {
-            op_type: "Transpose".to_string(),
+            op_type: "Transpose".into(),
             name: format!("{}__qlinear_y_nchw_to_nhwc", node.name),
             inputs: vec![dq_out_nchw],
             outputs: vec![fp32_conv_out.clone()],
@@ -581,7 +574,7 @@ fn rewrite_conv_node_to_qlinear(
     }
     if node.op_type == "Conv_Relu" {
         out.push(OnnxNode {
-            op_type: "Relu".to_string(),
+            op_type: "Relu".into(),
             name: format!("{}__qlinear_relu", node.name),
             inputs: vec![fp32_conv_out],
             outputs: vec![y_name.clone()],
@@ -648,14 +641,14 @@ fn rewrite_matmul_node_to_qlinear(
 
     Ok(Some(vec![
         OnnxNode {
-            op_type: "QuantizeLinear".to_string(),
+            op_type: "QuantizeLinear".into(),
             name: format!("{}__qlinear_a_quant", node.name),
             inputs: vec![a_name.clone(), a_scale.clone(), a_zp.clone()],
             outputs: vec![a_q.clone()],
             attributes: FxHashMap::default(),
         },
         OnnxNode {
-            op_type: "QLinearMatMul".to_string(),
+            op_type: "QLinearMatMul".into(),
             name: format!("{}__qlinear", node.name),
             inputs: vec![
                 a_q,
@@ -671,7 +664,7 @@ fn rewrite_matmul_node_to_qlinear(
             attributes: FxHashMap::default(),
         },
         OnnxNode {
-            op_type: "DequantizeLinear".to_string(),
+            op_type: "DequantizeLinear".into(),
             name: format!("{}__qlinear_y_dequant", node.name),
             inputs: vec![qmm_out, y_scale, y_zp],
             outputs: vec![y_name.clone()],
@@ -808,14 +801,13 @@ mod tests {
             outputs: vec!["y".to_string()],
             initializers,
             nodes: vec![OnnxNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "conv0".to_string(),
                 inputs: vec!["x".to_string(), "w".to_string()],
                 outputs: vec!["y".to_string()],
                 attributes: FxHashMap::default(),
             }],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         }
     }
 
@@ -1000,14 +992,14 @@ mod tests {
         );
         model.nodes = vec![
             OnnxNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "conv0".to_string(),
                 inputs: vec!["x".to_string(), "w".to_string()],
                 outputs: vec!["y0".to_string()],
                 attributes: FxHashMap::default(),
             },
             OnnxNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "conv1".to_string(),
                 inputs: vec!["x".to_string(), "w1".to_string()],
                 outputs: vec!["y1".to_string()],
@@ -1131,7 +1123,7 @@ mod tests {
     fn idempotent_on_empty_input_renames() {
         // No quantizable nodes -> no-op.
         let mut model = build_minimal_model();
-        model.nodes[0].op_type = "Relu".to_string();
+        model.nodes[0].op_type = "Relu".into();
         rewrite_to_qdq(&mut model, &FxHashMap::default(), &[]).unwrap();
         // Weight still present, no extra inits.
         assert!(model.initializers.contains_key("w"));

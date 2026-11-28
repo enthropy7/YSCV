@@ -93,7 +93,7 @@ pub(crate) enum RuntimeInputs<'i> {
 impl<'m, 'i> TensorEnv<'m, 'i> {
     /// Build from the model, pre-allocating a slot for every known tensor name.
     /// Holds a reference to model initializers for zero-copy weight access.
-    pub(crate) fn from_model(model: &'m OnnxModel) -> Self {
+    pub(crate) fn from_model(model: &'m OnnxExecutable) -> Self {
         Self::from_model_with_inputs(model, None)
     }
 
@@ -137,7 +137,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
 
     /// Build from the model with optional borrowed runtime inputs.
     pub(crate) fn from_model_with_inputs(
-        model: &'m OnnxModel,
+        model: &'m OnnxExecutable,
         runtime_inputs: Option<RuntimeInputs<'i>>,
     ) -> Self {
         let num_slots = model.runtime_index.name_to_id.len();
@@ -293,7 +293,7 @@ impl<'m, 'i> TensorEnv<'m, 'i> {
     /// [`Self::conv_weight_layout`] describes as channel-last, and the reader
     /// believes the layout — so the two have to be seeded together.
     #[cfg(feature = "gpu")]
-    pub(crate) fn insert_model_weights(&mut self, model: &'m OnnxModel) {
+    pub(crate) fn insert_model_weights(&mut self, model: &'m OnnxExecutable) {
         for (name, tensor) in &model.initializers {
             let packed = self
                 .resolve_id(name)

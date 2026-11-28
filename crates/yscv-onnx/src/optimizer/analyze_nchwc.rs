@@ -1,11 +1,13 @@
 use rustc_hash::FxHashMap;
 
+#[cfg(test)]
 use crate::loader::OnnxModel;
+use crate::loader::OnnxNode;
 
 /// Summary statistics describing NCHWc-transformability of a loaded graph.
 ///
-/// Produced by [`analyze_nchwc`] — inspects the graph for op patterns that
-/// could stay in NCHWc layout (Conv, Pool, BN, elementwise Add/Relu/Sigmoid,
+/// Inspects the graph for op patterns that could stay in NCHWc layout
+/// (Conv, Pool, BN, elementwise Add/Relu/Sigmoid,
 /// SiLU-as-Sigmoid-Mul) and counts maximal contiguous NCHWc-capable chains.
 /// Used by the runner and by B.8 rollout decisions to judge whether
 /// `YSCV_NCHWC=on` is worth flipping for a given model.
@@ -41,18 +43,23 @@ fn is_nchwc_capable_op(op_type: &str) -> bool {
     )
 }
 
-pub fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
-    let total_nodes = model.nodes.len();
+#[cfg(test)]
+pub(crate) fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
+    analyze_nchwc_nodes(&model.nodes)
+}
+
+pub(crate) fn analyze_nchwc_nodes(nodes: &[OnnxNode]) -> NchwcStats {
+    let total_nodes = nodes.len();
     let mut op_counts: FxHashMap<String, usize> = FxHashMap::default();
     let mut capable_nodes = 0usize;
     let mut chain_lengths: Vec<usize> = Vec::new();
     let mut current_chain = 0usize;
 
-    for node in &model.nodes {
-        if is_nchwc_capable_op(&node.op_type) {
+    for node in nodes {
+        if is_nchwc_capable_op(node.op_type.as_str()) {
             capable_nodes += 1;
             current_chain += 1;
-            *op_counts.entry(node.op_type.clone()).or_insert(0) += 1;
+            *op_counts.entry(node.op_type.to_string()).or_insert(0) += 1;
         } else if current_chain > 0 {
             chain_lengths.push(current_chain);
             current_chain = 0;
@@ -90,7 +97,7 @@ mod nchwc_stats_tests {
 
     fn node(op: &str, name: &str) -> OnnxNode {
         OnnxNode {
-            op_type: op.to_string(),
+            op_type: op.into(),
             name: name.to_string(),
             inputs: vec![],
             outputs: vec![],
@@ -109,7 +116,6 @@ mod nchwc_stats_tests {
             initializers: FxHashMap::default(),
             nodes: vec![],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         };
         for (i, op) in ops.iter().enumerate() {
             m.nodes.push(node(op, &format!("n{i}")));

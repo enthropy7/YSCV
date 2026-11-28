@@ -13,10 +13,11 @@
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
-use super::super::loader::OnnxModel;
+use super::super::ir::Graph;
+use super::super::loader::OnnxLoader;
 // The harness compares a graph against a transform of *the same* graph, so the
 // baseline has to be the file as written — see the note in `tests/mod.rs`.
-use super::super::loader::load_onnx_model_unoptimized as load_onnx_model;
+use super::super::plan::{OptimizationLevel, build_executable_from_graph};
 use super::super::runner::run_onnx_model;
 
 /// Serializes tests that mutate *or read* the process environment.
@@ -93,9 +94,9 @@ pub(in crate::tests) enum Tolerance {
 /// Runs `model_bytes` before and after `transform`, and asserts the outputs
 /// match within `tolerance`.
 ///
-/// Loads the model twice so the reference run cannot observe any mutation the
-/// transform makes. Rebuilds the runtime index afterwards, because passes
-/// deliberately leave that to their caller.
+/// Builds the reference directly from the source and the comparison executable
+/// directly from transformed IR, without writing optimized nodes back to a
+/// source model.
 ///
 /// `label` names the transformation in failure messages.
 pub(in crate::tests) fn assert_transform_preserves_numerics(
@@ -103,17 +104,22 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
     model_bytes: &[u8],
     feed: &FxHashMap<String, Tensor>,
     tolerance: Tolerance,
-    transform: impl FnOnce(&mut OnnxModel),
+    transform: impl FnOnce(&mut Graph),
 ) {
-    let reference_model =
-        load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: reference load: {e}"));
+    let reference_model = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: reference load: {e}"));
     let reference = run_onnx_model(&reference_model, feed.clone())
         .unwrap_or_else(|e| panic!("{label}: reference run: {e}"));
 
-    let mut transformed_model =
-        load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: transformed load: {e}"));
-    transform(&mut transformed_model);
-    transformed_model.rebuild_runtime_index();
+    let transformed_source = OnnxLoader::from_bytes(model_bytes)
+        .decode()
+        .unwrap_or_else(|e| panic!("{label}: transformed load: {e}"));
+    let mut transformed_graph = transformed_source.to_ir();
+    transform(&mut transformed_graph);
+    let transformed_model = build_executable_from_graph(transformed_graph, Default::default())
+        .unwrap_or_else(|e| panic!("{label}: transformed build: {e}"));
     let transformed = run_onnx_model(&transformed_model, feed.clone())
         .unwrap_or_else(|e| panic!("{label}: transformed run: {e}"));
 
@@ -125,8 +131,8 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
 ///
 /// The counterpart of [`assert_transform_preserves_numerics`] for changes that
 /// live in plan construction rather than in a graph pass. Those changes are not
-/// expressible as a transform on `OnnxModel` — they happen during
-/// `rebuild_runtime_index`, so the only way to get an unfused reference is to
+/// expressible as a transform on `OnnxModel` — they happen when `build`
+/// constructs the plan, so the only way to get an unfused reference is to
 /// build the plan twice under different switches.
 ///
 /// Worth routing plan tests through even when they already check the plan's
@@ -150,18 +156,23 @@ pub(in crate::tests) fn assert_plan_fusion_preserves_numerics(
     tolerance: Tolerance,
     kill_switch: &str,
 ) {
-    let fused = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: fused load: {e}"));
+    let fused = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: fused load: {e}"));
 
     // SAFETY: `set_var`/`remove_var` are not thread-safe and `cargo test` runs
     // tests concurrently. The `EnvGuard` the caller passed proves this thread
     // has exclusive use of the environment for the whole test, so no other test
     // can observe the variable while it is set. It is cleared before returning,
-    // including on a failed load, since the result is only unwrapped afterwards.
+    // including on a failed build, since the result is only unwrapped afterwards.
     #[allow(unsafe_code)]
     unsafe {
         std::env::set_var(kill_switch, "1");
     }
-    let unfused = load_onnx_model(model_bytes);
+    let unfused = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build();
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var(kill_switch);
@@ -233,15 +244,22 @@ pub(in crate::tests) fn assert_transform_is_noop(
     label: &str,
     model_bytes: &[u8],
     feed: &FxHashMap<String, Tensor>,
-    transform: impl FnOnce(&mut OnnxModel),
+    transform: impl FnOnce(&mut Graph),
 ) {
-    let before = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: load: {e}"));
-    let before_ops: Vec<String> = before.nodes.iter().map(|n| n.op_type.clone()).collect();
+    let before = OnnxLoader::from_bytes(model_bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: load: {e}"));
+    let before_ops: Vec<crate::OnnxOp> = before.nodes.iter().map(|n| n.op_type.clone()).collect();
 
-    let mut after = load_onnx_model(model_bytes).unwrap_or_else(|e| panic!("{label}: load: {e}"));
-    transform(&mut after);
-    after.rebuild_runtime_index();
-    let after_ops: Vec<String> = after.nodes.iter().map(|n| n.op_type.clone()).collect();
+    let after_source = OnnxLoader::from_bytes(model_bytes)
+        .decode()
+        .unwrap_or_else(|e| panic!("{label}: load: {e}"));
+    let mut after_graph = after_source.to_ir();
+    transform(&mut after_graph);
+    let after = build_executable_from_graph(after_graph, Default::default())
+        .unwrap_or_else(|e| panic!("{label}: build: {e}"));
+    let after_ops: Vec<crate::OnnxOp> = after.nodes.iter().map(|n| n.op_type.clone()).collect();
 
     assert_eq!(
         before_ops, after_ops,
@@ -261,8 +279,14 @@ pub(in crate::tests) fn assert_transform_is_noop(
 #[cfg(test)]
 mod harness_self_tests {
     use super::*;
+    use crate::ir::{Node, Op};
+    use crate::proto::onnx;
     use crate::tests::build_minimal_onnx_model;
-    use crate::{loader::OnnxNode, proto::onnx};
+
+    fn set_second_op(graph: &mut Graph, op_type: &str) {
+        let node = graph.node_ids().nth(1).expect("second node");
+        graph.set_op(node, Op::from_op_type(op_type));
+    }
 
     /// `Relu(x) -> Relu(y)`, so a transform can corrupt it in obvious ways.
     fn two_relu_model() -> Vec<u8> {
@@ -314,7 +338,7 @@ mod harness_self_tests {
             &two_relu_model(),
             &feed(),
             Tolerance::Exact,
-            |model| model.nodes[1].op_type = "Sigmoid".to_string(),
+            |graph| set_second_op(graph, "Sigmoid"),
         );
     }
 
@@ -328,9 +352,7 @@ mod harness_self_tests {
             &two_relu_model(),
             &feed(),
             Tolerance::Exact,
-            |model| {
-                model.nodes[1].op_type = "GlobalAveragePool".to_string();
-            },
+            |graph| set_second_op(graph, "GlobalAveragePool"),
         );
     }
 
@@ -343,7 +365,7 @@ mod harness_self_tests {
             &two_relu_model(),
             &feed(),
             Tolerance::Abs(1e-5),
-            |model| model.nodes[1].op_type = "Sigmoid".to_string(),
+            |graph| set_second_op(graph, "Sigmoid"),
         );
     }
 
@@ -351,12 +373,14 @@ mod harness_self_tests {
     #[test]
     #[should_panic(expected = "expected the transform to decline")]
     fn noop_assertion_catches_a_firing_transform() {
-        assert_transform_is_noop("not-a-noop", &two_relu_model(), &feed(), |model| {
-            model.nodes.push(OnnxNode {
-                op_type: "Relu".to_string(),
+        assert_transform_is_noop("not-a-noop", &two_relu_model(), &feed(), |graph| {
+            let y = graph.lookup_value("y").expect("y exists");
+            let z = graph.value_by_name("z");
+            graph.push_node(Node {
+                op: Op::from_op_type("Relu"),
                 name: "extra".to_string(),
-                inputs: vec!["y".to_string()],
-                outputs: vec!["z".to_string()],
+                inputs: vec![Some(y)],
+                outputs: vec![z],
                 attributes: Default::default(),
             });
         });

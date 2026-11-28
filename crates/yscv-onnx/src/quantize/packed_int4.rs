@@ -119,9 +119,6 @@ pub fn quantize_matmul_weights_int4_packed(
         packed_count += 1;
     }
 
-    if packed_count > 0 {
-        model.rebuild_runtime_index();
-    }
     Ok(packed_count)
 }
 
@@ -197,14 +194,13 @@ mod tests {
             outputs: vec!["y".to_string()],
             initializers,
             nodes: vec![OnnxNode {
-                op_type: op.to_string(),
+                op_type: op.into(),
                 name: "n0".to_string(),
                 inputs: vec!["x".to_string(), "w".to_string()],
                 outputs: vec!["y".to_string()],
                 attributes: attrs,
             }],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         }
     }
 

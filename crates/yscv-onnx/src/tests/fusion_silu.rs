@@ -122,7 +122,7 @@ fn run_conv_silu_graph(
         vec!["x", "w"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     let input_tensor = Tensor::from_vec(input_shape.to_vec(), input_data.clone()).unwrap();
     let mut feed = FxHashMap::default();

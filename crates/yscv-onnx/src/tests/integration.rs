@@ -87,7 +87,10 @@ fn exec_synthetic_cnn_conv_relu_pool_flatten_gemm() {
         vec!["input", "conv_w", "fc_w", "fc_b"],
         vec!["output"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     let input_data: Vec<f32> = (0..16).map(|v| v as f32 / 16.0).collect();
     let input = Tensor::from_vec(vec![1, 1, 4, 4], input_data).unwrap();
@@ -152,7 +155,10 @@ fn conv_identity_relu_bridge_fuses_and_matches_relu_output() {
         vec!["input", "conv_w", "conv_b"],
         vec!["output"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     let input = Tensor::from_vec(vec![1, 1, 2, 2], vec![0.0, 0.4, 1.0, -2.0]).unwrap();
     let mut feed = FxHashMap::default();
@@ -242,7 +248,10 @@ fn constant_tensor_proto_value_attribute() {
         vec!["input"],
         vec!["output"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     let input = Tensor::from_vec(vec![1, 8], (0..8).map(|i| i as f32).collect()).unwrap();
     let mut feed = FxHashMap::default();
@@ -282,7 +291,10 @@ fn split_opset13_input_tensor_sizes() {
         vec!["input", "split_sizes"],
         vec!["out_a", "out_b"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     let input = Tensor::from_vec(vec![1, 6], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]).unwrap();
     let mut feed = FxHashMap::default();
@@ -389,7 +401,10 @@ fn scalar_initializer_gather_unsqueeze_concat() {
         vec!["input", "idx", "four", "axes"],
         vec!["output"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     // Input shape [1, 2, 2, 2] → Shape produces [1, 2, 2, 2]
     // Gather(idx=2) → scalar 2.0
@@ -481,7 +496,10 @@ fn yolo_like_conv_silu_reshape_transpose() {
         vec!["input", "conv_w"],
         vec!["output"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     let input_data: Vec<f32> = (0..16).map(|v| v as f32 / 16.0).collect();
     let input = Tensor::from_vec(vec![1, 1, 4, 4], input_data).unwrap();

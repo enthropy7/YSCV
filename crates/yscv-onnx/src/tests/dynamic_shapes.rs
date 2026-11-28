@@ -81,7 +81,7 @@ fn build_dynamic_batch_cnn() -> Vec<u8> {
 }
 
 /// Run the dynamic-batch CNN with a given batch size and return output tensor.
-fn run_dynamic_cnn(model: &crate::loader::OnnxModel, batch: usize) -> Tensor {
+fn run_dynamic_cnn(model: &crate::plan::OnnxExecutable, batch: usize) -> Tensor {
     // Input: [batch, 1, 4, 4]
     let input_data: Vec<f32> = (0..batch * 16).map(|v| (v % 16) as f32 / 16.0).collect();
     let input = Tensor::from_vec(vec![batch, 1, 4, 4], input_data).unwrap();
@@ -94,7 +94,10 @@ fn run_dynamic_cnn(model: &crate::loader::OnnxModel, batch: usize) -> Tensor {
 #[test]
 fn dynamic_batch_cnn_batch1_and_batch4() {
     let bytes = build_dynamic_batch_cnn();
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     // Run with batch=1
     let out1 = run_dynamic_cnn(&model, 1);
@@ -209,7 +212,10 @@ fn dynamic_batch_conv_bn_pool() {
         vec!["x", "conv_w", "g", "b", "m", "v"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     // batch=1: input [1,1,4,4] -> conv same-pad [1,2,4,4] -> bn [1,2,4,4] -> pool [1,2,2,2]
     let input1 = Tensor::from_vec(vec![1, 1, 4, 4], (0..16).map(|i| i as f32).collect()).unwrap();

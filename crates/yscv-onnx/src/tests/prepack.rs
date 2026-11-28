@@ -25,22 +25,22 @@ use yscv_tensor::Tensor;
 
 use super::equivalence::{Lcg, Tolerance, assert_outputs_match};
 use super::*;
-use crate::optimizer::optimize_onnx_graph;
 #[cfg(not(any(feature = "metal-backend", feature = "gpu")))]
 use crate::runner::conv_kernel::ConvKernel;
 
-/// Loads, optimizes and runs a model, returning its outputs.
+/// Builds an optimized executable and runs it, returning its outputs.
 ///
 /// The optimizer is what turns an `Identity` into an alias and what tries to
 /// fold BatchNormalization into a shared weight, so these fixtures have to run
-/// it — loading alone reaches neither hazard.
+/// it — decoding alone reaches neither hazard.
 fn run_optimized(
     label: &str,
     bytes: &[u8],
     feed: &FxHashMap<String, Tensor>,
 ) -> FxHashMap<String, Tensor> {
-    let mut model = load_onnx_model(bytes).unwrap_or_else(|e| panic!("{label}: load: {e}"));
-    optimize_onnx_graph(&mut model).unwrap_or_else(|e| panic!("{label}: optimize: {e}"));
+    let model = OnnxLoader::from_bytes(bytes)
+        .build()
+        .unwrap_or_else(|e| panic!("{label}: load: {e}"));
     run_onnx_model(&model, feed.clone()).unwrap_or_else(|e| panic!("{label}: run: {e}"))
 }
 
@@ -252,7 +252,10 @@ fn siamese_towers_sharing_weights_compute_the_same_forked() {
     let _env = super::equivalence::lock_env();
     let bytes = siamese_model();
 
-    let model = load_onnx_model(&bytes).expect("load");
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .expect("load");
     assert!(
         !model.runtime_index.node_branches.is_empty(),
         "fixture must split into two towers, or the fork never happens"
@@ -381,8 +384,7 @@ fn a_conv_renamed_by_fusion_keeps_its_packed_weight() {
         vec!["y"],
     );
 
-    let mut model = load_onnx_model(&bytes).expect("load");
-    optimize_onnx_graph(&mut model).expect("optimize");
+    let model = OnnxLoader::from_bytes(&bytes).build().expect("load");
 
     assert!(
         model.nodes.iter().any(|n| n.op_type == "Conv_Relu"),
@@ -443,7 +445,10 @@ fn a_conv_kernel_fed_at_runtime_computes_the_same() {
             vec!["y"],
         );
 
-        let model = load_onnx_model(&dynamic).unwrap_or_else(|e| panic!("{label}: load: {e}"));
+        let model = OnnxLoader::from_bytes(&dynamic)
+            .optimization_level(OptimizationLevel::Disabled)
+            .build()
+            .unwrap_or_else(|e| panic!("{label}: load: {e}"));
         assert!(
             model.runtime_index.conv_kernels[0].is_none(),
             "{label}: the plan resolved a kernel for a Conv whose weight it \
@@ -476,7 +481,10 @@ fn a_conv_kernel_fed_at_runtime_computes_the_same() {
 #[test]
 fn all_three_weight_layouts_reach_their_kernel() {
     let bytes = three_layout_model();
-    let model = load_onnx_model(&bytes).expect("load");
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .expect("load");
 
     let kernels: Vec<ConvKernel> = model
         .runtime_index
@@ -518,7 +526,10 @@ fn all_three_weight_layouts_survive_the_fused_path() {
     let env = super::equivalence::lock_env();
     let bytes = three_layout_model();
 
-    let model = load_onnx_model(&bytes).expect("load");
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .expect("load");
     assert!(
         model
             .runtime_index

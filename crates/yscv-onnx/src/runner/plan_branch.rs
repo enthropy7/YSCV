@@ -9,7 +9,7 @@ use super::*;
 /// The entry point the plan resolved for this Conv node, if it resolved one.
 #[inline]
 fn planned_conv_kernel(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     node_idx: usize,
 ) -> Option<crate::runner::conv_kernel::ConvKernel> {
     model
@@ -21,7 +21,7 @@ fn planned_conv_kernel(
 }
 
 pub(crate) fn execute_plan_branch(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     env: &mut TensorEnv<'_, '_>,
     remaining_uses: &mut [usize],
     output_id_mask: &[bool],
@@ -1570,7 +1570,7 @@ pub(crate) fn execute_plan_branch(
                         .and_then(|nm| env.get(nm))
                         .map(|t| t.shape().to_vec())
                         .unwrap_or_default();
-                    (n.name.clone(), n.op_type.clone(), in_sh, out_sh)
+                    (n.name.clone(), n.op_type.to_string(), in_sh, out_sh)
                 }
             };
             // Unnamed nodes would otherwise all merge under the empty key.

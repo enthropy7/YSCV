@@ -232,14 +232,13 @@ LossKind::Huber
 Load any ONNX model and run inference on CPU. No GPU required. Supports 122 ONNX operators including opset 22.
 
 ```rust
-use yscv_onnx::{load_onnx_model_from_file, run_onnx_model};
+use yscv_onnx::{OnnxLoader, run_onnx_model};
 use yscv_tensor::Tensor;
 use std::collections::HashMap;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Step 1: Load the ONNX model
-    let model = load_onnx_model_from_file("model.onnx")?;
-    println!("Nodes: {}", model.nodes.len());
+    // Step 1: Decode and compile the ONNX model
+    let executable = OnnxLoader::load("model.onnx").build()?;
 
     // Step 2: Create input tensor (match your model's expected shape)
     let input = Tensor::from_vec(
@@ -250,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 3: Run inference
     let mut inputs = HashMap::new();
     inputs.insert("images".to_string(), input);   // "images" = model's input name
-    let outputs = run_onnx_model(&model, inputs)?;
+    let outputs = run_onnx_model(&executable, inputs)?;
 
     // Step 4: Read results
     for (name, tensor) in &outputs {
@@ -287,29 +286,29 @@ yscv-kernels = { version = "0.1", features = ["gpu"] }
 
 ```rust
 use yscv_kernels::GpuBackend;
-use yscv_onnx::{load_onnx_model_from_file, plan_gpu_execution,
+use yscv_onnx::{OnnxLoader, plan_gpu_execution,
                  GpuWeightCache, run_onnx_model_gpu_cached};
 use yscv_tensor::Tensor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("model.onnx")?;
+    let executable = OnnxLoader::load("model.onnx").build()?;
     let gpu = GpuBackend::new()?;
     println!("GPU: {}", gpu.adapter_name());
 
-    let plan = plan_gpu_execution(&model);
+    let plan = plan_gpu_execution(&executable);
     let mut wc = GpuWeightCache::new();
     let input = Tensor::from_vec(vec![1, 3, 640, 640], vec![0.5f32; 1*3*640*640])?;
 
     // Warmup (populates weight cache)
     let mut inputs = std::collections::HashMap::new();
     inputs.insert("images".to_string(), input.clone());
-    let _ = run_onnx_model_gpu_cached(&gpu, &model, inputs, &mut wc, Some(&plan));
+    let _ = run_onnx_model_gpu_cached(&gpu, &executable, inputs, &mut wc, Some(&plan));
 
     // Timed run
     let mut inputs = std::collections::HashMap::new();
     inputs.insert("images".to_string(), input);
     let start = std::time::Instant::now();
-    let outputs = run_onnx_model_gpu_cached(&gpu, &model, inputs, &mut wc, Some(&plan))?;
+    let outputs = run_onnx_model_gpu_cached(&gpu, &executable, inputs, &mut wc, Some(&plan))?;
     println!("GPU inference: {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
 
     for (name, t) in &outputs {
@@ -343,18 +342,18 @@ yscv-kernels = { version = "0.1", features = ["metal-backend"] }
 ```rust
 use yscv_onnx::{
     compile_mpsgraph_plan, run_mpsgraph_plan,
-    load_onnx_model_from_file,
+    OnnxLoader,
 };
 use yscv_tensor::Tensor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("model.onnx")?;
-    let input_name = model.inputs[0].clone();
+    let executable = OnnxLoader::load("model.onnx").build()?;
+    let input_name = "images".to_string();
     let input = Tensor::from_vec(vec![1, 3, 640, 640], vec![0.5f32; 1*3*640*640])?;
 
     // Compile the graph once (10-80ms depending on model).
     // Pipeline depth is controlled by YSCV_MPS_PIPELINE (default 3).
-    let plan = compile_mpsgraph_plan(&model, &[(input_name.as_str(), &input)])?;
+    let plan = compile_mpsgraph_plan(&executable, &[(input_name.as_str(), &input)])?;
 
     // Sync run — submit + wait in one call. Multi-input models pass
     // multiple (name, &[f32]) pairs; lookup is by name.
@@ -376,7 +375,7 @@ use yscv_onnx::{
     compile_mpsgraph_plan, submit_mpsgraph_plan, wait_mpsgraph_plan, InferenceHandle,
 };
 
-let plan = compile_mpsgraph_plan(&model, &[(name, &input)])?;
+let plan = compile_mpsgraph_plan(&executable, &[(name, &input)])?;
 let feeds = [(name, input_data.as_slice())];
 
 // Prime the pipeline — 2 or 3 in-flight frames is the sweet spot.
@@ -411,13 +410,13 @@ YSCV_MPS_PIPELINE=4 cargo run --release --features metal-backend
 If MPSGraph doesn't support all ops in your model, use the per-op Metal backend:
 
 ```rust
-use yscv_onnx::{compile_metal_plan, run_metal_plan, load_onnx_model_from_file};
+use yscv_onnx::{OnnxLoader, compile_metal_plan, run_metal_plan};
 use yscv_tensor::Tensor;
 
-let model = load_onnx_model_from_file("model.onnx")?;
+let executable = OnnxLoader::load("model.onnx").build()?;
 let input = Tensor::from_vec(vec![1, 3, 640, 640], vec![0.5f32; 1*3*640*640])?;
 
-let plan = compile_metal_plan(&model, "images", &input)?;
+let plan = compile_metal_plan(&executable, "images", &input)?;
 let outputs = run_metal_plan(&plan, &vec![0.5f32; 1*3*640*640])?;
 ```
 
@@ -442,10 +441,10 @@ yolo export model=yolo11n.pt format=onnx    # YOLO11 nano
 ```rust
 use yscv_detect::{coco_labels, decode_yolov8_output, letterbox_preprocess, yolov8_coco_config};
 use yscv_imgproc::imread;
-use yscv_onnx::{load_onnx_model_from_file, run_onnx_model};
+use yscv_onnx::{OnnxLoader, run_onnx_model};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("yolov8n.onnx")?;
+    let executable = OnnxLoader::load("yolov8n.onnx").build()?;
     let img = imread("photo.jpg")?;
 
     // Letterbox resize to 640x640
@@ -455,7 +454,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Inference
     let mut inputs = std::collections::HashMap::new();
     inputs.insert("images".to_string(), input_tensor);
-    let outputs = run_onnx_model(&model, inputs)?;
+    let outputs = run_onnx_model(&executable, inputs)?;
     let output = outputs.values().next().unwrap();
 
     // Decode detections
@@ -521,10 +520,10 @@ and runtime A/B env toggles), see
 // Try MPSGraph → Metal per-op → CPU
 #[cfg(feature = "metal-backend")]
 {
-    match compile_mpsgraph_plan(&model, &[("images", &input)]) {
+    match compile_mpsgraph_plan(&executable, &[("images", &input)]) {
         Ok(plan) => { /* fastest path */ },
         Err(_) => {
-            let plan = compile_metal_plan(&model, "images", &input)?;
+            let plan = compile_metal_plan(&executable, "images", &input)?;
             /* metal per-op fallback */
         }
     }
@@ -532,7 +531,7 @@ and runtime A/B env toggles), see
 
 #[cfg(not(feature = "metal-backend"))]
 {
-    let outputs = run_onnx_model(&model, inputs)?;  // CPU
+    let outputs = run_onnx_model(&executable, inputs)?;  // CPU
 }
 ```
 
@@ -854,11 +853,11 @@ cargo build --release --features "gpu,blas"
 Quantize an ONNX model's weights to INT4 for reduced memory and faster inference on LLM-style models:
 
 ```rust
-use yscv_onnx::{load_onnx_model_from_file, quantize_weights_int4, export_onnx_model_to_file};
+use yscv_onnx::{OnnxLoader, quantize_weights_int4, export_onnx_model_to_file};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load the original FP32 model
-    let mut model = load_onnx_model_from_file("llama-7b.onnx")?;
+    // Decode the original FP32 source model
+    let mut model = OnnxLoader::load("llama-7b.onnx").decode()?;
     println!("Original initializers: {}", model.initializers.len());
 
     // Quantize all weight tensors to INT4 (per-channel)
@@ -882,11 +881,11 @@ INT4 quantization maps each weight channel to [-8, 7] with per-channel scale and
 Generate text from a decoder-only transformer model (GPT-2, LLaMA, Mistral) with KV-cache and sampling:
 
 ```rust
-use yscv_onnx::{GenerateConfig, generate, load_onnx_model_from_file, run_onnx_model};
+use yscv_onnx::{GenerateConfig, OnnxLoader, generate, run_onnx_model};
 use yscv_tensor::Tensor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("gpt2.onnx")?;
+    let executable = OnnxLoader::load("gpt2.onnx").build()?;
 
     // Tokenize your prompt (use your tokenizer of choice)
     let prompt_tokens: Vec<u32> = vec![15496, 11, 616, 1438, 318]; // "Hello, my name is"
@@ -912,7 +911,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             let mut inputs = std::collections::HashMap::new();
             inputs.insert("input_ids".to_string(), input);
-            let outputs = run_onnx_model(&model, inputs)?;
+            let outputs = run_onnx_model(&executable, inputs)?;
             let logits = outputs.into_values().next()
                 .expect("model should produce at least one output");
             Ok(logits.data().to_vec())

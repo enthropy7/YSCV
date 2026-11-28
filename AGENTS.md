@@ -259,12 +259,12 @@ A minimal Rust harness looks like this:
 ```rust
 // bench.rs — `cargo run --release --bin bench`
 use std::time::Instant;
-use yscv_onnx::{load_onnx_model_from_file, OnnxRunner};
+use yscv_onnx::{OnnxLoader, OnnxRunner};
 use yscv_tensor::Tensor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = load_onnx_model_from_file("model.onnx")?;
-    let runner = OnnxRunner::new(&model)?;
+    let executable = OnnxLoader::load("model.onnx").build()?;
+    let runner = OnnxRunner::new(&executable)?;
     let input = Tensor::zeros(vec![1, 3, 224, 224])?;
     let feed: Vec<(&str, &Tensor)> = vec![("input", &input)];
 

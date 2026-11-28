@@ -577,7 +577,7 @@ fn dispatch_f16_with_f32_fallback(
 /// Weights are converted to f16, bias stays f32.
 pub fn compile_gpu_plan_f16(
     gpu: &GpuBackend,
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     plan: &GpuExecPlan,
     weight_cache: &mut GpuWeightCache,
     input_name: &str,

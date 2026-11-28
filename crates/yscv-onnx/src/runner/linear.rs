@@ -463,7 +463,7 @@ pub(super) fn exec_qlinear_matmul(node: &OnnxNode, env: &mut TensorEnv) -> Resul
 
     let float_node = OnnxNode {
         name: node.name.clone(),
-        op_type: "MatMul".to_string(),
+        op_type: "MatMul".into(),
         inputs: vec!["__qa".into(), "__qb_mat".into()],
         outputs: vec!["__qmm_out".into()],
         attributes: FxHashMap::default(),
@@ -652,7 +652,7 @@ pub(super) fn exec_matmul_integer(node: &OnnxNode, env: &mut TensorEnv) -> Resul
 
     let mm_node = OnnxNode {
         name: node.name.clone(),
-        op_type: "MatMul".to_string(),
+        op_type: "MatMul".into(),
         inputs: vec!["__mmi_a".into(), "__mmi_b".into()],
         outputs: vec!["__mmi_out".into()],
         attributes: FxHashMap::default(),

@@ -12,12 +12,14 @@ use rustc_hash::FxHashMap;
 ///   cargo run --release --no-default-features -p yscv-llm-bench --bin nchwc_coverage \
 ///     -- private/private/model.onnx
 use rustc_hash::FxHashSet;
-use yscv_onnx::{Attr, OnnxAttribute, OnnxModel, OnnxNode, load_onnx_model_from_file};
+use yscv_onnx::{Attr, OnnxAttribute, OnnxExecutable, OnnxLoader, OnnxNode};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).expect("Usage: nchwc_coverage <model.onnx>");
-    let model = load_onnx_model_from_file(path).expect("failed to load model");
+    let model = OnnxLoader::load(path)
+        .build()
+        .expect("failed to build model");
     run_coverage_probe(&model);
 }
 
@@ -79,9 +81,9 @@ fn is_passthrough(op_type: &str) -> bool {
 /// Build a map: tensor_name → shape, tracing through Identity nodes to
 /// resolve weight-sharing aliases. In Siamese networks, branch1 weights
 /// are Identity(branch0_initializer) — treat them as static weights.
-fn build_effective_initializers(model: &OnnxModel) -> FxHashMap<String, Vec<usize>> {
+fn build_effective_initializers(model: &OnnxExecutable) -> FxHashMap<String, Vec<usize>> {
     let mut effective: FxHashMap<String, Vec<usize>> = model
-        .initializers
+        .initializers()
         .iter()
         .map(|(k, v)| (k.clone(), v.shape().to_vec()))
         .collect();
@@ -91,7 +93,7 @@ fn build_effective_initializers(model: &OnnxModel) -> FxHashMap<String, Vec<usiz
     // Iterate repeatedly until no new entries are added.
     loop {
         let mut added = 0;
-        for node in &model.nodes {
+        for node in model.nodes() {
             if node.op_type != "Identity" {
                 continue;
             }
@@ -112,19 +114,19 @@ fn build_effective_initializers(model: &OnnxModel) -> FxHashMap<String, Vec<usiz
     effective
 }
 
-fn run_coverage_probe(model: &OnnxModel) {
+fn run_coverage_probe(model: &OnnxExecutable) {
     // Resolve weight shapes, including Identity-aliased weights (Siamese branches).
     let effective_weights = build_effective_initializers(model);
     println!(
         "Effective static weights (incl. Identity aliases): {}",
         effective_weights.len()
     );
-    println!("Raw initializers: {}", model.initializers.len());
+    println!("Raw initializers: {}", model.initializers().len());
     println!();
 
     // Count all conv ops
     let conv_ops: Vec<(usize, &yscv_onnx::OnnxNode)> = model
-        .nodes
+        .nodes()
         .iter()
         .enumerate()
         .filter(|(_, n)| {
@@ -136,7 +138,7 @@ fn run_coverage_probe(model: &OnnxModel) {
         .collect();
 
     println!("Total Conv ops: {}", conv_ops.len());
-    println!("Total nodes: {}", model.nodes.len());
+    println!("Total nodes: {}", model.nodes().len());
     println!();
 
     // Classify each conv op
@@ -248,7 +250,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     let mut shown = 0;
     for (_, node) in &conv_ops {
         let weight_name = node.inputs.get(1).map(|s| s.as_str()).unwrap_or("");
-        let in_init = model.initializers.contains_key(weight_name);
+        let in_init = model.initializers().contains_key(weight_name);
         if !in_init {
             let input0 = node.inputs.first().map(|s| s.as_str()).unwrap_or("");
             println!(
@@ -272,7 +274,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     // Investigate Identity weight-sharing: trace onnx::Conv_1037 producer
     {
         let target = "onnx::Conv_1037";
-        for node in &model.nodes {
+        for node in model.nodes() {
             if node.outputs.iter().any(|o| o == target) {
                 println!();
                 println!(
@@ -282,7 +284,7 @@ fn run_coverage_probe(model: &OnnxModel) {
                 println!("  inputs: {:?}", node.inputs);
                 // Check if its input is an initializer
                 for inp in &node.inputs {
-                    if model.initializers.contains_key(inp.as_str()) {
+                    if model.initializers().contains_key(inp.as_str()) {
                         println!("  → input '{}' IS in initializers!", inp);
                     }
                 }
@@ -306,8 +308,8 @@ fn run_coverage_probe(model: &OnnxModel) {
     for (b0, b1) in b0_ops.iter().zip(b1_ops.iter()) {
         let w0 = b0.1.inputs.get(1).map(|s| s.as_str()).unwrap_or("");
         let w1 = b1.1.inputs.get(1).map(|s| s.as_str()).unwrap_or("");
-        let in_init0 = model.initializers.contains_key(w0);
-        let in_init1 = model.initializers.contains_key(w1);
+        let in_init0 = model.initializers().contains_key(w0);
+        let in_init1 = model.initializers().contains_key(w1);
         println!(
             "  b0: {} weight='{}' (in_init={})",
             &b0.1.name[..b0.1.name.len().min(30)],
@@ -323,11 +325,11 @@ fn run_coverage_probe(model: &OnnxModel) {
         println!("  same weight? {}", w0 == w1);
     }
     println!();
-    println!("Total initializers: {}", model.initializers.len());
+    println!("Total initializers: {}", model.initializers().len());
 
     // Count QLinearConv ops
     let qlinear_conv: Vec<_> = model
-        .nodes
+        .nodes()
         .iter()
         .filter(|n| n.op_type == "QLinearConv")
         .collect();
@@ -335,7 +337,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     println!("QLinearConv ops in model: {}", qlinear_conv.len());
     // Show all non-Conv node op types and counts
     let mut op_counts: FxHashMap<&str, usize> = FxHashMap::default();
-    for node in &model.nodes {
+    for node in model.nodes() {
         *op_counts.entry(node.op_type.as_str()).or_default() += 1;
     }
     println!("All op types:");
@@ -353,7 +355,7 @@ fn run_coverage_probe(model: &OnnxModel) {
 
     // Build tensor → producing node index
     let mut tensor_producer: FxHashMap<&str, usize> = FxHashMap::default();
-    for (i, node) in model.nodes.iter().enumerate() {
+    for (i, node) in model.nodes().iter().enumerate() {
         for out in &node.outputs {
             if !out.is_empty() {
                 tensor_producer.insert(out.as_str(), i);
@@ -362,8 +364,8 @@ fn run_coverage_probe(model: &OnnxModel) {
     }
 
     // Build node → consumers (node indices)
-    let mut node_consumers: Vec<Vec<usize>> = vec![vec![]; model.nodes.len()];
-    for (i, node) in model.nodes.iter().enumerate() {
+    let mut node_consumers: Vec<Vec<usize>> = vec![vec![]; model.nodes().len()];
+    for (i, node) in model.nodes().iter().enumerate() {
         for inp in &node.inputs {
             if let Some(&prod) = tensor_producer.get(inp.as_str()) {
                 node_consumers[prod].push(i);
@@ -373,7 +375,7 @@ fn run_coverage_probe(model: &OnnxModel) {
 
     // Classify each node eligible for NCHWc
     let node_eligible: Vec<bool> = model
-        .nodes
+        .nodes()
         .iter()
         .map(|node| {
             if matches!(
@@ -411,7 +413,7 @@ fn run_coverage_probe(model: &OnnxModel) {
                 };
                 kh <= 5 && kw <= 5 && sh <= 2 && sw <= 2
             } else {
-                is_passthrough(&node.op_type)
+                is_passthrough(node.op_type.as_str())
             }
         })
         .collect();
@@ -427,7 +429,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     let static_names: FxHashSet<&str> = effective_weights.keys().map(|s| s.as_str()).collect();
     let initializer_names: FxHashSet<&str> = static_names.clone();
     let dynamic_inputs: Vec<&str> = model
-        .inputs
+        .input_names()
         .iter()
         .map(|s| s.as_str())
         .filter(|s| !initializer_names.contains(s))
@@ -451,7 +453,7 @@ fn run_coverage_probe(model: &OnnxModel) {
     // Track which dynamic inputs get a converter
     let mut converted_inputs: FxHashSet<String> = FxHashSet::default();
 
-    for (i, node) in model.nodes.iter().enumerate() {
+    for (i, node) in model.nodes().iter().enumerate() {
         if !node_eligible[i] && !matches!(node.op_type.as_str(), "Conv" | "Conv_Relu" | "Conv_SiLU")
         {
             // Non-NCHWc node: outputs are NHWC.
@@ -492,7 +494,7 @@ fn run_coverage_probe(model: &OnnxModel) {
 
     // Count exit converters for graph outputs
     let mut output_converts = 0usize;
-    for out in &model.outputs {
+    for out in model.output_names() {
         if nchwc_tensors.contains(out) {
             output_converts += 1;
         }

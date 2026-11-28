@@ -55,9 +55,9 @@ pub mod prelude {
         ImageF32, ImageU8, ImgProcError, imread, imread_gray, imwrite, rgb_to_grayscale,
     };
 
-    // onnx — model loading, inference, and error type
+    // onnx — loader, executable, and error type
     pub use yscv_onnx::{
-        OnnxError, OnnxModel, load_onnx_model, load_onnx_model_from_file, run_onnx_model,
+        OnnxError, OnnxExecutable, OnnxLoader, OnnxModel, OptimizationLevel, run_onnx_model,
     };
 
     // detect

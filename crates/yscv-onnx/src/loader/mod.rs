@@ -16,7 +16,7 @@ pub struct OnnxTensor {
 /// An ONNX operator node with its type, inputs, outputs, and attributes.
 #[derive(Debug, Clone)]
 pub struct OnnxNode {
-    pub op_type: String,
+    pub op_type: crate::OnnxOp,
     pub name: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
@@ -50,8 +50,6 @@ pub struct OnnxModel {
     /// the original `initializers` entry is removed when a weight is
     /// packed so dispatch routes through `packed_int4_gemv_dispatch`.
     pub(crate) packed_int4_weights: FxHashMap<String, crate::quantize::PackedInt4Weight>,
-    /// Precomputed runtime metadata for fast per-inference environment setup.
-    pub(crate) runtime_index: RuntimeModelIndex,
 }
 
 impl OnnxModel {
@@ -64,68 +62,86 @@ impl OnnxModel {
     pub const fn node_count(&self) -> usize {
         self.nodes.len()
     }
+}
 
-    /// Rebuilds runtime slot/id metadata after graph mutations.
-    ///
-    /// One action per node is *not* an invariant of the finished plan, and this
-    /// used to assert it was: the `FusedPwDwPwReduce` merge deliberately drops
-    /// the actions it absorbs, so a merged plan is shorter than the node list
-    /// and `nchwc_handoff` is documented as indexed by plan position for
-    /// exactly that reason. Nothing downstream reads a node through its plan
-    /// position — every action carries its own `node_idx` — so a short plan
-    /// executes correctly. The place the correspondence does have to hold is
-    /// the build loop that establishes it, before the merge runs, and
-    /// [`build_runtime_index`] asserts it there.
-    pub(crate) fn rebuild_runtime_index(&mut self) {
-        self.runtime_index =
-            build_runtime_index(&self.inputs, &self.outputs, &self.initializers, &self.nodes);
+enum LoaderSource<'a> {
+    Path(std::path::PathBuf),
+    Bytes(&'a [u8]),
+    Model(&'a OnnxModel),
+}
+
+/// Configures decoding and compilation of an ONNX executable.
+pub struct OnnxLoader<'a> {
+    source: LoaderSource<'a>,
+    optimization_level: Option<crate::plan::OptimizationLevel>,
+}
+
+impl<'a> OnnxLoader<'a> {
+    /// Loads an ONNX model from a file when [`Self::build`] or [`Self::decode`] is called.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Self {
+        Self {
+            source: LoaderSource::Path(path.as_ref().to_path_buf()),
+            optimization_level: None,
+        }
+    }
+
+    /// Loads an ONNX model from protobuf bytes.
+    pub fn from_bytes(data: &'a [u8]) -> Self {
+        Self {
+            source: LoaderSource::Bytes(data),
+            optimization_level: None,
+        }
+    }
+
+    /// Builds an executable from an existing source model.
+    pub fn from_model(model: &'a OnnxModel) -> Self {
+        Self {
+            source: LoaderSource::Model(model),
+            optimization_level: None,
+        }
+    }
+
+    /// Selects whether IR optimization passes run during [`Self::build`].
+    pub fn optimization_level(mut self, level: crate::plan::OptimizationLevel) -> Self {
+        self.optimization_level = Some(level);
+        self
+    }
+
+    /// Decodes the canonical source model without constructing runtime state.
+    pub fn decode(self) -> Result<OnnxModel, OnnxError> {
+        match self.source {
+            LoaderSource::Path(path) => {
+                let data = std::fs::read(&path).map_err(|source| OnnxError::Io {
+                    path,
+                    source: std::sync::Arc::new(source),
+                })?;
+                parse_onnx_model(&data)
+            }
+            LoaderSource::Bytes(data) => parse_onnx_model(data),
+            LoaderSource::Model(model) => Ok(model.clone()),
+        }
+    }
+
+    /// Decodes, lowers, and compiles an immutable executable.
+    pub fn build(self) -> Result<crate::plan::OnnxExecutable, OnnxError> {
+        let optimization_level = self.optimization_level.unwrap_or_else(|| {
+            if std::env::var("YSCV_ONNX_OPTIMIZE_OFF").as_deref() == Ok("1") {
+                crate::plan::OptimizationLevel::Disabled
+            } else {
+                crate::plan::OptimizationLevel::Enabled
+            }
+        });
+        match self.source {
+            LoaderSource::Model(model) => crate::plan::build_executable(model, optimization_level),
+            _ => {
+                let model = self.decode()?;
+                crate::plan::build_executable(&model, optimization_level)
+            }
+        }
     }
 }
 
-/// Loads an ONNX model from raw protobuf bytes, optimized for inference.
-///
-/// The graph optimizer runs as part of loading. It used to be a separate
-/// [`optimize_onnx_graph`](crate::optimize_onnx_graph) call every caller had to
-/// remember, and forgetting it did not produce an unoptimized model so much as
-/// a slow one — or, on the Conv paths, a runtime shape error from a kernel
-/// handed a weight the plan builder never got to permute.
-///
-/// Set `YSCV_ONNX_OPTIMIZE_OFF=1` to skip it process-wide, or call
-/// [`load_onnx_model_unoptimized`] for the graph exactly as the file spells it.
-/// The variable is read per load rather than cached, because loading is not a
-/// hot path and a cached read would ignore anything set after the first model.
-pub fn load_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
-    let mut model = parse_onnx_model(data)?;
-    if optimize_on_load() {
-        crate::optimizer::optimize_onnx_graph(&mut model)?;
-    } else {
-        model.rebuild_runtime_index();
-    }
-    Ok(model)
-}
-
-/// Loads an ONNX model from raw protobuf bytes without optimizing it.
-///
-/// The graph comes back node-for-node as the file spells it. That is what an
-/// inspection tool wants to report on, and what a test asserting the shape of a
-/// fixture wants to assert against; it is not what an inference caller wants,
-/// since none of the load-time fusions or weight folds have run.
-pub fn load_onnx_model_unoptimized(data: &[u8]) -> Result<OnnxModel, OnnxError> {
-    let mut model = parse_onnx_model(data)?;
-    model.rebuild_runtime_index();
-    Ok(model)
-}
-
-/// Whether [`load_onnx_model`] should run the optimizer.
-fn optimize_on_load() -> bool {
-    std::env::var_os("YSCV_ONNX_OPTIMIZE_OFF").is_none()
-}
-
-/// Decodes the protobuf into a model, leaving the runtime index empty.
-///
-/// The index is expensive to build — plan construction and weight prepacking —
-/// and the optimizer invalidates it, so it is built exactly once, by whichever
-/// entry point above finishes the load.
+/// Decodes the protobuf into a canonical source model without runtime state.
 fn parse_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
     let model_proto = onnx::ModelProto::decode(data)?;
 
@@ -167,7 +183,7 @@ fn parse_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
             }
         }
         nodes.push(OnnxNode {
-            op_type: node_proto.op_type.clone().unwrap_or_default(),
+            op_type: crate::OnnxOp::from_op_type(node_proto.op_type.as_deref().unwrap_or_default()),
             name: node_proto.name.clone().unwrap_or_default(),
             inputs: node_proto.input.clone(),
             outputs: node_proto.output.clone(),
@@ -197,27 +213,8 @@ fn parse_onnx_model(data: &[u8]) -> Result<OnnxModel, OnnxError> {
         initializers,
         nodes,
         packed_int4_weights: FxHashMap::default(),
-        runtime_index: RuntimeModelIndex::default(),
     })
-}
-
-/// Loads an ONNX model from a file path, optimized for inference.
-///
-/// Accepts any path-like type (`&str`, `String`, `&Path`, `PathBuf`, etc.).
-/// See [`load_onnx_model`] for the optimizer's role in loading and how to opt
-/// out of it.
-pub fn load_onnx_model_from_file(
-    path: impl AsRef<std::path::Path>,
-) -> Result<OnnxModel, OnnxError> {
-    let path = path.as_ref();
-    let data = std::fs::read(path).map_err(|e| OnnxError::Io {
-        path: path.to_path_buf(),
-        source: std::sync::Arc::new(e),
-    })?;
-    load_onnx_model(&data)
 }
 
 mod convert;
 use convert::*;
-
-use crate::plan::{RuntimeModelIndex, build_runtime_index};

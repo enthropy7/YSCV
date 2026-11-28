@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use yscv_onnx::{
-    Attr, OnnxAttribute, OnnxModel, OnnxNode, OnnxRunner, dump_runner_profile,
-    load_onnx_model_from_file, quant_runtime_stats, reset_quant_runtime_stats,
+    Attr, OnnxAttribute, OnnxExecutable, OnnxLoader, OnnxNode, OnnxRunner, dump_runner_profile,
+    quant_runtime_stats, reset_quant_runtime_stats,
 };
 use yscv_tensor::Tensor;
 
@@ -100,14 +100,14 @@ fn attr_int(node: &OnnxNode, name: Attr, default: i64) -> i64 {
     }
 }
 
-fn qlinear_conv_kind(model: &OnnxModel, node: &OnnxNode) -> Option<&'static str> {
+fn qlinear_conv_kind(model: &OnnxExecutable, node: &OnnxNode) -> Option<&'static str> {
     if node.op_type != "QLinearConv" {
         return None;
     }
     let w = node
         .inputs
         .get(3)
-        .and_then(|name| model.initializers.get(name))?;
+        .and_then(|name| model.initializers().get(name))?;
     let shape = w.shape();
     if shape.len() != 4 {
         return None;
@@ -143,8 +143,8 @@ fn qlinear_boundary_after(nodes: &[OnnxNode], start: usize, input: &str) -> Opti
     None
 }
 
-fn quant_chain_candidates(model: &OnnxModel) -> usize {
-    let nodes = &model.nodes;
+fn quant_chain_candidates(model: &OnnxExecutable) -> usize {
+    let nodes = model.nodes();
     let mut count = 0usize;
     let mut skip = vec![false; nodes.len()];
     for i in 0..nodes.len() {
@@ -204,11 +204,12 @@ fn quant_chain_candidates(model: &OnnxModel) -> usize {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let model =
-        load_onnx_model_from_file(Path::new(&args.model)).map_err(|e| format!("load: {e}"))?;
-    let chain_candidates = quant_chain_candidates(&model);
+    let executable = OnnxLoader::load(Path::new(&args.model))
+        .build()
+        .map_err(|e| format!("build: {e}"))?;
+    let chain_candidates = quant_chain_candidates(&executable);
     let runner =
-        OnnxRunner::with_threads(&model, args.threads).map_err(|e| format!("runner: {e}"))?;
+        OnnxRunner::with_threads(&executable, args.threads).map_err(|e| format!("runner: {e}"))?;
     let tensors: Vec<Tensor> = args
         .inputs
         .iter()

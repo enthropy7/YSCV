@@ -19,12 +19,12 @@ use crate::attr::Attr;
 use prost::Message;
 
 // Fixtures are asserted against the graph as written, and the pass tests drive
-// their pass explicitly, so every test here wants the loader *without* the
-// load-time optimizer `load_onnx_model` now runs. Aliased in one place rather
-// than renamed at the ~110 call sites below; the load-time default has its own
-// tests in `tests/loader.rs`.
-use super::loader::OnnxAttribute;
-use super::loader::load_onnx_model_unoptimized as load_onnx_model;
+// their pass explicitly, so tests here decode the source model for graph
+// assertions and build executables with `OptimizationLevel::Disabled` for
+// runtime/plan assertions. The load-time default has its own tests in
+// `tests/loader.rs`.
+use super::loader::{OnnxAttribute, OnnxLoader};
+use super::plan::OptimizationLevel;
 use super::proto::onnx;
 use super::runner::run_onnx_model;
 use rustc_hash::FxHashMap;
@@ -98,7 +98,10 @@ pub(super) fn run_single_op(
     let all_input_names: Vec<&str> = input_names.clone();
     let bytes =
         build_minimal_onnx_model(vec![node], init_protos, all_input_names, vec![output_name]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let mut feed = FxHashMap::default();
     for (name, tensor) in inputs {
         feed.insert(name.to_string(), tensor);

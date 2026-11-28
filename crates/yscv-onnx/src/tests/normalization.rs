@@ -51,7 +51,10 @@ fn exec_batch_norm_identity() {
         vec!["x", "g", "b", "m", "v"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input.clone());
     let result = run_onnx_model(&model, feed).unwrap();

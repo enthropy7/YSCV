@@ -125,7 +125,10 @@ fn qlinear_matching_dq_relu_q_runs_in_quant_domain() {
         vec!["xq", "s0", "zp0", "s1", "zp1"],
         vec!["yq"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     assert!(
         model.runtime_index.execution_plan.iter().any(|a| matches!(
             a,
@@ -169,7 +172,10 @@ fn qlinear_matmul_symmetric_fast_path_with_nontrivial_scales() {
         0.25,
         0.0,
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
@@ -268,7 +274,10 @@ fn qlinear_conv_symmetric_fast_path_with_bias() {
         vec!["x", "x_s", "x_zp", "w", "w_s", "w_zp", "y_s", "y_zp", "b"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     crate::runner::reset_quant_runtime_stats();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let stats = crate::runner::quant_runtime_stats();
@@ -426,7 +435,10 @@ fn check_qlinear_depthwise_with_bias(
         ],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     assert_eq!(
         model.runtime_index.prepacked_i8_depthwise.contains_key("w"),
         !runtime_filter,
@@ -579,7 +591,10 @@ fn check_qlinear_conv_ref(
         vec!["x", "x_s", "x_zp", "w", "w_s", "w_zp", "y_s", "y_zp", "b"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     crate::runner::reset_quant_runtime_stats();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let stats = crate::runner::quant_runtime_stats();
@@ -684,7 +699,10 @@ fn matmul_integer_symmetric_fast_path() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], inits, vec!["a", "b"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
@@ -744,7 +762,10 @@ fn conv_integer_symmetric_fast_path() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], inits, vec!["x", "w"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     let out = result["y"].data();
 
@@ -802,7 +823,7 @@ fn packed_int4_matmul_routes_through_gemv() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], inits, vec!["x", "w"], vec!["y"]);
-    let mut model = load_onnx_model(&bytes).unwrap();
+    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     // Reference fp32 forward.
     let activation: Vec<f32> = (0..k).map(|i| ((i as f32) - 32.0) * 0.05).collect();
@@ -811,7 +832,11 @@ fn packed_int4_matmul_routes_through_gemv() {
         "x".to_string(),
         Tensor::from_vec(vec![1, k], activation.clone()).unwrap(),
     );
-    let fp32 = run_onnx_model(&model, feed).unwrap();
+    let exec = OnnxLoader::from_model(&model)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
+    let fp32 = run_onnx_model(&exec, feed).unwrap();
     let ref_out = fp32["y"].clone();
 
     // Quantise: replaces `w` initializer with packed-int4 side-table
@@ -826,7 +851,11 @@ fn packed_int4_matmul_routes_through_gemv() {
         "x".to_string(),
         Tensor::from_vec(vec![1, k], activation).unwrap(),
     );
-    let quant = run_onnx_model(&model, feed).unwrap();
+    let exec = OnnxLoader::from_model(&model)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
+    let quant = run_onnx_model(&exec, feed).unwrap();
     let q_out = &quant["y"];
     assert_eq!(q_out.shape(), ref_out.shape());
 
@@ -1032,7 +1061,10 @@ fn run_quantized_pw_dw_case(
         let mut model_outputs = vec!["y"];
         model_outputs.extend(side_outputs.iter().map(String::as_str));
         let bytes = build_minimal_onnx_model(nodes, inits, model_inputs, model_outputs);
-        let model = load_onnx_model(&bytes).unwrap();
+        let model = OnnxLoader::from_bytes(&bytes)
+            .optimization_level(OptimizationLevel::Disabled)
+            .build()
+            .unwrap();
         assert!(
             model
                 .runtime_index
@@ -1311,7 +1343,10 @@ fn quantized_dw_pw_chain_bitwise_matches_unfused() {
             ],
             vec!["y"],
         );
-        let model = load_onnx_model(&bytes).unwrap();
+        let model = OnnxLoader::from_bytes(&bytes)
+            .optimization_level(OptimizationLevel::Disabled)
+            .build()
+            .unwrap();
         assert!(
             model
                 .runtime_index
@@ -1387,7 +1422,10 @@ fn qlinear_matmul_asymmetric_uses_fp32_fallback() {
         1.0,
         0.0,
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let result = run_onnx_model(&model, FxHashMap::default()).unwrap();
     assert_eq!(result["y"].shape(), &[2, 2]);
     // Verify finite output — the asymmetric path's exact numerics are
@@ -1481,7 +1519,10 @@ fn quantized_conv_dq_pair_matches_the_unfused_result() {
         vec!["x_s", "x_zp", "pw_w", "pw_w_s", "pw_w_zp", "y_s", "y_zp"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     assert!(
         model
             .runtime_index
@@ -1637,7 +1678,10 @@ fn quantized_fork_pair_still_materializes_the_side_value() {
         ],
         vec!["y", "side_out"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     assert!(
         model
             .runtime_index
@@ -1664,7 +1708,7 @@ fn quantized_fork_pair_still_materializes_the_side_value() {
 /// checking only the values of the outputs it did get back will not notice.
 fn assert_quant_fast_path_matches_unfused(
     label: &str,
-    model: &crate::loader::OnnxModel,
+    model: &crate::plan::OnnxExecutable,
     feed: &FxHashMap<String, Tensor>,
 ) {
     // SAFETY: `set_var` is not thread-safe and `cargo test` is concurrent. Every
@@ -1820,7 +1864,10 @@ fn quantized_residual_chain_matches_the_unfused_result() {
         ],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     assert!(
         model
             .runtime_index

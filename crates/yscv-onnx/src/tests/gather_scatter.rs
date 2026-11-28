@@ -284,7 +284,10 @@ fn node_error_is_tagged_with_its_node_once() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![], vec!["data", "indices"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("data".to_string(), input);
     feed.insert("indices".to_string(), indices);

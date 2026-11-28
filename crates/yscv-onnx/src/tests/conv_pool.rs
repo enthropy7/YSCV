@@ -27,7 +27,10 @@ fn exec_conv_with_padding() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![conv_w], vec!["x", "w"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
 
     let input = Tensor::from_vec(
         vec![1, 1, 3, 3],
@@ -71,7 +74,10 @@ fn dispatch_records_depthwise_padded_kernel() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![conv_w], vec!["x", "w"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let input = Tensor::from_vec(vec![1, c, 3, 3], vec![1.0f32; c * 9]).unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
@@ -112,7 +118,10 @@ fn dispatch_records_pointwise_gemm_kernel() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![conv_w], vec!["x", "w"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let input = Tensor::from_vec(vec![1, i, 2, 2], vec![1.0f32; i * 4]).unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
@@ -149,7 +158,10 @@ fn dispatch_records_matmul_kernel() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![b_w], vec!["x", "w"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let input = Tensor::from_vec(vec![32, 64], vec![0.1f32; 32 * 64]).unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);
@@ -202,7 +214,10 @@ fn dispatch_records_gemm_kernel() {
         vec!["x", "w", "c"],
         vec!["y"],
     );
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
     let input = Tensor::from_vec(vec![32, 64], vec![0.1f32; 32 * 64]).unwrap();
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), input);

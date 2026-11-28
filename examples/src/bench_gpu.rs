@@ -9,7 +9,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use rustc_hash::FxHashMap;
 use yscv_kernels::GpuBackend;
 use yscv_onnx::{
-    GpuWeightCache, load_onnx_model_from_file, plan_gpu_execution, profile_onnx_model_gpu,
+    GpuWeightCache, OnnxLoader, plan_gpu_execution, profile_onnx_model_gpu,
     run_onnx_model_gpu_cached, run_onnx_model_gpu_with,
 };
 use yscv_tensor::Tensor;
@@ -24,8 +24,13 @@ fn main() {
     let do_profile = args.iter().any(|a| a == "--profile");
     let model_path = &args[1];
     eprintln!("Loading model: {model_path}");
-    let model = load_onnx_model_from_file(model_path).expect("Failed to load ONNX model");
-    eprintln!("  Nodes: {}", model.nodes.len());
+    let source = OnnxLoader::load(model_path)
+        .decode()
+        .expect("Failed to load ONNX model");
+    eprintln!("  Nodes: {}", source.nodes.len());
+    let model = OnnxLoader::from_model(&source)
+        .build()
+        .expect("Failed to build ONNX executable");
 
     let gpu = GpuBackend::new().expect("GPU init failed");
     let mut wc = GpuWeightCache::new();

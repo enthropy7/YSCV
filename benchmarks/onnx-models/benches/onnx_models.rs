@@ -2,13 +2,13 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use yscv_onnx::{OnnxModel, OnnxRunner, load_onnx_model_from_file, optimize_onnx_graph};
+use yscv_onnx::{OnnxExecutable, OnnxLoader, OnnxRunner};
 use yscv_onnx_model_bench::{asset_dir, download_assets, make_inputs, model_cases};
 use yscv_tensor::Tensor;
 
 struct PreparedCase {
     name: String,
-    model: OnnxModel,
+    model: OnnxExecutable,
     inputs: Vec<(String, Tensor)>,
 }
 
@@ -19,7 +19,8 @@ fn bench_onnx_models(criterion: &mut Criterion) {
         .expect("load model benchmark cases")
         .into_iter()
         .map(|case| {
-            let model = load_onnx_model_from_file(asset_dir.join(&case.model))
+            let model = OnnxLoader::load(asset_dir.join(&case.model))
+                .build()
                 .unwrap_or_else(|error| panic!("load {}: {error}", case.model));
             let inputs = make_inputs(&case, &asset_dir).expect("build model benchmark inputs");
             PreparedCase {

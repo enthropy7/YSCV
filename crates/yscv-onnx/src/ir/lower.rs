@@ -1,10 +1,9 @@
 //! Lowering between [`OnnxModel`] and the optimization [`Graph`].
 //!
-//! `OnnxModel` stays the crate's public model type and the runner's input;
-//! the IR is an internal working form that passes operate on. So the flow is
-//! `to_ir` → run passes → `apply_ir`, and the two directions have to agree
-//! exactly: anything the IR cannot represent would be silently dropped from
-//! every optimized model.
+//! `OnnxModel` is the canonical source graph; the IR is the internal working
+//! form for passes and executable construction. Executable builds use `to_ir` →
+//! optional passes → `lower`, so anything the IR cannot represent must be
+//! preserved rather than silently dropped.
 //!
 //! Known gap: `OnnxNode` has no `domain` field — the loader discards operator
 //! domains when it decodes the proto, so custom-domain ops are already
@@ -14,8 +13,45 @@
 
 use rustc_hash::FxHashMap;
 
-use super::{Graph, Node, Op, ValueKind};
+use super::{Graph, Node, ValueKind};
 use crate::loader::{OnnxModel, OnnxNode};
+
+pub(crate) struct LoweredGraph {
+    pub(crate) inputs: Vec<String>,
+    pub(crate) outputs: Vec<String>,
+    pub(crate) initializers: FxHashMap<String, yscv_tensor::Tensor>,
+    pub(crate) nodes: Vec<OnnxNode>,
+}
+
+impl Graph {
+    pub(crate) fn lower(&self) -> LoweredGraph {
+        let nodes = self
+            .node_ids()
+            .filter_map(|id| self.to_onnx_node(id))
+            .collect();
+        let mut initializers = FxHashMap::default();
+        for idx in 0..self.value_count() {
+            let value = self.value(super::ValueId(idx as u32));
+            if let ValueKind::Constant(tensor) = &value.kind {
+                initializers.insert(value.name.clone(), tensor.clone());
+            }
+        }
+        LoweredGraph {
+            inputs: self
+                .graph_inputs()
+                .iter()
+                .map(|v| self.value(*v).name.clone())
+                .collect(),
+            outputs: self
+                .graph_outputs()
+                .iter()
+                .map(|v| self.value(*v).name.clone())
+                .collect(),
+            initializers,
+            nodes,
+        }
+    }
+}
 
 impl OnnxModel {
     /// Builds the def-use IR for this model.
@@ -59,7 +95,7 @@ impl OnnxModel {
                 .map(|name| graph.value_by_name(name))
                 .collect();
             graph.push_node(Node {
-                op: Op::from_op_type(&node.op_type),
+                op: node.op_type.clone(),
                 name: node.name.clone(),
                 inputs,
                 outputs,
@@ -88,7 +124,7 @@ impl Graph {
     pub(crate) fn to_onnx_node(&self, id: super::NodeId) -> Option<OnnxNode> {
         let node = self.node(id)?;
         Some(OnnxNode {
-            op_type: node.op.as_str().to_string(),
+            op_type: node.op.clone(),
             name: node.name.clone(),
             inputs: node
                 .inputs
@@ -105,41 +141,5 @@ impl Graph {
                 .collect(),
             attributes: node.attributes.clone(),
         })
-    }
-}
-
-impl OnnxModel {
-    /// Writes an optimized graph back over this model.
-    ///
-    /// Rebuilds `nodes` and `initializers` from the IR. The runtime index is
-    /// left alone — the driver rebuilds it once after the whole pipeline, and
-    /// that rebuild is what re-derives every conv weight's packed layout from
-    /// whatever names the passes left behind.
-    pub(crate) fn apply_ir(&mut self, graph: &Graph) {
-        let nodes: Vec<OnnxNode> = graph
-            .node_ids()
-            .filter_map(|id| graph.to_onnx_node(id))
-            .collect();
-
-        let mut initializers = FxHashMap::default();
-        for idx in 0..graph.value_count() {
-            let value = graph.value(super::ValueId(idx as u32));
-            if let ValueKind::Constant(tensor) = &value.kind {
-                initializers.insert(value.name.clone(), tensor.clone());
-            }
-        }
-
-        self.nodes = nodes;
-        self.initializers = initializers;
-        self.inputs = graph
-            .graph_inputs()
-            .iter()
-            .map(|v| graph.value(*v).name.clone())
-            .collect();
-        self.outputs = graph
-            .graph_outputs()
-            .iter()
-            .map(|v| graph.value(*v).name.clone())
-            .collect();
     }
 }

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn load_empty_graph() {
     let bytes = build_minimal_onnx_model(vec![], vec![], vec!["x"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     assert_eq!(model.graph_name, "test_graph");
     assert_eq!(model.ir_version, 8);
     assert_eq!(model.opset_version, 13);
@@ -35,7 +35,7 @@ fn load_rejects_a_value_defined_twice() {
     ] {
         let bytes = build_minimal_onnx_model(nodes, inits, vec!["x"], vec!["y"]);
         assert!(matches!(
-            load_onnx_model(&bytes),
+            OnnxLoader::from_bytes(&bytes).decode(),
             Err(crate::OnnxError::DuplicateDefinition { .. })
         ));
     }
@@ -43,7 +43,7 @@ fn load_rejects_a_value_defined_twice() {
     // An initializer that shares its name with a graph input is the older IR's
     // way of giving that input a default, not a second definition.
     let bytes = build_minimal_onnx_model(vec![relu("b", "y")], vec![bias], vec!["b"], vec!["y"]);
-    assert!(load_onnx_model(&bytes).is_ok());
+    assert!(OnnxLoader::from_bytes(&bytes).decode().is_ok());
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn load_float_initializer_via_float_data() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![], vec![init], vec!["x"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     let w = model.get_initializer("weight").unwrap();
     assert_eq!(w.shape(), &[2, 3]);
@@ -77,7 +77,7 @@ fn load_float_initializer_via_raw_data() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![], vec![init], vec!["x"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     let b = model.get_initializer("bias").unwrap();
     assert_eq!(b.shape(), &[3]);
@@ -94,7 +94,7 @@ fn load_int64_initializer() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![], vec![init], vec!["x"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     let idx = model.get_initializer("indices").unwrap();
     assert_eq!(idx.data(), &[10.0, 20.0, 30.0, 40.0]);
@@ -110,7 +110,7 @@ fn load_graph_with_relu_node() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![], vec!["x"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     assert_eq!(model.node_count(), 1);
     assert_eq!(model.nodes[0].op_type, "Relu");
@@ -148,7 +148,7 @@ fn load_node_with_attributes() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![node], vec![], vec!["x", "w"], vec!["y"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     let conv = &model.nodes[0];
     assert_eq!(conv.op_type, "Conv");
@@ -196,7 +196,7 @@ fn load_multi_node_graph() {
     };
     let bytes =
         build_minimal_onnx_model(nodes, vec![init], vec!["input", "conv_w"], vec!["output"]);
-    let model = load_onnx_model(&bytes).unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
 
     assert_eq!(model.node_count(), 3);
     assert_eq!(model.nodes[0].op_type, "Conv");
@@ -207,7 +207,7 @@ fn load_multi_node_graph() {
 
 #[test]
 fn decode_error_on_invalid_bytes() {
-    let result = load_onnx_model(&[0xFF, 0x00, 0x01]);
+    let result = OnnxLoader::from_bytes(&[0xFF, 0x00, 0x01]).decode();
     assert!(
         matches!(result, Err(crate::OnnxError::Decode { .. })),
         "{result:?}"
@@ -224,7 +224,7 @@ fn shape_mismatch_error() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(vec![], vec![init], vec!["x"], vec!["y"]);
-    let result = load_onnx_model(&bytes);
+    let result = OnnxLoader::from_bytes(&bytes).decode();
     assert!(
         matches!(
             &result,
@@ -265,23 +265,21 @@ fn dropout_probe_model() -> Vec<u8> {
     build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"])
 }
 
-/// The load-time optimizer is the default, so a caller that only loads still
-/// gets the fused, folded graph the runner is tuned for. Forgetting the
-/// separate `optimize_onnx_graph` call is what this closes.
-///
-/// Note this file's alias: `load_onnx_model` here is the *unoptimized* loader
-/// (see `tests/mod.rs`), so the public entry point is named in full.
+/// Executable construction optimizes by default, so a caller that only builds
+/// still gets the fused, folded graph the runner is tuned for while the decoded
+/// source remains unchanged.
 #[test]
-fn load_runs_the_optimizer_by_default() {
-    // Held because this *reads* `YSCV_ONNX_OPTIMIZE_OFF`, and the test below
-    // sets it. Without the lock the two race and this one intermittently sees
-    // the optimizer switched off under it.
+fn build_runs_the_optimizer_by_default() {
+    // Held because `build` without an explicit level *reads*
+    // `YSCV_ONNX_OPTIMIZE_OFF`, and the test below sets it. Without the lock
+    // the two race and this one intermittently sees the optimizer switched off
+    // under it.
     let _env = crate::tests::equivalence::lock_env();
     let bytes = dropout_probe_model();
 
-    let model = crate::loader::load_onnx_model(&bytes).expect("load");
+    let model = OnnxLoader::from_bytes(&bytes).build().expect("load");
     assert_eq!(
-        model.node_count(),
+        model.nodes.len(),
         2,
         "loading should have removed the Dropout, got {:?}",
         model.nodes.iter().map(|n| &n.op_type).collect::<Vec<_>>()
@@ -293,46 +291,220 @@ fn load_runs_the_optimizer_by_default() {
 /// The opt-out for a caller that wants the file's own graph — an inspector, or
 /// a test asserting against a fixture.
 #[test]
-fn load_unoptimized_keeps_the_graph_as_written() {
+fn decode_keeps_the_graph_as_written() {
     let bytes = dropout_probe_model();
 
-    let model = crate::loader::load_onnx_model_unoptimized(&bytes).expect("load");
+    let model = OnnxLoader::from_bytes(&bytes).decode().expect("load");
     assert_eq!(model.node_count(), 3);
     assert_eq!(model.nodes[1].op_type, "Dropout");
 }
 
-/// `YSCV_ONNX_OPTIMIZE_OFF=1` turns the load-time optimizer off process-wide,
-/// for bisecting a model the optimizer miscompiles without rebuilding against
-/// the unoptimized entry point.
+/// `YSCV_ONNX_OPTIMIZE_OFF=1` turns IR optimization off process-wide when no
+/// explicit level is selected, for bisecting a model the optimizer miscompiles.
+/// An explicit `optimization_level` always wins over the variable.
 #[test]
-fn optimize_off_env_var_disables_the_load_time_optimizer() {
-    // Held for the whole test: `load_onnx_model` reads this variable, so a
-    // sibling test loading a model concurrently would see the toggle.
+fn optimize_off_env_var_disables_ir_optimization() {
+    // Held for the whole test: `build` without an explicit level reads this
+    // variable, so a sibling test building a model concurrently would see the
+    // toggle.
     let _env = crate::tests::equivalence::lock_env();
     let bytes = dropout_probe_model();
 
     // SAFETY: `set_var`/`remove_var` are not thread-safe and `cargo test` runs
     // tests concurrently. The `EnvGuard` above proves this thread has exclusive
-    // use of the environment for the whole test. The load's result is held
-    // unexamined until after `remove_var`, so a failing load clears the
+    // use of the environment for the whole test. The build's result is held
+    // unexamined until after `remove_var`, so a failing build clears the
     // variable rather than leaking it into every later test.
     #[allow(unsafe_code)]
     unsafe {
         std::env::set_var("YSCV_ONNX_OPTIMIZE_OFF", "1");
     }
-    let disabled = crate::loader::load_onnx_model(&bytes);
+    let disabled = OnnxLoader::from_bytes(&bytes).build();
+    let explicit_enabled = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Enabled)
+        .build();
     #[allow(unsafe_code)]
     unsafe {
         std::env::remove_var("YSCV_ONNX_OPTIMIZE_OFF");
     }
-    let disabled = disabled.expect("load with the optimizer off");
-    let enabled = crate::loader::load_onnx_model(&bytes).expect("load");
+    let disabled = disabled.expect("build with the optimizer off");
+    let explicit_enabled = explicit_enabled.expect("explicit enabled build");
+    let enabled = OnnxLoader::from_bytes(&bytes).build().expect("build");
+    let explicit_disabled = OnnxLoader::from_bytes(&bytes)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .expect("explicit disabled build");
 
-    assert_eq!(disabled.node_count(), 3, "the Dropout should have survived");
+    assert_eq!(disabled.nodes.len(), 3, "the Dropout should have survived");
     assert_eq!(disabled.nodes[1].op_type, "Dropout");
+    assert_eq!(explicit_enabled.nodes.len(), 2, "explicit Enabled must win");
+    assert_eq!(enabled.nodes.len(), 2, "and be gone once the knob is unset");
+    assert_eq!(explicit_disabled.nodes.len(), 3);
+
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("YSCV_ONNX_OPTIMIZE_OFF", "0");
+    }
+    let zero = OnnxLoader::from_bytes(&bytes).build();
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("YSCV_ONNX_OPTIMIZE_OFF");
+    }
+    assert_eq!(zero.expect("build with opt-out set to zero").nodes.len(), 2);
+}
+
+#[test]
+fn builder_path_bytes_and_model_sources_match() {
+    let _env = crate::tests::equivalence::lock_env();
+    let bytes = dropout_probe_model();
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("model.onnx");
+    std::fs::write(&path, &bytes).expect("write model");
+    let source = OnnxLoader::from_bytes(&bytes).decode().expect("decode");
+
+    let from_path = OnnxLoader::load(&path).build().expect("path build");
+    let from_bytes = OnnxLoader::from_bytes(&bytes).build().expect("byte build");
+    let from_model = OnnxLoader::from_model(&source)
+        .build()
+        .expect("model build");
+
+    let op_types = |executable: &crate::plan::OnnxExecutable| {
+        executable
+            .nodes
+            .iter()
+            .map(|node| node.op_type.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(op_types(&from_path), op_types(&from_bytes));
+    assert_eq!(op_types(&from_model), op_types(&from_bytes));
+    assert_eq!(from_path.input_names(), from_bytes.input_names());
+    assert_eq!(from_path.output_names(), from_bytes.output_names());
+}
+
+#[test]
+fn executable_is_a_snapshot_of_its_source_model() {
+    let _env = crate::tests::equivalence::lock_env();
+    let bytes = dropout_probe_model();
+    let mut source = OnnxLoader::from_bytes(&bytes).decode().expect("decode");
+    let original = OnnxLoader::from_model(&source).build().expect("build");
+
+    source.nodes.clear();
+    let changed = OnnxLoader::from_model(&source).build().expect("rebuild");
+
+    assert_eq!(original.nodes.len(), 2);
+    assert!(changed.nodes.is_empty());
+}
+
+#[test]
+fn optimized_build_owns_fusions_without_mutating_source() {
+    let weight = onnx::TensorProto {
+        name: Some("w".into()),
+        dims: vec![1, 1, 1, 1],
+        data_type: Some(1),
+        float_data: vec![1.0],
+        ..Default::default()
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Conv".into()),
+            name: Some("conv".into()),
+            input: vec!["x".into(), "w".into()],
+            output: vec!["conv_out".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu".into()),
+            input: vec!["conv_out".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(nodes, vec![weight], vec!["x"], vec!["y"]);
+    let source = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    let optimized = OnnxLoader::from_model(&source)
+        .optimization_level(OptimizationLevel::Enabled)
+        .build()
+        .unwrap();
+    let disabled = OnnxLoader::from_model(&source)
+        .optimization_level(OptimizationLevel::Disabled)
+        .build()
+        .unwrap();
+
     assert_eq!(
-        enabled.node_count(),
-        2,
-        "and be gone once the knob is unset"
+        source
+            .nodes
+            .iter()
+            .map(|n| n.op_type.as_str())
+            .collect::<Vec<_>>(),
+        ["Conv", "Relu"]
     );
+    assert_eq!(optimized.nodes.len(), 1);
+    assert_eq!(optimized.nodes[0].op_type, "Conv_Relu");
+    assert_eq!(disabled.nodes.len(), 2);
+    assert!(!disabled.runtime_index.execution_plan.is_empty());
+    assert!(disabled.runtime_index.conv_kernels[0].is_some());
+    assert!(
+        disabled
+            .runtime_index
+            .prepacked_conv_weights
+            .iter()
+            .any(Option::is_some)
+    );
+
+    let input = Tensor::from_vec(vec![1, 1, 1, 4], vec![-2.0, -0.5, 1.0, 3.0]).unwrap();
+    let feed = || FxHashMap::from_iter([("x".to_string(), input.clone())]);
+    let optimized_out = run_onnx_model(&optimized, feed()).unwrap();
+    let disabled_out = run_onnx_model(&disabled, feed()).unwrap();
+    assert_eq!(optimized_out["y"], disabled_out["y"]);
+}
+
+#[test]
+fn optimized_build_owns_folded_constants() {
+    let constant = |name: &str, value: f32| onnx::TensorProto {
+        name: Some(name.into()),
+        dims: vec![1],
+        data_type: Some(1),
+        float_data: vec![value],
+        ..Default::default()
+    };
+    let nodes = vec![
+        onnx::NodeProto {
+            op_type: Some("Add".into()),
+            name: Some("add".into()),
+            input: vec!["a".into(), "b".into()],
+            output: vec!["sum".into()],
+            ..Default::default()
+        },
+        onnx::NodeProto {
+            op_type: Some("Relu".into()),
+            name: Some("relu".into()),
+            input: vec!["sum".into()],
+            output: vec!["y".into()],
+            ..Default::default()
+        },
+    ];
+    let bytes = build_minimal_onnx_model(
+        nodes,
+        vec![constant("a", -2.0), constant("b", 3.0)],
+        vec![],
+        vec!["y"],
+    );
+    let source = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    let executable = OnnxLoader::from_model(&source)
+        .optimization_level(OptimizationLevel::Enabled)
+        .build()
+        .unwrap();
+
+    assert_eq!(source.nodes.len(), 2);
+    assert_eq!(executable.nodes.len(), 1);
+    assert_eq!(executable.nodes[0].op_type, "Relu");
+    assert!(
+        executable
+            .initializers
+            .keys()
+            .any(|name| !source.initializers.contains_key(name))
+    );
+    let output = run_onnx_model(&executable, FxHashMap::default()).unwrap();
+    assert_eq!(output["y"].data(), &[1.0]);
 }

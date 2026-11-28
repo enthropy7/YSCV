@@ -17,7 +17,7 @@ use rustc_hash::FxHashMap;
 use std::time::Instant;
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use yscv_onnx::{compile_metal_plan, load_onnx_model_from_file, run_metal_plan, run_onnx_model};
+use yscv_onnx::{OnnxLoader, compile_metal_plan, run_metal_plan, run_onnx_model};
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
@@ -32,9 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iterations: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
 
     println!("Loading model: {model_path}");
-    let model = load_onnx_model_from_file(model_path)?;
+    let model = OnnxLoader::load(model_path).decode()?;
     let input_name = model.inputs.first().cloned().unwrap();
     let output_name = model.outputs.first().cloned().unwrap();
+    let exe = OnnxLoader::from_model(&model).build()?;
     println!("Input: {input_name}, Output: {output_name}");
     println!("Nodes: {}", model.nodes.len());
 
@@ -47,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
-        let _ = run_onnx_model(&model, inputs)?; // warmup
+        let _ = run_onnx_model(&exe, inputs)?; // warmup
     }
     let n_cpu = 10;
     let mut cpu_times = Vec::new();
@@ -55,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut inputs = FxHashMap::default();
         inputs.insert(input_name.clone(), input_tensor.clone());
         let t0 = Instant::now();
-        let _ = run_onnx_model(&model, inputs)?;
+        let _ = run_onnx_model(&exe, inputs)?;
         cpu_times.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     cpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -65,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Metal compile ──
     println!("\n--- Metal GPU Inference ---");
     let compile_start = Instant::now();
-    let metal_plan = compile_metal_plan(&model, &input_name, &input_tensor)?;
+    let metal_plan = compile_metal_plan(&exe, &input_name, &input_tensor)?;
     let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
     println!(
         "Compiled in {compile_ms:.1} ms ({} ops)",
@@ -118,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metal_out = run_metal_plan(&metal_plan, &input_data)?;
     let mut cpu_inputs = FxHashMap::default();
     cpu_inputs.insert(input_name.clone(), input_tensor.clone());
-    let cpu_out = run_onnx_model(&model, cpu_inputs)?;
+    let cpu_out = run_onnx_model(&exe, cpu_inputs)?;
 
     if let (Some(cpu_t), Some(mtl_t)) = (cpu_out.get(&output_name), metal_out.get(&output_name)) {
         let cpu_d = cpu_t.data();

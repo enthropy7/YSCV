@@ -5,7 +5,7 @@
 //! depends on which kernel the Conv dispatches to, so the choice belongs here,
 //! beside kernel selection.
 //!
-//! It used to happen in `load_onnx_model`, which is what made the tracker model
+//! It used to happen during source-model loading, which is what made the tracker model
 //! fail to load. The permuted bytes replaced the initializer, so a name-keyed
 //! side table was the only record of what a Conv weight now meant — and a pass
 //! that renames a weight (constant-folding an `Identity` produces an alias)

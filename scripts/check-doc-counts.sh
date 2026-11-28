@@ -33,8 +33,8 @@ EXPECTED_BACKEND_METHODS=27          # required methods on `pub trait Backend`
 # ── Actual counts (greps) ────────────────────────────────────────────
 actual_crates=$(find crates -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
 actual_version=$(awk -F\" '/^version = "/{print $2; exit}' Cargo.toml)
-actual_onnx_ops=$(awk '/match node.op_type/,/^}$/' crates/yscv-onnx/src/runner/dispatch.rs \
-    | grep -cE '^[[:space:]]+"[A-Z]')
+actual_onnx_ops=$(awk '/match &node.op_type/,/^}$/' crates/yscv-onnx/src/runner/dispatch.rs \
+    | grep -cE '^[[:space:]]+crate::OnnxOp::[A-Z]')
 tensor_ops=$(grep -hE '^    pub (const )?fn' crates/yscv-tensor/src/ops/*.rs | wc -l | tr -d ' ')
 tensor_main=$(grep -cE '^    pub (const )?fn' crates/yscv-tensor/src/tensor.rs)
 tensor_linalg=$(grep -cE '^    pub (const )?fn' crates/yscv-tensor/src/linalg.rs)

@@ -8,10 +8,10 @@
 //! scope ends.
 //!
 //! ```ignore
-//! use yscv_onnx::{CalibrationCollector, OnnxRunner, load_onnx_model_from_file};
+//! use yscv_onnx::{CalibrationCollector, OnnxLoader, OnnxRunner};
 //!
-//! let model = load_onnx_model_from_file("model.onnx")?;
-//! let runner = OnnxRunner::new(&model)?;
+//! let executable = OnnxLoader::load("model.onnx").build()?;
+//! let runner = OnnxRunner::new(&executable)?;
 //! let collector = CalibrationCollector::new();
 //! {
 //!     let _scope = collector.scope();

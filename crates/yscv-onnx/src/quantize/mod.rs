@@ -161,7 +161,7 @@ pub fn quantize_weights_int4(model: &mut OnnxModel) -> Result<(), OnnxError> {
 
         // Create DequantizeLinear node: (quantized, scale, zp) -> original_name
         let dequant_node = OnnxNode {
-            op_type: "DequantizeLinear".to_string(),
+            op_type: "DequantizeLinear".into(),
             name: format!("{name}_dequant"),
             inputs: vec![quant_name, scale_name, zp_name],
             outputs: vec![name.clone()],
@@ -187,7 +187,6 @@ pub fn quantize_weights_int4(model: &mut OnnxModel) -> Result<(), OnnxError> {
     let mut dequant_node_list: Vec<OnnxNode> = dequant_nodes.into_iter().map(|(_, n)| n).collect();
     dequant_node_list.append(&mut model.nodes);
     model.nodes = dequant_node_list;
-    model.rebuild_runtime_index();
 
     Ok(())
 }
@@ -215,14 +214,13 @@ mod tests {
                 m
             },
             nodes: vec![OnnxNode {
-                op_type: "Conv".to_string(),
+                op_type: "Conv".into(),
                 name: "conv0".to_string(),
                 inputs: vec!["input".to_string(), "conv_weight".to_string()],
                 outputs: vec!["output".to_string()],
                 attributes: FxHashMap::default(),
             }],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         };
 
         let result = quantize_weights_int4(&mut model);
@@ -277,7 +275,6 @@ mod tests {
             },
             nodes: vec![],
             packed_int4_weights: Default::default(),
-            runtime_index: Default::default(),
         };
 
         quantize_weights_int4(&mut model).expect("should succeed");

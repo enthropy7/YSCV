@@ -364,7 +364,7 @@ impl ProfileFilter {
 /// `ProfileFilter`. Unset, the profiler shows the Conv detail table and an
 /// unfiltered JSON.
 pub fn profile_onnx_model_cpu(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     inputs: FxHashMap<String, Tensor>,
 ) -> Result<(), OnnxError> {
     use std::time::Instant;
@@ -460,8 +460,9 @@ pub fn profile_onnx_model_cpu(
                                 node_kind(node_kinds, nodes, i + mid),
                             )?;
                             let mid_elapsed = mid_start.elapsed().as_secs_f64() * 1000.0;
-                            let mid_entry =
-                                timings.entry(mid_node.op_type.clone()).or_insert((0.0, 0));
+                            let mid_entry = timings
+                                .entry(mid_node.op_type.to_string())
+                                .or_insert((0.0, 0));
                             mid_entry.0 += mid_elapsed;
                             mid_entry.1 += 1;
                             let mid_out = mid_node
@@ -472,7 +473,7 @@ pub fn profile_onnx_model_cpu(
                                 .unwrap_or_default();
                             instance_timings.push(NodeTiming {
                                 name: mid_node.name.clone(),
-                                op: mid_node.op_type.clone(),
+                                op: mid_node.op_type.to_string(),
                                 ms: mid_elapsed,
                                 in_shape: mid_in,
                                 out_shape: mid_out,
@@ -495,7 +496,7 @@ pub fn profile_onnx_model_cpu(
             }
         }
 
-        let op_type = node.op_type.clone();
+        let op_type = node.op_type.to_string();
         let in_shape = node
             .inputs
             .first()

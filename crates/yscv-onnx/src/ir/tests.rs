@@ -6,9 +6,9 @@
 //! check that the index says the *right* thing, and that lowering round-trips.
 
 use super::*;
-// These lower a fixture and drive passes by hand; the load-time optimizer would
-// rewrite the fixture first. See the note in `tests/mod.rs`.
-use crate::loader::load_onnx_model_unoptimized as load_onnx_model;
+// These decode a fixture and drive passes by hand; building an executable would
+// optimize it first. See the note in `tests/mod.rs`.
+use crate::loader::OnnxLoader;
 use crate::proto::onnx;
 use crate::tests::build_minimal_onnx_model;
 
@@ -62,7 +62,10 @@ fn fanout_bytes() -> Vec<u8> {
 }
 
 fn graph_of(bytes: &[u8]) -> Graph {
-    load_onnx_model(bytes).expect("fixture loads").to_ir()
+    OnnxLoader::from_bytes(bytes)
+        .decode()
+        .expect("fixture loads")
+        .to_ir()
 }
 
 #[test]
@@ -368,15 +371,15 @@ fn validate_detects_a_stale_def() {
 
 // ── Lowering ─────────────────────────────────────────────────────────────
 
-/// Snapshot of everything `apply_ir` is responsible for reproducing.
-fn model_shape(
-    model: &crate::loader::OnnxModel,
-) -> (
-    Vec<(String, String, Vec<String>, Vec<String>)>,
+#[derive(Debug, PartialEq, Eq)]
+struct ModelShape(
+    Vec<(crate::OnnxOp, String, Vec<String>, Vec<String>)>,
     Vec<String>,
     Vec<String>,
     Vec<String>,
-) {
+);
+
+fn model_shape(model: &crate::loader::OnnxModel) -> ModelShape {
     let nodes = model
         .nodes
         .iter()
@@ -391,7 +394,7 @@ fn model_shape(
         .collect();
     let mut initializers: Vec<String> = model.initializers.keys().cloned().collect();
     initializers.sort();
-    (
+    ModelShape(
         nodes,
         initializers,
         model.inputs.clone(),
@@ -399,16 +402,46 @@ fn model_shape(
     )
 }
 
+/// Snapshot of everything lowering must reproduce.
+fn lowered_shape(lowered: &super::lower::LoweredGraph) -> ModelShape {
+    let nodes = lowered
+        .nodes
+        .iter()
+        .map(|n| {
+            (
+                n.op_type.clone(),
+                n.name.clone(),
+                n.inputs.clone(),
+                n.outputs.clone(),
+            )
+        })
+        .collect();
+    let mut initializers: Vec<String> = lowered.initializers.keys().cloned().collect();
+    initializers.sort();
+    ModelShape(
+        nodes,
+        initializers,
+        lowered.inputs.clone(),
+        lowered.outputs.clone(),
+    )
+}
+
 #[test]
-fn round_trip_preserves_graph_structure() {
+fn lowering_preserves_graph_structure() {
     for bytes in [two_relu_bytes(), fanout_bytes()] {
-        let mut model = load_onnx_model(&bytes).expect("fixture loads");
+        let model = OnnxLoader::from_bytes(&bytes)
+            .decode()
+            .expect("fixture loads");
         let before = model_shape(&model);
 
         let graph = model.to_ir();
-        model.apply_ir(&graph);
+        let lowered = graph.lower();
 
-        assert_eq!(model_shape(&model), before, "round-trip changed the model");
+        assert_eq!(
+            lowered_shape(&lowered),
+            before,
+            "lowering changed the graph"
+        );
     }
 }
 
@@ -432,16 +465,21 @@ fn round_trip_preserves_weights_and_optional_inputs() {
     };
     let bytes = build_minimal_onnx_model(nodes, vec![weight], vec!["x"], vec!["y"]);
 
-    let mut model = load_onnx_model(&bytes).expect("fixture loads");
+    let model = OnnxLoader::from_bytes(&bytes)
+        .decode()
+        .expect("fixture loads");
     let before = model_shape(&model);
     let before_weight = model.initializers["w"].data().to_vec();
 
     let graph = model.to_ir();
-    model.apply_ir(&graph);
+    let lowered = graph.lower();
 
-    assert_eq!(model_shape(&model), before);
-    assert_eq!(model.initializers["w"].data(), before_weight.as_slice());
-    assert_eq!(model.nodes[0].inputs[2], "", "optional input stays omitted");
+    assert_eq!(lowered_shape(&lowered), before);
+    assert_eq!(lowered.initializers["w"].data(), before_weight.as_slice());
+    assert_eq!(
+        lowered.nodes[0].inputs[2], "",
+        "optional input stays omitted"
+    );
 }
 
 /// Operators the IR does not intern must survive lowering unchanged, or every
@@ -457,18 +495,22 @@ fn round_trip_preserves_unknown_operators() {
     }];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
 
-    let mut model = load_onnx_model(&bytes).expect("fixture loads");
+    let model = OnnxLoader::from_bytes(&bytes)
+        .decode()
+        .expect("fixture loads");
     let graph = model.to_ir();
-    model.apply_ir(&graph);
+    let lowered = graph.lower();
 
-    assert_eq!(model.nodes[0].op_type, "ScatterElements");
+    assert_eq!(lowered.nodes[0].op_type, "ScatterElements");
 }
 
 /// Tombstoned nodes must not reappear on the way out.
 #[test]
-fn apply_ir_drops_removed_nodes() {
+fn lowering_drops_removed_nodes() {
     let bytes = two_relu_bytes();
-    let mut model = load_onnx_model(&bytes).expect("fixture loads");
+    let model = OnnxLoader::from_bytes(&bytes)
+        .decode()
+        .expect("fixture loads");
     let mut graph = model.to_ir();
 
     let ids: Vec<NodeId> = graph.node_ids().collect();
@@ -477,9 +519,9 @@ fn apply_ir_drops_removed_nodes() {
     graph.replace_all_uses_with(mid, x);
     graph.remove_node(ids[0]);
 
-    model.apply_ir(&graph);
+    let lowered = graph.lower();
 
-    assert_eq!(model.nodes.len(), 1);
-    assert_eq!(model.nodes[0].name, "r1");
-    assert_eq!(model.nodes[0].inputs[0], "x", "consumer was rewired");
+    assert_eq!(lowered.nodes.len(), 1);
+    assert_eq!(lowered.nodes[0].name, "r1");
+    assert_eq!(lowered.nodes[0].inputs[0], "x", "consumer was rewired");
 }

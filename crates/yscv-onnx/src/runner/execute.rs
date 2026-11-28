@@ -8,7 +8,7 @@ use super::*;
 /// JIT execution path: pre-compiled dispatch table, no per-node matching.
 /// Skips NodeKind matching, layout checks are minimal, Conv params pre-resolved.
 pub(crate) fn run_onnx_model_jit(
-    model: &OnnxModel,
+    model: &OnnxExecutable,
     mut env: TensorEnv<'_, '_>,
     specialization: Option<&ShapeSpecialization>,
 ) -> Result<FxHashMap<String, Tensor>, OnnxError> {

@@ -9,7 +9,7 @@ fn main() {
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use rustc_hash::FxHashMap;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use yscv_onnx::load_onnx_model_from_file;
+use yscv_onnx::OnnxLoader;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use yscv_tensor::Tensor;
 
@@ -17,8 +17,9 @@ use yscv_tensor::Tensor;
 fn main() {
     // Use uniform input for simplicity
     let model_path = "examples/src/slowwork/yolov8n.onnx";
-    let model = load_onnx_model_from_file(model_path).expect("load");
-    println!("Model: {} ({} nodes)", model_path, model.nodes.len());
+    let source = OnnxLoader::load(model_path).decode().expect("load");
+    println!("Model: {} ({} nodes)", model_path, source.nodes.len());
+    let model = OnnxLoader::from_model(&source).build().expect("build");
 
     let input_data = vec![0.5f32; 3 * 640 * 640];
     let input_tensor = Tensor::from_vec(vec![1, 3, 640, 640], input_data.clone()).unwrap();
