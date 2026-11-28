@@ -1,9 +1,9 @@
 //! Lowering between [`OnnxModel`] and the optimization [`Graph`].
 //!
 //! `OnnxModel` is the canonical source graph; the IR is the internal working
-//! form for passes and executable construction. Both source optimization and
-//! executable builds use `to_ir` → optional passes → `lower`, so anything the IR
-//! cannot represent must be preserved rather than silently dropped.
+//! form for passes and executable construction. Executable builds use `to_ir` →
+//! optional passes → `lower`, so anything the IR cannot represent must be
+//! preserved rather than silently dropped.
 //!
 //! Known gap: `OnnxNode` has no `domain` field — the loader discards operator
 //! domains when it decodes the proto, so custom-domain ops are already
@@ -141,18 +141,5 @@ impl Graph {
                 .collect(),
             attributes: node.attributes.clone(),
         })
-    }
-}
-
-impl OnnxModel {
-    /// Writes an optimized graph back over this model.
-    ///
-    /// Rebuilds the source graph from the IR without constructing runtime state.
-    pub(crate) fn apply_ir(&mut self, graph: &Graph) {
-        let lowered = graph.lower();
-        self.nodes = lowered.nodes;
-        self.initializers = lowered.initializers;
-        self.inputs = lowered.inputs;
-        self.outputs = lowered.outputs;
     }
 }

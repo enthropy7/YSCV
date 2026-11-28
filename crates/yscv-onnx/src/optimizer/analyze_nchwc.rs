@@ -1,11 +1,13 @@
 use rustc_hash::FxHashMap;
 
-use crate::loader::{OnnxModel, OnnxNode};
+#[cfg(test)]
+use crate::loader::OnnxModel;
+use crate::loader::OnnxNode;
 
 /// Summary statistics describing NCHWc-transformability of a loaded graph.
 ///
-/// Produced by [`analyze_nchwc`] — inspects the graph for op patterns that
-/// could stay in NCHWc layout (Conv, Pool, BN, elementwise Add/Relu/Sigmoid,
+/// Inspects the graph for op patterns that could stay in NCHWc layout
+/// (Conv, Pool, BN, elementwise Add/Relu/Sigmoid,
 /// SiLU-as-Sigmoid-Mul) and counts maximal contiguous NCHWc-capable chains.
 /// Used by the runner and by B.8 rollout decisions to judge whether
 /// `YSCV_NCHWC=on` is worth flipping for a given model.
@@ -41,7 +43,8 @@ fn is_nchwc_capable_op(op_type: &str) -> bool {
     )
 }
 
-pub fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
+#[cfg(test)]
+pub(crate) fn analyze_nchwc(model: &OnnxModel) -> NchwcStats {
     analyze_nchwc_nodes(&model.nodes)
 }
 

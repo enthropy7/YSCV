@@ -13,10 +13,11 @@
 use rustc_hash::FxHashMap;
 use yscv_tensor::Tensor;
 
-use super::super::loader::{OnnxLoader, OnnxModel};
+use super::super::ir::Graph;
+use super::super::loader::OnnxLoader;
 // The harness compares a graph against a transform of *the same* graph, so the
 // baseline has to be the file as written — see the note in `tests/mod.rs`.
-use super::super::plan::OptimizationLevel;
+use super::super::plan::{OptimizationLevel, build_executable_from_graph};
 use super::super::runner::run_onnx_model;
 
 /// Serializes tests that mutate *or read* the process environment.
@@ -93,10 +94,9 @@ pub(in crate::tests) enum Tolerance {
 /// Runs `model_bytes` before and after `transform`, and asserts the outputs
 /// match within `tolerance`.
 ///
-/// Decodes the model twice so the reference run cannot observe any mutation the
-/// transform makes. Builds a fresh executable from the transformed source
-/// afterwards, because passes deliberately leave plan construction to their
-/// caller.
+/// Builds the reference directly from the source and the comparison executable
+/// directly from transformed IR, without writing optimized nodes back to a
+/// source model.
 ///
 /// `label` names the transformation in failure messages.
 pub(in crate::tests) fn assert_transform_preserves_numerics(
@@ -104,7 +104,7 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
     model_bytes: &[u8],
     feed: &FxHashMap<String, Tensor>,
     tolerance: Tolerance,
-    transform: impl FnOnce(&mut OnnxModel),
+    transform: impl FnOnce(&mut Graph),
 ) {
     let reference_model = OnnxLoader::from_bytes(model_bytes)
         .optimization_level(OptimizationLevel::Disabled)
@@ -113,13 +113,12 @@ pub(in crate::tests) fn assert_transform_preserves_numerics(
     let reference = run_onnx_model(&reference_model, feed.clone())
         .unwrap_or_else(|e| panic!("{label}: reference run: {e}"));
 
-    let mut transformed_model = OnnxLoader::from_bytes(model_bytes)
+    let transformed_source = OnnxLoader::from_bytes(model_bytes)
         .decode()
         .unwrap_or_else(|e| panic!("{label}: transformed load: {e}"));
-    transform(&mut transformed_model);
-    let transformed_model = OnnxLoader::from_model(&transformed_model)
-        .optimization_level(OptimizationLevel::Disabled)
-        .build()
+    let mut transformed_graph = transformed_source.to_ir();
+    transform(&mut transformed_graph);
+    let transformed_model = build_executable_from_graph(transformed_graph, Default::default())
         .unwrap_or_else(|e| panic!("{label}: transformed build: {e}"));
     let transformed = run_onnx_model(&transformed_model, feed.clone())
         .unwrap_or_else(|e| panic!("{label}: transformed run: {e}"));
@@ -245,7 +244,7 @@ pub(in crate::tests) fn assert_transform_is_noop(
     label: &str,
     model_bytes: &[u8],
     feed: &FxHashMap<String, Tensor>,
-    transform: impl FnOnce(&mut OnnxModel),
+    transform: impl FnOnce(&mut Graph),
 ) {
     let before = OnnxLoader::from_bytes(model_bytes)
         .optimization_level(OptimizationLevel::Disabled)
@@ -253,13 +252,12 @@ pub(in crate::tests) fn assert_transform_is_noop(
         .unwrap_or_else(|e| panic!("{label}: load: {e}"));
     let before_ops: Vec<String> = before.nodes.iter().map(|n| n.op_type.clone()).collect();
 
-    let mut after = OnnxLoader::from_bytes(model_bytes)
+    let after_source = OnnxLoader::from_bytes(model_bytes)
         .decode()
         .unwrap_or_else(|e| panic!("{label}: load: {e}"));
-    transform(&mut after);
-    let after = OnnxLoader::from_model(&after)
-        .optimization_level(OptimizationLevel::Disabled)
-        .build()
+    let mut after_graph = after_source.to_ir();
+    transform(&mut after_graph);
+    let after = build_executable_from_graph(after_graph, Default::default())
         .unwrap_or_else(|e| panic!("{label}: build: {e}"));
     let after_ops: Vec<String> = after.nodes.iter().map(|n| n.op_type.clone()).collect();
 
@@ -281,8 +279,14 @@ pub(in crate::tests) fn assert_transform_is_noop(
 #[cfg(test)]
 mod harness_self_tests {
     use super::*;
+    use crate::ir::{Node, Op};
+    use crate::proto::onnx;
     use crate::tests::build_minimal_onnx_model;
-    use crate::{loader::OnnxNode, proto::onnx};
+
+    fn set_second_op(graph: &mut Graph, op_type: &str) {
+        let node = graph.node_ids().nth(1).expect("second node");
+        graph.set_op(node, Op::from_op_type(op_type));
+    }
 
     /// `Relu(x) -> Relu(y)`, so a transform can corrupt it in obvious ways.
     fn two_relu_model() -> Vec<u8> {
@@ -334,7 +338,7 @@ mod harness_self_tests {
             &two_relu_model(),
             &feed(),
             Tolerance::Exact,
-            |model| model.nodes[1].op_type = "Sigmoid".to_string(),
+            |graph| set_second_op(graph, "Sigmoid"),
         );
     }
 
@@ -348,9 +352,7 @@ mod harness_self_tests {
             &two_relu_model(),
             &feed(),
             Tolerance::Exact,
-            |model| {
-                model.nodes[1].op_type = "GlobalAveragePool".to_string();
-            },
+            |graph| set_second_op(graph, "GlobalAveragePool"),
         );
     }
 
@@ -363,7 +365,7 @@ mod harness_self_tests {
             &two_relu_model(),
             &feed(),
             Tolerance::Abs(1e-5),
-            |model| model.nodes[1].op_type = "Sigmoid".to_string(),
+            |graph| set_second_op(graph, "Sigmoid"),
         );
     }
 
@@ -371,12 +373,14 @@ mod harness_self_tests {
     #[test]
     #[should_panic(expected = "expected the transform to decline")]
     fn noop_assertion_catches_a_firing_transform() {
-        assert_transform_is_noop("not-a-noop", &two_relu_model(), &feed(), |model| {
-            model.nodes.push(OnnxNode {
-                op_type: "Relu".to_string(),
+        assert_transform_is_noop("not-a-noop", &two_relu_model(), &feed(), |graph| {
+            let y = graph.lookup_value("y").expect("y exists");
+            let z = graph.value_by_name("z");
+            graph.push_node(Node {
+                op: Op::from_op_type("Relu"),
                 name: "extra".to_string(),
-                inputs: vec!["y".to_string()],
-                outputs: vec!["z".to_string()],
+                inputs: vec![Some(y)],
+                outputs: vec![z],
                 attributes: Default::default(),
             });
         });

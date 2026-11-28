@@ -25,7 +25,7 @@ The following are considered public API and subject to semver rules: all `pub` i
 
 Things that are not covered by semver: benchmark performance numbers, internal module structure, CI workflow details, and documentation wording.
 
-For `yscv-onnx`, the loading and execution boundary is part of the public API: `OnnxLoader::decode()` returns a source `OnnxModel`, while `OnnxLoader::build()` returns the `OnnxExecutable` accepted by CPU, GPU, and Metal execution APIs. Source-model mutation and optimization do not alter an already-built executable.
+For `yscv-onnx`, the loading and execution boundary is part of the public API: `OnnxLoader::decode()` returns a canonical source `OnnxModel`, while `OnnxLoader::build()` returns the `OnnxExecutable` accepted by CPU, GPU, and Metal execution APIs. Optimization happens only during executable construction and never mutates the source model; source-model mutation does not alter an already-built executable.
 
 ## Release checklist
 

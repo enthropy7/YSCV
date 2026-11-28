@@ -176,7 +176,7 @@ pub fn export_onnx_model_to_file(
 ///
 /// Source-model Conv initializers remain in ONNX-native OIHW layout. Runtime
 /// prepacks and fused execution nodes belong to `OnnxExecutable`, not this
-/// export path; explicitly optimized source models are defused below.
+/// export path; manually constructed pseudo-ops are defused below.
 pub fn onnx_model_to_export_graph(model: &crate::loader::OnnxModel) -> OnnxExportGraph {
     use crate::loader::OnnxAttribute;
     let int64_tensor_names = infer_int64_tensor_names(&model.nodes);

@@ -106,7 +106,7 @@ let outputs = runner.run(&[("images", &input)])?;
 - **Fused-chain calibration**: calibration runs record local DW/PW intermediates inside zero-env fused Conv chains; normal inference keeps the streaming/no-intermediate path, while PTQ gets the activation stats needed for QLinear/QDQ coverage.
 - **LLM inference**: autoregressive `generate()` with KV-cache, top-k/top-p sampling, temperature, repetition penalty; RoPE and GroupQueryAttention for decoder-only transformers
 - **GPU inference**: wgpu (Vulkan/Metal/DX12) and native Metal/MPSGraph plan compiler with triple-buffered pipelined `submit`/`wait` API (multi-input models, f16 end-to-end, zero-alloc hot path, ~20 op kinds, automatic CPU fallback for unsupported subgraphs)
-- **Model export**: save optimized graphs back to ONNX format
+- **Model export**: save decoded or edited source graphs to standard ONNX format; optimized graphs remain internal to executables
 - **Typed errors**: every `OnnxError` variant carries typed fields, not a pre-rendered message. Tensor, kernel and IR failures nest as `Tensor`/`Kernel`/`Ir`; a CPU node failure comes back as `AtNode { node, op_type, source }` around the op's own error; protobuf and file errors keep their source (`Decode`, `Encode`, `Io { path, source }`).
 
 ## Features

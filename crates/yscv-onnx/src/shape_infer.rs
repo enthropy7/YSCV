@@ -8,8 +8,8 @@ use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
 use crate::plan::OnnxExecutable;
 
 pub(crate) struct GraphParts<'a> {
-    nodes: &'a [OnnxNode],
-    initializers: &'a FxHashMap<String, Tensor>,
+    pub(crate) nodes: &'a [OnnxNode],
+    pub(crate) initializers: &'a FxHashMap<String, Tensor>,
 }
 
 impl<'a> From<&'a OnnxModel> for GraphParts<'a> {

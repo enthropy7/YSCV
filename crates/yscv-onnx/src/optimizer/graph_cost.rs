@@ -1,6 +1,6 @@
 use crate::attr::Attr;
 use crate::loader::{OnnxAttribute, OnnxModel, OnnxNode};
-use crate::shape_infer::{Dim, ShapeInference, ShapeMap, TensorShape};
+use crate::shape_infer::{Dim, GraphParts, ShapeInference, ShapeMap, TensorShape};
 use std::fmt::Write as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +46,19 @@ pub struct GraphCostDiff {
 }
 
 pub fn graph_cost(model: &OnnxModel, shapes: &ShapeInference) -> GraphCost {
+    graph_cost_parts(GraphParts::from(model), shapes)
+}
+
+#[cfg(test)]
+pub(crate) fn graph_cost_executable(
+    model: &crate::plan::OnnxExecutable,
+    shapes: &ShapeInference,
+) -> GraphCost {
+    graph_cost_parts(GraphParts::from(model), shapes)
+}
+
+fn graph_cost_parts(model: GraphParts<'_>, shapes: &ShapeInference) -> GraphCost {
+    let model = &model;
     let mut nodes = Vec::with_capacity(model.nodes.len());
     let mut known_nodes = 0usize;
     let mut unknown_nodes = 0usize;
@@ -180,7 +193,7 @@ pub fn graph_cost_report(cost: &GraphCost) -> String {
 }
 
 fn cost_node(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
     output_shape: Option<&TensorShape>,
@@ -240,7 +253,7 @@ fn cost_node(
 }
 
 fn cost_conv(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     node: &OnnxNode,
     output_shape: Option<&TensorShape>,
     cost: &mut NodeCost,
@@ -285,7 +298,7 @@ fn cost_conv(
 }
 
 fn cost_matmul(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     shapes: &ShapeMap,
     node: &OnnxNode,
     output_shape: Option<&TensorShape>,
@@ -320,7 +333,7 @@ fn cost_matmul(
 }
 
 fn cost_gemm(
-    model: &OnnxModel,
+    model: &GraphParts<'_>,
     node: &OnnxNode,
     output_shape: Option<&TensorShape>,
     cost: &mut NodeCost,
@@ -424,7 +437,12 @@ fn cost_global_pool(
 /// shapes (`A[..,K]` last dim, `B[K,..]` first dim), then falls back to inferred
 /// activation shapes so activation×activation MatMuls — attention scores and the
 /// like — are costed instead of written off as unknown.
-fn matmul_reduction_dim(model: &OnnxModel, shapes: &ShapeMap, a: &str, b: &str) -> Option<usize> {
+fn matmul_reduction_dim(
+    model: &GraphParts<'_>,
+    shapes: &ShapeMap,
+    a: &str,
+    b: &str,
+) -> Option<usize> {
     if let Some(k) = model
         .initializers
         .get(a)

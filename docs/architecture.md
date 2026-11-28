@@ -139,7 +139,7 @@ All SIMD dispatch paths include scalar fallback for architectures without runtim
 
 ## ONNX compilation pipeline
 
-`OnnxLoader` separates decoded source from execution. `.decode()` produces a canonical `OnnxModel` for inspection, quantization, source optimization, and ONNX export. `.build()` lowers the source into the def-use IR, optionally runs graph passes and QConv scale retargeting, then lowers directly into an immutable `OnnxExecutable`. The executable owns the lowered nodes and initializers, runtime index, fused plan actions, prepacked weights, and resolved kernels; every CPU, GPU, and Metal runner accepts this type rather than `OnnxModel`.
+`OnnxLoader` separates decoded source from execution. `.decode()` produces a canonical `OnnxModel` for inspection, mutation, quantization, and ONNX export. `.build()` lowers the source into the def-use IR, optionally runs graph passes and QConv scale retargeting, then lowers directly into an immutable `OnnxExecutable`. Optimized IR is never written back into the source model. The executable owns the lowered nodes and initializers, runtime index, fused plan actions, prepacked weights, and resolved kernels; every CPU, GPU, and Metal runner accepts this type rather than `OnnxModel`.
 
 `OptimizationLevel::Enabled` is the default. `Disabled` skips IR passes and QConv retargeting but retains plan-level fusion, prepacking, layout selection, and kernel selection. Mutating a source model never changes an existing executable; build another snapshot with `OnnxLoader::from_model`.
 

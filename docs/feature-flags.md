@@ -594,8 +594,8 @@ commands: [`onnx-cpu-kernels.md`](onnx-cpu-kernels.md).
 
 ### Graph optimizer toggles
 
-These act on the load-time optimizer rather than on a kernel, so they change
-the graph the runner is handed rather than how a single op computes.
+These act on IR optimization during executable construction rather than on a
+kernel, so they change the executable graph rather than how a single op computes.
 
 - `YSCV_ONNX_PASSES=-<name>[,-<name>…]` — disable individual optimizer passes
   by name. Use it to bisect which pass changed a result: `-fold_constants`,

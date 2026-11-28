@@ -265,11 +265,11 @@ fn dropout_probe_model() -> Vec<u8> {
     build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"])
 }
 
-/// The load-time optimizer is the default, so a caller that only builds still
-/// gets the fused, folded graph the runner is tuned for. Forgetting the
-/// separate `optimize_onnx_graph` call is what this closes.
+/// Executable construction optimizes by default, so a caller that only builds
+/// still gets the fused, folded graph the runner is tuned for while the decoded
+/// source remains unchanged.
 #[test]
-fn load_runs_the_optimizer_by_default() {
+fn build_runs_the_optimizer_by_default() {
     // Held because `build` without an explicit level *reads*
     // `YSCV_ONNX_OPTIMIZE_OFF`, and the test below sets it. Without the lock
     // the two race and this one intermittently sees the optimizer switched off
@@ -299,11 +299,11 @@ fn decode_keeps_the_graph_as_written() {
     assert_eq!(model.nodes[1].op_type, "Dropout");
 }
 
-/// `YSCV_ONNX_OPTIMIZE_OFF=1` turns the load-time optimizer off process-wide,
-/// for bisecting a model the optimizer miscompiles. An explicit
-/// `optimization_level` always wins over the variable.
+/// `YSCV_ONNX_OPTIMIZE_OFF=1` turns IR optimization off process-wide when no
+/// explicit level is selected, for bisecting a model the optimizer miscompiles.
+/// An explicit `optimization_level` always wins over the variable.
 #[test]
-fn optimize_off_env_var_disables_the_load_time_optimizer() {
+fn optimize_off_env_var_disables_ir_optimization() {
     // Held for the whole test: `build` without an explicit level reads this
     // variable, so a sibling test building a model concurrently would see the
     // toggle.
@@ -491,7 +491,10 @@ fn optimized_build_owns_folded_constants() {
         vec!["y"],
     );
     let source = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    let executable = OnnxLoader::from_model(&source).build().unwrap();
+    let executable = OnnxLoader::from_model(&source)
+        .optimization_level(OptimizationLevel::Enabled)
+        .build()
+        .unwrap();
 
     assert_eq!(source.nodes.len(), 2);
     assert_eq!(executable.nodes.len(), 1);

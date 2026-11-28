@@ -1,7 +1,7 @@
 //! The execution plan: what the runner walks at inference time.
 //!
-//! Built once at load time from the optimized graph. Each node is classified
-//! ([`NodeKind`]), fusions are selected ([`NodeAction`]), convolution parameters
+//! Built once during executable construction from the lowered IR. Each node is
+//! classified ([`NodeKind`]), fusions are selected ([`NodeAction`]), convolution parameters
 //! are resolved ([`ConvParams`]) and weights are prepacked, so the per-inference
 //! loop matches on a plan enum with pre-resolved indices rather than re-deriving
 //! any of that from operator strings.
@@ -64,6 +64,16 @@ impl OnnxExecutable {
     pub fn output_names(&self) -> &[String] {
         &self.outputs
     }
+
+    /// Lowered execution nodes, including internal fused operators.
+    pub fn nodes(&self) -> &[OnnxNode] {
+        &self.nodes
+    }
+
+    /// Lowered constant tensors, including constants synthesized by IR passes.
+    pub fn initializers(&self) -> &FxHashMap<String, yscv_tensor::Tensor> {
+        &self.initializers
+    }
 }
 
 pub(crate) fn build_executable(
@@ -74,6 +84,13 @@ pub(crate) fn build_executable(
     if optimization_level == OptimizationLevel::Enabled {
         crate::optimizer::optimize_ir(&mut graph)?;
     }
+    build_executable_from_graph(graph, model.packed_int4_weights.clone())
+}
+
+pub(crate) fn build_executable_from_graph(
+    graph: crate::ir::Graph,
+    packed_int4_weights: FxHashMap<String, crate::quantize::PackedInt4Weight>,
+) -> Result<OnnxExecutable, OnnxError> {
     let lowered = graph.lower();
     let runtime_index = build_runtime_index(
         &lowered.inputs,
@@ -86,7 +103,7 @@ pub(crate) fn build_executable(
         outputs: lowered.outputs,
         initializers: lowered.initializers,
         nodes: lowered.nodes,
-        packed_int4_weights: model.packed_int4_weights.clone(),
+        packed_int4_weights,
         runtime_index,
     };
 

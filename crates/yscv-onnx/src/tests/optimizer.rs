@@ -1,9 +1,17 @@
 use super::*;
 use crate::ir::Pass;
 use crate::optimizer::{
-    FuseActivation, graph_cost, graph_cost_report, graph_stats, optimize_onnx_graph,
+    FuseActivation, graph_cost, graph_cost_executable, graph_cost_report, graph_stats, optimize_ir,
 };
+use crate::shape_infer::infer_executable_shapes;
 use crate::{TensorShape, infer_shapes};
+
+fn optimized_model(bytes: &[u8]) -> crate::plan::OnnxExecutable {
+    OnnxLoader::from_bytes(bytes)
+        .optimization_level(OptimizationLevel::Enabled)
+        .build()
+        .expect("optimize succeeds")
+}
 
 #[test]
 fn optimize_removes_dropout_nodes() {
@@ -31,11 +39,11 @@ fn optimize_removes_dropout_nodes() {
         },
     ];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    assert_eq!(model.node_count(), 3);
+    let source = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    assert_eq!(source.node_count(), 3);
 
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
-    assert_eq!(model.node_count(), 2, "dropout should be removed");
+    let model = optimized_model(&bytes);
+    assert_eq!(model.nodes.len(), 2, "dropout should be removed");
     // relu1 should now consume relu_out directly
     assert_eq!(model.nodes[1].inputs[0], "relu_out");
 }
@@ -66,9 +74,9 @@ fn remove_dropout_keeps_unnamed_siblings() {
         },
     ];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    let source = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     assert!(
-        model.nodes.iter().all(|n| n.name.is_empty()),
+        source.nodes.iter().all(|n| n.name.is_empty()),
         "fixture must have unnamed nodes for this to be a regression test"
     );
 
@@ -80,13 +88,13 @@ fn remove_dropout_keeps_unnamed_siblings() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Exact,
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
 
     assert_eq!(
-        model.node_count(),
+        model.nodes.len(),
         2,
         "only the Dropout should go, not every unnamed node"
     );
@@ -145,11 +153,10 @@ fn eliminate_squeeze_unsqueeze_handles_overlapping_chain() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Exact,
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
 
     // The Relu is the only node that must survive; whichever inverse pair the
     // pass claims, it must not corrupt the graph around it.
@@ -227,30 +234,28 @@ fn eliminate_squeeze_unsqueeze_matches_non_adjacent_pair() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Exact,
-        |model| {
-            let mut graph = model.to_ir();
+        |graph| {
             let fired = EliminateSqueezeUnsqueezePairs
-                .run(&mut graph)
+                .run(graph)
                 .expect("pass runs");
             assert!(fired, "pass must match across the intervening node");
-            model.apply_ir(&graph);
         },
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut graph = model.to_ir();
     EliminateSqueezeUnsqueezePairs
         .run(&mut graph)
         .expect("pass runs");
-    model.apply_ir(&graph);
+    let lowered = graph.lower();
 
     assert!(
-        model
+        lowered
             .nodes
             .iter()
             .all(|n| !matches!(n.op_type.as_str(), "Squeeze" | "Unsqueeze")),
         "the non-adjacent inverse pair should have been eliminated, got {:?}",
-        model.nodes.iter().map(|n| &n.op_type).collect::<Vec<_>>()
+        lowered.nodes.iter().map(|n| &n.op_type).collect::<Vec<_>>()
     );
 }
 
@@ -347,13 +352,12 @@ fn fold_conv_bn_is_numerically_equivalent() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Abs(1e-5),
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
     assert_eq!(
-        model.node_count(),
+        model.nodes.len(),
         1,
         "the BatchNormalization should fold in"
     );
@@ -381,11 +385,10 @@ fn fold_conv_bn_declines_on_a_shared_weight() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Abs(1e-5),
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
     assert_eq!(
         model
             .nodes
@@ -452,11 +455,10 @@ fn fold_conv_const_binary_absorbs_mul_and_add() {
     for op in ["Mul", "Add"] {
         for const_on_port in [0usize, 1] {
             let bytes = conv_const_binary_bytes(op, const_on_port);
-            let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-            optimize_onnx_graph(&mut model).expect("optimize succeeds");
+            let model = optimized_model(&bytes);
 
             assert_eq!(
-                model.node_count(),
+                model.nodes.len(),
                 1,
                 "{op} with the constant on port {const_on_port} should fold into the Conv"
             );
@@ -512,12 +514,11 @@ fn fold_conv_scalar_mul_is_numerically_equivalent() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Abs(1e-5),
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
-    assert_eq!(model.node_count(), 1, "the scalar Mul should fold in");
+    let model = optimized_model(&bytes);
+    assert_eq!(model.nodes.len(), 1, "the scalar Mul should fold in");
 }
 
 /// A rank-1 constant aligns against the *width* axis, not channels, so folding
@@ -561,10 +562,9 @@ fn fold_conv_const_binary_declines_on_non_channel_constant() {
     ];
     let bytes = build_minimal_onnx_model(nodes, inits, vec!["x"], vec!["y"]);
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
     assert_eq!(
-        model.node_count(),
+        model.nodes.len(),
         2,
         "a non-per-channel constant must not fold"
     );
@@ -622,13 +622,12 @@ fn fold_constants_collapses_a_chain_in_one_sweep() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Abs(1e-6),
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
     assert_eq!(
-        model.node_count(),
+        model.nodes.len(),
         1,
         "both constant nodes should fold, leaving only the sink, got {:?}",
         model.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
@@ -671,8 +670,7 @@ fn fold_constants_skips_an_unfoldable_node_without_giving_up() {
     ];
     let bytes = build_minimal_onnx_model(nodes, inits, vec!["x"], vec!["y"]);
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
 
     assert!(
         !model.nodes.iter().any(|n| n.name == "foldable"),
@@ -698,14 +696,9 @@ fn fold_constants_leaves_a_graph_output_alone() {
     ];
     let bytes = build_minimal_onnx_model(nodes, inits, vec!["k1"], vec!["y"]);
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
 
-    assert_eq!(
-        model.node_count(),
-        1,
-        "the producer of a graph output stays"
-    );
+    assert_eq!(model.nodes.len(), 1, "the producer of a graph output stays");
     assert_eq!(model.outputs, vec!["y".to_string()]);
 }
 
@@ -728,9 +721,8 @@ fn optimize_eliminates_dead_nodes() {
         },
     ];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x"], vec!["y"]);
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
-    assert_eq!(model.node_count(), 1, "dead node should be eliminated");
+    let model = optimized_model(&bytes);
+    assert_eq!(model.nodes.len(), 1, "dead node should be eliminated");
     assert_eq!(model.nodes[0].name, "used");
 }
 
@@ -753,21 +745,21 @@ fn fuse_conv_relu_merges_pair() {
         },
     ];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["x", "w"], vec!["y"]);
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut graph = model.to_ir();
     assert!(
         FuseActivation::conv_relu().run(&mut graph).unwrap(),
         "pass should fire"
     );
-    model.apply_ir(&graph);
+    let lowered = graph.lower();
 
-    assert_eq!(model.node_count(), 1);
-    assert_eq!(model.nodes[0].op_type, "Conv_Relu");
+    assert_eq!(lowered.nodes.len(), 1);
+    assert_eq!(lowered.nodes[0].op_type, "Conv_Relu");
     assert_eq!(
-        model.nodes[0].outputs[0], "y",
+        lowered.nodes[0].outputs[0], "y",
         "the fused node must keep the Relu's output name, since it is a graph output"
     );
-    assert_eq!(model.outputs, vec!["y".to_string()]);
+    assert_eq!(lowered.outputs, vec!["y".to_string()]);
 }
 
 /// The fusion rewrites the producer's output in place, so it must decline when
@@ -871,12 +863,11 @@ fn interleaved_branches_both_fuse() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Exact,
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
-    assert_eq!(model.node_count(), 2, "both Conv+Relu pairs should fuse");
+    let model = optimized_model(&bytes);
+    assert_eq!(model.nodes.len(), 2, "both Conv+Relu pairs should fuse");
     assert!(
         model.nodes.iter().all(|n| n.op_type == "Conv_Relu"),
         "every node should be a fused Conv_Relu, got {:?}",
@@ -925,12 +916,11 @@ fn reorder_restores_producer_consumer_adjacency() {
         },
     ];
     let bytes = build_minimal_onnx_model(nodes, vec![], vec!["xa", "xb", "w"], vec!["ya", "yb"]);
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
 
     // Sigmoid is not an activation any pass fuses, so all four nodes survive
     // and only the ordering is under test.
-    assert_eq!(model.node_count(), 4);
+    assert_eq!(model.nodes.len(), 4);
     for (idx, node) in model.nodes.iter().enumerate() {
         if node.op_type != "Conv" {
             continue;
@@ -1031,7 +1021,7 @@ fn graph_cost_report_shows_lighter_graph_after_optimization() {
         ..Default::default()
     };
     let bytes = build_minimal_onnx_model(nodes, vec![w], vec!["x"], vec!["y"]);
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let input_shapes =
         rustc_hash::FxHashMap::from_iter([("x".to_string(), TensorShape::known(vec![1, 3, 8, 8]))]);
 
@@ -1039,10 +1029,9 @@ fn graph_cost_report_shows_lighter_graph_after_optimization() {
     let before = graph_cost(&model, &before_shapes);
     let before_report = graph_cost_report(&before);
 
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
-
-    let after_shapes = infer_shapes(&model, &input_shapes);
-    let after = graph_cost(&model, &after_shapes);
+    let optimized = optimized_model(&bytes);
+    let after_shapes = infer_executable_shapes(&optimized, &input_shapes);
+    let after = graph_cost_executable(&optimized, &after_shapes);
     let after_report = graph_cost_report(&after);
 
     assert!(
@@ -1143,17 +1132,16 @@ fn rewrite_convtranspose_dts_is_numerically_identical() {
         &bytes,
         &feed,
         Tolerance::Abs(1e-5),
-        |model| {
-            let mut graph = model.to_ir();
+        |graph| {
             RewriteConvTransposeToDepthToSpace
-                .run(&mut graph)
+                .run(graph)
                 .expect("pass runs");
-            model.apply_ir(&graph);
+            let lowered = graph.lower();
             assert!(
-                model.nodes.iter().all(|n| n.op_type != "ConvTranspose"),
+                lowered.nodes.iter().all(|n| n.op_type != "ConvTranspose"),
                 "pass must replace the eligible ConvTranspose"
             );
-            assert!(model.nodes.iter().any(|n| n.op_type == "DepthToSpace"));
+            assert!(lowered.nodes.iter().any(|n| n.op_type == "DepthToSpace"));
         },
     );
 
@@ -1198,21 +1186,22 @@ fn rewrite_convtranspose_dts_skips_unsafe_cases() {
     let mut feed = FxHashMap::default();
     feed.insert("x".to_string(), rng.tensor(vec![1, 1, 4, 4]));
 
-    assert_transform_is_noop("rewrite_convtranspose_dts/k!=s", &bytes, &feed, |model| {
-        let mut graph = model.to_ir();
+    assert_transform_is_noop("rewrite_convtranspose_dts/k!=s", &bytes, &feed, |graph| {
         RewriteConvTransposeToDepthToSpace
-            .run(&mut graph)
+            .run(graph)
             .expect("pass runs");
-        model.apply_ir(&graph);
     });
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    let model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
     let mut graph = model.to_ir();
     RewriteConvTransposeToDepthToSpace
         .run(&mut graph)
         .expect("pass runs");
-    model.apply_ir(&graph);
-    assert!(model.nodes.iter().any(|n| n.op_type == "ConvTranspose"));
+    assert!(
+        graph
+            .node_ids()
+            .any(|id| graph.node(id).unwrap().op.as_str() == "ConvTranspose")
+    );
 }
 
 /// The DW+PW and PW+DW plan fusions used to find their partner by checking the
@@ -2073,13 +2062,13 @@ fn optimize_folds_a_constant_transpose_into_the_matmul_weight() {
         &bytes,
         &feed,
         crate::tests::equivalence::Tolerance::Exact,
-        |m| optimize_onnx_graph(m).expect("optimize succeeds"),
+        |graph| optimize_ir(graph).expect("optimize succeeds"),
     );
 
-    let mut model = OnnxLoader::from_bytes(&bytes).decode().unwrap();
-    assert_eq!(model.node_count(), 2, "the fold must not happen at load");
+    let source = OnnxLoader::from_bytes(&bytes).decode().unwrap();
+    assert_eq!(source.nodes.len(), 2, "decode must not fold the constant");
 
-    optimize_onnx_graph(&mut model).expect("optimize succeeds");
+    let model = optimized_model(&bytes);
     assert!(
         model.nodes.iter().all(|n| n.op_type != "Transpose"),
         "the constant Transpose should be folded away, got {:?}",
